@@ -1013,7 +1013,9 @@ pub(super) fn add_plan_checks(plan: &mut TasksFile, checks: &[SourceCheck]) -> V
 /// Run each source check that has a command with that command (bug-8fe462),
 /// in every verify step that covers only such checks and cannot pass as
 /// written (`unrunnable`): a planner that invented test names for a
-/// wildcard check gets the real ones. Returns one line per step changed.
+/// wildcard check gets the real ones. The step keeps its file tests and greps
+/// of its task's own files ([`own_guards`]). Returns one line per step
+/// changed.
 pub(super) fn apply_runs(
     plan: &mut TasksFile,
     checks: &[SourceCheck],
@@ -1054,7 +1056,12 @@ pub(super) fn apply_runs(
             if runs.is_empty() {
                 continue;
             }
-            let command = runs.join(" && ");
+            // bug-72dc0d: the step's own file tests and greps stay.
+            let command = own_guards(&step.command, &task.files)
+                .into_iter()
+                .chain([runs.join(" && ")])
+                .collect::<Vec<_>>()
+                .join(" && ");
             applied.push(format!(
                 "{} step {number}: `{}` became `{command}`, the source check's own tests",
                 task.id, step.command
@@ -1873,7 +1880,7 @@ mod tests {
         let after = SourceCoverage::of(&checks, &plan, &[]);
         assert_eq!(after.kept.len(), 20, "{:#?}", after.detail_lines());
 
-        let plan = TasksFile::parse(&fixture.join("plan3.toml")).expect("plan 3");
+        let mut plan = TasksFile::parse(&fixture.join("plan3.toml")).expect("plan 3");
         let quoted = SourceCoverage::of(&checks, &plan, &[]);
         assert_eq!(quoted.kept.len(), 1, "{:#?}", quoted.detail_lines());
         assert_eq!(quoted.elsewhere.len(), 19);
@@ -1884,6 +1891,22 @@ mod tests {
             "{}",
             quoted.summary_line()
         );
+        // Its criteria name the checks, so apply_runs gives each step the
+        // commands of the checks it covers, its greps of its own files kept.
+        let stuck = cargo_steps(&plan);
+        let applied = apply_runs(&mut plan, &checks, &stuck);
+        assert_eq!(applied.len(), 4, "{applied:#?}");
+        assert!(
+            plan.tasks[0].verify[0].command.starts_with(
+                "test -f core/include/undertow/lfo.h && test -f core/src/lfo.cpp && grep -q \
+                 'file(GLOB' core/CMakeLists.txt && grep -q 'CONFIGURE_DEPENDS' \
+                 core/CMakeLists.txt && tools/spec.sh 2 lfo 'P2.01*'"
+            ),
+            "{}",
+            plan.tasks[0].verify[0].command
+        );
+        let applied = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(applied.kept.len(), 20, "{:#?}", applied.detail_lines());
     }
 
     /// Round v7, phase 3: rows of a spec's table can share one command

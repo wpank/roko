@@ -2,7 +2,7 @@
 id = "bug-56a806"
 kind = "bug"
 title = "Plan generation wraps a spec's exact check commands in planner-invented guards: every step of Undertow phase 2's third plan (op 1a965a97) is grep -q '<name>' <file> && tools/spec.sh 2 …, T4's grep for AllocationCounter (a spec-test helper) can never pass on correct code, and coverage still says 24 of 24 kept because a step that contains a check's command counts as running it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "e87ec04e3"
 source = "round-v7-hermes-pilot#E-p2-plan4"
 discovered_from = "agent:team-lead (round v7 phase 2, op 1a965a97)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::apply_runs", "crates/roko-cli/src/plan_generate/source_checks.rs::assign_runs", "crates/roko-cli/src/plan_generate/source_checks.rs::SourceCoverage", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-72dc0d", "bug-3cdc58", "
 
 [[verify]]
 command = "grep -qw 'fn a_step_runs_the_spec_commands_exactly' crates/roko-cli/src/plan_generate/source_checks.rs && grep -qw 'fn a_planners_guards_around_spec_commands_are_dropped' crates/roko-cli/src/plan_generate/pipeline.rs && cargo test -p roko-cli --lib -- a_step_runs_the_spec_commands_exactly a_planners_guards_around_spec_commands_are_dropped"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T17:55:55Z"
+commit = "e87ec04e3"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+forced = false
+evidence = "e87ec04e3: source_checks::run_exactly, a pass after apply_runs and assign_runs (pipeline.rs), makes a step that runs any source check's command run those commands alone (in its order, each once, as the source writes them); a step that runs none is left alone; a step that becomes the same as an earlier step of its task joins it (covers move), so PLAN_VERIFY_DUPLICATE cannot refuse the plan; [[meta.verify]] likewise for the plan's own checks; one repair line per step changed. apply_runs and assign_runs keep no guards (own_guards removed); at the step limit assign_runs joins the last step that runs source commands. Coverage keeps a check only by a step that is exactly source commands; a guarded step reads as covered by a step that runs another command. Planner and regeneration prompts say a run: command is the step's whole command. Red to green: a_planners_guards_around_spec_commands_are_dropped (generation with rumble-3's plan as the reply) failed on 91ee178ed (all 15 guards written, Source checks: 24 of 24 kept) and passes now (1 call, 15 exact spec commands, 24 of 24 kept). cargo test -p roko-cli --lib plan_generate: 156 passed; --test plan_validation: 38 passed; --test plan_validate: 23 passed, 2 failed (the known bug-2a31bc); clippy -p roko-cli -D warnings clean; nightly fmt clean. 0-dollar replay of op 1a965a97 (Undertow at de7b49b, the pilot's two drafts, harness scratchpad roko-exact/replay): before (main a1d12fc1c and 9f0870e9a) 2 calls, 24 of 24 kept with 15 grep guards, p2check 15 findings; after: 2 calls, 24 of 24 kept, every step exactly a spec command, validate 0 diagnostics, p2check 0 findings."
 +++
 
 ## Problem

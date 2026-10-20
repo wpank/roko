@@ -22,7 +22,9 @@
 //! that ran out of time (gap-6f77a3), so a resumed run escalates from it
 //! rather than from the base timeout. And it keeps the verify steps each task
 //! passed on its earlier attempts (gap-6dba88), so a step that passed before
-//! and fails now reads as a regression in a resumed run too.
+//! and fails now reads as a regression in a resumed run too, and each task's
+//! best try so far (gap-fefdf5), so a resumed run starts the task from it, not
+//! from the last try's tree its kept checkout holds (gap-586507).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -55,6 +57,21 @@ pub(crate) struct LadderStanding {
     pub(crate) failures_on_rung: u32,
 }
 
+/// A task's best try so far (gap-fefdf5): the tree its checkout held after
+/// its checks, with the verify steps it passed. A resumed run starts the task
+/// from it (gap-586507).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BestTry {
+    /// The try's ordinal, from 1.
+    pub(crate) attempt: u32,
+    /// The checkout's tree after the try.
+    pub(crate) tree: String,
+    /// The checkout the try ran in.
+    pub(crate) workdir: PathBuf,
+    /// The labels of the verify steps it passed.
+    pub(crate) passed: Vec<String>,
+}
+
 /// `retry-feedback.json`: one plan's pending feedback and ladder standings,
 /// keyed by task id.
 #[derive(Debug, Serialize, Deserialize)]
@@ -79,6 +96,9 @@ struct RetryFeedbackFile {
     /// ([`super::step_ratchet::step_identity`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     passed_steps: BTreeMap<String, BTreeSet<String>>,
+    /// Each task's best try so far ([`BestTry`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    best_tries: BTreeMap<String, BestTry>,
 }
 
 /// What `retry-feedback.json` holds for one plan's checkpoint run, keyed by
@@ -91,6 +111,7 @@ struct KeptState {
     turn_caps: BTreeMap<String, TurnCapRetry>,
     timeouts: BTreeMap<String, u64>,
     passed_steps: BTreeMap<String, BTreeSet<String>>,
+    best_tries: BTreeMap<String, BestTry>,
 }
 
 /// A task's next dispatch: its attempt number and the feedback it starts with.
@@ -118,6 +139,8 @@ struct BookState {
     timeouts: HashMap<TaskKey, u64>,
     /// Verify steps passed on earlier attempts, by step identity.
     passed_steps: HashMap<TaskKey, BTreeSet<String>>,
+    /// Each task's best try so far.
+    best_tries: HashMap<TaskKey, BestTry>,
     /// Per plan: the file its feedback is kept in, and the checkpoint run.
     files: HashMap<String, (PathBuf, String)>,
 }
@@ -144,6 +167,12 @@ impl RetryFeedbackBook {
         state.turn_caps.retain(|(plan, _), _| plan != plan_id);
         state.timeouts.retain(|(plan, _), _| plan != plan_id);
         state.passed_steps.retain(|(plan, _), _| plan != plan_id);
+        state.best_tries.retain(|(plan, _), _| plan != plan_id);
+        for (task_id, best) in kept.best_tries {
+            state
+                .best_tries
+                .insert((plan_id.to_string(), task_id), best);
+        }
         for (task_id, standing) in kept.ladder {
             state
                 .ladder
@@ -290,8 +319,38 @@ impl RetryFeedbackBook {
         }
     }
 
+    /// `task_id`'s best try so far, which a resumed run starts it from
+    /// (gap-586507).
+    pub(crate) fn best_try(&self, plan_id: &str, task_id: &str) -> Option<BestTry> {
+        let key = (plan_id.to_string(), task_id.to_string());
+        self.state.lock().best_tries.get(&key).cloned()
+    }
+
+    /// Keep `best` as `task_id`'s best try so far, on disk as well when the
+    /// plan has a checkpoint.
+    pub(crate) fn record_best_try(&self, plan_id: &str, task_id: &str, best: BestTry) {
+        let key = (plan_id.to_string(), task_id.to_string());
+        let mut state = self.state.lock();
+        if state.best_tries.get(&key) != Some(&best) {
+            state.best_tries.insert(key, best);
+            persist(&state, plan_id);
+        }
+    }
+
+    /// The attempts of `task_id` that earlier processes of a resumed run made
+    /// and left feedback for: 0 in a run's first process.
+    pub(crate) fn earlier_attempts(&self, plan_id: &str, task_id: &str) -> u32 {
+        let key = (plan_id.to_string(), task_id.to_string());
+        self.state
+            .lock()
+            .earlier_attempts
+            .get(&key)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Drop `task_id`'s feedback once it passes, with its spend, any
-    /// turn-cap or timeout retry, and the steps it passed.
+    /// turn-cap or timeout retry, the steps it passed and its best try.
     pub(crate) fn clear(&self, plan_id: &str, task_id: &str) {
         let key = (plan_id.to_string(), task_id.to_string());
         let mut state = self.state.lock();
@@ -301,7 +360,8 @@ impl RetryFeedbackBook {
         let turn_cap = state.turn_caps.remove(&key).is_some();
         let timeout = state.timeouts.remove(&key).is_some();
         let steps = state.passed_steps.remove(&key).is_some();
-        if pending || spend || turn_cap || timeout || steps {
+        let best = state.best_tries.remove(&key).is_some();
+        if pending || spend || turn_cap || timeout || steps || best {
             persist(&state, plan_id);
         }
     }
@@ -392,8 +452,8 @@ impl RetryFeedbackBook {
 }
 
 /// Rewrite `plan_id`'s file from `state`, removing it once it would keep
-/// nothing: no feedback, ladder standing, spend, turn cap, timeout or step
-/// history.
+/// nothing: no feedback, ladder standing, spend, turn cap, timeout, step
+/// history or best try.
 /// Returns the file on success. Gate output and diagnoses can quote a
 /// secret, so the process's secrets are redacted from the file; a resumed
 /// attempt sees the redaction.
@@ -435,12 +495,19 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
         .filter(|((plan, _), steps)| plan == plan_id && !steps.is_empty())
         .map(|((_, task_id), steps)| (task_id.clone(), steps.clone()))
         .collect();
+    let best_tries: BTreeMap<String, BestTry> = state
+        .best_tries
+        .iter()
+        .filter(|((plan, _), _)| plan == plan_id)
+        .map(|((_, task_id), best)| (task_id.clone(), best.clone()))
+        .collect();
     let written = if tasks.is_empty()
         && ladder.is_empty()
         && spend.is_empty()
         && turn_caps.is_empty()
         && timeouts.is_empty()
         && passed_steps.is_empty()
+        && best_tries.is_empty()
     {
         match std::fs::remove_file(path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
@@ -457,6 +524,7 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
             turn_caps,
             timeouts,
             passed_steps,
+            best_tries,
         };
         serde_json::to_string_pretty(&file)
             .map_err(std::io::Error::other)
@@ -525,6 +593,7 @@ fn read_feedback_file(path: &Path, plan_id: &str, run_id: &str) -> KeptState {
         turn_caps: file.turn_caps,
         timeouts: file.timeouts,
         passed_steps: file.passed_steps,
+        best_tries: file.best_tries,
     }
 }
 

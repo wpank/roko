@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 use super::child_group;
 
 /// The lines of a failing check's output the agent gets back.
-const TAIL_LINES: usize = 60;
+pub(super) const TAIL_LINES: usize = 60;
 
 /// The most bytes of them.
-const TAIL_BYTES: usize = 8 * 1024;
+pub(super) const TAIL_BYTES: usize = 8 * 1024;
 
 /// One of an attempt's checks, as dispatch leaves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,13 +127,23 @@ pub(super) async fn run(
                 .status
                 .code()
                 .map_or_else(|| "a signal".to_string(), |code| format!("exit {code}"));
-            return ToolResult::Err(ToolError::Other(format!(
-                "run_tests: check {number} of {} ({}) failed ({exit}) after {secs} s; the \
-                 output's end:\n{}",
-                checks.len(),
-                check.label,
-                tail(&text)
-            )));
+            // bug-1f8db7: a failing check is the tool's answer, not a tool
+            // failure: as an error it would count toward a contract's
+            // consecutive-failure limit while the agent fixes its work.
+            return ToolResult::structured(
+                serde_json::json!({
+                    "build": "checks",
+                    "status": "failed",
+                    "summary": format!(
+                        "check {number} of {} ({}) failed ({exit}) after {secs} s",
+                        checks.len(),
+                        check.label
+                    ),
+                    "checks": ran,
+                    "output": tail(&text),
+                })
+                .to_string(),
+            );
         }
         ran.push(serde_json::json!({ "check": check.label, "passed": true, "secs": secs }));
     }
@@ -144,12 +154,17 @@ pub(super) async fn run(
 
 /// The last [`TAIL_LINES`] lines of `text`, at most [`TAIL_BYTES`] of them.
 fn tail(text: &str) -> String {
+    tail_of(text, TAIL_LINES, TAIL_BYTES)
+}
+
+/// The last `max_lines` lines of `text`, at most `max_bytes` of them.
+pub(super) fn tail_of(text: &str, max_lines: usize, max_bytes: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    let kept = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
-    if kept.len() <= TAIL_BYTES {
+    let kept = lines[lines.len().saturating_sub(max_lines)..].join("\n");
+    if kept.len() <= max_bytes {
         return kept;
     }
-    let mut start = kept.len() - TAIL_BYTES;
+    let mut start = kept.len() - max_bytes;
     while !kept.is_char_boundary(start) {
         start += 1;
     }

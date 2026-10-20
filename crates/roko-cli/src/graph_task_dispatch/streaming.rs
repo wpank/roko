@@ -97,6 +97,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 task.id
             )));
         }
+        // A try that passed fewer verify steps than the task's best one
+        // left its checkout to start from the best try's files (gap-fefdf5).
+        if self.workspace_provider.is_some() {
+            self.restore_best_try(spec, &task, &lease.path).await;
+        }
         let role = task.role.as_deref().unwrap_or("implementer");
         let _in_flight = self.in_flight.register(
             &format!("{}/{}", spec.plan_id, task.id),

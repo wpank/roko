@@ -397,7 +397,7 @@ fn is_roko_state(path: &str) -> bool {
 /// the untracked ones `.gitignore` keeps, hashed into the object store
 /// through a copy of the repository's index, which is left untouched.
 /// `None` outside a git work tree, or when git fails.
-async fn snapshot_tree(workdir: &Path) -> Option<String> {
+pub(super) async fn snapshot_tree(workdir: &Path) -> Option<String> {
     let index = git_line(workdir, &["rev-parse", "--git-path", "index"], None).await?;
     let scratch = tempfile::tempdir().ok()?;
     let scratch_index = scratch.path().join("index");
@@ -426,7 +426,7 @@ async fn git_line(workdir: &Path, args: &[&str], index: Option<&Path>) -> Option
 /// index at `index` when given, and whether the output was cut there (git is
 /// then killed). `None` when git cannot start, fails, or runs past
 /// [`GIT_TIMEOUT`].
-async fn git_bytes(
+pub(super) async fn git_bytes(
     workdir: &Path,
     args: &[&str],
     index: Option<&Path>,
@@ -462,7 +462,7 @@ async fn git_bytes(
 
 /// Parse `git diff --raw -z`: a `:<mode> <mode> <blob> <blob> <status>`
 /// header, then one path, or two for a rename or copy, each NUL-terminated.
-fn parse_raw_diff(raw: &[u8]) -> Vec<ChangedPath> {
+pub(super) fn parse_raw_diff(raw: &[u8]) -> Vec<ChangedPath> {
     let mut fields = raw
         .split(|byte| *byte == 0)
         .map(|field| String::from_utf8_lossy(field).into_owned());

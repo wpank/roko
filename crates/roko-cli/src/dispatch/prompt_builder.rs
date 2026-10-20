@@ -899,6 +899,11 @@ pub struct GateFeedback {
     /// errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnosis: Option<String>,
+    /// What roko kept of the task's tries (gap-fefdf5): its best try, whose
+    /// files the attempt starts from, and what the failed try changed from
+    /// them. Rendered as its own section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
 }
 
 impl GateFeedback {
@@ -909,6 +914,13 @@ impl GateFeedback {
         if !diagnosis.is_empty() {
             self.diagnosis = Some(diagnosis.chars().take(MAX_DIAGNOSIS_CHARS).collect());
         }
+        self
+    }
+
+    /// Attach what roko kept of the task's tries ([`Self::kept`]).
+    #[must_use]
+    pub fn with_kept(mut self, kept: Option<String>) -> Self {
+        self.kept = kept.filter(|kept| !kept.trim().is_empty());
         self
     }
 
@@ -949,6 +961,7 @@ impl GateFeedback {
                 .take(roko_core::defaults::DEFAULT_TOOL_OUTPUT_TRUNCATE_AT)
                 .collect(),
             diagnosis: None,
+            kept: None,
         })
     }
 }
@@ -3193,6 +3206,11 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
         buf.push_str(diagnosis);
         buf.push_str("\n\n");
     }
+    if let Some(kept) = &feedback.kept {
+        buf.push_str("## Kept by roko\n");
+        buf.push_str(kept);
+        buf.push_str("\n\n");
+    }
     if !feedback.compile_errors.is_empty() {
         buf.push_str("## Compile errors\n");
         for err in &feedback.compile_errors {
@@ -4460,6 +4478,7 @@ mod tests {
             clippy_warnings: vec![],
             raw_output: "...".into(),
             diagnosis: Some("The import path moved to crate::dispatch.".into()),
+            kept: None,
         });
         let pctx = PromptContext::from_task(&task(), &c);
         let p = assembler.assemble(&task(), &pctx).unwrap();
@@ -4539,6 +4558,7 @@ mod tests {
                 clippy_warnings: vec![],
                 raw_output: "...".into(),
                 diagnosis: Some("The import path moved to crate::dispatch.".into()),
+                kept: None,
             });
             let pctx = PromptContext::from_task(&task(), &c);
             let system = assembler.assemble(&task(), &pctx).unwrap().system_prompt;

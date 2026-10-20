@@ -638,6 +638,21 @@ impl TuiBridge {
         });
     }
 
+    /// The task's best try's files were put back before its next try,
+    /// because its last try passed fewer verify steps (gap-fefdf5).
+    pub fn best_try_restored(&self, plan_id: &str, task_id: &str, best: u32, paths: &[String]) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: "best_try_restored".to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            message: format!(
+                "the next try starts from try {best}'s files ({} put back)",
+                paths.len()
+            ),
+        });
+    }
+
     /// Extension hook fired.
     pub fn extension_hook(&self, plan_id: &str, task_id: &str, hook: &str, success: bool) {
         self.sender.publish(DashboardEvent::EventLogEntry {

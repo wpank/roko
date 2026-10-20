@@ -1,0 +1,246 @@
+[meta]
+plan = "p2-undertow-rumble"
+title = "P2 · Undertow rumble"
+iteration = 0
+total = 4
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh"
+fail_msg = "SC20: `tools/check.sh` (every present spec test, phases 0 to 2) is the plan's final check, not any one task's. Phases 0"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Add LFO utilities and globbed core sources"
+description = "Implement `undertow/lfo.h` and `core/src/lfo.cpp`, and switch `core/CMakeLists.txt` to glob `src/*.cpp` so the new source is compiled automatically. Assumption: the new LFO is stateless and pure by beat position, with all rate choices and shapes from the request."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/CMakeLists.txt",
+    "core/include/undertow/lfo.h",
+    "core/src/lfo.cpp",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `core/CMakeLists.txt` uses `file(GLOB ... CONFIGURE_DEPENDS ...)` for `src/*.cpp`, and `cargo` is not involved; a CMake build of `undertow_core` includes the new source.",
+    "AC2: `lfoCycleBeats(rate)` returns the 17 requested cycle lengths and `Lfo::valueAt(ppq)` is deterministic for a given beat position and seed.",
+]
+sequence = 0
+goal = "The core library builds from a globbed source list and exports the phase-2 LFO API."
+non_goals = [
+    "Do not add any rumble, output-stage, voice-modulation, or engine wiring in this task.",
+    "Do not change any spec tests.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-17"
+why = "See the current library source list and include/setup conventions."
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-80"
+why = "Match the project's header style and namespace conventions."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-40"
+why = "Confirm how core sources include headers and use core types."
+
+[[task.verify]]
+phase = "compile"
+command = "test -f core/include/undertow/lfo.h && test -f core/src/lfo.cpp && grep -q 'file(GLOB' core/CMakeLists.txt && grep -q 'CONFIGURE_DEPENDS' core/CMakeLists.txt && cargo check -p undertow_core"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Implement rumble generation and ducking"
+description = "Implement `undertow/rumble.h` and `core/src/rumble.cpp` for the ghost kick, reverb tail, tone shaping, saturation, ducking, and silence behavior. Assumption: the reverb and filter state are implemented without allocation during `process`, and the tail is flushed to exact zero below the denormal threshold."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/rumble.h",
+    "core/src/rumble.cpp",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `Rumble::process(send, ppq, bpm, running)` produces the beat-synced kick/duck behavior and never emits a dry kick signal.",
+    "AC2: With `rumble_level` at zero, the output is exact silence; with full settings the stage stays finite, bounded, and allocation-free after prepare.",
+]
+sequence = 1
+goal = "The core library exposes a working rumble stage that can be prepared, reset, parameterized, and processed per sample."
+non_goals = [
+    "Do not modify `core/CMakeLists.txt` or the LFO implementation in this task.",
+    "Do not add output-stage or engine wiring yet.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-80"
+why = "Match namespace conventions and nearby public API layout."
+
+[[task.context.read_files]]
+path = "core/src/voice.cpp"
+lines = "1-260"
+why = "Reuse existing sample-rate, smoothing, and reset conventions if needed."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "See how the engine currently calls voice/audio stages and handles meters."
+
+[[task.verify]]
+phase = "test"
+command = "test -f core/include/undertow/rumble.h && test -f core/src/rumble.cpp && grep -q 'class Rumble' core/include/undertow/rumble.h && cargo test -p undertow_core rumble"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Implement the output stage and clipping meter"
+description = "Implement `undertow/output_stage.h` and `core/src/output_stage.cpp` for saturation, master gain, crossover, stereo width, soft clipping, and the clip meter. Assumption: the stage remains neutral at its zeroed settings so phase-1 behavior is unchanged when it is wired in."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/output_stage.h",
+    "core/src/output_stage.cpp",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `softClip(x)` is transparent through 0.5 and never exceeds 0.966.",
+    "AC2: `OutputStage::process(mono, left, right)` applies the requested processing order and reports clipping for 0.5 s after an overfull-scale sample.",
+]
+sequence = 2
+goal = "The core library exposes a complete output stage with crossover, widening, soft clipping, and clip-meter state."
+non_goals = [
+    "Do not add LFO, rumble, voice-modulation, or engine wiring in this task.",
+    "Do not modify `core/CMakeLists.txt`.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-80"
+why = "Match the project’s existing API style and class organization."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "Confirm existing meter and block-processing patterns for the stage wiring."
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-40"
+why = "Keep the new source file aligned with the library build structure."
+
+[[task.verify]]
+phase = "test"
+command = "test -f core/include/undertow/output_stage.h && test -f core/src/output_stage.cpp && grep -q 'softClip' core/include/undertow/output_stage.h && cargo test -p undertow_core output_stage"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Add voice modulation and wire the engine"
+description = "Add `VoiceModulation` and `MonoVoice::setModulation`, then update `core/src/engine.cpp` so per-sample processing applies LFO modulation, rumble send, rumble/output stage processing, meter updates, and controller 120 resets. Assumption: host transport and internal-clock behavior follow the request exactly, and neutral parameter settings keep phase-1 measurements unchanged."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/voice.h",
+    "core/src/voice.cpp",
+    "core/src/engine.cpp",
+]
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `MonoVoice::setModulation` changes cutoff, resonance, pulse width, pitch, and gain as specified, with default no modulation.",
+    "AC2: The engine computes `ppq`/`running`, routes LFOs and rumble/output processing in order, and controller 120 silences output immediately.",
+    "AC3: The engine reports clipping and rumble meters, and the requested LFO/rumble/output behaviors are reachable through engine parameters.",
+]
+sequence = 3
+goal = "The voice accepts modulation input and the engine routes LFOs, rumble, and output-stage processing per sample."
+non_goals = [
+    "Do not change phase-3 sequencer code or phase-4 editor code.",
+    "Do not modify `core/CMakeLists.txt`, `lfo.cpp`, `rumble.cpp`, or `output_stage.cpp` in this task.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Add the modulation struct and class method in the existing voice API."
+
+[[task.context.read_files]]
+path = "core/src/voice.cpp"
+lines = "1-260"
+why = "Insert modulation handling into voice state and processing."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "Wire per-sample LFO, rumble, output stage, transport, and meters."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check --workspace"
+fail_msg = "workspace must compile"
+timeout_ms = 900000

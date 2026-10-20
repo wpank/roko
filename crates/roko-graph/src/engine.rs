@@ -6851,10 +6851,12 @@ exclusive = ["src/app.rs"]
         }
     }
 
-    /// bug-daa54e: nodes whose only shared path is a build-registration file
-    /// still run side by side; each adds its own source to `core/CMakeLists.txt`.
+    /// bug-daa54e: nodes that each add their source to `core/CMakeLists.txt`
+    /// share no other path, and still take turns: in one working tree, one
+    /// write to the shared list could overwrite the other. (With a worktree
+    /// per task the plan runner drops exclusive paths, so they run together.)
     #[tokio::test(start_paused = true)]
-    async fn same_wave_tasks_sharing_only_a_build_list_run_in_parallel() {
+    async fn same_wave_tasks_sharing_a_build_list_take_turns_in_one_tree() {
         let graph = load_from_str(
             r#"
 [graph]
@@ -6894,12 +6896,12 @@ exclusive = ["core/src/filter.cpp", "./core/CMakeLists.txt"]
             assert!(output.success, "through_start = {through_start}");
             assert_eq!(
                 log.max_running.load(Ordering::SeqCst),
-                2,
+                1,
                 "{:?}",
                 log.events()
             );
             assert!(
-                ran_together(&log, "oscillator", "filter"),
+                !ran_together(&log, "oscillator", "filter"),
                 "{:?}",
                 log.events()
             );

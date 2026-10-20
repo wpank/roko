@@ -22,8 +22,11 @@ use regex::Regex;
 use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
-use super::runnable::{Probe, Unchecked, Unrunnable, check_command, command_words, only_reads};
-use crate::task_parser::{TasksFile, VerifyStep};
+use super::runnable::{
+    Probe, Unchecked, Unrunnable, check_command, command_words, only_reads,
+    read_only_files as only_reads_files,
+};
+use crate::task_parser::{TaskDef, TasksFile, VerifyStep};
 
 /// The most of one check that a prompt or a report quotes, in characters.
 const CHECK_CHARS: usize = 300;
@@ -566,6 +569,10 @@ pub(super) struct SourceCoverage {
     /// By check id: the task, and why its step cannot pass as written, when
     /// no step that can run checks it (gap-ecafde).
     cannot_run: BTreeMap<String, (String, String)>,
+    /// By check id: the task, and the command of a step that covers a check
+    /// whose own command the source gives, but runs another one (bug-72dc0d:
+    /// a `cargo test` step covering `tools/spec.sh 2 rumble 'P2.04*'`).
+    elsewhere: BTreeMap<String, (String, String)>,
     /// By check id: why the plan drops it (`[meta] dropped_checks`).
     dropped: BTreeMap<String, String>,
 }
@@ -575,10 +582,13 @@ impl SourceCoverage {
     /// pass as written. A check is kept when a verify step that can run
     /// covers it (or an acceptance criterion that names it), or runs its own
     /// command (bug-3cdc58), and runs more than a grep, a file test or a
-    /// build; it cannot run when only steps that
-    /// cannot pass cover it otherwise; shallow when only grep, file test or
-    /// build steps do; dropped when `[meta] dropped_checks` gives a reason for
-    /// it that does more than restate it; and missing otherwise.
+    /// build; a check whose own command the source gives is kept only by a
+    /// step that runs it (bug-72dc0d), and a step that covers it but runs
+    /// another command keeps it no more than its acceptance text does. It
+    /// cannot run when only steps that cannot pass cover it otherwise;
+    /// shallow when only grep, file test or build steps do; dropped when
+    /// `[meta] dropped_checks` gives a reason for it that does more than
+    /// restate it; and missing otherwise.
     pub(super) fn of(checks: &[SourceCheck], plan: &TasksFile, unrunnable: &[Unrunnable]) -> Self {
         let text_of = |id: &str| {
             checks
@@ -593,9 +603,16 @@ impl SourceCoverage {
                 .iter()
                 .any(|check| check.id == id && check.plan_level)
         };
+        let run_of = |id: &str| {
+            checks
+                .iter()
+                .find(|check| check.id == id)
+                .and_then(|check| check.run.as_deref())
+        };
         let mut kept = BTreeMap::new();
         let mut shallow = BTreeMap::new();
         let mut cannot_run = BTreeMap::new();
+        let mut elsewhere = BTreeMap::new();
         for task in &plan.tasks {
             // Each check a step covers: through a criterion, or named.
             let mut covering: Vec<(String, String, &str, usize)> = Vec::new();
@@ -635,10 +652,15 @@ impl SourceCoverage {
                 let stuck = unrunnable
                     .iter()
                     .find(|step| step.task == task.id && step.step == number);
+                let other_command = run_of(&id).is_some_and(|run| !runs_command(command, run));
                 if let Some(stuck) = stuck {
                     cannot_run
                         .entry(id)
                         .or_insert_with(|| (task.id.clone(), stuck.why.clone()));
+                } else if other_command {
+                    elsewhere
+                        .entry(id)
+                        .or_insert_with(|| (task.id.clone(), command.to_string()));
                 } else if is_shallow(command) {
                     shallow
                         .entry(id)
@@ -646,6 +668,7 @@ impl SourceCoverage {
                 } else {
                     shallow.remove(&id);
                     cannot_run.remove(&id);
+                    elsewhere.remove(&id);
                     kept.insert(id, (task.id.clone(), criterion));
                 }
             }
@@ -664,7 +687,8 @@ impl SourceCoverage {
                 );
             }
         }
-        shallow.retain(|id, _| !cannot_run.contains_key(id));
+        shallow.retain(|id, _| !cannot_run.contains_key(id) && !elsewhere.contains_key(id));
+        elsewhere.retain(|id, _| !cannot_run.contains_key(id) && !kept.contains_key(id));
         let dropped = plan
             .meta
             .dropped_checks
@@ -679,11 +703,13 @@ impl SourceCoverage {
             .collect::<BTreeMap<_, _>>();
         shallow.retain(|id, _| !dropped.contains_key(id));
         cannot_run.retain(|id, _| !dropped.contains_key(id));
+        elsewhere.retain(|id, _| !dropped.contains_key(id));
         Self {
             checks: checks.to_vec(),
             kept,
             shallow,
             cannot_run,
+            elsewhere,
             dropped,
         }
     }
@@ -697,6 +723,7 @@ impl SourceCoverage {
                 !self.kept.contains_key(&check.id)
                     && !self.shallow.contains_key(&check.id)
                     && !self.cannot_run.contains_key(&check.id)
+                    && !self.elsewhere.contains_key(&check.id)
                     && !self.dropped.contains_key(&check.id)
             })
             .collect()
@@ -729,6 +756,13 @@ impl SourceCoverage {
                 self.cannot_run.len()
             );
         }
+        if !self.elsewhere.is_empty() {
+            let _ = write!(
+                line,
+                ", {} covered by a step that runs another command",
+                self.elsewhere.len()
+            );
+        }
         if !self.dropped.is_empty() {
             let _ = write!(line, ", {} dropped with a reason", self.dropped.len());
         }
@@ -751,6 +785,13 @@ impl SourceCoverage {
                     Some(format!(
                         "cannot run {}: {} ({task}: {why})",
                         check.id, check.text
+                    ))
+                } else if let Some((task, command)) = self.elsewhere.get(&check.id) {
+                    Some(format!(
+                        "another command for {}: {} ({task} runs `{}`)",
+                        check.id,
+                        check.text,
+                        one_line(command)
                     ))
                 } else if let Some((task, command)) = self.shallow.get(&check.id) {
                     Some(format!(
@@ -777,6 +818,7 @@ impl SourceCoverage {
                 let kept = self.kept.get(&check.id);
                 let shallow = self.shallow.get(&check.id);
                 let stuck = self.cannot_run.get(&check.id);
+                let elsewhere = self.elsewhere.get(&check.id);
                 let dropped = self.dropped.get(&check.id);
                 let status = if kept.is_some() {
                     "kept"
@@ -793,13 +835,22 @@ impl SourceCoverage {
                     id: check.id.clone(),
                     check: check.text.clone(),
                     status: status.to_string(),
-                    task: kept.or(stuck).or(shallow).map(|(task, _)| task.clone()),
+                    task: kept
+                        .or(stuck)
+                        .or(shallow)
+                        .or(elsewhere)
+                        .map(|(task, _)| task.clone()),
                     criterion: kept.map(|(_, criterion)| criterion.clone()),
                     reason: dropped
                         .cloned()
                         .or_else(|| stuck.map(|(_, why)| why.clone()))
                         .or_else(|| {
                             shallow.map(|(_, command)| format!("only `{}`", one_line(command)))
+                        })
+                        .or_else(|| {
+                            elsewhere.map(|(_, command)| {
+                                format!("runs `{}`, not its own command", one_line(command))
+                            })
                         }),
                 }
             })
@@ -810,7 +861,7 @@ impl SourceCoverage {
             shallow: self.shallow.len(),
             cannot_run: self.cannot_run.len(),
             dropped: self.dropped.len(),
-            missing: self.missing().len(),
+            missing: self.missing().len() + self.elsewhere.len(),
             regenerated,
             checks,
         }
@@ -962,7 +1013,9 @@ pub(super) fn add_plan_checks(plan: &mut TasksFile, checks: &[SourceCheck]) -> V
 /// Run each source check that has a command with that command (bug-8fe462),
 /// in every verify step that covers only such checks and cannot pass as
 /// written (`unrunnable`): a planner that invented test names for a
-/// wildcard check gets the real ones. Returns one line per step changed.
+/// wildcard check gets the real ones. The step keeps its file tests and greps
+/// of its task's own files ([`own_guards`]). Returns one line per step
+/// changed.
 pub(super) fn apply_runs(
     plan: &mut TasksFile,
     checks: &[SourceCheck],
@@ -977,18 +1030,13 @@ pub(super) fn apply_runs(
             {
                 continue;
             }
-            let named: Vec<String> = step
-                .covers
-                .iter()
-                .map(|cover| cover.trim())
-                .flat_map(|cover| {
-                    task.acceptance
+            // A check of the plan's own runs in `[[meta.verify]]` (bug-96115c).
+            let named: Vec<String> = step_checks(&task.acceptance, step)
+                .into_iter()
+                .filter(|id| {
+                    !checks
                         .iter()
-                        .enumerate()
-                        .filter(|(index, item)| ac_id(item, *index) == cover)
-                        .flat_map(|(_, item)| named_checks(item))
-                        .chain(named_checks(cover))
-                        .collect::<Vec<_>>()
+                        .any(|check| &check.id == id && check.plan_level)
                 })
                 .collect();
             // Every check it covers must have a command of its own.
@@ -1008,7 +1056,12 @@ pub(super) fn apply_runs(
             if runs.is_empty() {
                 continue;
             }
-            let command = runs.join(" && ");
+            // bug-72dc0d: the step's own file tests and greps stay.
+            let command = own_guards(&step.command, &task.files)
+                .into_iter()
+                .chain([runs.join(" && ")])
+                .collect::<Vec<_>>()
+                .join(" && ");
             applied.push(format!(
                 "{} step {number}: `{}` became `{command}`, the source check's own tests",
                 task.id, step.command
@@ -1017,6 +1070,297 @@ pub(super) fn apply_runs(
         }
     }
     applied
+}
+
+/// The source checks a verify step covers: named in its `covers`, or by an
+/// acceptance criterion of its task (`acceptance`) that its `covers` names.
+fn step_checks(acceptance: &[String], step: &VerifyStep) -> Vec<String> {
+    step.covers
+        .iter()
+        .map(|cover| cover.trim())
+        .flat_map(|cover| {
+            acceptance
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| ac_id(item, *index) == cover)
+                .flat_map(|(_, item)| named_checks(item))
+                .chain(named_checks(cover))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Run each source check whose own command roko knows, and that no step
+/// runs, in the task that owns it (bug-72dc0d). The planner groups the work
+/// and words it; roko runs the source's commands, so how many of them a plan
+/// keeps does not turn on the planner retyping each one ([`owner_of`]). A
+/// task's checks run as one step: in place of its first step that cannot pass
+/// as written (`unrunnable`), after that step's file tests and greps of the
+/// task's own files ([`own_guards`]); else as a step of its own while the
+/// task has fewer than `max_steps(task)` steps; else after its last step's
+/// command. Returns one line per step changed or added.
+pub(super) fn assign_runs(
+    plan: &mut TasksFile,
+    checks: &[SourceCheck],
+    unrunnable: &[Unrunnable],
+    max_steps: impl Fn(&TaskDef) -> usize,
+) -> Vec<String> {
+    let mut owned: BTreeMap<usize, Vec<&SourceCheck>> = BTreeMap::new();
+    for check in checks.iter().filter(|check| !check.plan_level) {
+        let Some(run) = check.run.as_deref() else {
+            continue;
+        };
+        let ran = plan
+            .tasks
+            .iter()
+            .flat_map(|task| &task.verify)
+            .any(|step| runs_command(&step.command, run));
+        if let (false, Some(owner)) = (ran, owner_of(plan, check, run)) {
+            owned.entry(owner).or_default().push(check);
+        }
+    }
+    let mut assigned = Vec::new();
+    for (index, owned) in owned {
+        let limit = max_steps(&plan.tasks[index]);
+        let task = &mut plan.tasks[index];
+        let mut runs: Vec<&str> = Vec::new();
+        let mut covers: Vec<String> = Vec::new();
+        for check in &owned {
+            if let Some(run) = check.run.as_deref()
+                && !runs.contains(&run)
+            {
+                runs.push(run);
+            }
+            if let Some(criterion) = criterion_naming(&task.acceptance, check)
+                && !covers.contains(&criterion)
+            {
+                covers.push(criterion);
+            }
+        }
+        let command = runs.join(" && ");
+        let ids = owned
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let stuck = (1..=task.verify.len()).find(|number| {
+            unrunnable
+                .iter()
+                .any(|step| step.task == task.id && step.step == *number)
+        });
+        let into =
+            stuck.or_else(|| (task.verify.len() >= limit.max(1)).then_some(task.verify.len()));
+        if let Some(number) = into {
+            let guards = own_guards(&task.verify[number - 1].command, &task.files);
+            let step = &mut task.verify[number - 1];
+            let was = one_line(&step.command);
+            step.command = if stuck.is_some() {
+                guards
+                    .iter()
+                    .map(String::as_str)
+                    .chain([command.as_str()])
+                    .collect::<Vec<_>>()
+                    .join(" && ")
+            } else {
+                format!("{} && {command}", step.command)
+            };
+            for cover in covers {
+                if !step.covers.contains(&cover) {
+                    step.covers.push(cover);
+                }
+            }
+            assigned.push(format!(
+                "{} step {number}: `{was}` became `{}`, to run the source's own commands for \
+                 {ids}",
+                task.id,
+                one_line(&step.command)
+            ));
+        } else {
+            assigned.push(format!(
+                "{}: added a step running `{command}`, the source's own commands for {ids}",
+                task.id
+            ));
+            task.verify.push(VerifyStep {
+                phase: "test".to_string(),
+                command,
+                fail_msg: Some(format!("the source's checks {ids}")),
+                timeout_ms: crate::task_parser::default_verify_timeout(),
+                scope: Vec::new(),
+                covers,
+                expect: None,
+            });
+        }
+    }
+    assigned
+}
+
+/// The commands of `command`, joined only by `&&`, that test or grep files
+/// of `files` alone: what a step checks of its own task's files before it
+/// runs anything else. Empty when anything but `&&` joins its commands.
+fn own_guards(command: &str, files: &[String]) -> Vec<String> {
+    let Some(segments) = and_segments(command) else {
+        return Vec::new();
+    };
+    segments
+        .into_iter()
+        .filter(|segment| {
+            let words = command_words(segment);
+            matches!(
+                words.first().map(String::as_str),
+                Some("test" | "[" | "grep" | "egrep" | "fgrep")
+            ) && only_reads_files(segment).is_some_and(|reads| {
+                !reads.is_empty() && reads.iter().all(|read| files.contains(read))
+            })
+        })
+        .collect()
+}
+
+/// The commands of `command` when `&&` alone joins them, outside quotes:
+/// `None` for `||`, `|`, `;`, `&` or a line break.
+fn and_segments(command: &str) -> Option<Vec<String>> {
+    let mut segments = vec![String::new()];
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '&') if chars.peek() == Some(&'&') => {
+                chars.next();
+                segments.push(String::new());
+                continue;
+            }
+            (None, '&' | '|' | ';' | '\n') => return None,
+            _ => {}
+        }
+        if let Some(segment) = segments.last_mut() {
+            segment.push(c);
+        }
+    }
+    Some(
+        segments
+            .into_iter()
+            .map(|segment| segment.trim().to_string())
+            .filter(|segment| !segment.is_empty())
+            .collect(),
+    )
+}
+
+/// The one task of `plan` that owns `check`, whose command is `run`, by the
+/// first of these rules that names any task: a step of the task covers the
+/// check; the task's title, description or acceptance names it (by its id,
+/// by its own label in the source such as `P2.04`, or by its command); its
+/// command names one of the task's files (`rumble` in `tools/spec.sh 2 rumble
+/// 'P2.04*'` for `core/src/rumble.cpp`). `None` when no rule names a task, or
+/// the first that does names several.
+fn owner_of(plan: &TasksFile, check: &SourceCheck, run: &str) -> Option<usize> {
+    let label = check_label(&check.text);
+    let covers = |task: &TaskDef| {
+        task.verify
+            .iter()
+            .any(|step| step_checks(&task.acceptance, step).contains(&check.id))
+    };
+    let names = |task: &TaskDef| {
+        std::iter::once(task.title.as_str())
+            .chain(task.description.as_deref())
+            .chain(task.acceptance.iter().map(String::as_str))
+            .any(|text| {
+                named_checks(text).contains(&check.id)
+                    || label.is_some_and(|label| contains_token(text, label))
+                    || text.contains(run)
+            })
+    };
+    let files = |task: &TaskDef| names_files_of(run, task);
+    let rules: [&dyn Fn(&TaskDef) -> bool; 3] = [&covers, &names, &files];
+    for rule in rules {
+        let mut owners = plan
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| rule(task))
+            .map(|(index, _)| index);
+        match (owners.next(), owners.next()) {
+            (Some(owner), None) => return Some(owner),
+            (Some(_), Some(_)) => return None,
+            (None, _) => {}
+        }
+    }
+    None
+}
+
+/// The acceptance criterion of a task (its `acceptance`) that names `check`:
+/// by the check's id, its label in the source, or its command.
+fn criterion_naming(acceptance: &[String], check: &SourceCheck) -> Option<String> {
+    let label = check_label(&check.text);
+    acceptance
+        .iter()
+        .enumerate()
+        .find(|(_, item)| {
+            named_checks(item).contains(&check.id)
+                || label.is_some_and(|label| contains_token(item, label))
+                || check.run.as_deref().is_some_and(|run| item.contains(run))
+        })
+        .map(|(index, item)| ac_id(item, index))
+}
+
+/// The source's own label for a check stated as a table row: its first cell,
+/// when that is one short word with a letter and a digit (`P2.04` of `P2.04 |
+/// `tools/spec.sh 2 rumble 'P2.04*'` | …`).
+fn check_label(text: &str) -> Option<&str> {
+    let (first, _) = text.split_once(" | ")?;
+    let first = first.trim();
+    (first.len() <= 24
+        && !first.contains(char::is_whitespace)
+        && first.contains(|c: char| c.is_ascii_alphabetic())
+        && first.contains(|c: char| c.is_ascii_digit()))
+    .then_some(first)
+}
+
+/// Whether `text` holds `token` as a word of its own: not inside a longer
+/// word or number (`P2.01` is not in `P2.010`).
+fn contains_token(text: &str, token: &str) -> bool {
+    text.match_indices(token).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + token.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '.')
+            && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
+/// Words too common in commands and file names to tell one task's files
+/// from another's.
+const COMMON_WORDS: &[&str] = &[
+    "core", "index", "lib", "main", "mod", "spec", "src", "test", "tests", "util", "utils",
+];
+
+/// Whether `run`, a check's command, names one of `task`'s files: a word of
+/// its arguments is the name of a file the task writes, without its
+/// extension, or a part of that name (`output` of `output_stage.cpp`).
+fn names_files_of(run: &str, task: &TaskDef) -> bool {
+    let words: Vec<String> = command_words(run)
+        .iter()
+        .skip(1)
+        .filter(|word| !word.starts_with('-'))
+        .flat_map(|word| {
+            word.split(|c: char| !c.is_ascii_alphanumeric())
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+        })
+        .filter(|word| {
+            word.len() >= 3
+                && word.chars().all(|c| c.is_ascii_alphabetic())
+                && !COMMON_WORDS.contains(&word.as_str())
+        })
+        .collect();
+    task.files
+        .iter()
+        .filter_map(|file| Path::new(file).file_stem()?.to_str())
+        .map(str::to_ascii_lowercase)
+        .any(|stem| {
+            words
+                .iter()
+                .any(|word| *word == stem || stem.split(['_', '-']).any(|part| part == word))
+        })
 }
 
 /// The prompt that asks the planner once more for a plan that leaves some of
@@ -1051,6 +1395,23 @@ pub(super) fn regeneration_prompt(
                 let _ = writeln!(
                     problems,
                     "- {}: {} ({task} runs only `{}`)",
+                    check.id,
+                    check.text,
+                    one_line(command)
+                );
+            }
+        }
+    }
+    if !coverage.elsewhere.is_empty() {
+        problems.push_str(
+            "These checks come with their own command, but the step that covers them runs \
+             another one; run each check's own command, unchanged:\n",
+        );
+        for check in &coverage.checks {
+            if let Some((task, command)) = coverage.elsewhere.get(&check.id) {
+                let _ = writeln!(
+                    problems,
+                    "- {}: {} ({task} runs `{}`)",
                     check.id,
                     check.text,
                     one_line(command)
@@ -1439,5 +1800,141 @@ mod tests {
         }
         let checks = source_checks("# Spec\n\n## Notes\n\nAs a final check, run `make lint`.\n");
         assert!(checks.is_empty(), "{checks:?}");
+    }
+
+    /// bug-72dc0d: round v7's second phase-2 plan write (op 9fa7849f)
+    /// checked every task with cargo in a CMake repo, and kept 1 of the
+    /// spec's 20 checks. Each check's own command now runs in the task that
+    /// owns it, found by the file its command names: T1 keeps its greps of
+    /// its own files and runs the LFO checks, and so on. The third write (op
+    /// 87df1c1b) quoted every check in its criteria while its steps ran
+    /// cargo: that keeps none of them, where it counted 10.
+    #[test]
+    fn the_source_commands_run_in_the_tasks_that_own_them() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p2_spec_checks");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&request);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(checks.len(), 20);
+        assert_eq!(
+            checks[3].run.as_deref(),
+            Some("tools/spec.sh 2 rumble 'P2.04*'")
+        );
+        let cargo_steps = |plan: &TasksFile| -> Vec<Unrunnable> {
+            plan.tasks
+                .iter()
+                .flat_map(|task| {
+                    (1..)
+                        .zip(&task.verify)
+                        .filter(|(_, step)| step.command.contains("cargo "))
+                        .map(|(step, _)| Unrunnable {
+                            task: task.id.clone(),
+                            step,
+                            why: "it runs `cargo`, which needs a `Cargo.toml`".to_string(),
+                        })
+                })
+                .collect()
+        };
+
+        let mut plan = TasksFile::parse(&fixture.join("plan2.toml")).expect("plan 2");
+        let stuck = cargo_steps(&plan);
+        assert_eq!(stuck.len(), 4);
+        let before = SourceCoverage::of(&checks, &plan, &stuck);
+        assert_eq!(before.kept.len(), 1, "only [[meta.verify]]");
+        let assigned = assign_runs(&mut plan, &checks, &stuck, |_| 4);
+        assert_eq!(assigned.len(), 4, "{assigned:#?}");
+        let command = |id: &str| {
+            plan.tasks
+                .iter()
+                .find(|task| task.id == id)
+                .expect("a task")
+                .verify[0]
+                .command
+                .clone()
+        };
+        assert_eq!(
+            command("T1"),
+            "test -f core/include/undertow/lfo.h && test -f core/src/lfo.cpp && grep -q \
+             'file(GLOB' core/CMakeLists.txt && grep -q 'CONFIGURE_DEPENDS' \
+             core/CMakeLists.txt && tools/spec.sh 2 lfo 'P2.01*' && tools/spec.sh 2 lfo \
+             'P2.02*' && tools/spec.sh 2 lfo 'P2.03*'"
+        );
+        assert!(
+            command("T2").ends_with(
+                "grep -q 'class Rumble' core/include/undertow/rumble.h && tools/spec.sh 2 \
+                 rumble 'P2.04*' && tools/spec.sh 2 rumble 'P2.05*' && tools/spec.sh 2 rumble \
+                 'P2.06*' && tools/spec.sh 2 rumble 'P2.07*' && tools/spec.sh 2 rumble 'P2.08*'"
+            ),
+            "{}",
+            command("T2")
+        );
+        assert!(command("T3").contains("tools/spec.sh 2 output 'P2.12*'"));
+        assert!(command("T4").starts_with("tools/spec.sh 2 engine 'P2.13*' && "));
+        assert!(
+            plan.tasks
+                .iter()
+                .flat_map(|task| &task.verify)
+                .all(|step| !step.command.contains("cargo"))
+        );
+        let after = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(after.kept.len(), 20, "{:#?}", after.detail_lines());
+
+        let mut plan = TasksFile::parse(&fixture.join("plan3.toml")).expect("plan 3");
+        let quoted = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(quoted.kept.len(), 1, "{:#?}", quoted.detail_lines());
+        assert_eq!(quoted.elsewhere.len(), 19);
+        assert!(
+            quoted
+                .summary_line()
+                .ends_with("19 covered by a step that runs another command"),
+            "{}",
+            quoted.summary_line()
+        );
+        // Its criteria name the checks, so apply_runs gives each step the
+        // commands of the checks it covers, its greps of its own files kept.
+        let stuck = cargo_steps(&plan);
+        let applied = apply_runs(&mut plan, &checks, &stuck);
+        assert_eq!(applied.len(), 4, "{applied:#?}");
+        assert!(
+            plan.tasks[0].verify[0].command.starts_with(
+                "test -f core/include/undertow/lfo.h && test -f core/src/lfo.cpp && grep -q \
+                 'file(GLOB' core/CMakeLists.txt && grep -q 'CONFIGURE_DEPENDS' \
+                 core/CMakeLists.txt && tools/spec.sh 2 lfo 'P2.01*'"
+            ),
+            "{}",
+            plan.tasks[0].verify[0].command
+        );
+        let applied = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(applied.kept.len(), 20, "{:#?}", applied.detail_lines());
+    }
+
+    /// Round v7, phase 3: rows of a spec's table can share one command
+    /// (`tools/spec.sh 3 sequencer 'P3.01*,P3.02*'`). The task that owns them
+    /// runs it in one step, once, and that step keeps every row.
+    #[test]
+    fn checks_that_share_a_command_run_once() {
+        let source = "# Phase 3\n\n## Acceptance checks\n\n| Id | Command | Check |\n|---|---|---|\n\
+                      | P3.01 | `tools/spec.sh 3 sequencer 'P3.01*,P3.02*'` | the steps play in order |\n\
+                      | P3.02 | `tools/spec.sh 3 sequencer 'P3.01*,P3.02*'` | a tie slides on |\n";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(source);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(checks.len(), 2, "{checks:?}");
+        let mut plan = TasksFile::parse_str(
+            "[meta]\nplan = \"p3\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"The sequencer\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/src/sequencer.cpp\"]\n",
+        )
+        .expect("a plan");
+        let assigned = assign_runs(&mut plan, &checks, &[], |_| 4);
+        assert_eq!(assigned.len(), 1, "{assigned:?}");
+        let commands: Vec<&str> = plan.tasks[0]
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(commands, ["tools/spec.sh 3 sequencer 'P3.01*,P3.02*'"]);
+        assert_eq!(SourceCoverage::of(&checks, &plan, &[]).kept.len(), 2);
     }
 }

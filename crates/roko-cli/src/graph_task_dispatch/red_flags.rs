@@ -132,6 +132,14 @@ impl GraphTaskDispatcher {
         scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<Screened> {
         let role = task.role.as_deref().unwrap_or("implementer");
+        // The first attempt after a hand-back of the plan's check
+        // (find-5bcba7) starts a new chain: what it changed counts from the
+        // tree it started on, whatever attempt of the task it is.
+        let handed_back = self
+            .handed_back
+            .lock()
+            .remove(&format!("{}/{}", spec.plan_id, task.id));
+        let chain_attempt = if handed_back { 0 } else { attempt_number };
         // First, so the attempt's changed files are kept whatever the screen
         // decides (`take_changed_files`).
         let diff = self.attempt_diff(spec, task, attempt_key, workdir).await;
@@ -161,7 +169,7 @@ impl GraphTaskDispatcher {
             }
             rejection = match diff_rejection {
                 Some(rejection) => Some(rejection),
-                None => no_changes_red_flag(task, role, diff, attempt_number).await,
+                None => no_changes_red_flag(task, role, diff, chain_attempt).await,
             };
         }
         let Some(mut rejection) = rejection else {

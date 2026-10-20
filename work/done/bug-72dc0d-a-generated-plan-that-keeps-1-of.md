@@ -2,7 +2,7 @@
 id = "bug-72dc0d"
 kind = "bug"
 title = "A generated plan that keeps 1 of the spec's 20 source checks is still written: the regeneration that asked for the 19 missing ones is dropped without a word, a cargo step in a repo with no Cargo.toml is neither flagged as unrunnable (runnable.rs checks the program, not the manifest) nor run red-on-base (skipped: cargo), and spec quality grades the plan A (Undertow phase 2, op 9fa7849f)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate", "roko-cli/plan_validate"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "9f0870e9a"
 source = "round-v7-hermes-pilot#E-p2-plan2"
 discovered_from = "agent:hermes-pilot (round v7 phase 2, op 9fa7849f)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_generate/runnable.rs::problems", "crates/roko-cli/src/plan_generate/source_checks.rs::apply_runs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-8fe462", "bug-3cdc58", "
 
 [[verify]]
 command = "grep -rqw 'fn a_spec_that_names_each_tasks_checks_gets_its_commands_or_no_plan' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_spec_that_names_each_tasks_checks_gets_its_commands_or_no_plan"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T15:08:54Z"
+commit = "6cbd4e8a4"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "L"
+claimed_at = "2026-10-20T11:42:02Z"
+forced = false
+evidence = "Merged 9f0870e9a (work/bug-72dc0d: 6cbd4e8a4 + c54fe8e23). Post-merge verify at 9f0870e9a: the 11 new and touched tests pass, the two load flakes among them. A build tool without its manifest cannot run (runnable::missing_manifest: cargo/go/npm/pnpm/yarn with no Cargo.toml/go.mod/package.json in the workspace or above, nor written by an earlier task). source_checks::assign_runs: each check whose command the source gives and no step runs goes to its one owner task (a step covers it; else its title, description or acceptance names it by SC id, by the spec's own label such as P2.04, or by its command; else its command names one of the task's files), as one step: in place of its first step that cannot run (keeping that step's file tests and greps of the task's own files), else a new step, else appended at the tier's step limit; checks that share a command run it once. apply_runs keeps the same guards and no longer puts a plan-level check in a task step. Coverage comes from what runs: a check with a command is kept only by a step that runs it; one covered by a step running another command is reported (\"N covered by a step that runs another command\") and named in the regeneration prompt. A regeneration that is not kept says why (its draft is kept when it does not validate); a plan that keeps fewer than half its source's checks after it is refused, with no plan written. Verify: a_spec_that_names_each_tasks_checks_gets_its_commands_or_no_plan passes (the real phase-2 spec and plan write 2 in a CMake workspace: 1 call, 20 of 20 kept, every task runs its spec commands, no cargo; an unassignable plan: 2 calls, then refused, no tasks.toml), with the_source_commands_run_in_the_tasks_that_own_them, checks_that_share_a_command_run_once and a_build_tool_without_its_manifest_cannot_run. $0 replays of the pilot's real plan writes in Undertow at 8bd841a (harness and logs tmp/hermes-roko-v7/roko-planner/replay-p2b/): plan write 2 (op 9fa7849f) on c25301eef: 2 calls, \"1 of 20 kept, 19 in no verify step\", written with cargo in all 4 tasks, validate 0 diagnostics; on the branch: 1 call, \"20 of 20 kept\", T1 keeps its glob greps and runs P2.01-03, T2 P2.04-08, T3 P2.09-12, T4 P2.13-19, [[meta.verify]] tools/check.sh, no cargo, validate 0 diagnostics. Plan write 3 (op 87df1c1b) on c25301eef: 2 calls, \"10 of 20 kept, 10 checked only by a grep, a file test or a build\" (counted from AC text), cargo in all 4 tasks; on the branch: 1 call, \"20 of 20 kept\", the spec's commands in every task, no cargo. Branch: roko-cli lib 3921 passed, 2 failed (graph_execution::delivery a_cancel_stops_the_post_merge_regression_check: WouldBlock on the regression checkout lock; plan_verify plan_check_publishes_start_heartbeat_and_finish: two extra heartbeats; both timing under load 180, neither file touched, both passed when rerun at 9f0870e9a); clippy -D warnings clean; nightly fmt clean."
 +++
 
 ## Problem

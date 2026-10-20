@@ -956,7 +956,7 @@ pub(super) fn problems(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<U
         for (number, step) in (1..).zip(&task.verify) {
             let needs_later = later
                 .iter()
-                .find(|later| later.task == task.id && later.step == number)
+                .find(|later| !later.guessed && later.task == task.id && later.step == number)
                 .map(LaterFile::why);
             let why = needs_later
                 .or_else(|| step_problem(&step.command, workdir, &written, probe))
@@ -1339,6 +1339,10 @@ pub struct LaterFile {
     /// (`its test includes \`ui/UiFrame.h\``), or uses the type it declares
     /// (`its test uses \`UiFrame\``). `None` when the step names the file.
     pub how: Option<String>,
+    /// Whether the need is a guess: the step's test uses the name of the
+    /// type the file declares, by the file's name. A guess is a warning, and
+    /// never sends a plan back.
+    pub guessed: bool,
 }
 
 impl LaterFile {
@@ -1350,15 +1354,20 @@ impl LaterFile {
             .how
             .as_ref()
             .map_or_else(String::new, |how| format!(" ({how})"));
+        let (writes, runs) = if self.writers.len() > 1 {
+            ("write", "run")
+        } else {
+            ("writes", "runs")
+        };
         if self.after {
             format!(
-                "it needs `{}`{how}, which does not exist until {writers} writes it, and \
-                 {writers} runs after {}: check it in {writers}, or have {} write it",
+                "it needs `{}`{how}, which does not exist until {writers} {writes} it, and \
+                 {writers} {runs} after {}: check it in {writers}, or have {} write it",
                 self.path, self.task, self.task
             )
         } else {
             format!(
-                "it needs `{}`{how}, which does not exist until {writers} writes it, and \
+                "it needs `{}`{how}, which does not exist until {writers} {writes} it, and \
                  {writers} may run alongside {}: have {} wait for {writers}, or check it there",
                 self.path, self.task, self.task
             )
@@ -1382,7 +1391,7 @@ pub fn later_files(plan: &TasksFile, root: &Path) -> Vec<LaterFile> {
     for (index, task) in plan.tasks.iter().enumerate() {
         let written = written_before_and_by(plan, index);
         for (number, step) in (1..).zip(&task.verify) {
-            let mut needs: Vec<(String, Option<String>)> = needed_files(&step.command)
+            let mut needs: Vec<(String, Option<(String, bool)>)> = needed_files(&step.command)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|path| (path, None))
@@ -1420,6 +1429,8 @@ pub fn later_files(plan: &TasksFile, root: &Path) -> Vec<LaterFile> {
                 let after = writers
                     .iter()
                     .all(|writer| waits_for(plan, &writer.id, &task.id));
+                let (how, guessed) =
+                    how.map_or((None, false), |(how, guessed)| (Some(how), guessed));
                 found.push(LaterFile {
                     task: task.id.clone(),
                     step: number,
@@ -1427,6 +1438,7 @@ pub fn later_files(plan: &TasksFile, root: &Path) -> Vec<LaterFile> {
                     writers: writers.iter().map(|writer| writer.id.clone()).collect(),
                     after,
                     how,
+                    guessed,
                 });
             }
         }
@@ -1529,22 +1541,23 @@ impl TestCode {
     }
 
     /// How `compiled`, a step's test code, needs `file`, which a later task
-    /// writes: it includes it, or uses the type its name declares (`UiFrame`
-    /// for `plugin/ui/UiFrame.h`) that no non-test code uses yet.
-    fn needs(&mut self, compiled: &Compiled, file: &str) -> Option<String> {
+    /// writes, and whether that is a guess: it includes it, or, a guess, uses
+    /// the type its name declares (`UiFrame` for `plugin/ui/UiFrame.h`) that
+    /// no non-test code uses yet.
+    fn needs(&mut self, compiled: &Compiled, file: &str) -> Option<(String, bool)> {
         if let Some(include) = compiled
             .includes
             .iter()
             .find(|include| file == include.as_str() || file.ends_with(&format!("/{include}")))
         {
-            return Some(format!("its test includes `{include}`"));
+            return Some((format!("its test includes `{include}`"), false));
         }
         let stem = Path::new(file).file_stem()?.to_str()?;
         let type_like = stem.len() >= 4
             && stem.starts_with(|c: char| c.is_ascii_uppercase())
             && stem.contains(|c: char| c.is_ascii_lowercase());
         (type_like && compiled.words.contains(stem) && !self.production().contains(stem))
-            .then(|| format!("its test uses `{stem}`"))
+            .then(|| (format!("its test uses `{stem}`"), true))
     }
 
     /// The C and C++ test files `command` runs: one it names by path, or one
@@ -3426,6 +3439,41 @@ pub(super) mod tests {
             "{}",
             later[0].why()
         );
+        let guessed: Vec<bool> = later.iter().map(|later| later.guessed).collect();
+        assert_eq!(guessed, [true, false, true]);
+        // A guess is a warning; a missing include an error. Generation acts
+        // on the include only.
+        let plan_dir = root.join("plans/p4");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(plan_dir.join("tasks.toml"), &toml).expect("tasks.toml");
+        let report =
+            crate::plan_validate::validate_plans_dir_with_workdir(&plan_dir, None, Some(root))
+                .expect("validate");
+        let mut severities: Vec<(String, bool)> = report.plans[0]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.rule_id == "PLAN_058")
+            .map(|diagnostic| {
+                (
+                    format!("{:?}", diagnostic.severity),
+                    diagnostic.message.contains("its test uses"),
+                )
+            })
+            .collect();
+        severities.sort();
+        assert_eq!(
+            severities,
+            [
+                ("Error".to_string(), false),
+                ("Warning".to_string(), true),
+                ("Warning".to_string(), true),
+            ]
+        );
+        let stuck: Vec<usize> = problems(&plan, root, &Probe::with(&[], &[]))
+            .iter()
+            .map(|stuck| stuck.step)
+            .collect();
+        assert_eq!(stuck, [2]);
 
         // A Rust workspace's tests are not read.
         std::fs::remove_file(root.join("CMakeLists.txt")).expect("no CMake");

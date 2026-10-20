@@ -256,10 +256,11 @@ fn validate_plans_dir_impl(
                 // Round v7, phase-0 finding #2: a check that needs a file only
                 // a task after its own writes cannot pass when its task ends
                 // (PLAN_058): an error when every writer waits for the task, a
-                // warning when one may run alongside it.
+                // warning when one may run alongside it, or when roko only
+                // guesses the need from a type's name (gap-3f4d97).
                 for later in roko_cli::plan_generate::later_files(&tasks_file, workdir) {
                     plan.diagnostics.push(Diagnostic {
-                        severity: if later.after {
+                        severity: if later.after && !later.guessed {
                             Severity::Error
                         } else {
                             Severity::Warning

@@ -2,7 +2,7 @@
 id = "gap-7ce3ca"
 kind = "gap"
 title = "vb campaign could not redo a finished unit whose run an infrastructure failure spoiled: moving it to .abandoned left the unit finished"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "ccc19e6aa"
 source = "gap-327242 worker (claude-agent), 2026-10-20: Pilot B unit roko-fixed-s1-2"
 discovered_from = "gap-327242"
 anchors = ["benchmarks/viabilitybench/driver/campaign.py::cmd_campaign", "benchmarks/viabilitybench/driver/test_campaign.py"]
@@ -20,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-327242", "bug-c6318e"], 
 
 [[verify]]
 command = "grep -q 'def test_a_finished_unit_whose_run_was_moved_aside_runs_again' benchmarks/viabilitybench/driver/test_campaign.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_campaign.py -q -p no:cacheprovider -k 'moved_aside_runs_again'"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T16:05:55Z"
+commit = "ccc19e6aa"
+forced = false
+evidence = "ccc19e6aa: campaign.cmd_campaign counts a finish event with exit 0 only while its run directory is still in the experiment directory, so a finished unit whose run was moved to <experiment>.abandoned/ runs again under the next run id; the Resuming paragraph says so. Needed for Pilot B (gap-327242): roko-fixed-s1-2 finished with 9 tasks spoiled by Cerebras 402s. Verify: test_campaign.py -k moved_aside_runs_again passed (run, rerun runs nothing, move aside, rerun redoes it as only-2; the log keeps both attempts). test_campaign.py 10 passed."
 +++
 
 ## Problem

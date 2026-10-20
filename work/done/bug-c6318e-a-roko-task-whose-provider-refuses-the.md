@@ -2,7 +2,7 @@
 id = "bug-c6318e"
 kind = "bug"
 title = "A Roko task whose provider refuses the account (HTTP 402 payment required) is recorded as Roko's own failure, not infra_error"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "ccc19e6aa"
 source = "gap-327242 worker (claude-agent), 2026-10-20: Pilot B unit roko-fixed-s1-2, Cerebras 402 from 15:17Z"
 discovered_from = "gap-327242"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py::account_refusals", "benchmarks/viabilitybench/driver/test_run_roko.py"]
@@ -20,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-327242"], supersedes = [
 
 [[verify]]
 command = "grep -q 'def test_a_task_the_provider_refused_for_the_account_is_an_infra_error' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -q -p no:cacheprovider -k 'refused_for_the_account'"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T16:05:39Z"
+commit = "ccc19e6aa"
+forced = false
+evidence = "ccc19e6aa: run_roko.account_refusals reads the metering proxy log for forwarded 401/402 answers, and a task that then failed or timed out becomes infra_error with reason \"provider_account: the provider refused N call(s) with HTTP 402\"; a completed task keeps its outcome (a routed arm whose ladder drops a refused rung, shakedown D7). Found in Pilot B (gap-327242): Cerebras answered 402 payment_required from 15:17:44Z and 9 tasks of roko-fixed-s1-2 were recorded failed. Verify: test_run_roko.py -k refused_for_the_account passed (a fake roko through the proxy against a stub answering 402 -> infra_error; unit cases for 401, the proxy own 403 refusal, an injected 503 and a 429). test_run_roko.py + test_shakedown.py 35 passed."
 +++
 
 ## Problem

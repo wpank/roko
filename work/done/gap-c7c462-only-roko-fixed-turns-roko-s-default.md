@@ -2,7 +2,7 @@
 id = "gap-c7c462"
 kind = "gap"
 title = "Only roko_fixed turns Roko's default audits off: roko_fixed_glm/_kimi/_mini, fr_claude, roko_ladder and roko_plan still audit, and an audit dispatches models outside the arm"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/arms"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "ccc19e6aa"
 source = "gap-327242 worker (claude-agent), 2026-10-20: preparing Pilot B"
 discovered_from = "gap-327242"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py::run_switches", "benchmarks/viabilitybench/driver/run_roko_plan.py", "benchmarks/viabilitybench/arms/roko_ladder.toml"]
@@ -20,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-327242", "gap-d76b1b", "
 
 [[verify]]
 command = "grep -q 'def test_every_roko_arm_but_roko_full_turns_audits_off' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -q -p no:cacheprovider -k 'every_roko_arm_but_roko_full_turns_audits_off'"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T16:05:57Z"
+commit = "ccc19e6aa"
+forced = false
+evidence = "f5c2d6d9d and ccc19e6aa: every Roko arm but roko_full sets [roko] audit = false, so plan run gets --no-audit (run_roko.run_switches): roko_fixed, roko_fixed_glm/_kimi/_mini, fr_claude, roko_ladder and roko_plan; run_roko_plan.py adds run_switches to its plan run argv. roko_full keeps audits through its overlay audit_floor. Before the fix test_shakedown D7 failed once in two runs: an audit B3 review called gpt-5.4-mini (cost row role audit) after the ladder glm-4.7 pass, a model mismatch. Verify: test_run_roko.py -k every_roko_arm_but_roko_full_turns_audits_off passed; test_run_roko_plan (asserts --no-audit in the run argv), test_log1, test_shakedown, test_fr_claude, test_run_roko_routed, test_pilot_c passed."
 +++
 
 ## Problem

@@ -86,7 +86,8 @@ pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
 /// Known extension namespace for what stopped the last run before its tasks
 /// settled (gap-fab2cc): `{"by": "SIGINT" | "SIGTERM" | "SIGHUP" |
-/// "deadline" | "conductor"}`. Absent when nothing stopped it.
+/// "deadline" | "conductor" | "cancel" | "tui-closed" | "time-limit"}`.
+/// Absent when nothing stopped it.
 pub const STOP_EXTENSION: &str = "roko.run.stop@1";
 
 /// Known extension namespace for the plan's delivery into its run's batch
@@ -120,9 +121,10 @@ pub enum GraphCheckpointStatus {
     Failed,
     /// An operator cancelled the plan before every node finished.
     Cancelled,
-    /// A stop request (a signal, a closed operator TUI, the FAST deadline or
-    /// the conductor) stopped the run before every node finished; recorded
-    /// Activities remain resumable. [`STOP_EXTENSION`] names the request.
+    /// A stop request (a signal, a closed operator TUI, the FAST deadline,
+    /// the run's time limit or the conductor) stopped the run before every
+    /// node finished; recorded Activities remain resumable.
+    /// [`STOP_EXTENSION`] names the request.
     Interrupted,
 }
 

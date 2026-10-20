@@ -164,6 +164,8 @@ Roko ran most of the build of its own web portal: 16 plans and 173 tasks.
 
 36 workspace members · ~1.2M lines of Rust · 11,000+ tests · MIT OR Apache-2.0
 
+The design is described in the whitepaper, [Roko: A Cybernetic Harness for Multi-Agent Orchestration](https://github.com/wpank/roko/releases/tag/whitepaper-v1) (PDF; source in [docs/whitepaper](docs/whitepaper/)).
+
 ---
 
 **The guide:** [Quick start](#quick-start) · [How it works](#how-it-works) ·

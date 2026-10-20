@@ -552,6 +552,73 @@ pub fn implementers_without_a_shell(plan: &TasksFile) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Extensions of the source files a CMake target lists (bug-daa54e).
+const CMAKE_SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "m", "mm"];
+
+/// Add to each task that creates a C or C++ source the CMake file that must
+/// list it (bug-daa54e): the nearest `CMakeLists.txt` above the source, one
+/// that exists or that the task or a task before it writes, unless it
+/// collects its sources with a glob. Phase 1's oscillator, filter and envelope
+/// tasks each created a source under `core/`, whose `CMakeLists.txt` names
+/// every source, without listing that file: each edit was out of scope. A
+/// build-registration file may sit in several tasks' `files` without keeping
+/// them apart ([`roko_graph::exclusion::is_registration_file`]). Returns one
+/// line per file added.
+pub(super) fn repair_build_lists(plan: &mut TasksFile, workdir: &Path) -> Vec<String> {
+    let mut repairs = Vec::new();
+    for index in 0..plan.tasks.len() {
+        let written = written_before_and_by(plan, index);
+        let mut lists: Vec<(String, String)> = Vec::new();
+        for source in created_by(plan, index, workdir) {
+            let compiled = Path::new(&source)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| CMAKE_SOURCES.contains(&extension));
+            if !compiled {
+                continue;
+            }
+            let Some(list) = cmake_list_for(&source, workdir, &written) else {
+                continue;
+            };
+            let task = &plan.tasks[index];
+            if !task.files.contains(&list) && !lists.iter().any(|(added, _)| *added == list) {
+                lists.push((list, source));
+            }
+        }
+        for (list, source) in lists {
+            let task = &mut plan.tasks[index];
+            repairs.push(format!(
+                "{}: added `{list}` to its files: it creates `{source}`, which that CMake file \
+                 lists",
+                task.id
+            ));
+            task.files.push(list);
+        }
+    }
+    repairs
+}
+
+/// The `CMakeLists.txt` that lists `source`: the nearest one in a directory
+/// above it, that exists in `workdir` or is among `written`; `None` when
+/// there is none, or when it collects sources with `file(GLOB …)`.
+fn cmake_list_for(source: &str, workdir: &Path, written: &[String]) -> Option<String> {
+    let mut dir = Path::new(source).parent();
+    while let Some(current) = dir {
+        let list = current.join("CMakeLists.txt");
+        let list = list.to_string_lossy().trim_start_matches("./").to_string();
+        let on_disk = workdir.join(&list);
+        if on_disk.is_file() {
+            let text = std::fs::read_to_string(&on_disk).unwrap_or_default();
+            return (!text.contains("GLOB")).then_some(list);
+        }
+        if is_written(written, &list) {
+            return Some(list);
+        }
+        dir = current.parent();
+    }
+    None
+}
+
 /// The tasks of `plan` that create a file (one that neither exists nor is
 /// written by a task before them) while their `allowed_tools` lack
 /// `write_file`, or their `denied_tools` hold it (bug-df9aff): no try can
@@ -2287,6 +2354,67 @@ pub(super) mod tests {
             rules.iter().filter(|(rule, _)| *rule == "PLAN_054").count(),
             9,
             "T1's first step passes now, and T5's other step reads its own file: {rules:?}"
+        );
+    }
+
+    /// bug-daa54e: round v7's phase-1 spec says its oscillator, filter and
+    /// envelope tasks, which run in parallel, each add their source to
+    /// `core/CMakeLists.txt`, and the plan left that file out of their
+    /// `files`. Generation adds it to each task that creates a source under
+    /// `core/` (and to the voice task, whose source must be listed too), and
+    /// the generated-plan checks let the five tasks share it, parallel ones
+    /// included. A `CMakeLists.txt` that globs its sources needs no entry.
+    #[test]
+    fn a_shared_file_the_spec_says_a_task_edits_joins_its_files() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p1_final_check/tasks.toml");
+        let mut plan = TasksFile::parse(&fixture).expect("the phase-1 plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("core/src")).expect("core");
+        std::fs::write(
+            temp.path().join("core/CMakeLists.txt"),
+            "add_library(undertow_core STATIC src/params.cpp src/engine.cpp)\n",
+        )
+        .expect("the core list");
+        for source in ["core/src/params.cpp", "core/src/engine.cpp"] {
+            std::fs::write(temp.path().join(source), "// phase 0\n").expect("a source");
+        }
+        let repairs = repair_build_lists(&mut plan, temp.path());
+        assert_eq!(repairs.len(), 4, "{repairs:?}");
+        assert_eq!(
+            repairs[0],
+            "T1: added `core/CMakeLists.txt` to its files: it creates `core/src/oscillator.cpp`, \
+             which that CMake file lists"
+        );
+        for task in &plan.tasks {
+            assert!(
+                task.files.iter().any(|file| file == "core/CMakeLists.txt"),
+                "{}: {:?}",
+                task.id,
+                task.files
+            );
+        }
+        let policy = crate::plan_policy::PlanExecutionPolicy::generated(8);
+        let shared: Vec<String> = crate::plan_policy::validate_plan_budgets(&plan, policy)
+            .into_iter()
+            .filter(|issue| issue.message.contains("core/CMakeLists.txt"))
+            .map(|issue| issue.to_string())
+            .collect();
+        assert_eq!(shared, Vec::<String>::new());
+        assert!(
+            repair_build_lists(&mut plan, temp.path()).is_empty(),
+            "added once"
+        );
+
+        let mut plan = TasksFile::parse(&fixture).expect("the phase-1 plan");
+        std::fs::write(
+            temp.path().join("core/CMakeLists.txt"),
+            "file(GLOB CORE_SOURCES src/*.cpp)\nadd_library(undertow_core STATIC ${CORE_SOURCES})\n",
+        )
+        .expect("a globbing list");
+        assert_eq!(
+            repair_build_lists(&mut plan, temp.path()),
+            Vec::<String>::new()
         );
     }
 

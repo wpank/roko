@@ -45,6 +45,7 @@ pub mod plan_set;
 pub mod plan_verify;
 pub mod run_manifest;
 pub mod runtime_event_adapter;
+pub mod time_limit;
 pub mod view_state;
 pub mod workflow_caller;
 pub mod workspaces;

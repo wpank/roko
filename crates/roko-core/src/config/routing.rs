@@ -239,14 +239,17 @@ pub struct LadderRoleConfig {
 /// ```
 ///
 /// Each try on a rung is bounded (gap-3e770b): a try that uses up its rung's
-/// turns or spend fails on that rung, as a failed check does, so two such
-/// tries climb. `max_turns` and `max_usd` set a rung's allowance by name;
-/// a rung `max_turns` leaves out gets [`LadderConfig::try_turns`]'s default.
+/// turns, spend or time is judged by the task's checks on the work it left,
+/// and fails on that rung when they fail, so two such tries climb.
+/// `max_turns`, `max_usd` and `max_secs` set a rung's allowance by name; a
+/// rung `max_turns` leaves out gets [`LadderConfig::try_turns`]'s default,
+/// and one `max_secs` leaves out [`LadderConfig::try_secs`]'s (bug-f0007b).
 ///
 /// ```toml
 /// [routing.ladder]
 /// max_turns = { cheap = 12, mid = 30 }
 /// max_usd = { cheap = 0.06 }
+/// max_secs = { cheap = 300, mid = 900 }
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -280,11 +283,20 @@ pub struct LadderConfig {
     /// first.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub max_usd: BTreeMap<String, f64>,
+    /// How long one try of a task may run on a rung, in seconds, by rung
+    /// name ([`Self::try_secs`], bug-f0007b). `0` leaves the rung's tries
+    /// without a time bound.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub max_secs: BTreeMap<String, u64>,
 }
 
 /// Fewest turns a try gets by default on a rung it can still climb from
 /// ([`LadderConfig::try_turns`]).
 pub const MIN_TRY_TURNS: u32 = 12;
+
+/// Fewest seconds a try gets by default on a rung it can still climb from
+/// ([`LadderConfig::try_secs`]).
+pub const MIN_TRY_SECS: u64 = 300;
 
 /// D11's cascade plus Sonnet, cheapest first.
 fn default_ladder_rungs() -> Vec<LadderRung> {
@@ -312,6 +324,7 @@ impl Default for LadderConfig {
             probe: true,
             max_turns: BTreeMap::new(),
             max_usd: BTreeMap::new(),
+            max_secs: BTreeMap::new(),
         }
     }
 }
@@ -466,6 +479,13 @@ impl LadderConfig {
                 ));
             }
         }
+        for name in self.max_secs.keys() {
+            if !named(name) {
+                issues.push(format!(
+                    "routing.ladder.max_secs: no rung is named `{name}`"
+                ));
+            }
+        }
         issues
     }
 
@@ -516,6 +536,30 @@ impl LadderConfig {
                 .unwrap_or(0)
                 .max(MIN_TRY_TURNS)
                 .min(tier_turns)
+        })
+    }
+
+    /// How long, in seconds, one try may run on rung `rung`, from which the
+    /// task can still climb `climbs_left` rungs, when its attempt may run
+    /// `tier_secs` (its `timeout_secs`, else `[timeouts] agent_dispatch_secs`;
+    /// bug-f0007b). The rung's `max_secs`, when set, `0` for no bound.
+    /// Otherwise as [`Self::try_turns`] shares out turns: each rung below the
+    /// highest one the task can reach gets half the time of the rung above
+    /// it, from `tier_secs` on that highest rung, and never less than
+    /// [`MIN_TRY_SECS`] or more than `tier_secs`: with the default 1800 s, a
+    /// task that can climb two rungs gets 450 s on its start rung, then 900 s.
+    /// `None` on the highest rung, where the attempt's timeout stands.
+    #[must_use]
+    pub fn try_secs(&self, rung: &str, climbs_left: u32, tier_secs: u64) -> Option<u64> {
+        if let Some(&secs) = self.max_secs.get(rung) {
+            return (secs > 0).then_some(secs);
+        }
+        (climbs_left > 0).then(|| {
+            tier_secs
+                .checked_shr(climbs_left)
+                .unwrap_or(0)
+                .max(MIN_TRY_SECS)
+                .min(tier_secs)
         })
     }
 
@@ -1026,6 +1070,7 @@ rungs = [{ name = "only", model = "claude-sonnet" }]
 start = { architectural = "only" }
 max_turns = { only = 9 }
 max_usd = { only = 0.25 }
+max_secs = { only = 600 }
 
 [[routing.ladder.roles]]
 role = "reviewer"
@@ -1058,6 +1103,7 @@ start = { mechanical = "only" }
         );
         assert_eq!(ladder.try_turns("only", 0, 60), Some(9));
         assert_eq!(ladder.try_usd("only"), Some(0.25));
+        assert_eq!(ladder.try_secs("only", 0, 1800), Some(600));
     }
 
     /// gap-3e770b: a try on a rung the task can still climb from gets half
@@ -1082,6 +1128,7 @@ start = { mechanical = "only" }
             r#"
             max_turns = { cheap = 6, top = 40, gone = 3 }
             max_usd = { cheap = 0.05, mid = 0.0, nowhere = 1.0 }
+            max_secs = { nowhere = 60 }
             "#,
         )
         .expect("ladder");
@@ -1097,7 +1144,37 @@ start = { mechanical = "only" }
                 "routing.ladder.max_usd: `mid` = 0 is not a positive amount, so its tries have \
                  no spend allowance of their own",
                 "routing.ladder.max_usd: no rung is named `nowhere`",
+                "routing.ladder.max_secs: no rung is named `nowhere`",
             ]
         );
+    }
+
+    /// bug-f0007b: a try on a rung the task can still climb from gets half
+    /// the time of the rung above it, from the attempt's time on the highest
+    /// rung it can reach, at least [`MIN_TRY_SECS`] and at most the
+    /// attempt's time; the highest rung keeps the attempt's timeout.
+    /// `max_secs` sets a rung's time outright, and `0` takes its bound away.
+    #[test]
+    fn a_try_s_time_halves_below_the_highest_rung_it_can_reach() {
+        let ladder = LadderConfig::default();
+        assert_eq!(ladder.try_secs("mid", 2, 1800), Some(450));
+        assert_eq!(ladder.try_secs("strong", 1, 1800), Some(900));
+        assert_eq!(ladder.try_secs("top", 0, 1800), None);
+        // Never below the floor, never above the attempt's time.
+        assert_eq!(ladder.try_secs("cheap", 2, 600), Some(MIN_TRY_SECS));
+        assert_eq!(ladder.try_secs("cheap", 1, 120), Some(120));
+        assert_eq!(ladder.try_secs("cheap", 70, 1800), Some(MIN_TRY_SECS));
+
+        let bounded: LadderConfig = toml::from_str(
+            r#"
+            max_secs = { cheap = 60, mid = 0, top = 2400 }
+            "#,
+        )
+        .expect("ladder");
+        assert_eq!(bounded.try_secs("cheap", 2, 1800), Some(60));
+        assert_eq!(bounded.try_secs("mid", 1, 1800), None);
+        assert_eq!(bounded.try_secs("top", 0, 1800), Some(2400));
+        assert_eq!(bounded.try_secs("strong", 1, 1800), Some(900));
+        assert!(bounded.issues().is_empty(), "{:?}", bounded.issues());
     }
 }

@@ -2,14 +2,16 @@
 id = "spec-ce1484"
 kind = "spec"
 title = "Epic: whitepaper v1"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "L"
 subsystem = ["docs/whitepaper", "tools/paperlint"]
 created = 2026-09-29
-updated = 2026-10-16
+updated = 2026-10-20
+last_verified = 2026-10-20
+last_verified_rev = "815f512e2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§1, the author's answers of 2026-09-29; §3 E1)"
 anchors = ["docs/whitepaper/README.md", "tools/paperlint.py"]
@@ -19,6 +21,16 @@ links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", 
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep '^Verdict:' docs/whitepaper/REVIEW.md | tail -1 | grep -q '^Verdict: accept' && ! ls work/items/gap-8117a8-*.md >/dev/null 2>&1"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T10:33:15Z"
+commit = "815f512e2"
+by = "coordinator 2026-10-20"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Every child is done: the review (gap-6a83de, accepted 2026-10-16) and publication (gap-8117a8: tag whitepaper-v1, GitHub release with the PDF, 2026-10-20). The epic's verify passes: strict paperlint with every section reviewed, REVIEW.md ends Verdict: accept, and gap-8117a8 has left work/items."
 +++
 
 ## Problem

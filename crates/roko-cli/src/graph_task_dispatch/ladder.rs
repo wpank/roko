@@ -525,10 +525,10 @@ impl GraphTaskDispatcher {
 
     /// What one try of `task` may use on the rung `plan` routed `attempt`
     /// to, `step` rungs above its start rung, when its tier gives an attempt
-    /// `tier_turns` (gap-3e770b): the rung's turns and spend allowance from
-    /// `[routing.ladder]`. `None` for an attempt the ladder did not route (a
-    /// pin among them), and on a rung with neither bound, such as the
-    /// highest one the task can reach.
+    /// `tier_turns` (gap-3e770b) and it may run `tier_secs` (bug-f0007b): the
+    /// rung's turns, time and spend allowance from `[routing.ladder]`. `None`
+    /// for an attempt the ladder did not route (a pin among them), and on a
+    /// rung with no bound, such as the highest one the task can reach.
     pub(super) fn rung_allowance(
         &self,
         task: &TaskDef,
@@ -536,6 +536,7 @@ impl GraphTaskDispatcher {
         plan: &RunnerDispatchPlan,
         step: u32,
         tier_turns: u32,
+        tier_secs: u64,
     ) -> Option<RungAllowance> {
         let rung = match plan.source {
             ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
@@ -549,8 +550,10 @@ impl GraphTaskDispatcher {
             rung: name.to_string(),
             turns: ladder.try_turns(name, climbs_left, tier_turns),
             usd: ladder.try_usd(name),
+            secs: ladder.try_secs(name, climbs_left, tier_secs),
         };
-        (allowance.turns.is_some() || allowance.usd.is_some()).then_some(allowance)
+        (allowance.turns.is_some() || allowance.usd.is_some() || allowance.secs.is_some())
+            .then_some(allowance)
     }
 
     /// Count `settled`, an attempt of `task`, toward the task's standing on
@@ -1927,6 +1930,117 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
                 serde_json::json!(["cheap", "gate_failed", true, true]),
                 serde_json::json!(["top", "passed", false, false]),
             ]
+        );
+    }
+
+    /// Fake Claude CLI that records each call as [`JUDGED_PROVIDER`] does.
+    /// Below the tier's 60 turns it writes what `cheap-work` beside it holds
+    /// to `answer.txt`, then keeps working, a line every 200 ms, until it is
+    /// stopped; given 60 turns it writes the right answer, 42, and finishes.
+    const SLOW_PROVIDER: &str = r#"#!/bin/sh
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+printf '%s\n---\n' "$*" > "$dir/prompt-$n"
+cat >> "$dir/prompt-$n"
+previous=
+model=-
+turns=-
+for arg in "$@"; do
+  case "$previous" in
+    --model) model=$arg ;;
+    --max-turns) turns=$arg ;;
+  esac
+  previous=$arg
+done
+printf '%s %s -\n' "$model" "$turns" >> "$dir/provider-calls"
+if [ "$turns" != 60 ]; then
+  cat "$dir/cheap-work" > answer.txt
+  i=0
+  while [ "$i" -lt 300 ]; do
+    i=$((i + 1))
+    printf '%s\n' '{"type":"content_block_delta","delta":{"text":"still thinking"}}'
+    sleep 0.2
+  done
+  exit 1
+fi
+echo 42 > answer.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote answer.txt"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// bug-f0007b: a try that runs its rung's time is stopped there and
+    /// judged by the task's checks on the work it left, as one that reaches
+    /// its turns or spend is (gap-2c9412). Work that passes them is accepted
+    /// on the cheap rung. Work that fails them fails the try on its check;
+    /// the next try is told it was stopped and why, and two such tries climb
+    /// to the top rung, which has no time bound and passes.
+    #[tokio::test]
+    async fn a_try_that_runs_its_time_is_judged_by_its_checks() {
+        let work = |answer: &'static str| {
+            move |dir: &std::path::Path| {
+                std::fs::write(dir.join("cheap-work"), answer).expect("write the cheap work");
+            }
+        };
+        let two_seconds = |config: &mut RokoConfig| {
+            config
+                .routing
+                .ladder
+                .max_secs
+                .insert("cheap".to_string(), 2);
+        };
+
+        let started = std::time::Instant::now();
+        let right = bounded_tries(SLOW_PROVIDER, ANSWER_CHECK, 3, work("42\n"), two_seconds).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the try stops at its bound, not the provider's 60 s: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(right.calls, [format!("{CHEAP} 30 -")]);
+        assert_eq!(
+            right.verdicts,
+            [["passed", "none", "cheap", "start"].map(str::to_string)]
+        );
+        let output = right.passed.expect("the stopped try passes its check");
+        assert!(
+            output.contains("at its 2 s time bound; the task's checks passed on the work it left"),
+            "{output}"
+        );
+        let [settled] = right.settled.as_slice() else {
+            panic!("one attempt_settled: {:?}", right.settled);
+        };
+        assert_eq!(
+            settled["detail"], "passed its checks after reaching its 2 s time bound",
+            "{settled}"
+        );
+
+        let wrong = bounded_tries(SLOW_PROVIDER, ANSWER_CHECK, 3, work("41\n"), two_seconds).await;
+        assert_eq!(
+            wrong.calls,
+            [
+                format!("{CHEAP} 30 -"),
+                format!("{CHEAP} 30 -"),
+                format!("{TOP} 60 -"),
+            ]
+        );
+        let place = |outcome: &str, blame: &str, rung: &str, reason: &str| {
+            [outcome, blame, rung, reason].map(str::to_string)
+        };
+        assert_eq!(
+            wrong.verdicts,
+            [
+                place("gate_failed", "agent", "cheap", "start"),
+                place("gate_failed", "agent", "cheap", "start"),
+                place("passed", "none", "top", "escalated"),
+            ]
+        );
+        assert!(
+            wrong.prompts[1]
+                .contains("was stopped: the try reached its time bound on rung `cheap`: 2 s")
+                && wrong.prompts[1].contains("AssertionError: answer.txt holds 41, not 42"),
+            "{}",
+            wrong.prompts[1]
         );
     }
 

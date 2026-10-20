@@ -2,18 +2,34 @@
 id = "bug-f0007b"
 kind = "bug"
 title = "A try on a rung with no max_usd has no time or spend bound of its own, so one slow mid try (glm-4.7, 13 min of streamed reasoning) spent the run's whole cap and the task never climbed again"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-20
+last_verified = 2026-10-20
+last_verified_rev = "cdcab3318"
 source = "round-v6-dogfood-desktop#L1-notch"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L1, 2026-10-17)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/try_allowance.rs::RungAllowance", "crates/roko-core/src/config/routing.rs::LadderConfig", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::StallWatch"]
-links = { depends_on = [], blocks = [], related = ["gap-2c9412"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-2c9412", "bug-bfb75a"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_try_that_runs_its_time_is_judged_by_its_checks' crates/roko-cli/src && cargo test -p roko-cli --lib a_try_that_runs_its_time_is_judged_by_its_checks"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T10:54:15Z"
+commit = "cdcab3318"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-20T09:42:54Z"
+forced = false
+evidence = "[routing.ladder] max_secs bounds a try's time per rung (try_allowance.rs, watchdog.rs try_time_stop, routing.rs LadderConfig::try_secs). Default as max_turns shares turns: half the rung above's time from the attempt's timeout (1800 s) on the highest rung the task can reach, at least 300 s (two climbs left 450 s, one 900 s, top none); 0 = no bound. Permit waits are left out. At the bound roko's loop makes no further model call; an agent that runs its own loop is stopped; roko's loop is stopped 120 s later if a call still runs. The try is judged by its checks (gap-2c9412). Verify a_try_that_runs_its_time_is_judged_by_its_checks passes: a CLI agent still working at its 2 s bound is stopped; right work passes on cheap ('passed its checks after reaching its 2 s time bound'), wrong work fails its check twice, the next prompt says 'the try reached its time bound on rung cheap: 2 s' with the check line, and it climbs to top, which passes. Also a_try_stops_at_its_time_bound, a_rung_time_bound_refuses_the_next_call, a_try_s_time_halves_below_the_highest_rung_it_can_reach. Lib tests: roko-cli 3898, roko-core 2044, roko-learn 1384, roko-serve 1068 pass; clippy clean. $0 e2e, a stand-in on roko's own loop (bench/bounds-bench.sh, slow rung bounded at 12 s): 8 s turns pass on slow at the bound (dispatch 16.1 s, no third model call); 15 s turns: two tries stop at 15.1 s, fail their checks, climb to fast and pass (run 43.1 s)."
 +++
 
 ## Problem
@@ -78,6 +94,10 @@ A try that reaches its rung's time or spend bound is judged by its checks and, f
 left for the next rung. A replay of this run's shape under a $0.25 cap reaches strong instead of stopping on mid.
 
 ## Notes
+
+- Round v7 (2026-10-20, the lead's ask): phase 1 of Undertow (run `0bed5c58`) had T2's single try run 46 min on glm-4.7
+  (23 turns, 98,839 output tokens, mostly reasoning; it passed). The lead chose option (a): a per-rung try time
+  bound, `[routing.ladder] max_secs`, with a default, that ends the try and judges its work by its checks.
 
 - Evidence: `tmp/hermes-roko-v6/findings/dogfood-desktop.md`.
   - The take is `tmp/hermes-roko-v6/media/pipeline/work/takes/l1-g2-page-2134`; the climb video is the guide's climb slot.

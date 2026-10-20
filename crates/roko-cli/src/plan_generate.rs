@@ -15,6 +15,7 @@
 mod accept_blocks;
 mod build_system;
 mod dry_run_fs;
+mod file_paths;
 mod overview;
 mod pipeline;
 mod runnable;

@@ -45,7 +45,8 @@ const PYTHON_PROJECT_FILES: &[&str] = &[
 
 /// Directories a search for a project's `CMakeLists.txt` leaves out: build
 /// output and vendored code (bug-574c45).
-const NOT_THE_PROJECT: &[&str] = &["build", "node_modules", "target", "third_party", "vendor"];
+pub(super) const NOT_THE_PROJECT: &[&str] =
+    &["build", "node_modules", "target", "third_party", "vendor"];
 
 /// Build tools that run only beside their manifest (bug-72dc0d): each tool,
 /// the subcommands that need the manifest, and the manifest's file names.

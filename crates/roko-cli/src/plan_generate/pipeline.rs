@@ -12,7 +12,7 @@
 //! This code lived in `prd.rs` until the PRD pipeline was removed on
 //! 2026-10-02 (tmp/workflow-audit).
 
-use super::{accept_blocks, dry_run_fs, overview, runnable, sizes, source_checks};
+use super::{accept_blocks, dry_run_fs, file_paths, overview, runnable, sizes, source_checks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1794,6 +1794,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let size_sources: Vec<&str> = std::iter::once(source.content.as_str())
             .chain(documents.iter().map(|document| document.text.as_str()))
             .collect();
+        // bug-7c6f1b: a source that adds no file (phase 2.1's "No new
+        // files") gets no plan that lists one.
+        let no_new_files = size_sources
+            .iter()
+            .any(|text| file_paths::says_no_new_files(text));
         let extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
             let toml_content = extract_fenced_block(raw, "toml")
                 .or_else(|| extract_fenced_block(raw, "tasks.toml"))
@@ -1833,6 +1838,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // gap-dc5d7c: a step that covers a source check by its id names
             // a criterion of its task that states the check.
             let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+            // bug-7c6f1b: a `files` path the workspace lacks names the file
+            // of that name its task reads.
+            repairs.extend(file_paths::repair_file_paths(
+                &mut parsed,
+                workdir_ref,
+                no_new_files,
+            ));
             // gap-9e212c: a task whose size its source states gets the
             // smallest tier that covers it.
             repairs.extend(sizes::repair_tiers(&mut parsed, &size_sources, policy));
@@ -1916,6 +1928,16 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                      on independent outputs with disjoint files, or raise its tier:\n{}",
                     listed(size_issues.iter().map(ToString::to_string).collect())
                 ));
+            }
+            if no_new_files {
+                let added = file_paths::new_files(&parsed, workdir_ref);
+                if !added.is_empty() {
+                    refusals.push(format!(
+                        "generated plan lists files that do not exist, but the source says no \
+                         new files: each task changes files the workspace has:\n{}",
+                        listed(added)
+                    ));
+                }
             }
             // bug-27f00b: the plan roko writes is the plan. A task that writes
             // into its directory writes a plan, not what the request asks for.

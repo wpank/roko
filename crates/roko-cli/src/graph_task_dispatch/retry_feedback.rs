@@ -534,7 +534,8 @@ pub(super) struct RetryNotice<'a> {
     /// The attempt that failed, from 1.
     pub(super) attempt: u32,
     /// The check that failed: `verify`, `pre_verify:<check>`,
-    /// `plan-branch`, `scratch-copy-back` or `review`.
+    /// `plan-branch`, `scratch-copy-back`, `review`, or `plan-check` (the
+    /// plan's whole-plan check, handed back to the task).
     pub(super) check: &'a str,
     /// The failing steps; the event keeps the first line of each.
     pub(super) failing_steps: &'a [String],
@@ -617,6 +618,31 @@ impl super::GraphTaskDispatcher {
         }
         self.gate_retry_context
             .record(plan_id, task_id, feedback, next_attempt)
+    }
+
+    /// Hand task `task_id` of plan `plan_id`, which passed, back for one
+    /// more attempt, because the plan's whole-plan check then failed on files
+    /// it changed (find-5bcba7). Its next attempt starts from the plan's
+    /// accepted work in a fresh checkout, as after a plan-branch conflict,
+    /// with `feedback`, which quotes the failed step `check`. The run's
+    /// hand-back runs that attempt.
+    pub fn hand_back(&self, plan_id: &str, task_id: &str, check: &str, feedback: GateFeedback) {
+        self.restart_from_plan_tip(plan_id, task_id, "plan-check hand-back");
+        let key = format!("{plan_id}/{task_id}");
+        self.handed_back.lock().insert(key.clone());
+        let started = self
+            .task_attempts
+            .lock()
+            .get(&key)
+            .copied()
+            .unwrap_or_default();
+        let failing = [check.to_string()];
+        let notice = RetryNotice {
+            attempt: started,
+            check: "plan-check",
+            failing_steps: &failing,
+        };
+        self.leave_retry_feedback(plan_id, task_id, &notice, feedback, started);
     }
 }
 

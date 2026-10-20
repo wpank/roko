@@ -423,14 +423,7 @@ pub(crate) async fn start_plan_run_with(
     let run_id = uuid::Uuid::new_v4().to_string();
 
     // Plans inside a plan set live under their group directory.
-    let plan_dir = dto
-        .group
-        .as_deref()
-        .map_or_else(
-            || plans_dir(&state.workdir),
-            |group| plans_dir(&state.workdir).join(group),
-        )
-        .join(&id);
+    let plan_dir = plan_dir_of(&state.workdir, &dto);
 
     // Refuse a plan `roko plan run` would refuse, before the run takes the
     // workspace (gap-655d19).

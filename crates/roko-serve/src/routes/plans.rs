@@ -114,6 +114,21 @@ fn plans_dir(workdir: &std::path::Path) -> std::path::PathBuf {
     roko_fs::workspace_plans::workspace_plans_dir(workdir)
 }
 
+/// The directory of plan `plan` in `workdir`: under its group's directory
+/// when it belongs to a plan set.
+fn plan_dir_of(
+    workdir: &std::path::Path,
+    plan: &crate::plan_types::PlanSummaryDto,
+) -> std::path::PathBuf {
+    plan.group
+        .as_deref()
+        .map_or_else(
+            || plans_dir(workdir),
+            |group| plans_dir(workdir).join(group),
+        )
+        .join(&plan.id)
+}
+
 /// Load a plan by id using the runtime's plan-discovery methods.
 ///
 /// Returns 404 when the plan is absent, just like the legacy `find_plan`

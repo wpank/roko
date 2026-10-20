@@ -35,7 +35,8 @@ pub(super) async fn list_plans(
     Ok(Json(Value::Array(summaries)))
 }
 
-/// `GET /api/plans/:id` — load a specific plan summary.
+/// `GET /api/plans/:id` — load a specific plan summary, with the run a resume
+/// would continue (`resumable_run`, or null).
 ///
 /// Delegates to `state.runtime.load_plan_summary()` so that directory-layout
 /// plans (the normal layout) are discovered correctly. The previous
@@ -60,6 +61,20 @@ pub(super) async fn get_plan(
     if let Some(tasks_done) = v.get("tasks_done").and_then(Value::as_u64) {
         v["completed_task_count"] = tasks_done.into();
     }
+    // The run a resume would continue, which a chat host's `plan_run` that
+    // says neither `resume` nor `fresh` is refused over (bug-cbdb6b), so the
+    // host can ask its person before any paid work is approved (gap-b78706).
+    // Reading it changes nothing; a checkpoint it cannot read leaves null.
+    let resumable = state
+        .runtime
+        .checkpoint_run(&state.workdir, &plan_dir_of(&state.workdir, &dto))
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(plan_id = %id, %error, "could not read the plan's checkpoint");
+            None
+        })
+        .filter(|run| run.resumable);
+    v["resumable_run"] = json!(resumable);
     Ok(Json(v))
 }
 

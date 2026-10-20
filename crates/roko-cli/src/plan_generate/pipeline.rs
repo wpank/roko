@@ -1859,6 +1859,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &stuck,
                 |task| policy.tier_size_limits(task.tier_class()).max_verify_steps,
             ));
+            // bug-56a806: a step that runs a source check's command runs the
+            // source's commands alone, without a guard of the planner's own.
+            repairs.extend(source_checks::run_exactly(&mut parsed, &checks));
             // bug-8723fc: an implementer with no check builds with the
             // workspace's own build system, never one it lacks.
             repairs.extend(runnable::repair_build_checks(
@@ -4424,6 +4427,109 @@ mod tests {
         let log = std::fs::read_to_string(&calls).expect("planner call log");
         assert_eq!(log.lines().count(), 2, "asked once more, then refused");
         assert!(!workdir.join("plans/widget/tasks.toml").exists());
+    }
+
+    /// bug-56a806: round v7's third phase-2 plan write (op 1a965a97) put a
+    /// guard of the planner's own before each of the spec's 15 check
+    /// commands, `grep -q '<name>' <file> && tools/spec.sh 2 …`. T4's grep
+    /// for `AllocationCounter`, a helper of the spec's tests, fails on correct
+    /// code, and roko counted all 24 checks kept. Generation now writes each
+    /// step as the spec's own commands alone, after one call, and keeps all 24.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_planners_guards_around_spec_commands_are_dropped() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p2_exact_commands");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let plan = std::fs::read_to_string(fixture.join("tasks.toml")).expect("the plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        cmake_workspace(workdir);
+        // The files the plan's tasks read, with the symbols they name, and
+        // the spec's scripts.
+        for (file, text) in [
+            ("core/include/undertow/voice.h", "class MonoVoice;\n"),
+            (
+                "core/include/undertow/engine.h",
+                "struct Transport;\nstruct Meters;\n",
+            ),
+            ("core/src/params.cpp", "constexpr int kNumParams = 57;\n"),
+            (
+                "core/src/engine.cpp",
+                "Transport transport;\nMeters meters;\n",
+            ),
+            ("tools/spec.sh", "#!/bin/sh\nexit 1\n"),
+            ("tools/check.sh", "#!/bin/sh\nexit 1\n"),
+        ] {
+            let path = workdir.join(file);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, text).expect("a file");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("permissions");
+        }
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let source = PlanSource::Text {
+            text: &spec,
+            kind: "prompt",
+        };
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "p2-undertow-rumble-3", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+        let written = TasksFile::parse(&workdir.join("plans/p2-undertow-rumble-3/tasks.toml"))
+            .expect("the plan");
+        let commands: Vec<(&str, &str)> = written
+            .tasks
+            .iter()
+            .flat_map(|task| {
+                task.verify
+                    .iter()
+                    .map(|step| (task.id.as_str(), step.command.as_str()))
+            })
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                ("T1", "tools/spec.sh 2 lfo 'P2.01*'"),
+                ("T1", "tools/spec.sh 2 lfo 'P2.02*'"),
+                ("T1", "tools/spec.sh 2 lfo 'P2.03*'"),
+                ("T2", "tools/spec.sh 2 rumble 'P2.04*'"),
+                ("T2", "tools/spec.sh 2 rumble 'P2.05*'"),
+                ("T2", "tools/spec.sh 2 rumble 'P2.06*'"),
+                ("T2", "tools/spec.sh 2 rumble 'P2.07*'"),
+                ("T2", "tools/spec.sh 2 rumble 'P2.08*'"),
+                ("T3", "tools/spec.sh 2 output 'P2.09*,P2.10*'"),
+                ("T3", "tools/spec.sh 2 output 'P2.11*,P2.12*'"),
+                ("T3", "tools/spec.sh 2 output 'P2.20*,P2.21*'"),
+                ("T4", "tools/spec.sh 2 engine 'P2.13*,P2.14*,P2.23*'"),
+                ("T4", "tools/spec.sh 2 engine 'P2.15*,P2.16*'"),
+                ("T4", "tools/spec.sh 2 engine 'P2.17*,P2.22*'"),
+                ("T4", "tools/spec.sh 2 engine 'P2.18*,P2.19*'"),
+            ]
+        );
+        let meta: Vec<&str> = written
+            .meta
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(meta, ["tools/check.sh"]);
+        let checks = outcome
+            .source_checks
+            .expect("the spec's checks are reported");
+        assert_eq!((checks.kept, checks.total), (24, 24), "{checks:?}");
+        assert!(!checks.regenerated);
     }
 
     /// bug-8723fc: in a CMake workspace (Undertow's phase 2), the plan writer

@@ -942,6 +942,24 @@ impl GraphTaskDispatcher {
             .is_some_and(|meta| meta.skip_enrichment)
     }
 
+    /// The build trees the attempt checkout at `checkout` holds, by the
+    /// `[gates] warm_build_dirs` that gave them (gap-6754ab), for its prompt
+    /// to name (gap-9d7381, [`DispatchContext::warm_build_trees`]). Empty
+    /// without per-task worktrees: the shared checkout's trees are the
+    /// person's.
+    fn checkout_build_trees(&self, checkout: &Path) -> Vec<String> {
+        if self.workspace_provider.is_none() {
+            return Vec::new();
+        }
+        crate::orchestrator::worktree::warm_build_dirs(
+            checkout,
+            self.config.gates.warm_build_dirs.as_deref(),
+        )
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect()
+    }
+
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
     /// the plan ceiling: a policy that continues on exhaustion only warns, and
     /// `--no-budget` disables the check. S5's in-run budget cut lowers the
@@ -1438,6 +1456,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            warm_build_trees: lease
+                .as_ref()
+                .map(|lease| self.checkout_build_trees(&lease.path))
+                .unwrap_or_default(),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
             knowledge_section: attempt.knowledge_section(),

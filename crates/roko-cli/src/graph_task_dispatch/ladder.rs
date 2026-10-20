@@ -278,6 +278,15 @@ impl GraphTaskDispatcher {
                 } else if matches!(plan.source, ModelChoiceSource::SelfModel { .. }) {
                     // An active self-model chose the start rung (6130).
                     LadderReason::SelfModel
+                } else if ladder.start_unreachable(
+                    role,
+                    task.tier_class(),
+                    task.hints.rung.as_deref(),
+                ) {
+                    // No rung at or above the task's start rung can run here,
+                    // so it starts one runnable rung below the highest
+                    // (gap-ff2c38).
+                    LadderReason::StartUnreachable
                 } else if hinted {
                     LadderReason::Hint
                 } else {
@@ -1110,6 +1119,77 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             .filter(|id| id.starts_with("ladder_exhausted"))
             .collect();
         assert_eq!(diagnoses, ["ladder_exhausted:stream-plan/T-EXP"]);
+    }
+
+    /// gap-ff2c38: when no rung at or above a task's start rung can run (a
+    /// chat run drops the CLI rung at the top), the task starts one runnable
+    /// rung below the highest, its tries there say why, and it climbs once
+    /// after two failures. A task whose start rung runs starts there, as
+    /// before.
+    #[tokio::test]
+    async fn a_try_on_an_unreachable_start_says_so() {
+        const MID: &str = "ladder-mid-slug";
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let (dispatcher, task) = ladder_fixture_with(&temp, |config| {
+            config
+                .models
+                .insert("mid-model".to_string(), model("batch-cli", MID, None));
+            // No `[models]` entry runs the top rung's model here.
+            config.routing.ladder.rungs = vec![
+                rung("cheap", "cheap-model"),
+                rung("mid", "mid-model"),
+                rung("strong", "batch-model"),
+                rung("top", "unreachable-model"),
+            ];
+        })
+        .await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        let mut architectural = task.clone();
+        architectural.id = "T-ARCH".to_string();
+        architectural.tier = "architectural".to_string();
+        let mut spec = make_spec(&architectural);
+        spec.max_retries = 3;
+        let mut mechanical = task.clone();
+        mechanical.id = "T-MECH".to_string();
+        let mut mechanical_spec = make_spec(&mechanical);
+        mechanical_spec.max_retries = 0;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        for _ in 0..=spec.max_retries {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails");
+        }
+        dispatcher
+            .dispatch(&mechanical_spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the mechanical attempt fails");
+        assert_eq!(called_models(&temp), [MID, MID, TOP, TOP, CHEAP]);
+
+        dispatcher.close_run_attempts(RUN);
+        let verdicts: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let places: Vec<(&str, &str, &str, bool)> = verdicts.iter().map(place).collect();
+        assert_eq!(
+            places,
+            [
+                ("agent", "mid", "start_unreachable", false),
+                ("agent", "mid", "start_unreachable", false),
+                ("agent", "strong", "escalated", false),
+                ("agent", "strong", "escalated", true),
+                ("agent", "cheap", "start", false),
+            ]
+        );
     }
 
     /// A settled turn-cap stop of `task` on the cheap rung. `substitute`

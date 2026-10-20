@@ -286,15 +286,21 @@ pub(crate) fn fit_offline(
     let mut window = CalibrationWindow::new(model.version.clone()).keeping(gate.keeps());
     let mut scored = Vec::new();
     for unit in runs.units.iter().chain(fresh.iter().copied()) {
-        let Some(passed) = unit.label.y_gate.filter(|_| !unit.failover) else {
+        let Some(passed) = unit.label.y_gate else {
             continue;
         };
         let task = TaskFeatures::from(unit);
+        let w = unit.label.weight;
+        // A failover substitute teaches the model what the model that ran did, but nobody
+        // chose it: it is neither scored nor in the window, as in the live sink (bug-a35286).
+        if unit.failover {
+            model.observe_with(unit, &task, w);
+            continue;
+        }
         let forecasts = model.forecast(&task, std::slice::from_ref(&unit.arm));
         let Some(p) = forecasts.first().map(|forecast| forecast.p_gate) else {
             continue;
         };
-        let w = unit.label.weight;
         scored.push(Scored::weighted(p, passed, w));
         // The fit routes nothing, so it scores as a shadow window does: the routed pass rate
         // is unknown and fails no bound (bug-92cc56).

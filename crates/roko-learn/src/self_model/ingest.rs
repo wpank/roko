@@ -6,8 +6,9 @@
 //! line with no verdict is an abandoned attempt: it is counted and skipped. The label is the
 //! verdict's `learning_label` (S01 §4.1), through [`Label::of_verdict`] as in the live outcome
 //! sink: `1` a pass, `0` an agent failure, and none for an unverified attempt, a forced accept
-//! or a provider or harness outcome. An attempt a provider failover substituted is marked and
-//! kept out of training, as `RoutingObservationSink` does.
+//! or a provider or harness outcome. An attempt a provider failover substituted is marked: the
+//! model learns what the model that ran did, while the fit neither scores it nor counts it in the
+//! calibration window, since nobody chose it (bug-a35286).
 //!
 //! [`read_forecast_join`] joins each run's shadow forecasts (`predictions.jsonl`, 6126) to its
 //! routed attempts and their verdicts by attempt key: the measure of S04 §7.4's shadow
@@ -36,11 +37,11 @@ pub struct IngestReport {
 }
 
 impl IngestReport {
-    /// The units the self-model may train on: labelled, and run on the arm that was asked for.
+    /// The units the self-model learns from: the labelled ones, a failover substitute's
+    /// included (bug-a35286). A substitute is marked, and the fit neither scores it nor counts
+    /// it in the calibration window, since nobody chose it.
     pub fn training_units(&self) -> impl Iterator<Item = &Unit> {
-        self.units
-            .iter()
-            .filter(|unit| !unit.failover && unit.label.y_gate.is_some())
+        self.units.iter().filter(|unit| unit.label.y_gate.is_some())
     }
 }
 
@@ -61,7 +62,8 @@ pub struct DataAudit {
     pub labelled: usize,
     /// Settled attempts with no label: unverified, provider or harness outcomes.
     pub unlabelled: usize,
-    /// Labelled units a provider failover substituted, kept out of training.
+    /// Labelled units a provider failover substituted: the model learns them, and the
+    /// calibration window and the scores leave them out (bug-a35286).
     pub failover: usize,
     /// Labelled units per label source (`pre_gate_success`, `gate_passed`, `vs`).
     pub label_sources: BTreeMap<String, usize>,
@@ -452,8 +454,8 @@ mod tests {
 
         assert_eq!(
             report.training_units().count(),
-            4,
-            "the failover unit is left out"
+            5,
+            "the failover unit teaches its model too (bug-a35286)"
         );
     }
 

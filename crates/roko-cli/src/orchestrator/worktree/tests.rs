@@ -2496,6 +2496,137 @@ async fn accept_refuses_a_conflicting_sibling_and_moves_no_ref() {
     assert_eq!(manager.accepted_for_plan("plan").unwrap(), one);
 }
 
+/// The base of round v7's phase-1 `core/CMakeLists.txt` (gap-32ddce), and
+/// the same list with `sources` registered after `src/engine.cpp`.
+fn source_list(sources: &[&str]) -> String {
+    let mut list =
+        String::from("add_library(core STATIC\n    src/params.cpp\n    src/engine.cpp\n");
+    for source in sources {
+        list.push_str(&format!("    src/{source}.cpp\n"));
+    }
+    list.push_str(")\n");
+    list
+}
+
+/// A manager whose repository's `main` holds `CMakeLists.txt` as
+/// [`source_list`] with no sources, where attempt `first` registered
+/// `oscillator` and landed on the plan branch, and attempt `sibling` wrote
+/// `sibling` over the file, from the same base.
+async fn sibling_conflicts_in_cmake(sibling: &str) -> Option<(TempDir, WorktreeManager)> {
+    let (tmp, manager) = make_manager()?;
+    let repo = manager.config.repo_root.clone();
+    std::fs::write(repo.join("CMakeLists.txt"), source_list(&[])).unwrap();
+    git_in(&repo, &["add", "CMakeLists.txt"]);
+    git_in(&repo, &["commit", "-m", "core library"]);
+    attempt_with_file(
+        &manager,
+        "first",
+        "CMakeLists.txt",
+        &source_list(&["oscillator"]),
+    )
+    .await;
+    attempt_with_file(&manager, "sibling", "CMakeLists.txt", sibling).await;
+    manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    let refused = manager
+        .accept_attempt("plan", "sibling", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, WorktreeError::Conflict { .. }),
+        "{refused}"
+    );
+    Some((tmp, manager))
+}
+
+/// gap-32ddce: a sibling that, like the plan branch, only added a line to a
+/// registration file takes the plan branch with both added lines. Its
+/// checkout then holds a commit on top of the plan branch's tip, so
+/// accepting it again fast-forwards the branch.
+#[tokio::test]
+async fn a_union_merge_keeps_both_sides_added_lines() {
+    let Some((_tmp, manager)) = sibling_conflicts_in_cmake(&source_list(&["envelope"])).await
+    else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    let plan = format_branch_name("plan");
+    let tip = git_in(&repo, &["rev-parse", &plan]);
+    let cmake = ["CMakeLists.txt".to_string()];
+
+    let merged = manager
+        .union_merge_attempt("plan", "sibling", 0, &cmake)
+        .await
+        .unwrap()
+        .expect("both sides only added lines");
+
+    assert_eq!(merged.paths, cmake);
+    let sibling = manager.get_attempt("plan", "sibling", 0).unwrap();
+    let both = source_list(&["oscillator", "envelope"]);
+    assert_eq!(
+        std::fs::read_to_string(sibling.path.join("CMakeLists.txt")).unwrap(),
+        both
+    );
+    assert_eq!(git_in(&sibling.path, &["status", "--porcelain"]), "");
+    assert_eq!(git_in(&sibling.path, &["rev-parse", "HEAD"]), merged.commit);
+    git_in(
+        &repo,
+        &["merge-base", "--is-ancestor", &tip, &merged.commit],
+    );
+    assert_eq!(
+        git_in(&repo, &["rev-parse", &plan]),
+        tip,
+        "the plan branch waits"
+    );
+
+    let accepted = manager
+        .accept_attempt("plan", "sibling", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    assert_eq!(git_in(&repo, &["rev-parse", &plan]), accepted.commit_oid);
+    assert_eq!(
+        git_in(&repo, &["rev-parse", &format!("{}^", accepted.commit_oid)]),
+        merged.commit,
+        "a fast-forward"
+    );
+    assert_eq!(
+        git_in(&repo, &["show", &format!("{plan}:CMakeLists.txt")]),
+        both.trim_end()
+    );
+}
+
+/// gap-32ddce: a sibling that removed or changed a line, or conflicts in a
+/// file it was not given, is not merged: nothing changes.
+#[tokio::test]
+async fn a_union_merge_refuses_changed_lines_and_other_files() {
+    let changed = source_list(&["envelope"]).replace("src/params.cpp", "src/parameters.cpp");
+    for (sibling, given) in [
+        (changed, "CMakeLists.txt"),
+        (source_list(&["envelope"]), "other.txt"),
+    ] {
+        let Some((_tmp, manager)) = sibling_conflicts_in_cmake(&sibling).await else {
+            return;
+        };
+        let checkout = manager.get_attempt("plan", "sibling", 0).unwrap().path;
+        let head = git_in(&checkout, &["rev-parse", "HEAD"]);
+
+        let merged = manager
+            .union_merge_attempt("plan", "sibling", 0, &[given.to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(merged, None, "{given}: {sibling}");
+        assert_eq!(git_in(&checkout, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git_in(&checkout, &["status", "--porcelain"]), "");
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("CMakeLists.txt")).unwrap(),
+            sibling
+        );
+    }
+}
+
 /// gap-3b5361: a plan branch checked out anywhere is never moved.
 #[tokio::test]
 async fn accept_leaves_a_checked_out_plan_branch_alone() {

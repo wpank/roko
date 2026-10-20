@@ -357,6 +357,23 @@ pub trait ExecutionWorkspaceProvider: Send + Sync {
         lease: &WorkspaceLease,
         request: &WorkspaceAcceptRequest,
     ) -> Result<WorkspaceAcceptance, WorkspaceError>;
+
+    /// After [`Self::accept`] refused the attempt holding `lease` with a
+    /// [`WorkspaceError::Conflict`], merge its plan branch into its checkout
+    /// when the merge conflicts only in files of `paths` and each side only
+    /// added lines to each of them: each then gets both sides' added lines.
+    ///
+    /// The checkout then holds a commit that builds on the plan branch's tip,
+    /// so accepting the attempt again fast-forwards the branch, once the
+    /// caller has checked the merge. Returns the files merged, or `None`, with
+    /// nothing changed, for any other conflict. The default merges nothing.
+    async fn union_merge(
+        &self,
+        _lease: &WorkspaceLease,
+        _paths: &[String],
+    ) -> Result<Option<Vec<String>>, WorkspaceError> {
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------

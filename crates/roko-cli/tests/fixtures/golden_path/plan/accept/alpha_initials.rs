@@ -14,3 +14,8 @@ fn ignores_extra_spaces() {
 fn upper_cases_a_non_ascii_initial() {
     assert_eq!(initials("émile zola"), "ÉZ");
 }
+
+#[test]
+fn keeps_every_letter_of_an_upper_cased_initial() {
+    assert_eq!(initials("ßeta omega"), "SSO");
+}

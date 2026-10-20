@@ -6,7 +6,10 @@
 //! batch branch, in the repository's regression checkout (the delivery's
 //! regression check, see [`super::batch`]); otherwise the shared working tree
 //! its tasks edited.
-//! A plan whose tasks all passed but whose check fails does not succeed.
+//! A plan whose tasks all passed but whose check fails does not succeed,
+//! unless the failure, handed back to the tasks whose files it names, is
+//! fixed by their next attempts and the plan's check then passes
+//! ([`super::plan_handback`], find-5bcba7).
 //! The check runs code the plan's agents wrote, so its steps get the
 //! environment verify steps get, without provider keys (G09).
 //!
@@ -100,6 +103,11 @@ pub struct PlanVerifyFailure {
     /// when the run was asked to stop (bug-7b62ff): the check did not fail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped_by: Option<String>,
+    /// Everything the failed step wrote, stdout then stderr, which a
+    /// hand-back searches for the files it names (find-5bcba7). Empty when
+    /// the step did not run to its end.
+    #[serde(skip)]
+    pub text: String,
 }
 
 impl std::fmt::Display for PlanVerifyFailure {
@@ -159,6 +167,7 @@ async fn run_plan_verify_from(
             command: step.command.clone(),
             output,
             stopped_by: None,
+            text: String::new(),
         };
         let mut command = tokio::process::Command::new("sh");
         command.arg("-c").arg(&step.command).current_dir(dir);
@@ -200,6 +209,7 @@ async fn run_plan_verify_from(
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let wrote = format!("{stdout}{stderr}");
             let text = if stderr.trim().is_empty() {
                 stdout
             } else {
@@ -210,10 +220,13 @@ async fn run_plan_verify_from(
                 .filter(|line| !line.trim().is_empty())
                 .collect();
             let tail = lines[lines.len().saturating_sub(5)..].join(" | ");
-            return Err(failure(match step.fail_msg.as_deref() {
-                Some(message) => format!("{message}: {tail}"),
-                None => tail,
-            }));
+            return Err(PlanVerifyFailure {
+                text: wrote,
+                ..failure(match step.fail_msg.as_deref() {
+                    Some(message) => format!("{message}: {tail}"),
+                    None => tail,
+                })
+            });
         }
     }
     Ok(())

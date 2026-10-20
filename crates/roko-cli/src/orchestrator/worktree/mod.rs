@@ -201,6 +201,17 @@ pub struct AcceptedWorktree {
     pub commit_oid: String,
 }
 
+/// What [`WorktreeManager::union_merge_attempt`] merged into an attempt's
+/// checkout (gap-32ddce).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnionMerge {
+    /// The commit the checkout now holds: the attempt's work merged with its
+    /// plan branch's tip, which it has as a parent.
+    pub commit: String,
+    /// The files that hold both sides' added lines.
+    pub paths: Vec<String>,
+}
+
 /// What [`WorktreeManager::release_accepted`] did with a delivered plan's
 /// accepted attempts (gap-415c54).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1069,6 +1080,43 @@ impl WorktreeManager {
         })
         .await
     }
+    /// Merge plan `plan_id`'s branch into the checkout of attempt `attempt` at
+    /// `task_id`, whose acceptance conflicted (gap-32ddce), when the merge
+    /// conflicts only in files of `paths` and each side only added lines to
+    /// each of them since their merge base: each such file then gets both
+    /// sides' added lines (`git merge-file --union`).
+    ///
+    /// The checkout then holds a commit with the plan branch's tip as a
+    /// parent, so accepting the attempt again fast-forwards the branch: check
+    /// the merge before that. Returns `Ok(None)`, with nothing changed, for
+    /// any other conflict, a checkout with changes it has not committed, or a
+    /// plan branch the attempt no longer conflicts with.
+    pub async fn union_merge_attempt(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        paths: &[String],
+    ) -> Result<Option<UnionMerge>, WorktreeError> {
+        let id = format_attempt_worktree_id(plan_id, task_id, attempt);
+        let handle = self
+            .get(&id)
+            .ok_or_else(|| WorktreeError::NotFound(id.clone()))?;
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        let plan_id = plan_id.to_string();
+        let paths = paths.to_vec();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let result = manager
+                .union_merge_locked(&plan_id, &handle, &paths, &lifecycle)
+                .await;
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            result
+        })
+        .await
+    }
+
     /// Last accepted attempt for a plan, used by plan verification and merge.
     pub fn accepted_for_plan(&self, plan_id: &str) -> Option<AcceptedWorktree> {
         self.accepted.lock().get(plan_id).cloned()

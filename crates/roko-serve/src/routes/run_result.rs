@@ -405,8 +405,9 @@ pub(super) fn unverified_diff(
 
 /// Each file `commit` changes from `base`, with its status, line counts,
 /// whether it is binary and its unified patch (`null` for a binary file),
-/// within `limits`, plus totals over every file. `None` when git cannot
-/// tell.
+/// within `limits`, plus totals over every file. A binary file, which counts
+/// no lines, gives its size instead: `bytes_before` and `bytes_after`, `null`
+/// on the side it is missing from (gap-0a126f). `None` when git cannot tell.
 fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> Option<Value> {
     let entries = diff_entries(workdir, base, commit)?;
     let kept = &entries[..entries.len().min(limits.max_files)];
@@ -415,6 +416,19 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
         .filter(|entry| !entry.binary)
         .map(|entry| entry.path.as_str())
         .collect::<Vec<_>>();
+    let binaries = kept
+        .iter()
+        .filter(|entry| entry.binary)
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    let (sizes_before, sizes_after) = if binaries.is_empty() {
+        (HashMap::new(), HashMap::new())
+    } else {
+        (
+            blob_sizes(workdir, base, &binaries)?,
+            blob_sizes(workdir, commit, &binaries)?,
+        )
+    };
     let mut patches = if paths.is_empty() {
         HashMap::new()
     } else {
@@ -430,7 +444,7 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
                     .remove(&entry.path)
                     .map_or((json!(""), false), |(patch, cut)| (json!(patch), cut))
             };
-            json!({
+            let mut file = json!({
                 "path": entry.path,
                 "status": entry.status,
                 "additions": entry.additions,
@@ -438,7 +452,12 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
                 "binary": entry.binary,
                 "patch": patch,
                 "truncated": truncated,
-            })
+            });
+            if entry.binary {
+                file["bytes_before"] = json!(sizes_before.get(&entry.path));
+                file["bytes_after"] = json!(sizes_after.get(&entry.path));
+            }
+            file
         })
         .collect::<Vec<_>>();
     let additions = entries
@@ -458,6 +477,38 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
         },
         "truncated": kept.len() < entries.len(),
     }))
+}
+
+/// The size in bytes of each of `paths` that `tree` holds, by path; a path it
+/// does not hold is left out. `None` when git fails.
+fn blob_sizes(workdir: &Path, tree: &str, paths: &[&str]) -> Option<HashMap<String, u64>> {
+    let mut args = vec![
+        "--literal-pathspecs",
+        "ls-tree",
+        "-r",
+        "-l",
+        "-z",
+        tree,
+        "--",
+    ];
+    args.extend_from_slice(paths);
+    let listing = git(workdir, &args)?;
+    let mut sizes = HashMap::new();
+    for record in listing.split(|byte| *byte == 0) {
+        // `<mode> SP <type> SP <object> SP+ <size> TAB <path>`
+        let record = String::from_utf8_lossy(record);
+        let Some((meta, path)) = record.split_once('\t') else {
+            continue;
+        };
+        if let Some(size) = meta
+            .split_whitespace()
+            .nth(3)
+            .and_then(|size| size.parse::<u64>().ok())
+        {
+            sizes.insert(path.to_string(), size);
+        }
+    }
+    Some(sizes)
 }
 
 /// Each file `tip` changes from `base`, in git's path order: its status from

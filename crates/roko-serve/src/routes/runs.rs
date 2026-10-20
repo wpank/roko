@@ -4647,6 +4647,135 @@ mod tests {
         assert_eq!(too_much.status, StatusCode::BAD_REQUEST);
     }
 
+    /// gap-0a126f: a binary file counts no lines, so a run's diff gives its
+    /// size instead: the bytes it had at the base and has at the run's tip,
+    /// `null` on the side it is missing from. A text file has no sizes. Round
+    /// v7's Undertow commits review images and demo renders this way.
+    #[tokio::test]
+    async fn a_binary_file_in_a_run_diff_says_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        let binary = |len: usize, seed: u8| -> Vec<u8> {
+            (0..len)
+                .map(|n| {
+                    if n % 7 == 0 {
+                        0
+                    } else {
+                        seed.wrapping_add(n as u8)
+                    }
+                })
+                .collect()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir_all(repo.join("artifacts/audio")).unwrap();
+        std::fs::write(repo.join("artifacts/audio/init.wav"), binary(1_000, 1)).unwrap();
+        std::fs::write(repo.join("artifacts/old.bin"), binary(300, 2)).unwrap();
+        std::fs::write(repo.join("notes.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/r8"]);
+        std::fs::write(repo.join("artifacts/audio/init.wav"), binary(2_000, 3)).unwrap();
+        std::fs::create_dir_all(repo.join("artifacts/ui")).unwrap();
+        std::fs::write(
+            repo.join("artifacts/ui/editor [idle].png"),
+            binary(1_500, 4),
+        )
+        .unwrap();
+        std::fs::remove_file(repo.join("artifacts/old.bin")).unwrap();
+        std::fs::write(repo.join("notes.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "the run's renders"]);
+        git(&["switch", "--quiet", "main"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r8").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"r8","timestamp_ms":1,"plan_id":"r8"}),
+                json!({"type":"task_completed","run_id":"r8","timestamp_ms":2,"plan_id":"r8","task_id":"t1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":"r8","timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ],
+        );
+        let manifest = roko_fs::RokoLayout::for_project(&repo)
+            .run_dir("r8")
+            .join("manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            json!({"run_id":"r8","plan_ids":["r8"],"workspace":{"base_commit":base}}).to_string(),
+        )
+        .unwrap();
+
+        let Json(diff) = get_run_diff(State(state), Path("r8".into()), Query(DiffQuery::default()))
+            .await
+            .unwrap();
+        let file = |path: &str| {
+            diff["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|file| file["path"] == path)
+                .unwrap_or_else(|| panic!("no {path} in {diff}"))
+                .clone()
+        };
+        let sizes = |path: &str| {
+            let file = file(path);
+            assert_eq!(file["binary"], true, "{file}");
+            assert!(file["patch"].is_null(), "{file}");
+            (file["bytes_before"].clone(), file["bytes_after"].clone())
+        };
+        assert_eq!(
+            sizes("artifacts/audio/init.wav"),
+            (json!(1_000), json!(2_000))
+        );
+        assert_eq!(
+            sizes("artifacts/ui/editor [idle].png"),
+            (Value::Null, json!(1_500))
+        );
+        assert_eq!(sizes("artifacts/old.bin"), (json!(300), Value::Null));
+        let notes = file("notes.txt");
+        assert_eq!(notes["binary"], false, "{notes}");
+        assert!(notes.get("bytes_before").is_none(), "{notes}");
+    }
+
     #[tokio::test]
     async fn run_summary_reports_where_the_verified_work_is() {
         let dir = tempfile::tempdir().unwrap();

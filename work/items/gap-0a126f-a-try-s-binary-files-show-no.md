@@ -13,8 +13,8 @@ updated = 2026-10-20
 last_verified = 2026-10-20
 source = "round-v7-roko-ladder#binary-outputs"
 discovered_from = "agent:roko-ladder (round v7 binary-outputs test, roko c25301eef)"
-anchors = ["crates/roko-cli/src/orchestrator/worktree/acceptance.rs::attempt_review_diff", "crates/roko-serve/src/routes/run_result.rs"]
-links = { depends_on = [], blocks = [], related = ["bug-ba0c40"], supersedes = [], duplicate_of = "" }
+anchors = ["crates/roko-serve/src/routes/run_result.rs"]
+links = { depends_on = [], blocks = [], related = ["bug-ba0c40", "gap-ca983a"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_binary_file_in_a_run_diff_says_its_size' crates/ && cargo test -p roko-serve --lib -- a_binary_file_in_a_run_diff_says_its_size"
@@ -49,8 +49,9 @@ the artifacts must be in their tasks' `files`, as they were in this test.
 
 ## Where
 
-- `crates/roko-cli/src/orchestrator/worktree/acceptance.rs::attempt_review_diff`: numstat and the text patch of a
-  held attempt.
+- `crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs::await_review`: writes the review hold from
+  `attempt_review_diff`'s numstat and text patch (`orchestrator/worktree/acceptance.rs`). bug-ba0c40 is changing that
+  file, so the sizes are worked out in `await_review`.
 - `crates/roko-serve/src/routes/run_result.rs`: the diff route's per-file entries. Binary detection comes from
   numstat's `-` and `-`.
 
@@ -58,12 +59,14 @@ the artifacts must be in their tasks' `files`, as they were in this test.
 
 1. The diff route's binary entries carry their size before and after (`git cat-file -s <tree>:<path>`), e.g.
    `bytes_before`, `bytes_after`.
-2. The review hold carries the same per binary file, beside its numstat.
+2. The review hold gets the same in gap-ca983a. Its files (`attempt_workspace.rs`, `acceptance.rs`) are being
+   changed by bug-ba0c40 (claimed by work-batch 1602), so that part waits for it.
 3. Optional: the run's events say when a try adds more than a threshold of binary bytes, so a page can flag it.
 
 ## Done when
 
-The diff route and the review hold give a binary file's bytes before and after. Checked by the test in `[[verify]]`.
+The diff route gives a binary file's bytes before and after. Checked by the test in `[[verify]]`. The review hold's
+sizes are gap-ca983a, which depends on bug-ba0c40.
 
 ## Notes
 

@@ -18,6 +18,7 @@ mod dry_run_fs;
 mod overview;
 mod pipeline;
 mod runnable;
+mod sizes;
 mod source_checks;
 
 pub use runnable::{

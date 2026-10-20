@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -864,19 +864,154 @@ impl SourceCoverage {
             missing: self.missing().len() + self.elsewhere.len(),
             regenerated,
             checks,
+            documents: Vec::new(),
         }
     }
 }
 
+/// Extensions of the documents a request may name for roko to read.
+const NAMED_DOCUMENT_EXTENSIONS: &[&str] = &["markdown", "md"];
+
+/// The largest document a request names that roko reads, in bytes.
+const NAMED_DOCUMENT_BYTES: u64 = 256 * 1024;
+
+/// A document of the workspace that a request names by its path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NamedDocument {
+    /// Its path, relative to the workspace.
+    pub path: String,
+    /// Its text.
+    pub text: String,
+}
+
+/// The markdown documents of the workspace that `request` names by path, in
+/// the order it names them (round v7, phase 0). Asked naturally, a chat host
+/// that read a spec sends roko a summary that names it ("Create a roko plan
+/// for phase 0 from docs/specs/phase-0-foundation.md") and none of its checks,
+/// so roko reads the spec itself. A path counts when it is relative, or
+/// absolute inside `workdir`, and names a file of at most 256 KiB inside the
+/// workspace.
+pub(super) fn named_documents(request: &str, workdir: &Path) -> Vec<NamedDocument> {
+    let root = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
+    let mut documents: Vec<NamedDocument> = Vec::new();
+    let words = request.split(|c: char| c.is_whitespace() || "`\"'()[]<>*,;|".contains(c));
+    for word in words {
+        let word = word.trim_end_matches(['.', ':', '!', '?']);
+        let Some(path) = document_path(word, workdir, &root) else {
+            continue;
+        };
+        let file = root.join(&path);
+        let inside = file
+            .canonicalize()
+            .is_ok_and(|real| real.starts_with(&root));
+        let small = std::fs::metadata(&file)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= NAMED_DOCUMENT_BYTES);
+        if !inside || !small || documents.iter().any(|document| document.path == path) {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            documents.push(NamedDocument { path, text });
+        }
+    }
+    documents
+}
+
+/// `word` as the workspace path of a markdown document, when it names one
+/// inside the workspace `workdir`, whose real path is `root`.
+fn document_path(word: &str, workdir: &Path, root: &Path) -> Option<String> {
+    let path = Path::new(word);
+    let extension = path.extension()?.to_str()?;
+    if !NAMED_DOCUMENT_EXTENSIONS.contains(&extension) {
+        return None;
+    }
+    let relative = if path.is_absolute() {
+        path.strip_prefix(workdir)
+            .or_else(|_| path.strip_prefix(root))
+            .ok()?
+    } else {
+        path
+    };
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str()?),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// The checks `documents` state, numbered `SC1`, `SC2`, … across them, in
+/// order.
+pub(super) fn document_checks(documents: &[NamedDocument]) -> Vec<SourceCheck> {
+    let mut checks: Vec<SourceCheck> = documents
+        .iter()
+        .flat_map(|document| source_checks(&document.text))
+        .collect();
+    for (index, check) in checks.iter_mut().enumerate() {
+        check.id = format!("SC{}", index + 1);
+    }
+    checks
+}
+
+/// Who states the source checks, as the planner block's first words: the
+/// source itself (`The prompt states`), or the documents it names.
+pub(super) fn checks_stated_by(kind: &str, documents: &[NamedDocument]) -> String {
+    match documents {
+        [] => format!("The {kind} states"),
+        [document] => format!("`{}`, which the {kind} names, states", document.path),
+        _ => format!("The documents the {kind} names state"),
+    }
+}
+
+/// The planner prompt's copy of `documents`, the documents a request names
+/// whose checks are the source checks, within `chars` characters in all.
+pub(super) fn documents_block(documents: &[NamedDocument], kind: &str, chars: usize) -> String {
+    let mut block = format!(
+        "## Documents the {kind} names\n\n\
+         The {kind} states no checks itself; it names the documents below, which roko read for \
+         you. Plan from them as much as from the {kind}, and do not open them again.\n"
+    );
+    let mut left = chars;
+    for document in documents {
+        let end = document.text.floor_char_boundary(left);
+        let text = document.text[..end].trim_end();
+        let fence = "`".repeat(longest_backtick_run(text).max(3) + 1);
+        let _ = write!(
+            block,
+            "\n### `{}`\n\n{fence}markdown\n{text}\n{fence}\n",
+            document.path
+        );
+        if end < document.text.len() {
+            let _ = writeln!(
+                block,
+                "\n`{}` is cut here, at {end} characters: read the rest of it yourself.",
+                document.path
+            );
+        }
+        left -= end;
+    }
+    block
+}
+
+/// The longest run of backticks in `text`.
+fn longest_backtick_run(text: &str) -> usize {
+    text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
+}
+
 /// The planner prompt's list of the source's `checks`, with how to keep
-/// each one; empty when the source states none.
-pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
+/// each one; empty when the source states none. `states` says who states
+/// them ([`checks_stated_by`]).
+pub(super) fn planner_block(checks: &[SourceCheck], states: &str) -> String {
     if checks.is_empty() {
         return String::new();
     }
     let mut block = format!(
         "## Source checks\n\n\
-         The {kind} states the {} checks below. Keep each one as a verify step of the task that \
+         {states} the {} checks below. Keep each one as a verify step of the task that \
          delivers it: a step whose `covers` names the check (`covers = [\"SC3\"]`) and whose \
          command checks what the check states, by running a test the repository has or a test \
          the task writes. Name a test the task writes in its description, and put a `grep -q` \
@@ -1907,6 +2042,48 @@ mod tests {
         );
         let applied = SourceCoverage::of(&checks, &plan, &[]);
         assert_eq!(applied.kept.len(), 20, "{:#?}", applied.detail_lines());
+    }
+
+    /// Round v7, phase 0: asked naturally, the chat sent roko a 10-line
+    /// summary that names the spec and states no check. The spec it names
+    /// is read, and its checks are the 15 the spec states, as when the spec
+    /// itself is the source. A path outside the workspace, a missing file or
+    /// a file that is no markdown document is not one.
+    #[test]
+    fn a_summary_names_the_spec_whose_checks_it_keeps() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p0_source_checks");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let summary = std::fs::read_to_string(fixture.join("summary.md")).expect("the summary");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("docs/specs")).expect("docs");
+        std::fs::write(workdir.join("docs/specs/phase-0-foundation.md"), &spec).expect("spec");
+        assert!(source_checks(&summary).is_empty());
+
+        let documents = named_documents(&summary, workdir);
+        let paths: Vec<&str> = documents
+            .iter()
+            .map(|document| document.path.as_str())
+            .collect();
+        assert_eq!(paths, ["docs/specs/phase-0-foundation.md"]);
+        assert_eq!(document_checks(&documents), source_checks(&spec));
+        assert_eq!(document_checks(&documents).len(), 15);
+
+        std::fs::write(workdir.join("CMakeLists.txt"), "# Checks\n").expect("cmake");
+        std::fs::write(workdir.join("README.md"), "# Undertow\n").expect("readme");
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("other.md"), &spec).expect("outside");
+        let request = format!(
+            "Plan from `{}`, see README.md, ../other.md, {}, docs/specs/missing.md, \
+             CMakeLists.txt and (docs/specs/phase-0-foundation.md).",
+            workdir.join("docs/specs/phase-0-foundation.md").display(),
+            outside.path().join("other.md").display(),
+        );
+        let paths: Vec<String> = named_documents(&request, workdir)
+            .into_iter()
+            .map(|document| document.path)
+            .collect();
+        assert_eq!(paths, ["docs/specs/phase-0-foundation.md", "README.md"]);
     }
 
     /// Round v7, phase 3: rows of a spec's table can share one command

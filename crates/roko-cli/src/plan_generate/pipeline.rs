@@ -33,6 +33,7 @@ use indexmap::IndexMap;
 use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::ModelProfile;
 use roko_core::io::atomic_write_str;
+use roko_learn::runtime_feedback::GenerationSourceChecks;
 pub use roko_learn::runtime_feedback::{ArtifactValidationReport, GenerationOutcome};
 
 /// How many tasks the tasks.toml files at `paths` hold together.
@@ -1519,6 +1520,40 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // gap-dc5d7c: the checks the source states, each to be kept as a
         // verify step or dropped with a reason.
         let mut checks = source_checks::source_checks(&source.content);
+        // Round v7, phase 0: a chat host that read a spec sends a summary
+        // that names it and states no check. Such a request is planned with
+        // the checks of the documents it names, which the planner reads.
+        let documents = if checks.is_empty() {
+            let mut documents = source_checks::named_documents(&source.content, workdir_ref);
+            documents.retain(|document| !source_checks::source_checks(&document.text).is_empty());
+            checks = source_checks::document_checks(&documents);
+            documents
+        } else {
+            Vec::new()
+        };
+        if !documents.is_empty() {
+            let names: Vec<String> = documents
+                .iter()
+                .map(|document| format!("`{}`", document.path))
+                .collect();
+            println!(
+                "📋 The {} states no checks itself; planning with the {} checks of {}",
+                source.kind,
+                checks.len(),
+                names.join(", ")
+            );
+            let chars = PlannerBudget::for_context_window(planner_context_window(
+                &resolved.config.models,
+                &planner_model,
+            ))
+            .source_chars;
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&source_checks::documents_block(
+                &documents,
+                &source.kind,
+                chars,
+            ));
+        }
         // gap-ecafde: what this machine can run; bug-8fe462: the commands
         // that run checks stated as unittest ids, wildcards expanded.
         let probe = runnable::Probe::default();
@@ -1530,7 +1565,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 "plan generate: source checks in the planner prompt"
             );
             extra.push_str("\n\n---\n\n");
-            extra.push_str(&source_checks::planner_block(&checks, &source.kind));
+            extra.push_str(&source_checks::planner_block(
+                &checks,
+                &source_checks::checks_stated_by(&source.kind, &documents),
+            ));
         }
         // gap-ecafde: the test runners this machine has, which a check must
         // use to be able to pass.
@@ -1838,16 +1876,23 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 toml::to_string_pretty(&parsed)
                     .map_err(|error| format!("re-serialize the repaired draft: {error}"))?
             };
+            // bug-16b798: every gate's findings go back at once, so that one
+            // fix-up can answer them all (phase 2's budget findings hid its
+            // tier-size ones until the next draft).
+            let mut refusals = Vec::new();
+            let listed = |lines: Vec<String>| {
+                lines
+                    .iter()
+                    .map(|line| format!("  - {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
             let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
             if !policy_issues.is_empty() {
-                return Err(format!(
+                refusals.push(format!(
                     "generated plan violates the `{}` structural budget:\n{}",
                     template_kind.label(),
-                    policy_issues
-                        .iter()
-                        .map(|issue| format!("  - {issue}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    listed(policy_issues.iter().map(ToString::to_string).collect())
                 ));
             }
             // 3225 (decision 3203): a task over its tier's size limits is
@@ -1856,30 +1901,25 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // the work to a pricier rung without the planner choosing to.
             let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
             if !size_issues.is_empty() {
-                return Err(format!(
+                refusals.push(format!(
                     "generated plan has tasks over their tier's size limits; split each \
                      on independent outputs with disjoint files, or raise its tier:\n{}",
-                    size_issues
-                        .iter()
-                        .map(|issue| format!("  - {issue}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    listed(size_issues.iter().map(ToString::to_string).collect())
                 ));
             }
             // bug-27f00b: the plan roko writes is the plan. A task that writes
             // into its directory writes a plan, not what the request asks for.
             let own_writers = own_plan_writers(&parsed, &plan_dir, workdir_ref);
             if !own_writers.is_empty() {
-                return Err(format!(
+                refusals.push(format!(
                     "generated plan has tasks that write the plan's own files, but the plan roko \
                      writes is the plan: its tasks build what the request asks for and write the \
                      project's files (a spec goes in `docs/spec.md`, in one task):\n{}",
-                    own_writers
-                        .iter()
-                        .map(|line| format!("  - {line}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    listed(own_writers)
                 ));
+            }
+            if !refusals.is_empty() {
+                return Err(refusals.join("\n"));
             }
 
             // Run the same context check that plan_loader.rs enforces at
@@ -2503,12 +2543,37 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // All attempts (initial + retries) failed to produce valid TOML.
             let final_err = validated_toml.unwrap_err();
             let _preview: String = output.chars().take(500).collect();
+            // bug-16b798: say why the last draft was refused. A draft that
+            // parsed and failed roko's checks is no fencing problem, and a
+            // more capable model is unlikely to fix it.
+            let unfenced = final_err.starts_with("no TOML block found")
+                || final_err.starts_with("TOML block is missing");
+            let checked = final_err.starts_with("generated plan violates")
+                || final_err.starts_with("generated plan has")
+                || final_err.starts_with("generated plan still violates");
             let has_toml_like = output.contains("[meta]") || output.contains("[[task]]");
-            let toml_hint = if has_toml_like {
-                "\nhint: The model output TOML without proper fencing. \
-                 Try a more capable model or check the plan_generate system prompt."
+            let reason = if unfenced {
+                let fencing = if has_toml_like {
+                    "\nhint: The model output TOML without proper fencing. \
+                     Try a more capable model or check the plan_generate system prompt."
+                } else {
+                    ""
+                };
+                format!(
+                    "The agent output ({} bytes) did not contain a parseable ```toml block.\n\
+                     hint: Try again, or create plans/{slug}/tasks.toml manually.{fencing}",
+                    output.len()
+                )
+            } else if checked {
+                "The last draft parsed, but did not pass roko's plan checks above.\n\
+                 hint: these come from the request's shape or roko's plan limits, so a more \
+                 capable model is unlikely to help: change the request or its spec, or ask again."
+                    .to_string()
             } else {
-                ""
+                format!(
+                    "The last draft's TOML did not parse as a plan.\n\
+                     hint: Try again, or create plans/{slug}/tasks.toml manually."
+                )
             };
             let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
@@ -2551,9 +2616,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
                  Last error: {final_err}\n\
-                 The agent output ({} bytes) did not contain a parseable ```toml block.\n\
-                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}{drafts}",
-                output.len()
+                 {reason}{drafts}"
             ));
         }
 
@@ -2676,7 +2739,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             artifact_valid,
             validation_report,
             spec_quality,
-            source_checks: source_coverage.map(|coverage| coverage.record(checks_regenerated)),
+            source_checks: source_coverage.map(|coverage| GenerationSourceChecks {
+                documents: documents
+                    .iter()
+                    .map(|document| document.path.clone())
+                    .collect(),
+                ..coverage.record(checks_regenerated)
+            }),
             cost_usd: spend.spent_usd(),
         };
 
@@ -4414,6 +4483,133 @@ mod tests {
         );
         let runners = runnable::runners_block(workdir, &probe).expect("a CMake project");
         assert!(runners.contains("no `Cargo.toml` here"), "{runners}");
+    }
+
+    /// bug-16b798: phase 2's three drafts were fenced and parsed, and each
+    /// failed the generated-plan budget, yet the error blamed the fencing and
+    /// suggested a more capable model; and the budget's findings hid the
+    /// drafts' tier-size ones. Every gate's findings now go back at once, and
+    /// the failure says the drafts parsed and failed roko's checks.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_budget_failure_names_the_budget_not_the_fencing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let task = |id: &str, depends_on: &str, max_loc: u32| {
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"Widget part {id}\"\n\
+                 description = \"Extend src/widget.rs.\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nmax_loc = {max_loc}\n\
+                 files = [\"src/widget.rs\"]\ndepends_on = [{depends_on}]\n\n\
+                 [task.context]\nread_files = []\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/check.sh widget {id}\"\n\n"
+            )
+        };
+        let plan = format!(
+            "[meta]\nplan = \"widget\"\ntotal = 3\ndone = 0\nstatus = \"ready\"\n\n{}{}{}",
+            task("T1", "", 500),
+            task("T2", "\"T1\"", 40),
+            task("T3", "\"T2\"", 40),
+        );
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("no draft passes the checks");
+        let error = format!("{error:#}");
+        for expected in [
+            "PLAN_FRAGMENTED_OWNERSHIP",
+            "PLAN_TIER_SIZE",
+            "did not pass roko's plan checks",
+        ] {
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        for wrong in ["parseable ```toml block", "Try a more capable model"] {
+            assert!(!error.contains(wrong), "{wrong}: {error}");
+        }
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 3, "the draft, then two fix-ups");
+        let fixup = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("a fix-up");
+        assert!(
+            fixup.contains("PLAN_FRAGMENTED_OWNERSHIP") && fixup.contains("PLAN_TIER_SIZE"),
+            "{fixup}"
+        );
+    }
+
+    /// Round v7, phase 0: asked naturally, a chat host summarised the spec
+    /// and named its file, and roko planned without the spec's checks. A
+    /// request that states no checks and names a spec of the workspace now
+    /// gets the spec in the planner's prompt and its checks as the plan's
+    /// source checks, run by the task that owns them.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_summary_naming_its_spec_is_planned_with_the_specs_checks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("docs/specs")).expect("docs");
+        let spec = "# Widget\n\nSpin the widget.\n\n## Acceptance checks\n\n\
+                    | Id | Command | Check |\n|---|---|---|\n\
+                    | W.01 | `tools/spec.sh widget spin` | the widget spins |\n\
+                    | W.02 | `tools/spec.sh widget stop` | the widget stops |\n";
+        std::fs::write(workdir.join("docs/specs/widget.md"), spec).expect("the spec");
+        let plan = "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+                    [[task]]\nid = \"T1\"\ntitle = \"Spin the widget\"\n\
+                    description = \"Write src/widget.cpp.\"\nstatus = \"ready\"\n\
+                    role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.cpp\"]\n\
+                    depends_on = []\n\n[task.context]\nread_files = []\n\n\
+                    [[task.verify]]\nphase = \"test\"\ncommand = \"grep -q spin src/widget.cpp\"\n";
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(
+                PlanSource::Text {
+                    text: "Write the plan for the widget from docs/specs/widget.md. Ensure each \
+                           task has checks aligned to the spec. Don't run anything.",
+                    kind: "prompt",
+                },
+                "widget",
+                workdir,
+            )
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1);
+        let asked = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("the call");
+        for expected in [
+            "## Documents the prompt names",
+            "| W.02 | `tools/spec.sh widget stop` | the widget stops |",
+            "`docs/specs/widget.md`, which the prompt names, states the 2 checks below",
+        ] {
+            assert!(asked.contains(expected), "{expected}: {asked}");
+        }
+        let checks = outcome
+            .source_checks
+            .expect("the spec's checks are reported");
+        assert_eq!((checks.kept, checks.total), (2, 2), "{checks:?}");
+        assert_eq!(checks.documents, ["docs/specs/widget.md"]);
+        let written = TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("plan");
+        assert!(
+            written.tasks[0].verify.iter().any(
+                |step| step.command == "tools/spec.sh widget spin && tools/spec.sh widget stop"
+            ),
+            "{:?}",
+            written.tasks[0].verify
+        );
     }
 
     /// bug-96115c: a request that names its final check gets a plan whose

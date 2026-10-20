@@ -643,6 +643,7 @@ async fn generate_plan_rejects_empty_slug() {
     let req = GenerateRequest {
         slug: Some("  ".into()),
         prompt: None,
+        spec_path: None,
     };
     assert!(req.validate_payload().is_err());
 }
@@ -652,6 +653,7 @@ async fn generate_plan_rejects_neither_field() {
     let req = GenerateRequest {
         slug: None,
         prompt: None,
+        spec_path: None,
     };
     let err = req.validate_payload().unwrap_err();
     // Must be a 422.
@@ -663,6 +665,7 @@ async fn generate_plan_rejects_both_fields() {
     let req = GenerateRequest {
         slug: Some("demo".into()),
         prompt: Some("build something".into()),
+        spec_path: None,
     };
     let err = req.validate_payload().unwrap_err();
     assert_eq!(err.status.as_u16(), 422);
@@ -673,6 +676,7 @@ async fn generate_plan_rejects_blank_prompt() {
     let req = GenerateRequest {
         slug: None,
         prompt: Some("   ".into()),
+        spec_path: None,
     };
     let err = req.validate_payload().unwrap_err();
     assert_eq!(err.status.as_u16(), 422);
@@ -683,6 +687,7 @@ async fn generate_plan_accepts_prompt_only() {
     let req = GenerateRequest {
         slug: None,
         prompt: Some("build a widget".into()),
+        spec_path: None,
     };
     assert!(req.validate_payload().is_ok());
 }
@@ -857,22 +862,26 @@ fn generate_request_refuses_a_prd_slug() {
     let slug_only = GenerateRequest {
         slug: Some("demo".into()),
         prompt: None,
+        spec_path: None,
     };
     let error = slug_only.validate_payload().expect_err("a slug is refused");
     assert!(format!("{error:?}").contains("'prompt'"), "{error:?}");
     let both = GenerateRequest {
         slug: Some("demo".into()),
         prompt: Some("Build the widget".into()),
+        spec_path: None,
     };
     assert!(both.validate_payload().is_err());
     let blank = GenerateRequest {
         slug: None,
         prompt: Some("  ".into()),
+        spec_path: None,
     };
     assert!(blank.validate_payload().is_err());
     let neither = GenerateRequest {
         slug: None,
         prompt: None,
+        spec_path: None,
     };
     assert!(neither.validate_payload().is_err());
 }
@@ -899,6 +908,7 @@ async fn generate_plan_from_prompt_calls_the_runtime_with_the_prompt() {
         ValidJson(GenerateRequest {
             slug: None,
             prompt: Some("Build a widget library".into()),
+            spec_path: None,
         }),
     )
     .await
@@ -931,6 +941,73 @@ async fn generate_plan_from_prompt_calls_the_runtime_with_the_prompt() {
     assert_eq!(calls[0].arg, "Build a widget library");
     // Nothing is written as a PRD draft any more.
     assert!(!state.workdir.join(".roko").join("prd").exists());
+}
+
+/// gap-fe4225: with a `spec_path`, `POST /plans/generate` plans from the
+/// workspace file's exact bytes, with the prompt's instructions after them.
+/// A chat that copied phase 2's spec by hand turned every row of its checks
+/// table into `|| …`. A path outside the workspace, or no file, is refused.
+#[tokio::test]
+async fn plan_generate_with_a_spec_path_plans_from_the_file() {
+    let runtime = Arc::new(RecordingRuntime {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        notify: Arc::new(Notify::new()),
+        success: true,
+        call_count: Arc::new(AtomicUsize::new(0)),
+        group: None,
+        last_options: Arc::new(Mutex::new(None)),
+        known_plan_id: None,
+        plan_tasks: vec![],
+        summary_estimated_minutes: None,
+    });
+    let notify = Arc::clone(&runtime.as_ref().notify);
+    let calls = Arc::clone(&runtime.as_ref().calls);
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let spec = "# Phase 2: rumble\n\n## Acceptance checks\n\n| Id | Command | Check |\n|---|---|---|\n\
+                | P2.01 | `tools/spec.sh 2 lfo 'P2.01*'` | the rates are right |\n";
+    std::fs::create_dir_all(state.workdir.join("docs/specs")).expect("docs");
+    std::fs::write(state.workdir.join("docs/specs/phase-2.md"), spec).expect("the spec");
+
+    let request = GenerateRequest {
+        slug: None,
+        prompt: Some("Don't run it yet.".into()),
+        spec_path: Some("docs/specs/phase-2.md".into()),
+    };
+    assert!(request.validate_payload().is_ok());
+    let response = generate_plan(State(Arc::clone(&state)), ValidJson(request))
+        .await
+        .expect("generate a plan from the spec");
+    assert_eq!(
+        response.into_response().status(),
+        axum::http::StatusCode::ACCEPTED
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+        .await
+        .expect("runtime should be called");
+    let asked = calls.lock().expect("lock calls")[0].arg.clone();
+    assert!(asked.starts_with(spec), "{asked}");
+    assert!(asked.ends_with("---\n\nDon't run it yet.\n"), "{asked}");
+
+    let outside = tempfile::tempdir().expect("tempdir");
+    std::fs::write(outside.path().join("other.md"), spec).expect("a file outside");
+    let outside_path = outside.path().join("other.md").display().to_string();
+    for path in [
+        "../other.md",
+        outside_path.as_str(),
+        "docs/specs/missing.md",
+        "docs/specs",
+    ] {
+        let refused = generate_plan(
+            State(Arc::clone(&state)),
+            ValidJson(GenerateRequest {
+                slug: None,
+                prompt: None,
+                spec_path: Some(path.to_string()),
+            }),
+        )
+        .await;
+        assert!(refused.is_err(), "{path}");
+    }
 }
 
 /// A runtime whose plan generation returns without writing a plan.
@@ -991,6 +1068,7 @@ async fn generate_plan_that_writes_no_plan_fails_its_operation() {
         ValidJson(GenerateRequest {
             slug: None,
             prompt: Some("a rust app that prints hello world".into()),
+            spec_path: None,
         }),
     )
     .await

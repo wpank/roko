@@ -294,16 +294,26 @@ fn tools() -> Vec<(Value, &'static str)> {
             tool(
                 "plan_generate",
                 "Have Roko's planner write a plan for a request, without running it. Paid: \
-                 the planner model spends budget. Answers at once with a run id, which \
-                 run_status follows, and the plan's id, which plan_run takes once the plan \
-                 is written.",
+                 the planner model spends budget. To plan from a spec file in the workspace, \
+                 pass its path as spec_path: Roko reads the file exactly, so never copy a spec \
+                 into prompt. Answers at once with a run id, which run_status follows, and the \
+                 plan's id, which plan_run takes once the plan is written.",
                 json!({
                     "type": "object",
                     "properties": {
-                        "prompt": { "type": "string", "description": "What the plan is for" },
+                        "prompt": {
+                            "type": "string",
+                            "description": "What the plan is for; with spec_path, only what \
+                                            to add to the spec"
+                        },
+                        "spec_path": {
+                            "type": "string",
+                            "description": "A spec file in the workspace to plan from, as a \
+                                            path relative to the workspace \
+                                            (docs/specs/phase-2.md)"
+                        },
                         "title": title_schema()
                     },
-                    "required": ["prompt"],
                     "additionalProperties": false
                 }),
                 json!({
@@ -563,9 +573,13 @@ async fn call_tool(
             start_plan(state, plan_id, start, origin, max_usd).await
         }
         "plan_generate" => {
-            let prompt = required_str(&arguments, name, "prompt")?.to_string();
+            // gap-fe4225: a spec path is read by serve, exactly as written.
+            let prompt = arguments.get("prompt").and_then(Value::as_str);
+            let spec_path = arguments.get("spec_path").and_then(Value::as_str);
+            let request = super::plans::plan_request_text(&state.workdir, prompt, spec_path)
+                .map_err(|error| JsonRpcError::invalid_params(error.message))?;
             let title = optional_title(&arguments)?;
-            Ok(generate_plan(state, prompt, &mcp_origin(auth), title).await)
+            Ok(generate_plan(state, request, &mcp_origin(auth), title).await)
         }
         "run_cancel" => {
             let run_id = required_str(&arguments, name, "run_id")?;
@@ -1614,6 +1628,40 @@ mod tests {
                 body["error"]["message"]
                     .as_str()
                     .is_some_and(|m| m.contains("title")),
+                "{body}"
+            );
+        }
+    }
+
+    /// gap-fe4225: `plan_generate` takes a `spec_path` that serve reads, so
+    /// a chat never copies a spec into `prompt`; `prompt` is optional then,
+    /// a path outside the workspace is refused, and so is a call with neither.
+    #[tokio::test]
+    async fn mcp_plan_generate_takes_a_spec_path() {
+        let runtime = Arc::new(HeldPlans::new());
+        let (_dir, _state, open) = state_and_router(runtime, open_config());
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let (_, body) = post_mcp(&open, &list, &[]).await;
+        let tools = body["result"]["tools"].as_array().expect("a tool list");
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "plan_generate")
+            .expect("the tool is listed");
+        assert_eq!(
+            tool["inputSchema"]["properties"]["spec_path"]["type"], "string",
+            "{tool}"
+        );
+        assert!(tool["inputSchema"].get("required").is_none(), "{tool}");
+
+        for (id, arguments, expected) in [
+            (2, json!({ "spec_path": "../outside.md" }), "spec_path"),
+            (3, json!({}), "'prompt' or 'spec_path'"),
+        ] {
+            let (_, body) = post_mcp(&open, &call(id, "plan_generate", arguments), &[]).await;
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(expected)),
                 "{body}"
             );
         }

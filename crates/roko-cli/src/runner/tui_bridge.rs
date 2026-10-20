@@ -638,16 +638,18 @@ impl TuiBridge {
         });
     }
 
-    /// The task's best try's files were put back before its next try,
-    /// because its last try passed fewer verify steps (gap-fefdf5).
-    pub fn best_try_restored(&self, plan_id: &str, task_id: &str, best: u32, paths: &[String]) {
+    /// The task's next try starts from `from` (`"try 2's files"`, or `"the
+    /// checkout's base"` for a resumed task no try of which passed a step),
+    /// because its last try passed fewer verify steps than its best one
+    /// (gap-fefdf5) or the run resumed it (gap-586507).
+    pub fn best_try_restored(&self, plan_id: &str, task_id: &str, from: &str, paths: &[String]) {
         self.sender.publish(DashboardEvent::EventLogEntry {
             timestamp_ms: timestamp_now_ms(),
             event_type: "best_try_restored".to_string(),
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
             message: format!(
-                "the next try starts from try {best}'s files ({} put back)",
+                "the next try starts from {from} ({} files put back)",
                 paths.len()
             ),
         });

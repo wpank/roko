@@ -389,7 +389,7 @@ fn attempt_chain(attempt_key: &str) -> &str {
 
 /// Whether `path` is roko's own state, which the harness writes throughout
 /// a run.
-fn is_roko_state(path: &str) -> bool {
+pub(super) fn is_roko_state(path: &str) -> bool {
     path == ".roko" || path.starts_with(".roko/")
 }
 
@@ -416,7 +416,11 @@ pub(super) async fn snapshot_tree(workdir: &Path) -> Option<String> {
 
 /// Trimmed stdout of git in `workdir`, or `None` when it fails or prints
 /// nothing.
-async fn git_line(workdir: &Path, args: &[&str], index: Option<&Path>) -> Option<String> {
+pub(super) async fn git_line(
+    workdir: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+) -> Option<String> {
     let (stdout, _) = git_bytes(workdir, args, index, 64 * 1024).await?;
     let line = String::from_utf8_lossy(&stdout).trim().to_string();
     (!line.is_empty()).then_some(line)

@@ -10,13 +10,20 @@
 //! more continues in place, as before (ties go to the latest), and so does a
 //! try that passed nothing with no better try before it.
 //!
+//! The best try is kept beside the plan's Graph checkpoint as well
+//! ([`retry_feedback::BestTry`]). A resumed run re-attaches the checkout an
+//! earlier process kept, which holds the last try's tree, so a task's first
+//! try in the new process starts from its best try's tree when that try passed
+//! a step, and clean from the checkout's base otherwise (gap-586507).
+//!
 //! Only a task's own checkout, a per-task worktree, is ever restored: in a
 //! shared working tree, sibling tasks' edits would be undone with it.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use super::diff_snapshot::{git_bytes, parse_raw_diff, snapshot_tree};
+use super::diff_snapshot::{git_bytes, git_line, is_roko_state, parse_raw_diff, snapshot_tree};
+use super::retry_feedback::BestTry;
 use super::*;
 
 /// Most characters of the failed try's patch its feedback shows.
@@ -25,7 +32,8 @@ const PATCH_CHARS: usize = 3_000;
 /// Most bytes of `git diff --raw` output read for a restore.
 const RAW_LIMIT: usize = 4 * 1024 * 1024;
 
-/// What dispatch keeps of each task's tries, by task (`"{plan_id}/{task_id}"`).
+/// What dispatch keeps of each task's tries in this process, by task
+/// (`"{plan_id}/{task_id}"`).
 #[derive(Debug, Default)]
 pub(super) struct BestTries {
     tasks: parking_lot::Mutex<HashMap<String, TaskTries>>,
@@ -34,23 +42,10 @@ pub(super) struct BestTries {
 #[derive(Debug, Default)]
 struct TaskTries {
     /// The try that passed the most verify steps, the latest of a tie.
-    best: Option<KeptTry>,
-    /// The best try's files, which the next try starts from, once a try
-    /// passed fewer steps than it.
-    restore: Option<KeptTry>,
-}
-
-/// One failed try of a task, as its checkout held it after its checks.
-#[derive(Debug, Clone)]
-struct KeptTry {
-    /// The try's ordinal, from 1.
-    attempt: u32,
-    /// The checkout's tree after the try ([`snapshot_tree`]).
-    tree: String,
-    /// The checkout the try ran in.
-    workdir: PathBuf,
-    /// The labels of the verify steps it passed.
-    passed: Vec<String>,
+    best: Option<BestTry>,
+    /// The best try, whose files the next try starts from, once a try passed
+    /// fewer steps than it.
+    restore: Option<BestTry>,
 }
 
 impl BestTries {
@@ -84,13 +79,13 @@ impl GraphTaskDispatcher {
             .filter(|(_, (_, passed))| *passed)
             .map(|((label, _), _)| label.clone())
             .collect();
-        let this = KeptTry {
+        let this = BestTry {
             attempt,
             tree,
             workdir: workdir.to_path_buf(),
             passed,
         };
-        let best = {
+        let better = {
             let mut tasks = self.best_tries.tasks.lock();
             let tries = tasks
                 .entry(format!("{}/{}", spec.plan_id, task.id))
@@ -103,13 +98,17 @@ impl GraphTaskDispatcher {
                     best.workdir == this.workdir && this.passed.len() < best.passed.len()
                 })
                 .cloned();
-            let Some(best) = better else {
-                tries.best = Some(this);
-                tries.restore = None;
-                return None;
-            };
-            tries.restore = Some(best.clone());
-            best
+            if better.is_none() {
+                tries.best = Some(this.clone());
+            }
+            tries.restore.clone_from(&better);
+            better
+        };
+        let Some(best) = better else {
+            // Kept beside the checkpoint too, for a resumed run (gap-586507).
+            self.gate_retry_context
+                .record_best_try(&spec.plan_id, &task.id, this);
+            return None;
         };
         let patch = tree_patch(workdir, &best.tree, &this.tree).await;
         tracing::info!(
@@ -125,26 +124,37 @@ impl GraphTaskDispatcher {
         Some(progress_note(&best, &this, steps.len(), patch.as_deref()))
     }
 
-    /// Put the task's best try's files back in `workdir` before its next
-    /// try, when [`Self::settle_best_try`] arranged it and the try runs in
-    /// that checkout.
+    /// Before a try of `task` in `workdir`, put back the task's best try's
+    /// files when its last try passed fewer steps ([`Self::settle_best_try`]).
+    /// On the task's first try in a resumed run's process, whose kept
+    /// checkout holds the last try's tree, start from the best try's files,
+    /// or clean ([`Self::resumed_start`], gap-586507).
     pub(super) async fn restore_best_try(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         workdir: &Path,
     ) {
-        let best = self
-            .best_tries
-            .tasks
-            .lock()
-            .get_mut(&format!("{}/{}", spec.plan_id, task.id))
-            .and_then(|tries| tries.restore.take());
-        let Some(best) = best.filter(|best| best.workdir == workdir) else {
+        let (pending, first_here) = {
+            let mut tasks = self.best_tries.tasks.lock();
+            let key = format!("{}/{}", spec.plan_id, task.id);
+            let first_here = !tasks.contains_key(&key);
+            let tries = tasks.entry(key).or_default();
+            (tries.restore.take(), first_here)
+        };
+        let start = match pending {
+            Some(best) if best.workdir == workdir => {
+                Some((best.tree, format!("try {}'s files", best.attempt)))
+            }
+            Some(_) => None,
+            None if first_here => self.resumed_start(spec, task, workdir).await,
+            None => None,
+        };
+        let Some((tree, from)) = start else {
             return;
         };
         let restored = match snapshot_tree(workdir).await {
-            Some(now) => restore_tree(workdir, &now, &best.tree).await,
+            Some(now) => restore_tree(workdir, &now, &tree).await,
             None => None,
         };
         match restored {
@@ -152,28 +162,66 @@ impl GraphTaskDispatcher {
                 tracing::info!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
-                    best = best.attempt,
+                    from = %from,
                     files = paths.len(),
-                    "put the task's best try's files back before its next try"
+                    "the task's next try starts from its best try's files, or clean"
                 );
                 if let Some(tui) = &self.tui_bridge {
-                    tui.best_try_restored(&spec.plan_id, &task.id, best.attempt, &paths);
+                    tui.best_try_restored(&spec.plan_id, &task.id, &from, &paths);
                 }
             }
             None => tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
-                best = best.attempt,
-                "could not put the task's best try's files back; the next try continues in place"
+                from = %from,
+                "could not put the task's files back; the next try continues in place"
             ),
         }
+    }
+
+    /// Where the first try in this process of `task` starts, when earlier
+    /// processes of the run left it failed tries (gap-586507). Its kept
+    /// checkout `workdir` holds the last try's tree, so it starts from its
+    /// best try's tree when that try passed a step in this checkout, and
+    /// clean, from the checkout's base, otherwise: never from the last try's
+    /// tree. The tree and what it is; `None` for a task no earlier process
+    /// tried.
+    async fn resumed_start(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        workdir: &Path,
+    ) -> Option<(String, String)> {
+        let book = &self.gate_retry_context;
+        if book.earlier_attempts(&spec.plan_id, &task.id) == 0 {
+            return None;
+        }
+        let kept = book
+            .best_try(&spec.plan_id, &task.id)
+            .filter(|best| !best.passed.is_empty() && best.workdir == workdir);
+        if let Some(best) = kept {
+            let object = format!("{}^{{tree}}", best.tree);
+            let args = ["rev-parse", "--verify", "--quiet", object.as_str()];
+            if git_line(workdir, &args, None).await.is_some() {
+                let start = (best.tree.clone(), format!("try {}'s files", best.attempt));
+                // This process knows it as the task's best try from here on.
+                let key = format!("{}/{}", spec.plan_id, task.id);
+                if let Some(tries) = self.best_tries.tasks.lock().get_mut(&key) {
+                    tries.best = Some(best);
+                }
+                return Some(start);
+            }
+        }
+        let args = ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"];
+        let base = git_line(workdir, &args, None).await?;
+        Some((base, "the checkout's base".to_string()))
     }
 }
 
 /// The feedback note of a try that passed fewer of the `total` verify steps
 /// than `best`: what passed, that its files come back, and `patch`, what
 /// the failed try changed from them.
-fn progress_note(best: &KeptTry, this: &KeptTry, total: usize, patch: Option<&str>) -> String {
+fn progress_note(best: &BestTry, this: &BestTry, total: usize, patch: Option<&str>) -> String {
     let passed = best
         .passed
         .iter()
@@ -239,7 +287,11 @@ async fn restore_tree(workdir: &Path, now: &str, to: &str) -> Option<Vec<String>
     if truncated {
         return None;
     }
-    let changes = parse_raw_diff(&raw);
+    // roko's own state in the checkout is never the try's work.
+    let changes: Vec<_> = parse_raw_diff(&raw)
+        .into_iter()
+        .filter(|change| !is_roko_state(&change.path))
+        .collect();
     let scratch = tempfile::tempdir().ok()?;
     let index = scratch.path().join("index");
     git_bytes(workdir, &["read-tree", to], Some(&index), 1024).await?;
@@ -326,7 +378,7 @@ echo "$n" > "$dir/tries"
 case "$n" in
   1) printf 'X\n' > a.txt ;;
   *)
-    cat a.txt > "$dir/seen-a"
+    cat a.txt > "$dir/seen-a" 2>/dev/null || echo missing > "$dir/seen-a"
     case "$prompt $*" in *"Kept by roko"*) echo told > "$dir/told" ;; esac
     printf 'A\n' > a.txt; printf 'B\n' > b.txt; printf 'C\n' > c.txt ;;
 esac
@@ -355,40 +407,38 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             .collect()
     }
 
-    /// A dispatcher whose task runs in its own worktree of a fresh repository,
-    /// with `script` as its agent, and its three verify steps: a.txt, b.txt
-    /// and c.txt hold A, B and C. Returns the repository (where `script`
-    /// leaves its notes), the worktrees, the runs directory, the dispatcher
-    /// and the task's spec.
-    async fn fixture(
+    /// A dispatcher whose task runs in its own worktree under `worktrees` of
+    /// the repository `repo`, with `script` as its agent, and the task's
+    /// spec: three verify steps, a.txt, b.txt and c.txt hold A, B and C. With
+    /// `resumable`, the plan runs as Graph checkpoint run [`RUN`], with its
+    /// retry feedback beside it in `repo`: a second such dispatcher stands in
+    /// for a resumed process of the run, and re-attaches the checkouts the
+    /// first one kept.
+    async fn dispatcher_in(
+        repo: &tempfile::TempDir,
+        worktrees: &Path,
         script: &str,
-    ) -> (
-        tempfile::TempDir,
-        tempfile::TempDir,
-        std::path::PathBuf,
-        Arc<GraphTaskDispatcher>,
-        TaskExecutionSpec,
-    ) {
-        let (repo, worktrees) = repo_with_worktrees();
-        let runs_dir = repo.path().join(".roko/runs");
+        resumable: bool,
+    ) -> (Arc<GraphTaskDispatcher>, TaskExecutionSpec) {
         let provider = Arc::new(WorktreeExecutionWorkspaceProvider::new(
             WorktreeManager::new(WorktreeConfig {
                 repo_root: repo.path().to_path_buf(),
                 base_branch: "HEAD".to_string(),
-                worktrees_root: worktrees.path().to_path_buf(),
+                worktrees_root: worktrees.to_path_buf(),
                 max_live: None,
                 idle_ttl: std::time::Duration::from_secs(3600),
             }),
         ));
+        let workspaces = Arc::clone(&provider);
         let (dispatcher, mut task) = make_test_dispatcher_with(
-            &repo,
+            repo,
             script,
             no_auto_fix,
             GraphFeedbackContext {
-                runs_dir: Some(runs_dir.clone()),
+                runs_dir: Some(repo.path().join(".roko/runs")),
                 ..GraphFeedbackContext::default()
             },
-            |dispatcher| dispatcher.with_workspace_provider(provider),
+            |dispatcher| dispatcher.with_workspace_provider(workspaces),
         )
         .await;
         task.description = Some(format!(
@@ -401,6 +451,36 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         ];
         let mut spec = make_spec(&task);
         spec.max_retries = 2;
+        if resumable {
+            provider
+                .manager()
+                .begin_plan_run(&spec.plan_id, RUN)
+                .await
+                .expect("the plan run begins");
+            dispatcher.attach_retry_feedback(
+                &spec.plan_id,
+                repo.path().join(".roko/retry-feedback.json"),
+                RUN,
+            );
+        }
+        (dispatcher, spec)
+    }
+
+    /// [`dispatcher_in`] a fresh repository, not resumable. Returns the
+    /// repository (where `script` leaves its notes), its worktrees, its runs
+    /// directory, the dispatcher and the task's spec.
+    async fn fixture(
+        script: &str,
+    ) -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        std::path::PathBuf,
+        Arc<GraphTaskDispatcher>,
+        TaskExecutionSpec,
+    ) {
+        let (repo, worktrees) = repo_with_worktrees();
+        let (dispatcher, spec) = dispatcher_in(&repo, worktrees.path(), script, false).await;
+        let runs_dir = repo.path().join(".roko/runs");
         (repo, worktrees, runs_dir, dispatcher, spec)
     }
 
@@ -481,5 +561,64 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             .expect("try 2 passes");
         assert_eq!(note(&repo, "seen-a"), "X", "try 2 starts from try 1's work");
         assert_eq!(note(&repo, "told"), "", "nothing was restored");
+    }
+
+    /// gap-586507: a resumed run re-attaches the checkout its earlier process
+    /// kept, which holds the last try's broken tree. The task's first try in
+    /// the new process starts from its best try's files instead.
+    #[tokio::test]
+    async fn a_resumed_task_starts_from_its_best_try() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        {
+            let (dispatcher, spec) = dispatcher_in(&repo, worktrees.path(), SCRIPT, true).await;
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("try 1 fails verify[2]");
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("try 2 breaks verify[0]");
+        }
+        // A new process of the same run.
+        let (dispatcher, spec) = dispatcher_in(&repo, worktrees.path(), SCRIPT, true).await;
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the resumed try passes from try 1's files");
+        assert_eq!(
+            note(&repo, "seen-a"),
+            "A",
+            "the resumed try starts from try 1's a.txt"
+        );
+        assert_eq!(note(&repo, "seen-c"), "absent", "try 2's c.txt is gone");
+    }
+
+    /// gap-586507: when no try of a resumed task passed a step, its first try
+    /// in the new process starts clean, from its checkout's base, never from
+    /// the last try's tree.
+    #[tokio::test]
+    async fn a_resumed_task_that_passed_nothing_starts_clean() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        {
+            let (dispatcher, spec) =
+                dispatcher_in(&repo, worktrees.path(), NOTHING_SCRIPT, true).await;
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("try 1 passes no step");
+        }
+        let (dispatcher, spec) = dispatcher_in(&repo, worktrees.path(), NOTHING_SCRIPT, true).await;
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the resumed try passes");
+        assert_eq!(
+            note(&repo, "seen-a"),
+            "missing",
+            "the resumed try starts clean"
+        );
     }
 }

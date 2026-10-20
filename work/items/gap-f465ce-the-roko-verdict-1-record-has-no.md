@@ -13,7 +13,10 @@ last_verified = 2026-10-17
 source = "team-lead, round v6 (roko-caps' gap-2c9412 follow-up)"
 discovered_from = "gap-2c9412"
 anchors = ["crates/roko-learn/src/telemetry/records.rs::AttemptVerdictRecord", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::SettledAttempt"]
-links = { depends_on = [], blocks = [], related = ["gap-2c9412"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-2c9412", "gap-3217a0"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q 'gap-f465ce' crates/roko-cli/src/graph_task_dispatch/ladder.rs && cargo test -p roko-cli --lib -- a_bounded_try_is_judged_by_its_checks a_try_that_runs_its_time_is_judged_by_its_checks"
 +++
 
 ## Problem

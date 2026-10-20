@@ -1707,12 +1707,14 @@ exit 1
 "#;
 
     /// What tries of a task left: what each call was given, each prompt,
-    /// the outcome, blame, rung and ladder reason of each verdict, each
+    /// the outcome, blame, rung and ladder reason of each verdict, the bound
+    /// each verdict says its try ended at (`-` for none), each
     /// `attempt_settled` event, and the output of the try that passed.
     struct Tries {
         calls: Vec<String>,
         prompts: Vec<String>,
         verdicts: Vec<[String; 4]>,
+        bounds: Vec<String>,
         settled: Vec<serde_json::Value>,
         passed: Option<String>,
     }
@@ -1766,13 +1768,17 @@ exit 1
             })
             .collect();
         dispatcher.close_run_attempts(RUN);
-        let verdicts = std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
-            .expect("the run's attempt log")
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|line| line["schema_version"] == "roko.verdict/1")
+        let rows: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let field = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_string();
+        let verdicts = rows
+            .iter()
             .map(|verdict| {
-                let field = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_string();
                 [
                     field(&verdict["outcome"]),
                     field(&verdict["blame"]),
@@ -1781,10 +1787,15 @@ exit 1
                 ]
             })
             .collect();
+        let bounds = rows
+            .iter()
+            .map(|verdict| field(&verdict["bound"]))
+            .collect();
         Tries {
             calls,
             prompts,
             verdicts,
+            bounds,
             settled: published(&mut events, &["attempt_settled"]),
             passed,
         }
@@ -1960,6 +1971,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
             settled["detail"], "passed its checks after reaching its 30-turn bound",
             "{settled}"
         );
+        // The run's own records say so too (gap-f465ce).
+        assert_eq!(right.bounds, ["turns"]);
 
         let wrong = bounded_tries(JUDGED_PROVIDER, ANSWER_CHECK, 3, work("41\n"), |_| {}).await;
         assert_eq!(
@@ -1982,6 +1995,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
             ]
         );
         assert!(wrong.passed.is_some(), "the top rung passes");
+        assert_eq!(wrong.bounds, ["turns", "turns", "-"]);
         let check_line = "AssertionError: answer.txt holds 41, not 42";
         assert!(!wrong.prompts[0].contains(check_line));
         for prompt in &wrong.prompts[1..] {
@@ -2096,6 +2110,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-s","model":"claude-sonnet-4-6
         assert_eq!(
             settled["detail"], "passed its checks after reaching its 2 s time bound",
             "{settled}"
+        );
+        assert_eq!(
+            right.bounds,
+            ["time"],
+            "the verdict says so too (gap-f465ce)"
         );
 
         let wrong = bounded_tries(SLOW_PROVIDER, ANSWER_CHECK, 3, work("41\n"), two_seconds).await;

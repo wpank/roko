@@ -7,7 +7,9 @@ Before the first task, `preflight` emits the plan of a stand-in task into a scra
 
 1. emits a one-task plan, named by the task's alias and never by its key (`planemit.plan_slug`, bug-3c921e), and the
    workspace roko.toml into the task's workdir, which is Roko's workspace (`planemit`);
-2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`.
+2. runs `roko --repo <ws> --model <m> plan validate --strict --dag --json <ws>/plans`; a plan that fails is
+   `infra_error`, unless only `ADVISORY_RULES` warnings failed it (`advisory_only`): PLAN_TIER_SIZE's word limit
+   meets the spec text every arm gets, and `plan run` never checks it. The transcript keeps those warnings.
    A routed arm's command lines name no `--model`, which would pin its start rung past the ladder (planemit's ladder
    mode; bug-0b7695);
 3. reserves every attempt Roko may make on the run's budget line (`Ledger.reserve`: `max_retries` + 1 attempts, each
@@ -154,6 +156,7 @@ API:
            swap=None, rungs=()) -> (list[RokoAttempt], list[str])
     arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
     run_switches(arm) -> list[str]                                # `plan run`'s switches: --no-audit for audit = false
+    advisory_only(checked: Ran) -> list[dict] | None              # a validation failed only on ADVISORY_RULES
     RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path
 """
 
@@ -190,6 +193,11 @@ PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the met
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
 OFFLINE_KEY = "placeholder"  # in Roko's environment, which its agent's shell inherits: neutral (bug-d68575)
 VALIDATE_TIMEOUT_S = 120.0
+# `plan validate` warnings that advise a planner on a plan's shape, which `plan run` never checks, so `--strict` failing
+# on them alone does not fail the task (step 2). PLAN_TIER_SIZE (gap-1d1fa6) flags a description over its tier's word
+# limit (focused: 350), and a benchmark task's description is the spec text every arm gets, which the arm may neither
+# shorten nor split: 10 of the 20 pilot instances run 371-458 words.
+ADVISORY_RULES = frozenset({"PLAN_TIER_SIZE"})
 EGRESS_LOG = "egress.jsonl"  # in the run directory, for a claude_cli arm (3318), as run_cli.py's own
 CLI_CACHE_WRITE_TTL = "1h"  # 3318: fr_claude's subscription turns write the 1-hour cache, as fd_claude.toml's do
 # The stand-in task `preflight` emits a plan for: a family task's shape (one source file, visible tests run by
@@ -305,12 +313,15 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             env = {**env, **agent_env.proxy_env(egress_proxy.url)}
         build = _build(binary, env, settings.get("build") or None, transcript, jail)
         head = _head(binary, ctx.workdir, None if spec.rungs else ctx.model)
-        checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
-                        env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)), jail)
+        checked = _roko([*head, "plan", "validate", "--strict", "--dag", "--json", str(ctx.workdir / "plans")],
+                        ctx.workdir, env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)), jail)
         transcript.append(checked.event("validate"))
-        if checked.returncode != 0:
+        advisory = advisory_only(checked)
+        if checked.returncode != 0 and advisory is None:
             raise RunnerError(f"the emitted plan failed `plan validate --strict --dag` (exit {checked.returncode}): "
-                              f"{(checked.stdout + checked.stderr).strip()[-300:]}")
+                              f"{_validate_summary(checked)}")
+        if checked.returncode != 0:
+            transcript.append({"event": "validate_advisory", "diagnostics": advisory})
         keys = [f"{ctx.chain_key}:{number}" for number in range(1, max_retries + 2)]
         _reserve(ctx.ledger, keys, task_bound / (max_retries + 1) if ctx.billed else 0.0)
         reserved = keys
@@ -421,6 +432,36 @@ def arm_prompt(arm: dict) -> dict[str, str]:
     return planemit.template_identity(ladder=_routed(arm),
                                       provider_kind=arm.get("roko", {}).get("provider_kind", "openai_compat"),
                                       overlay=bool(arm.get("overlay")))
+
+
+def advisory_only(checked: Ran) -> list[dict] | None:
+    """The diagnostics of a `plan validate --strict --dag --json` that failed only on ADVISORY_RULES warnings, or None
+    when it failed otherwise: a timeout, another exit, an output that is not its JSON report (the first document; the
+    DAG analysis follows), an error, or any other diagnostic."""
+    if checked.timed_out or checked.returncode != 1:
+        return None
+    try:
+        report, _ = json.JSONDecoder().raw_decode(checked.stdout.lstrip())
+        diagnostics = [one for plan in report["plans"] for one in plan["diagnostics"]]
+        errors = report["totals"]["errors"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if errors != 0 or not diagnostics or not all(
+            isinstance(one, dict) and one.get("severity") == "warning" and one.get("rule_id") in ADVISORY_RULES
+            for one in diagnostics):
+        return None
+    return [{"rule_id": one["rule_id"], "message": str(one.get("message", ""))[:300]} for one in diagnostics]
+
+
+def _validate_summary(checked: Ran) -> str:
+    """A failed validation's diagnostics as `RULE: message` lines, else the tail of what it printed."""
+    try:
+        report, _ = json.JSONDecoder().raw_decode(checked.stdout.lstrip())
+        lines = [f"{one.get('rule_id')}: {one.get('message')}" for plan in report["plans"]
+                 for one in plan["diagnostics"]]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        lines = []
+    return "; ".join(lines)[:300] if lines else (checked.stdout + checked.stderr).strip()[-300:]
 
 
 def run_switches(arm: dict) -> list[str]:

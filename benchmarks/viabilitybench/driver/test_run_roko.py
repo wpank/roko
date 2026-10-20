@@ -349,6 +349,33 @@ def one_more_newline(template: str | object) -> str | object:
     return lambda resolved: (template(resolved) + "\n") if resolved else ""
 
 
+def validate_report(*diagnostics: tuple[str, str], errors: int = 0) -> str:
+    """`plan validate --strict --dag --json`'s output: its report, then the DAG analysis."""
+    report = {"plans": [{"plan_id": "plan-x", "diagnostics": [
+        {"severity": severity, "rule_id": rule, "plan_id": "plan-x", "task_id": "T01", "message": f"{rule} says so"}
+        for severity, rule in diagnostics]}],
+        "totals": {"errors": errors, "warnings": len(diagnostics) - errors, "plans_checked": 1}}
+    return json.dumps(report, indent=2) + "\n" + json.dumps({"total_plans": 1, "dangling_refs": []}, indent=2) + "\n"
+
+
+def test_a_validation_that_failed_only_on_the_tier_size_advice_does_not_fail_the_task():
+    # 10 of the 20 pilot instances' specs run past the focused tier's 350 words (PLAN_TIER_SIZE), which `--strict`
+    # rejects; `plan run` never checks it, and every arm gets the same spec, so only that warning is tolerated.
+    def ran(stdout: str, returncode: int | None = 1, timed_out: bool = False) -> run_roko.Ran:
+        return run_roko.Ran(argv=[], returncode=returncode, stdout=stdout, stderr="", timed_out=timed_out, seconds=1.0)
+
+    size = ("warning", "PLAN_TIER_SIZE")
+    assert run_roko.advisory_only(ran(validate_report(size))) == [
+        {"rule_id": "PLAN_TIER_SIZE", "message": "PLAN_TIER_SIZE says so"}]
+    for refused in (ran(validate_report(size, ("warning", "PLAN_037"))), ran(validate_report(("warning", "PLAN_037"))),
+                    ran(validate_report(("error", "PLAN_TIER_SIZE"), errors=1)), ran(validate_report()),
+                    ran(validate_report(size), returncode=2), ran(validate_report(size), None, timed_out=True),
+                    ran("1 diagnostics in 1 plan\n")):
+        assert run_roko.advisory_only(refused) is None
+    summary = run_roko._validate_summary(ran(validate_report(("warning", "PLAN_037"))))
+    assert summary == "PLAN_037: PLAN_037 says so"
+
+
 def test_only_an_arm_that_turns_audits_off_runs_plan_run_with_no_audit():
     # gap-d76b1b turned Roko's audits on by default; roko_fixed turns them off, so its runs call only the pin.
     def arm(name: str) -> dict:
@@ -1008,6 +1035,22 @@ def test_real_roko_validates_the_emitted_plan(tmp_path):
                              env=env, capture_output=True, text=True, timeout=120, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert "0 diagnostics in 1 plan" in checked.stdout and "Tasks: 1" in checked.stdout
+
+
+@real_roko
+def test_real_roko_fails_a_long_spec_only_on_the_tier_size_advice(tmp_path):
+    # The runner's own command on a 400-word spec: Roko's report is JSON, and its one diagnostic is PLAN_TIER_SIZE.
+    task = toy_task(tmp_path)
+    long_spec = task.spec_text + "\n\n" + "Keep the function pure and document every branch. " * 50
+    emitted = planemit.emit(plan_spec(task, spec_text=long_spec), task.workdir)
+    env = {**agent_env.build(home=tmp_path / "home"), "ROKO_CONFIG": str(emitted.config_path),
+           "CEREBRAS_API_KEY": run_roko.OFFLINE_KEY}
+    checked = run_roko._roko([str(REAL_ROKO), "--repo", str(task.workdir), "--model", PIN, "--no-serve", "plan",
+                              "validate", "--strict", "--dag", "--json", str(task.workdir / "plans")], task.workdir,
+                             env, 120, [])
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    [advice] = run_roko.advisory_only(checked)
+    assert advice["rule_id"] == "PLAN_TIER_SIZE" and "limit 350" in advice["message"]
 
 
 class ToolStub:

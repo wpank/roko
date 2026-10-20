@@ -350,6 +350,9 @@ pub struct ResolvedLadder<'a> {
     pub usable: Vec<usize>,
     /// Index into `rungs` of the start rung, always one of `usable`.
     pub start: usize,
+    /// Index into `rungs` of the start rung the task's hint or tier names,
+    /// which may not run.
+    pub requested: usize,
 }
 
 impl<'a> ResolvedLadder<'a> {
@@ -357,6 +360,15 @@ impl<'a> ResolvedLadder<'a> {
     #[must_use]
     pub fn start_rung(&self) -> &'a LadderRung {
         &self.rungs[self.start]
+    }
+
+    /// Whether no rung at or above the requested start can run, so the task
+    /// starts below it (gap-ff2c38).
+    #[must_use]
+    pub fn start_unreachable(&self) -> bool {
+        self.usable
+            .last()
+            .is_some_and(|&highest| highest < self.requested)
     }
 }
 
@@ -369,7 +381,10 @@ impl LadderConfig {
     /// rungs, else the one named by the role's `start`, else the ladder's
     /// `start`, else D11; a start name that matches no rung means the first
     /// rung. When that rung cannot run, the task starts on the next runnable
-    /// rung above it, else the nearest one below.
+    /// rung above it. When no rung above it can run either, as in a chat run
+    /// that drops a CLI rung at the top, it starts on the runnable rung below
+    /// the highest one, so it can still climb once (gap-ff2c38), or on the
+    /// only one that runs.
     #[must_use]
     pub fn resolve(
         &self,
@@ -389,21 +404,24 @@ impl LadderConfig {
             .filter(|(_, rung)| runnable(&rung.model))
             .map(|(index, _)| index)
             .collect();
-        let named = rung_hint
+        let requested = rung_hint
             .and_then(|hint| rungs.iter().position(|rung| rung.name == hint))
             .unwrap_or_else(|| {
                 let name = self.start_name(entry, tier);
                 rungs.iter().position(|rung| rung.name == name).unwrap_or(0)
             });
-        let start = usable
-            .iter()
-            .copied()
-            .find(|&index| index >= named)
-            .or_else(|| usable.last().copied())?;
+        let start = match usable.iter().copied().find(|&index| index >= requested) {
+            Some(index) => index,
+            None => {
+                let highest = usable.len().checked_sub(1)?;
+                usable[highest.saturating_sub(1)]
+            }
+        };
         Some(ResolvedLadder {
             rungs,
             usable,
             start,
+            requested,
         })
     }
 
@@ -882,6 +900,61 @@ mod tests {
             off.resolve("implementer", TaskTier::Focused, None, |_| true)
                 .is_none()
         );
+    }
+
+    /// gap-ff2c38: when no rung at or above a task's start rung can run, as
+    /// in a chat run that drops the CLI rung at the top, the task starts one
+    /// runnable rung below the highest, so it can still climb once. A start
+    /// that can run is unchanged.
+    #[test]
+    fn an_unreachable_start_keeps_one_climb() {
+        let ladder = LadderConfig::default();
+        let name = |resolved: &ResolvedLadder<'_>| resolved.start_rung().name.clone();
+        let highest = |resolved: &ResolvedLadder<'_>| {
+            let index = *resolved.usable.last().expect("a runnable rung");
+            resolved.rungs[index].name.clone()
+        };
+        let no_top = |model: &str| model != "claude-sonnet-4-6";
+        let architectural = ladder
+            .resolve("implementer", TaskTier::Architectural, None, no_top)
+            .expect("ladder");
+        assert_eq!(name(&architectural), "mid");
+        assert_eq!(highest(&architectural), "strong");
+        assert!(architectural.start_unreachable());
+        // A hint that names a rung that cannot run falls back the same way.
+        let hinted = ladder
+            .resolve("implementer", TaskTier::Focused, Some("top"), no_top)
+            .expect("ladder");
+        assert_eq!(name(&hinted), "mid");
+        assert!(hinted.start_unreachable());
+        // With one runnable rung, the task starts there.
+        let only_cheap = |model: &str| model == "gpt-oss-120b";
+        let alone = ladder
+            .resolve("implementer", TaskTier::Architectural, None, only_cheap)
+            .expect("ladder");
+        assert_eq!(name(&alone), "cheap");
+        assert!(alone.start_unreachable());
+
+        // A start that runs, or a rung above it, changes nothing.
+        for tier in TaskTier::ALL {
+            let every = ladder
+                .resolve("implementer", tier, None, |_| true)
+                .expect("ladder");
+            assert!(!every.start_unreachable(), "{tier}");
+            if tier != TaskTier::Architectural {
+                let without_top = ladder
+                    .resolve("implementer", tier, None, no_top)
+                    .expect("ladder");
+                assert_eq!(without_top.start, every.start, "{tier}");
+                assert!(!without_top.start_unreachable(), "{tier}");
+            }
+        }
+        let no_cheap = |model: &str| model != "gpt-oss-120b";
+        let moved_up = ladder
+            .resolve("implementer", TaskTier::Mechanical, None, no_cheap)
+            .expect("ladder");
+        assert_eq!(name(&moved_up), "mid");
+        assert!(!moved_up.start_unreachable());
     }
 
     /// gap-dbf2a6: a task's `rung` hint replaces its tier's start rung, and a

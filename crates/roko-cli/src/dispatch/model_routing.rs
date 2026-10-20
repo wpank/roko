@@ -1488,10 +1488,57 @@ impl RoutingLadder {
             tracing::info!("routing ladder: no rung can run in this workspace; the router picks");
             return None;
         }
-        Some(Self {
+        let ladder = Self {
             config: ladder.clone(),
             runnable,
-        })
+        };
+        ladder.note_unreachable_starts();
+        Some(ladder)
+    }
+
+    /// Say which tiers' start rung cannot run here, nor any rung above it,
+    /// so their tasks start one runnable rung below the highest (gap-ff2c38):
+    /// one line wherever a run sets or narrows its ladder, when any does.
+    fn note_unreachable_starts(&self) {
+        let runnable = |model: &str| self.runnable.contains_key(model);
+        let roles: BTreeSet<&str> = std::iter::once("implementer")
+            .chain(self.config.roles.iter().map(|entry| entry.role.trim()))
+            .collect();
+        let mut moved = Vec::new();
+        for role in roles {
+            for tier in TaskTier::ALL {
+                let Some(resolved) = self.config.resolve(role, tier, None, runnable) else {
+                    continue;
+                };
+                if !resolved.start_unreachable() {
+                    continue;
+                }
+                let name = |index: usize| resolved.rungs[index].name.as_str();
+                let tasks = if role == "implementer" {
+                    format!("{tier} tasks")
+                } else {
+                    format!("{tier} {role} tasks")
+                };
+                let highest = resolved.usable.last().copied().unwrap_or(resolved.start);
+                let climb = if highest == resolved.start {
+                    "with no rung above it to climb to".to_string()
+                } else {
+                    format!("and can climb to {}", name(highest))
+                };
+                moved.push(format!(
+                    "{tasks} start on {} instead of {}, {climb}",
+                    name(resolved.start),
+                    name(resolved.requested),
+                ));
+            }
+        }
+        if !moved.is_empty() {
+            tracing::info!(
+                tiers = %moved.join("; "),
+                "routing ladder: a start rung cannot run here, nor any rung above it, so its tasks \
+                 start one runnable rung below the highest"
+            );
+        }
     }
 
     /// The rung a task of `tier` in `role` starts on, or `None` when no rung
@@ -1513,6 +1560,18 @@ impl RoutingLadder {
             name: rung.name.clone(),
             model: self.runnable.get(&rung.model)?.clone(),
         })
+    }
+
+    /// Whether no rung at or above the start rung of a task of `tier` in
+    /// `role` can run here, so it starts one runnable rung below the highest
+    /// ([`LadderConfig::resolve`], gap-ff2c38).
+    #[must_use]
+    pub fn start_unreachable(&self, role: &str, tier: TaskTier, rung_hint: Option<&str>) -> bool {
+        self.config
+            .resolve(role, tier, rung_hint, |model| {
+                self.runnable.contains_key(model)
+            })
+            .is_some_and(|resolved| resolved.start_unreachable())
     }
 }
 
@@ -1578,6 +1637,7 @@ impl RoutingLadder {
             tracing::warn!("routing ladder: no rung passed its probe; the router picks");
             return None;
         }
+        self.note_unreachable_starts();
         Some(self)
     }
 
@@ -1610,6 +1670,7 @@ impl RoutingLadder {
             );
             return None;
         }
+        self.note_unreachable_starts();
         Some(self)
     }
 

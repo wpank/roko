@@ -876,6 +876,9 @@ impl AttemptOpenRecord {
 pub enum LadderReason {
     /// The start rung of the task's role and tier.
     Start,
+    /// The runnable rung below the highest one, because no rung at or above
+    /// the task's start rung can run here (gap-ff2c38).
+    StartUnreachable,
     /// The rung the task's `rung` hint names.
     Hint,
     /// A rung above the start, after agent-blamed failures.

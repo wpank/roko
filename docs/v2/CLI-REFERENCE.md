@@ -367,7 +367,8 @@ roko status --cfactor              # Compute and show C-Factor metrics
 for `.roko/`, `roko.toml`, agent command availability, secrets, and optionally the HTTP
 control plane. Its `routing_ladder` line names the `[routing.ladder]` rungs that cannot run on
 this machine and why (a run only logs them), since a task whose start rung cannot run starts on
-the next rung up that can.
+the next rung up that can, or, when no rung above it can, one runnable rung below the highest, so it
+can still climb once.
 
 ```
 roko doctor [--workdir <path>] [--serve-url <url>]

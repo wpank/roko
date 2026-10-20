@@ -2,7 +2,7 @@
 id = "gap-ff2c38"
 kind = "gap"
 title = "A task whose start rung can't run starts on the highest runnable rung, with no rung left to climb: a chat run's architectural tasks (start top, claude_cli) ran all tries on strong and exhausted (Undertow phase 2 run 82b7e069: T2, T3 0/8 on gpt-5.4-mini)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-core/config", "roko-cli/dispatch"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "594ad4de6"
 source = "round-v7-roko-ladder#start-unreachable"
 discovered_from = "agent:roko-ladder (round v7, run 82b7e069 analysis)"
 anchors = ["crates/roko-core/src/config/routing.rs::LadderConfig::resolve", "crates/roko-cli/src/dispatch/model_routing.rs::RoutingLadder", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::GraphTaskDispatcher::record_attempt_ladder"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-cf427e", "gap-460230", "
 
 [[verify]]
 command = "grep -rqw 'fn an_unreachable_start_keeps_one_climb' crates/roko-core/ && grep -rqw 'fn a_try_on_an_unreachable_start_says_so' crates/roko-cli/ && cargo test -p roko-core --lib -- an_unreachable_start_keeps_one_climb && cargo test -p roko-cli --lib -- a_try_on_an_unreachable_start_says_so"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T20:23:09Z"
+commit = "594ad4de6"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-20T19:00:44Z"
+forced = false
+evidence = "Tests: an_unreachable_start_keeps_one_climb (roko-core: without the top rung an architectural task starts on mid with strong above it; a hint naming an unrunnable rung falls back the same way; one runnable rung starts there; every start that runs, or has a runnable rung above it, is unchanged) and a_try_on_an_unreachable_start_says_so (roko-cli dispatch: with top unrunnable an architectural task runs mid, mid, strong, strong, its step-0 tries record ladder.reason start_unreachable, it climbs once after two failures; a mechanical task whose start runs records start). Both red before the rule (core: start strong; cli: four tries on strong), green after. roko-core lib 2045 passed; roko-learn telemetry/self_model 116 passed; roko-cli lib 3937 passed, 1 failed = plan_check_publishes_start_heartbeat_and_finish (bug-e362a1, flaky under load; passes alone, rerun ok); tier_ladder_canary passed; clippy -D warnings (roko-core, roko-learn, roko-cli) and nightly fmt clean."
 +++
 
 ## Problem

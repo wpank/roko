@@ -2,7 +2,7 @@
 id = "bug-291992"
 kind = "bug"
 title = "The Roko arm's strict plan validation ends 10 of the 20 pilot instances infra_error on PLAN_TIER_SIZE: their specs run past the focused tier's 350 words"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "5c8c9e194"
 source = "gap-327242 worker (claude-agent), 2026-10-20: Pilot B's first roko-fixed-s1 unit"
 discovered_from = "gap-327242"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py::advisory_only", "benchmarks/viabilitybench/driver/test_run_roko.py"]
@@ -20,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-327242", "gap-dd670b"], 
 
 [[verify]]
 command = "grep -q 'def test_a_validation_that_failed_only_on_the_tier_size_advice_does_not_fail_the_task' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -q -p no:cacheprovider -k 'tier_size'"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T15:09:55Z"
+commit = "5c8c9e194"
+forced = false
+evidence = "5c8c9e194: run_roko.py runs plan validate --strict --dag --json per task and no longer fails a task whose report has no error and only PLAN_TIER_SIZE warnings (ADVISORY_RULES, advisory_only); the transcript keeps them as validate_advisory, and any other diagnostic still ends the task infra_error with its rule in the reason. Found live in Pilot B (gap-327242) at c962955af: 4 of the first 7 roko-fixed-s1 tasks ended infra_error on PLAN_TIER_SIZE; 10 of the 20 pilot specs run 371-458 words against the focused limit of 350. Verify: test_run_roko.py -k tier_size, 2 passed (advisory_only cases; the real binary fails a 400-word spec on PLAN_TIER_SIZE alone). Also test_run_roko.py 26 passed, test_pilot_b/run_roko_plan/fr_claude/run_roko_sandbox 9 passed, test_shakedown 8 passed; offline plan run --no-audit of F4-l1-0001 (458 words) against the ToolStub ran 3 attempts on gpt-oss-120b only."
 +++
 
 ## Problem

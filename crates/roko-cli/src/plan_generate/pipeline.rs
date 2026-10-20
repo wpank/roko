@@ -16,7 +16,7 @@ use super::{accept_blocks, dry_run_fs, overview, runnable, source_checks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
@@ -347,6 +347,128 @@ pub struct PlanProgress {
     /// What they may cost together (gap-18bfa2); none when uncapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_usd: Option<f64>,
+    /// How long the generation has run, in ms (gap-61c95c).
+    pub elapsed_ms: u64,
+    /// Where that time went, so far (gap-61c95c).
+    pub phases: PlanPhases,
+}
+
+/// Where a plan generation's time went (gap-61c95c), in ms, each phase
+/// cumulative and `None` until it has run. The phases add up to at most
+/// [`PlanProgress::elapsed_ms`]: a planner call still running is in neither.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlanPhases {
+    /// Reading the source and the workspace and lifting the source's checks
+    /// into the planner prompt, before the first planner call.
+    pub lift_ms: Option<u64>,
+    /// Inside planner calls: the first, its retries (their backoff
+    /// included), fixes and regenerations.
+    pub planner_ms: Option<u64>,
+    /// Between planner calls: repairing and checking their drafts, and
+    /// writing the plan.
+    pub repair_ms: Option<u64>,
+    /// Validating the written plan.
+    pub validate_ms: Option<u64>,
+}
+
+/// The clock of one plan generation (gap-61c95c): where its time goes,
+/// marked as it moves on.
+struct PlanClock {
+    started: Instant,
+    marks: std::sync::Mutex<PlanClockMarks>,
+}
+
+#[derive(Default)]
+struct PlanClockMarks {
+    /// When the first planner call started: the lift's end.
+    lifted: Option<Instant>,
+    /// The planner calls that ended, together.
+    planner: Option<Duration>,
+    /// When the planner call running now started.
+    calling: Option<Instant>,
+    /// When the written plan's validation started: the repairs' end.
+    validating: Option<Instant>,
+    validate: Option<Duration>,
+}
+
+impl PlanClock {
+    fn new(started: Instant) -> Self {
+        Self {
+            started,
+            marks: std::sync::Mutex::default(),
+        }
+    }
+
+    fn marks(&self) -> std::sync::MutexGuard<'_, PlanClockMarks> {
+        self.marks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The lift ends: the first planner call is about to start.
+    fn lifted(&self) {
+        self.marks().lifted.get_or_insert_with(Instant::now);
+    }
+
+    /// Run `call`, a planner call, counting its time as the planner's. The
+    /// first one ends the lift.
+    async fn planner<T>(&self, call: impl std::future::Future<Output = T>) -> T {
+        {
+            let now = Instant::now();
+            let mut marks = self.marks();
+            marks.lifted.get_or_insert(now);
+            marks.calling = Some(now);
+        }
+        let out = call.await;
+        let mut marks = self.marks();
+        if let Some(started) = marks.calling.take() {
+            *marks.planner.get_or_insert_default() += started.elapsed();
+        }
+        out
+    }
+
+    /// The written plan's validation starts.
+    fn validating(&self) {
+        self.marks().validating = Some(Instant::now());
+    }
+
+    /// The written plan's validation ended.
+    fn validated(&self) {
+        let mut marks = self.marks();
+        marks.validate = marks.validating.map(|started| started.elapsed());
+    }
+
+    /// How long the generation has run, and where the time went.
+    fn read(&self) -> (u64, PlanPhases) {
+        let now = Instant::now();
+        let marks = self.marks();
+        let ms = |span: Duration| u64::try_from(span.as_millis()).unwrap_or(u64::MAX);
+        // A running planner call and the validation are no repair.
+        let lift = marks
+            .lifted
+            .map(|lifted| lifted.saturating_duration_since(self.started));
+        let lifted = marks.lifted.unwrap_or(now);
+        let repairs_end = marks.validating.unwrap_or(now);
+        let calling = marks.calling.map_or(Duration::ZERO, |started| {
+            repairs_end.saturating_duration_since(started)
+        });
+        let repair = marks
+            .planner
+            .map(|planner| {
+                repairs_end
+                    .saturating_duration_since(lifted)
+                    .saturating_sub(planner)
+                    .saturating_sub(calling)
+            })
+            .filter(|repair| !repair.is_zero());
+        let phases = PlanPhases {
+            lift_ms: lift.map(ms),
+            planner_ms: marks.planner.map(ms),
+            repair_ms: repair.map(ms),
+            validate_ms: marks.validate.map(ms),
+        };
+        (ms(now.saturating_duration_since(self.started)), phases)
+    }
 }
 
 /// Where [`generate_plan`] reports its [`PlanProgress`].
@@ -1173,6 +1295,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
     let workdir = workdir.to_path_buf();
     async {
         let t_total = Instant::now();
+        // gap-61c95c: where the generation's time goes, in its progress.
+        let clock = PlanClock::new(t_total);
         let t_phase = Instant::now();
         let source = ReadSource::read(source)?;
         let template_kind = source.template;
@@ -1258,6 +1382,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                       reason: Option<String>,
                       model: &str| {
             let calling = !matches!(stage, "writing" | "recording");
+            let (elapsed_ms, phases) = clock.read();
             emit(PlanProgress {
                 stage,
                 attempt,
@@ -1267,6 +1392,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 calls: spend.calls() + u32::from(calling),
                 cost_usd: spend.spent_usd(),
                 max_usd: capped,
+                elapsed_ms,
+                phases,
             });
         };
         // bug-1602d4: the stage again once its planner call has ended, with
@@ -1278,9 +1405,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(stage) = last {
+                let (elapsed_ms, phases) = clock.read();
                 emit(PlanProgress {
                     calls: spend.calls(),
                     cost_usd: spend.spent_usd(),
+                    elapsed_ms,
+                    phases,
                     ..stage
                 });
             }
@@ -1442,8 +1572,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             allowed_tools: Some("Read,Grep,Glob"),
             max_turns: Some(PLANNER_MAX_TURNS),
         };
+        clock.lifted();
         report("planning", (1, 1), None, planner_model.as_str());
-        let call = run_agent_capture_silent_with_usage(planner_call).await?;
+        let call = clock
+            .planner(run_agent_capture_silent_with_usage(planner_call))
+            .await?;
         spend.record(&call).await;
         report_spend();
         let (exit_code, output) = (call.exit_code, call.output);
@@ -1551,8 +1684,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     attempt,
                     max_crash_retries + 1,
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                let retry = run_agent_capture_silent_with_usage(planner_call).await?;
+                // The backoff is the planner's time, as its retry is.
+                let retry = clock
+                    .planner(async {
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                        run_agent_capture_silent_with_usage(planner_call).await
+                    })
+                    .await?;
                 spend.record(&retry).await;
                 report_spend();
                 last_exit_code = retry.exit_code;
@@ -1977,12 +2115,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     error,
                     budget.source_chars,
                 );
-                let retry_result = run_agent_capture_silent_with_usage(AgentExecOpts {
-                    prompt: &retry_prompt,
-                    model: retry_model,
-                    ..planner_call
-                })
-                .await;
+                let retry_result = clock
+                    .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
+                        prompt: &retry_prompt,
+                        model: retry_model,
+                        ..planner_call
+                    }))
+                    .await;
                 if let Ok(retry) = &retry_result {
                     spend.record(retry).await;
                     report_spend();
@@ -2052,11 +2191,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     planner_model.as_str(),
                 );
                 let prompt = hidden_output_regeneration_prompt(&task_prompt, candidate, &hidden);
-                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
-                    prompt: &prompt,
-                    ..planner_call
-                })
-                .await;
+                let retry = clock
+                    .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
+                        prompt: &prompt,
+                        ..planner_call
+                    }))
+                    .await;
                 if let Ok(retry) = &retry {
                     spend.record(retry).await;
                     report_spend();
@@ -2115,11 +2255,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &unrunnable,
                 &unchecked,
             );
-            let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
-                prompt: &prompt,
-                ..planner_call
-            })
-            .await;
+            let retry = clock
+                .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
+                    prompt: &prompt,
+                    ..planner_call
+                }))
+                .await;
             if let Ok(retry) = &retry {
                 spend.record(retry).await;
                 report_spend();
@@ -2162,11 +2303,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     planner_model.as_str(),
                 );
                 let prompt = spec_regeneration_prompt(&task_prompt, &kept.0, &kept.1);
-                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
-                    prompt: &prompt,
-                    ..planner_call
-                })
-                .await;
+                let retry = clock
+                    .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
+                        prompt: &prompt,
+                        ..planner_call
+                    }))
+                    .await;
                 if let Ok(retry) = &retry {
                     spend.record(retry).await;
                     report_spend();
@@ -2352,6 +2494,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             "plan generate: TOML extracted and written"
         );
         let t_phase = Instant::now();
+        clock.validating();
         let generated_changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
 
         let changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
@@ -2447,6 +2590,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         let post_ms = t_phase.elapsed().as_millis();
+        clock.validated();
         let total_ms = t_total.elapsed().as_millis();
         tracing::info!(
             init_ms,
@@ -4971,6 +5115,81 @@ mod tests {
         assert_eq!(stages[0].calls, 1, "{stages:?}");
         assert_eq!(stages[0].model, "planner", "{stages:?}");
         assert_eq!(stages[3].calls, 1, "{stages:?}");
+    }
+
+    /// gap-61c95c: each progress report says how long the generation has
+    /// run and where the time went: the lift before the first planner
+    /// call, the planner calls, the repairs between them and the written
+    /// plan's validation, each null until it has run, together never more
+    /// than the time run. The last report has them all.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_progress_reports_its_elapsed_time_and_phases() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        // The planner takes a moment to answer.
+        let planner = bin.path().join("planner.sh");
+        let script = std::fs::read_to_string(&planner).expect("planner script");
+        std::fs::write(
+            &planner,
+            script.replacen("set -eu\n", "set -eu\nsleep 0.4\n", 1),
+        )
+        .expect("slow the planner down");
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+
+        let stages = stages.lock().expect("stages");
+        let names: Vec<&str> = stages.iter().map(|stage| stage.stage).collect();
+        assert_eq!(
+            names,
+            ["planning", "planning", "writing", "recording"],
+            "{stages:?}"
+        );
+        for pair in stages.windows(2) {
+            assert!(pair[0].elapsed_ms <= pair[1].elapsed_ms, "{stages:?}");
+        }
+        for stage in stages.iter() {
+            let phases = stage.phases;
+            let spent: u64 = [
+                phases.lift_ms,
+                phases.planner_ms,
+                phases.repair_ms,
+                phases.validate_ms,
+            ]
+            .into_iter()
+            .flatten()
+            .sum();
+            assert!(spent <= stage.elapsed_ms, "{stage:?}");
+        }
+        let before_the_call = stages[0].phases;
+        assert!(before_the_call.lift_ms.is_some(), "{stages:?}");
+        assert_eq!(before_the_call.planner_ms, None, "{stages:?}");
+        assert_eq!(before_the_call.validate_ms, None, "{stages:?}");
+        assert!(
+            stages[1].phases.planner_ms.is_some_and(|ms| ms >= 400),
+            "{stages:?}"
+        );
+        assert_eq!(stages[2].phases.validate_ms, None, "{stages:?}");
+        let last = stages[3].phases;
+        assert!(last.planner_ms.is_some_and(|ms| ms >= 400), "{last:?}");
+        assert!(
+            last.lift_ms.is_some() && last.repair_ms.is_some() && last.validate_ms.is_some(),
+            "{last:?}"
+        );
+        let json = serde_json::to_value(&stages[3]).expect("progress json");
+        assert!(json["elapsed_ms"].is_u64(), "{json}");
+        assert!(json["phases"]["planner_ms"].is_u64(), "{json}");
+        let first = serde_json::to_value(&stages[0]).expect("progress json");
+        assert!(first["phases"]["planner_ms"].is_null(), "{first}");
     }
 
     /// bug-1602d4: a planner call's spend is reported as soon as the call

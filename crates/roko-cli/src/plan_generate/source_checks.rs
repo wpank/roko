@@ -23,7 +23,7 @@ use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
 use super::runnable::{Probe, Unchecked, Unrunnable, check_command, command_words, only_reads};
-use crate::task_parser::{TaskDef, TasksFile, VerifyStep};
+use crate::task_parser::{TaskDef, TasksFile, VerifyExpect, VerifyStep};
 
 /// The most of one check that a prompt or a report quotes, in characters.
 const CHECK_CHARS: usize = 300;
@@ -62,6 +62,9 @@ pub(super) struct SourceCheck {
     /// Whether the source names it as the plan's own final check, which
     /// `[[meta.verify]]` runs once every task has passed (bug-96115c).
     pub plan_level: bool,
+    /// Whether the source calls it a regression check, one that passes on
+    /// the base too (bug-59782c): a step roko adds for it says so.
+    pub regression: bool,
 }
 
 /// The checks `source` states, numbered in order.
@@ -72,16 +75,52 @@ pub(super) fn source_checks(source: &str) -> Vec<SourceCheck> {
         reader.line(line, lines.get(index + 1).copied());
     }
     reader.finish();
+    let labels = regression_labels(source);
     reader
         .checks
         .into_iter()
         .enumerate()
         .map(|(index, text)| SourceCheck {
             id: format!("SC{}", index + 1),
+            regression: is_regression(&text, &labels),
             text,
             run: None,
             plan_level: reader.plan_checks.contains(&index),
         })
+        .collect()
+}
+
+/// Whether a check is a regression check, one that passes on the base too
+/// (bug-59782c): its own text says so (`A regression check: it passes on the
+/// base too`), or a sentence of the source calls its label one
+/// ([`regression_labels`]).
+fn is_regression(text: &str, labels: &[String]) -> bool {
+    let lower = text.to_lowercase();
+    ["regression check", "pass_on_base", "passes on the base too"]
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+        || check_label(text).is_some_and(|label| labels.iter().any(|named| named == label))
+}
+
+/// The labels a sentence of `source` calls regression checks (bug-59782c), as
+/// in `P2.1.08 and P2.1.09 are regression checks`: labels joined by commas and
+/// `and`, then `is` or `are`. `P2.1.04, and P2.1.09, a regression check of
+/// the saturation` calls neither one: the phrase there describes P2.1.09
+/// alone, and its own row says so.
+fn regression_labels(source: &str) -> Vec<String> {
+    static SENTENCE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)((?:`?[a-z][\w.-]*\d[\w.-]*`?(?:\s*,\s*(?:and\s+)?|\s+and\s+)?)+)\s+(?:are|is)\s+(?:all\s+|both\s+|a\s+)?regression\s+checks?",
+        )
+        .expect("valid regression sentence regex")
+    });
+    static LABEL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)[a-z][\w.-]*\d[\w.-]*").expect("valid label regex"));
+    SENTENCE
+        .captures_iter(source)
+        .filter_map(|captures| captures.get(1))
+        .flat_map(|labels| LABEL.find_iter(labels.as_str()))
+        .map(|label| label.as_str().trim_end_matches(['.', '-']).to_string())
         .collect()
 }
 
@@ -1373,6 +1412,22 @@ pub(super) fn assign_runs(
                     step.covers.push(cover);
                 }
             }
+            // bug-59782c: a step that runs only regression checks passes on
+            // the base, and one that now runs another may not.
+            let runs: Vec<&SourceCheck> = checks
+                .iter()
+                .filter(|check| {
+                    check
+                        .run
+                        .as_deref()
+                        .is_some_and(|run| runs_command(&step.command, run))
+                })
+                .collect();
+            if !runs.is_empty() && runs.iter().all(|check| check.regression) {
+                step.expect = Some(VerifyExpect::PassOnBase);
+            } else if step.expect == Some(VerifyExpect::PassOnBase) {
+                step.expect = None;
+            }
             assigned.push(format!(
                 "{} step {number}: `{was}` became `{}`, to run the source's own commands for \
                  {ids}",
@@ -1380,8 +1435,19 @@ pub(super) fn assign_runs(
                 one_line(&step.command)
             ));
         } else {
+            // bug-59782c: regression checks pass on the base too.
+            let regression = owned.iter().all(|check| check.regression);
+            let passes = match (regression, owned.len()) {
+                (false, _) => "",
+                (true, 1) => {
+                    ", which passes on the base too: the source calls it a regression check"
+                }
+                (true, _) => {
+                    ", which pass on the base too: the source calls them regression checks"
+                }
+            };
             assigned.push(format!(
-                "{}: added a step running `{command}`, the source's own commands for {ids}",
+                "{}: added a step running `{command}`, the source's own commands for {ids}{passes}",
                 task.id
             ));
             task.verify.push(VerifyStep {
@@ -1391,7 +1457,7 @@ pub(super) fn assign_runs(
                 timeout_ms: crate::task_parser::default_verify_timeout(),
                 scope: Vec::new(),
                 covers,
-                expect: None,
+                expect: regression.then_some(VerifyExpect::PassOnBase),
             });
         }
     }
@@ -2403,6 +2469,81 @@ mod tests {
                 "cmake --build --preset core"
             ]
         );
+    }
+
+    /// bug-59782c: round v7's phase-2.1 spec calls P2.1.08 and P2.1.09
+    /// regression checks: they pass on the base too. The planner left P2.1.09
+    /// out, and the step the coverage repair added for it had no `expect`. A
+    /// check the source calls a regression check, in its own row or in a
+    /// sentence that names it, is one, and the step added for it passes on
+    /// the base; `P2.1.04, and P2.1.09, a regression check of …` makes
+    /// P2.1.04 none. A step that also runs another check keeps its own
+    /// `expect`.
+    #[test]
+    fn a_repaired_regression_check_step_passes_on_base() {
+        let source = "# Phase 2.1\n\n## Acceptance checks\n\n\
+                      | Check | Command | Proves |\n|---|---|---|\n\
+                      | P2.1.04 | `tools/spec.sh 2_1 engine 'P2.1.04*'` | the meters stay finite |\n\
+                      | P2.1.08 | `tools/spec.sh 1 filter` | phase 1's filter checks still pass |\n\
+                      | P2.1.09 | `tools/spec.sh 2_1 engine 'P2.1.09*'` | the blend holds. A \
+                      regression check: it passes on the base too |\n\n\
+                      ## Notes for the planner\n\n\
+                      - **The meters** (`engine.cpp`): P2.1.04, and P2.1.09, a regression check \
+                      of the saturation.\n\
+                      - P2.1.08 and P2.1.09 are regression checks (`expect = \"pass_on_base\"`).\n";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(source);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let regression: Vec<(Option<&str>, bool)> = checks
+            .iter()
+            .map(|check| (check_label(&check.text), check.regression))
+            .collect();
+        assert_eq!(
+            regression,
+            [
+                (Some("P2.1.04"), false),
+                (Some("P2.1.08"), true),
+                (Some("P2.1.09"), true)
+            ]
+        );
+        let meters = "tools/spec.sh 2_1 engine 'P2.1.04*'";
+        let plan = || {
+            TasksFile::parse_str(&format!(
+                "[meta]\nplan = \"p2-1\"\ntotal = 2\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T3\"\ntitle = \"The meters\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"mechanical\"\nfiles = [\"core/src/engine.cpp\"]\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = {meters:?}\nexpect = \"fail_on_base\"\n\n\
+                 [[task]]\nid = \"T4\"\ntitle = \"The filter\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"mechanical\"\nfiles = [\"core/src/filter.cpp\"]\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 1 filter\"\n\
+                 expect = \"pass_on_base\"\n"
+            ))
+            .expect("a plan")
+        };
+        let mut repaired = plan();
+        let assigned = assign_runs(&mut repaired, &checks, &[], |_| 4);
+        assert_eq!(
+            assigned,
+            [
+                "T3: added a step running `tools/spec.sh 2_1 engine 'P2.1.09*'`, the source's own \
+                 commands for SC3, which passes on the base too: the source calls it a regression \
+                 check"
+            ]
+        );
+        let added = &repaired.tasks[0].verify[1];
+        assert_eq!(added.command, "tools/spec.sh 2_1 engine 'P2.1.09*'");
+        assert_eq!(added.expect, Some(VerifyExpect::PassOnBase));
+
+        // At the step limit P2.1.09 joins P2.1.04's step, which fails on the
+        // base still.
+        let mut joined = plan();
+        assign_runs(&mut joined, &checks, &[], |_| 1);
+        let step = &joined.tasks[0].verify[0];
+        assert_eq!(
+            step.command,
+            format!("{meters} && tools/spec.sh 2_1 engine 'P2.1.09*'")
+        );
+        assert_eq!(step.expect, Some(VerifyExpect::FailOnBase));
     }
 
     /// gap-115c2a: roko runs a source check's own command alone (bug-56a806),

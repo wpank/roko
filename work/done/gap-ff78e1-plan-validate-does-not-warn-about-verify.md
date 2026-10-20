@@ -2,15 +2,16 @@
 id = "gap-ff78e1"
 kind = "gap"
 title = "plan validate does not warn about verify steps that cannot pass (a runner not installed, a test its file does not define, a test file no task writes); only plan generation checks them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_validate"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "9842a6411"
 source = "roko-planner, gap-ecafde follow-up (round v6)"
 discovered_from = "gap-ecafde"
 anchors = ["crates/roko-cli/src/plan_validate.rs::validate_tasks_file", "crates/roko-cli/src/plan_generate/runnable.rs::problems"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-ecafde", "bug-6fa025"], 
 
 [[verify]]
 command = "grep -rqw 'fn plan_validate_warns_about_steps_that_cannot_pass' crates/roko-cli/src && cargo test -p roko-cli --lib -- plan_validate_warns_about_steps_that_cannot_pass"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-20T22:33:53Z"
+commit = "86c8d981f"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-20T19:21:35Z"
+forced = false
+evidence = "Merged 9842a6411 (work/gap-ff78e1: cf609c84f red test, 86c8d981f). runnable::unrunnable_steps runs generation's step_problem per step; Probe::portable() takes every command and module as present, so static plan validate reports the same everywhere (the lead's decision): PLAN_059 warning for a build tool without its manifest, a missing file no task writes before the step, or an undefined test. plan_validate::validate_plans_dir_on_this_machine (plan validate --spec-quality --dynamic) adds PLAN_060 for a runner or Python module this machine lacks. Steps PLAN_054/055/056/058 (not a guess) name are left to them. The scan's false positives fixed for generation too: files stop at the first cd, negated tests need no file, ( and ) words are no paths, missing-file and undefined-test checks need an &&-only plain line. Post-merge verify at 9842a6411: grep OK; cargo test -p roko-cli --lib plan_validate_warns_about_steps_that_cannot_pass: 1 passed. Branch: roko-cli lib 3939 passed, 0 failed; plan_validation 38/38; plan_validate 23/25 (the 2 failures are bug-2a31bc's PLAN_041 counts, open); clippy -D warnings clean; nightly fmt. Static scan with the branch binary: roko's 133 plans 0 hits (52 false ones before the cd/negation fixes); Undertow's phase plans 4, all in rumble-2 and real (cargo steps in a CMake repo); v6 mori imports 25, about half files their scan workspace lacks but bardo has."
 +++
 
 ## Problem

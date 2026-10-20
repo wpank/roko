@@ -1196,6 +1196,11 @@ pub struct GenerationSourceChecks {
     pub regenerated: bool,
     /// Each check, in source order.
     pub checks: Vec<GenerationSourceCheck>,
+    /// The workspace documents the checks come from, when the request states
+    /// none itself and names them (round v7: a chat host's summary of a
+    /// spec).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<String>,
 }
 
 /// One check a generated plan's source states (gap-dc5d7c).

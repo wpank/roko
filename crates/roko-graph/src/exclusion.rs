@@ -5,11 +5,13 @@
 //! The engine's ready-queue scheduler never runs two nodes whose paths overlap
 //! at the same time, and `roko plan validate` flags plan tasks that could.
 //!
-//! A build-registration file ([`is_registration_file`]) is the exception
-//! (bug-daa54e): a list of sources or modules, such as a `CMakeLists.txt`,
-//! that tasks which can run in parallel each add an entry to. Two nodes that
-//! both name the same one do not overlap on it, so they still run together;
-//! a clash in it at merge time costs a retry instead.
+//! A build-registration file ([`is_registration_file`]) is a list of sources
+//! or modules, such as a `CMakeLists.txt`, that several tasks each add an
+//! entry to (bug-daa54e). Plan generation lets them all list it
+//! ([`first_overlap_except_registration`]). The scheduler still never runs
+//! two nodes that name it at the same time in one working tree, where one
+//! write could overwrite the other; with a worktree per task, nothing is
+//! serialized, and their edits meet at merge.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -27,11 +29,12 @@ pub const REGISTRATION_FILES: &[&str] = &[
     "mod.rs",
 ];
 
-/// Whether `path` names a build-registration file ([`REGISTRATION_FILES`]).
+/// Whether `path` names a build-registration file, by its file name
+/// ([`REGISTRATION_FILES`]).
 ///
-/// It goes by the file name alone. The scheduler lets nodes that both name
-/// one run together, plan generation lets several tasks list one, and a merge
-/// may combine both sides' added lines in one.
+/// Plan generation lets several tasks list one, and a merge may combine both
+/// sides' added lines in one. In a shared working tree, the scheduler still
+/// runs the nodes that name one at different times.
 #[must_use]
 pub fn is_registration_file(path: &str) -> bool {
     lexical(path)
@@ -44,10 +47,27 @@ pub fn is_registration_file(path: &str) -> bool {
 /// the path it overlaps.
 ///
 /// Two paths overlap when they name the same file, or when one names a
-/// directory that holds the other; two that name the same build-registration
-/// file do not ([`is_registration_file`]).
+/// directory that holds the other.
 #[must_use]
 pub fn first_overlap<'a>(wanted: &'a [String], held: &'a [String]) -> Option<(&'a str, &'a str)> {
+    wanted.iter().find_map(|path| {
+        held.iter()
+            .find(|other| overlaps(path, other))
+            .map(|other| (path.as_str(), other.as_str()))
+    })
+}
+
+/// [`first_overlap`], except that two paths naming the same
+/// build-registration file do not overlap ([`is_registration_file`]).
+///
+/// Plan generation's checks use it, so several tasks may list the file they
+/// each add to (bug-daa54e); the scheduler uses [`first_overlap`]. A directory
+/// that holds a registration file still overlaps it.
+#[must_use]
+pub fn first_overlap_except_registration<'a>(
+    wanted: &'a [String],
+    held: &'a [String],
+) -> Option<(&'a str, &'a str)> {
     wanted.iter().find_map(|path| {
         held.iter()
             .find(|other| overlaps(path, other) && !shared_registration(path, other))
@@ -130,21 +150,29 @@ mod tests {
     }
 
     /// bug-daa54e: phase 1's three parallel tasks each add their source to
-    /// `core/CMakeLists.txt`. Naming the same registration file is no overlap,
-    /// so they run together; a directory that holds one still overlaps it, and
-    /// so does a second, overlapping path of the same nodes.
+    /// `core/CMakeLists.txt`. For plan generation, naming the same
+    /// registration file is no overlap; a directory that holds one still
+    /// overlaps it, and so does a second, overlapping path of the same nodes.
+    /// The scheduler's own overlap counts the shared file.
     #[test]
     fn a_shared_registration_file_is_no_overlap() {
         let oscillator = paths(&["core/src/oscillator.cpp", "core/CMakeLists.txt"]);
         let filter = paths(&["core/src/filter.cpp", "./core/CMakeLists.txt"]);
-        assert_eq!(first_overlap(&oscillator, &filter), None);
         assert_eq!(
-            first_overlap(&oscillator, &paths(&["core"])),
+            first_overlap_except_registration(&oscillator, &filter),
+            None
+        );
+        assert_eq!(
+            first_overlap(&oscillator, &filter),
+            Some(("core/CMakeLists.txt", "./core/CMakeLists.txt"))
+        );
+        assert_eq!(
+            first_overlap_except_registration(&oscillator, &paths(&["core"])),
             Some(("core/src/oscillator.cpp", "core"))
         );
         let both = paths(&["core/CMakeLists.txt", "core/src/oscillator.cpp"]);
         assert_eq!(
-            first_overlap(&oscillator, &both),
+            first_overlap_except_registration(&oscillator, &both),
             Some(("core/src/oscillator.cpp", "core/src/oscillator.cpp"))
         );
         for path in [

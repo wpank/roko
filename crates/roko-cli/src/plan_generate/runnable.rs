@@ -561,9 +561,10 @@ const CMAKE_SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "m", "mm"];
 /// collects its sources with a glob. Phase 1's oscillator, filter and envelope
 /// tasks each created a source under `core/`, whose `CMakeLists.txt` names
 /// every source, without listing that file: each edit was out of scope. A
-/// build-registration file may sit in several tasks' `files` without keeping
-/// them apart ([`roko_graph::exclusion::is_registration_file`]). Returns one
-/// line per file added.
+/// build-registration file may sit in several tasks' `files`: generation
+/// counts it as neither split ownership nor an overlap
+/// ([`roko_graph::exclusion::is_registration_file`]). Returns one line per
+/// file added.
 pub(super) fn repair_build_lists(plan: &mut TasksFile, workdir: &Path) -> Vec<String> {
     let mut repairs = Vec::new();
     for index in 0..plan.tasks.len() {

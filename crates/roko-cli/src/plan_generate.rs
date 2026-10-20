@@ -497,7 +497,7 @@ Before finalizing, verify your tasks against:
 5. Every `files` entry, every `path` in `read_files`, and every `cargo` command must reference actual files and crates that exist in the workspace or that the plan explicitly creates.
 6. If a task creates a NEW crate, list the specific files: `"crates/new-crate/src/lib.rs"`, `"crates/new-crate/Cargo.toml"`. Use the plan slug as the crate name (e.g., slug "btc-funding-alert" → `"crates/btc-funding-alert/src/lib.rs"`).
 7. Researcher tasks that only READ files should still list specific file paths they will inspect.
-8. A task whose work must be registered in a shared build or module list (a `CMakeLists.txt` that names every source, a `mod.rs`, an `index.ts`, a `Cargo.toml` workspace) lists that file in its `files`, even when other tasks list it too: tasks that share only such a file still run in parallel.
+8. A task whose work must be registered in a shared build or module list (a `CMakeLists.txt` that names every source, a `mod.rs`, an `index.ts`, a `Cargo.toml` workspace) lists that file in its `files`, even when other tasks list it too. Sharing such a file is no reason to make one of those tasks wait for another.
 
 ## Complete Example (end-to-end)
 

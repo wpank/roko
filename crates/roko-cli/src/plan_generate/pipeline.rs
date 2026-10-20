@@ -992,8 +992,9 @@ fn own_plan_writers(plan: &TasksFile, plan_dir: &Path, workdir: &Path) -> Vec<St
 }
 
 /// The plan report's note on the build-registration files several tasks
-/// list (bug-daa54e): which, and that their tasks still run in parallel, so a
-/// clash in one at merge costs a retry. `None` when no task shares one.
+/// list (bug-daa54e): which, and how their tasks run: together with a
+/// worktree per task, their edits meeting at merge, and in turn in one shared
+/// tree. `None` when no task shares one.
 fn shared_registration_note(plan: &TasksFile) -> Option<String> {
     let mut shared: Vec<(String, Vec<String>)> = Vec::new();
     for task in &plan.tasks {
@@ -1015,8 +1016,9 @@ fn shared_registration_note(plan: &TasksFile) -> Option<String> {
         .collect();
     (!shared.is_empty()).then(|| {
         format!(
-            "Shared build-registration files: {}. Tasks that share only these still run in \
-             parallel; a clash in one at merge costs a retry.",
+            "Shared build-registration files: {}. With a worktree per task, tasks that share \
+             only these still run in parallel, and their edits meet at merge; in one shared tree \
+             they take turns.",
             shared.join(", ")
         )
     })

@@ -582,10 +582,11 @@ pub fn validate_plan_budgets(
 /// neither depends on the other, declare overlapping `files`.
 ///
 /// Overlap is the Graph engine's own rule (`roko_graph::exclusion`): the same
-/// path, or a directory and a path inside it; two tasks that name the same
-/// build-registration file do not overlap on it (bug-daa54e). The engine runs
-/// such tasks one after the other, so the plan gives up parallelism its author
-/// meant to have. A task without `files` declares nothing and is never
+/// path, or a directory and a path inside it. In a shared working tree the
+/// engine runs such tasks one after the other, so the plan gives up
+/// parallelism its author meant to have. Two tasks that name the same
+/// build-registration file, each adding its entry, are not flagged
+/// (bug-daa54e). A task without `files` declares nothing and is never
 /// flagged.
 fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
     let dependency_map = tasks
@@ -596,7 +597,10 @@ fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
     let mut issues = Vec::new();
     for (index, first) in tasks.tasks.iter().enumerate() {
         for second in &tasks.tasks[index + 1..] {
-            let overlap = roko_graph::exclusion::first_overlap(&first.files, &second.files);
+            let overlap = roko_graph::exclusion::first_overlap_except_registration(
+                &first.files,
+                &second.files,
+            );
             let Some((first_path, second_path)) = overlap else {
                 continue;
             };

@@ -13,6 +13,7 @@
 //! - Feedback from failures feeds into retry context
 
 mod accept_blocks;
+mod build_system;
 mod dry_run_fs;
 mod overview;
 mod pipeline;
@@ -371,6 +372,7 @@ Detect the project language and use the right commands:
 - package.json → TypeScript: `npx tsc`, `npx jest`, `npx eslint`
 - go.mod → Go: `go build`, `go test`, `golangci-lint`
 - pyproject.toml/setup.py → Python: `python -m py_compile`, `pytest` (or `python3 -m unittest` when the tests use unittest), `ruff`
+- CMakeLists.txt → C/C++: `cmake --build`, `ctest -R <test>` (with CMakePresets.json: `cmake --preset <name>`, `cmake --build --preset <name>`, `ctest --preset <name> -R <test>`)
 
 ## Verify steps by role
 
@@ -468,10 +470,10 @@ files = [
 
 Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the plan slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
-- [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
+- [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks, unless the file is a shared build or module list (File Path Rules 8)
 - [ ] Every task is within its tier's limits (files, max_loc, description words, verify steps); a larger one is split or given a higher tier
 - [ ] Every acceptance criterion has a verify step that covers it, steps of different criteria are not chained into one command, and no semantic duplicate exists elsewhere in the plan
-- [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
+- [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the project's gate would catch a regression
 - [ ] A test runner's own exit status is its check: no pipe, redirection or test count around it
 - [ ] Every task writes files (implementer or scribe), and every verify step reads a file its own task writes or runs code built from them; none reads only files no task of the plan writes, another plan's files or `.roko/`
 - [ ] A request without a spec gets a `scribe` task that writes `docs/spec.md`, with numbered acceptance criteria, first
@@ -494,7 +496,7 @@ Before finalizing, verify your tasks against:
 2. Never use bare directory references like `"crates/"` or `"src/"`.
 3. Never use glob patterns like `*` in file paths.
 4. Never output angle-bracket placeholders like `<path>`, `<crate>`, `<file>`, `<module>`, or `<relevant-lib>`.
-5. Every `files` entry, every `path` in `read_files`, and every `cargo` command must reference actual files and crates that exist in the workspace or that the plan explicitly creates.
+5. Every `files` entry, every `path` in `read_files`, and every build or test command must reference actual files, crates and targets that exist in the workspace or that the plan explicitly creates.
 6. If a task creates a NEW crate, list the specific files: `"crates/new-crate/src/lib.rs"`, `"crates/new-crate/Cargo.toml"`. Use the plan slug as the crate name (e.g., slug "btc-funding-alert" → `"crates/btc-funding-alert/src/lib.rs"`).
 7. Researcher tasks that only READ files should still list specific file paths they will inspect.
 8. A task whose work must be registered in a shared build or module list (a `CMakeLists.txt` that names every source, a `mod.rs`, an `index.ts`, a `Cargo.toml` workspace) lists that file in its `files`, even when other tasks list it too. Sharing such a file is no reason to make one of those tasks wait for another.
@@ -695,11 +697,12 @@ fn verify_step_limits(policy: PlanExecutionPolicy) -> String {
 #[must_use]
 pub fn build_generator_system_prompt(workdir: &Path) -> String {
     let mut prompt = String::new();
+    // bug-8723fc: a CMake workspace reads the examples in its own commands.
+    let base = build_system::localize(PLAN_GENERATOR_SYSTEM_PROMPT, workdir);
     let _ = writeln!(
         prompt,
         "{}",
-        PLAN_GENERATOR_SYSTEM_PROMPT
-            .replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+        base.replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
             .replace("{TIER_SIZE_LIMITS}", &render_tier_size_limits())
             .replace("{GENERATED_PLAN_LIMITS}", &render_generated_plan_limits())
     );

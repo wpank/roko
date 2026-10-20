@@ -1674,6 +1674,22 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // commands for, runs those commands.
             let stuck = runnable::problems(&parsed, workdir_ref, &probe);
             repairs.extend(source_checks::apply_runs(&mut parsed, &checks, &stuck));
+            // bug-72dc0d: each source check whose command roko knows runs in
+            // the task that owns it, whatever command the planner wrote.
+            let stuck = runnable::problems(&parsed, workdir_ref, &probe);
+            repairs.extend(source_checks::assign_runs(
+                &mut parsed,
+                &checks,
+                &stuck,
+                |task| policy.tier_size_limits(task.tier_class()).max_verify_steps,
+            ));
+            // bug-8723fc: an implementer with no check builds with the
+            // workspace's own build system, never one it lacks.
+            repairs.extend(runnable::repair_build_checks(
+                &mut parsed,
+                workdir_ref,
+                &probe,
+            ));
             let validated = if repairs.is_empty() {
                 validated
             } else {
@@ -2127,13 +2143,42 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 report_spend();
             }
             checks_regenerated = true;
-            if let Ok(retry) = retry
-                && retry.exit_code == 0
-                && let Ok(better) = try_extract_and_validate(&retry.output)
-                && missing_of(&better) < missing
-                && hidden_output_lines(&better).len() <= hidden_output_lines(candidate).len()
-            {
-                validated_toml = Ok(better);
+            // bug-72dc0d: the plan asked for is kept only when it does
+            // better, and when it is not, the person is told why.
+            let better = match retry {
+                Err(error) => Err(format!("the planner call failed: {error:#}")),
+                Ok(retry) if retry.exit_code != 0 => Err(format!(
+                    "the planner exited with status {}",
+                    retry.exit_code
+                )),
+                Ok(retry) => match try_extract_and_validate(&retry.output) {
+                    Err(error) => {
+                        keep_draft(&retry.output, &error);
+                        Err(format!("its plan does not validate: {error}"))
+                    }
+                    Ok(better) if missing_of(&better) >= missing => {
+                        let (unkept, problems) = missing_of(&better);
+                        Err(format!(
+                            "it leaves {unkept} source check(s) unkept and {problems} step(s) or \
+                             task(s) that cannot pass or be seen, against {} and {} before",
+                            missing.0, missing.1
+                        ))
+                    }
+                    Ok(better)
+                        if hidden_output_lines(&better).len()
+                            > hidden_output_lines(candidate).len() =>
+                    {
+                        Err("more of its checks hide their test runner's output".to_string())
+                    }
+                    Ok(better) => Ok(better),
+                },
+            };
+            match better {
+                Ok(better) => validated_toml = Ok(better),
+                Err(why) => {
+                    eprintln!("  The plan written again is not kept, so the first stands: {why}");
+                    tracing::warn!(slug, %why, "plan generate: regeneration not kept");
+                }
             }
         }
 
@@ -2215,6 +2260,28 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             println!("📋 {}", coverage.summary_line());
             for line in coverage.detail_lines() {
                 println!("   {line}");
+            }
+            // bug-72dc0d: a plan that keeps fewer than half of the checks
+            // its source states, after the planner was asked once more, is not
+            // written: it would pass for work its source says is not done.
+            if coverage.unkept() * 2 > checks.len() {
+                if let Ok(plan) = &validated_toml {
+                    keep_draft(plan, &coverage.summary_line());
+                }
+                let asked = if checks_regenerated {
+                    ", after asking the planner once more"
+                } else {
+                    ""
+                };
+                return Err(anyhow!(
+                    "plan generation wrote no plan for {slug}: it keeps {} of the {} checks its \
+                     source states{asked} ({}). A check whose command the source gives runs in \
+                     the task that owns it, the one whose files its command names; give each \
+                     other check a task that runs it, or ask again.",
+                    checks.len() - coverage.unkept(),
+                    checks.len(),
+                    coverage.summary_line()
+                ));
             }
         }
 
@@ -2905,7 +2972,13 @@ fn validate_and_fix_generated_plan(
                             })
                             .unwrap_or_default();
 
-                        if role == "implementer" && !files.is_empty() {
+                        // bug-8723fc: only a task that writes Rust gets a
+                        // cargo check here; repair_build_checks gives the
+                        // others their workspace's own build.
+                        let rust = files
+                            .iter()
+                            .any(|file| file.ends_with(".rs") || file.ends_with("Cargo.toml"));
+                        if role == "implementer" && rust {
                             // Infer crate name from file paths for compile check
                             let crate_name = infer_crate_from_paths(&files);
                             let compile_cmd = match &crate_name {
@@ -4008,6 +4081,195 @@ mod tests {
             ["T1"],
             "T2 and T3 still run side by side"
         );
+    }
+
+    /// A CMake workspace with Undertow's presets, `core` and `plugin`, and a
+    /// core library that collects its sources with a glob.
+    #[cfg(unix)]
+    fn cmake_workspace(workdir: &Path) {
+        std::fs::create_dir_all(workdir.join("core")).expect("core");
+        std::fs::write(workdir.join("CMakeLists.txt"), "add_subdirectory(core)\n").expect("cmake");
+        std::fs::write(
+            workdir.join("core/CMakeLists.txt"),
+            "file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)\n\
+             add_library(undertow_core STATIC ${CORE_SOURCES})\n",
+        )
+        .expect("the core list");
+        std::fs::write(
+            workdir.join("CMakePresets.json"),
+            r#"{"version": 6,
+                "configurePresets": [{"name": "core"}, {"name": "plugin"}],
+                "buildPresets": [{"name": "core", "configurePreset": "core"},
+                                 {"name": "plugin", "configurePreset": "plugin"}],
+                "testPresets": [{"name": "core", "configurePreset": "core"}]}"#,
+        )
+        .expect("presets");
+    }
+
+    /// bug-72dc0d: round v7's phase-2 spec names each check's command in its
+    /// table. Asked from a Hermes chat, the planner checked every task with
+    /// cargo in a CMake repo (op 9fa7849f), and roko wrote that plan with 1 of
+    /// 20 checks kept. Now cargo cannot run there, each check's own command
+    /// runs in the task that owns it, and the plan keeps all 20 after one
+    /// call. A plan none of whose tasks roko can give its checks to is sent
+    /// back once, and then refused: no plan is written.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spec_that_names_each_tasks_checks_gets_its_commands_or_no_plan() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p2_spec_checks");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let plan = std::fs::read_to_string(fixture.join("plan2.toml")).expect("plan 2");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        cmake_workspace(workdir);
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let source = PlanSource::Text {
+            text: &request,
+            kind: "prompt",
+        };
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "p2-undertow-rumble", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+        let written = TasksFile::parse(&workdir.join("plans/p2-undertow-rumble/tasks.toml"))
+            .expect("the plan");
+        let commands: Vec<&str> = written
+            .tasks
+            .iter()
+            .flat_map(|task| &task.verify)
+            .map(|step| step.command.as_str())
+            .collect();
+        assert!(
+            commands.iter().all(|command| !command.contains("cargo")),
+            "{commands:#?}"
+        );
+        for (task, run) in [
+            ("T1", "tools/spec.sh 2 lfo 'P2.03*'"),
+            ("T2", "tools/spec.sh 2 rumble 'P2.08*'"),
+            ("T3", "tools/spec.sh 2 output 'P2.09*'"),
+            ("T4", "tools/spec.sh 2 engine 'P2.19*'"),
+        ] {
+            let task = written.tasks.iter().find(|t| t.id == task).expect("a task");
+            assert!(
+                task.verify.iter().any(|step| step.command.contains(run)),
+                "{}: {:?}",
+                task.id,
+                task.verify
+            );
+        }
+        let checks = outcome
+            .source_checks
+            .expect("the spec's checks are reported");
+        assert_eq!((checks.kept, checks.total), (20, 20), "{checks:?}");
+        assert!(!checks.regenerated);
+
+        // A plan whose task no check can be given to: refused after asking
+        // once more.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let motor = "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+                     [[task]]\nid = \"T1\"\ntitle = \"Add the motor\"\n\
+                     description = \"Write src/motor.cpp.\"\nstatus = \"ready\"\n\
+                     role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/motor.cpp\"]\n\
+                     depends_on = []\n\n[task.context]\nread_files = []\n\n\
+                     [[task.verify]]\nphase = \"test\"\ncommand = \"grep -q motor src/motor.cpp\"\n";
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[motor],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let source = PlanSource::Text {
+            text: "# Widget\n\n## Acceptance checks\n\n| Id | Command | Check |\n|---|---|---|\n\
+                   | W.01 | `tools/spec.sh widget spin` | the widget spins |\n\
+                   | W.02 | `tools/spec.sh widget stop` | the widget stops |\n\
+                   | W.03 | `tools/spec.sh widget wobble` | the widget wobbles |\n",
+            kind: "prompt",
+        };
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("a plan that keeps none of its spec's checks");
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("wrote no plan") && error.contains("keeps 0 of the 3 checks"),
+            "{error}"
+        );
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "asked once more, then refused");
+        assert!(!workdir.join("plans/widget/tasks.toml").exists());
+    }
+
+    /// bug-8723fc: in a CMake workspace (Undertow's phase 2), the plan writer
+    /// taught by Rust examples and added `cargo check --workspace` to a task
+    /// with no check. Now the examples, the note on runners and a task with
+    /// no check use the workspace's own CMake presets, and name no cargo
+    /// command; a Rust workspace's prompt is unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn a_cmake_workspace_gets_no_cargo_defaults() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        cmake_workspace(workdir);
+        let prompt = crate::plan_generate::build_generator_system_prompt(workdir);
+        for rust in [
+            "cargo check",
+            "cargo test",
+            "crates/roko-core",
+            "FundingRate",
+        ] {
+            assert!(!prompt.contains(rust), "{rust}");
+        }
+        for cmake in [
+            "command = \"cmake --preset core && cmake --build --preset core\"",
+            "ctest --preset core -R gain",
+            "## This workspace's build",
+            "no verify step runs `cargo`",
+        ] {
+            assert!(prompt.contains(cmake), "{cmake}");
+        }
+        let rust = tempfile::tempdir().expect("tempdir");
+        std::fs::write(rust.path().join("Cargo.toml"), "[workspace]\n").expect("cargo");
+        let rust_prompt = crate::plan_generate::build_generator_system_prompt(rust.path());
+        assert!(rust_prompt.contains("command = \"cargo check -p roko-core\""));
+        assert!(!rust_prompt.contains("## This workspace's build"));
+
+        let draft = "[meta]\nplan = \"p2\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                     [[task]]\nid = \"T4\"\ntitle = \"Wire the engine\"\nstatus = \"ready\"\n\
+                     role = \"implementer\"\ntier = \"focused\"\n\
+                     files = [\"core/src/engine.cpp\"]\n";
+        let fixed = validate_and_fix_generated_plan(
+            draft,
+            "p2",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .expect("the draft is fixed");
+        assert!(!fixed.contains("cargo"), "{fixed}");
+        let mut plan = TasksFile::parse_str(&fixed).expect("the plan");
+        let probe = runnable::Probe::with(&[("cmake", true), ("ctest", true)], &[]);
+        let added = runnable::repair_build_checks(&mut plan, workdir, &probe);
+        assert_eq!(added.len(), 1, "{added:?}");
+        assert_eq!(
+            plan.tasks[0].verify[0].command,
+            "cmake --preset core && cmake --build --preset core"
+        );
+        let runners = runnable::runners_block(workdir, &probe).expect("a CMake project");
+        assert!(runners.contains("no `Cargo.toml` here"), "{runners}");
     }
 
     /// bug-96115c: a request that names its final check gets a plan whose

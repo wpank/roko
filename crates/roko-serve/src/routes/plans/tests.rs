@@ -644,6 +644,7 @@ async fn generate_plan_rejects_empty_slug() {
         slug: Some("  ".into()),
         prompt: None,
         spec_path: None,
+        max_usd: None,
     };
     assert!(req.validate_payload().is_err());
 }
@@ -654,6 +655,7 @@ async fn generate_plan_rejects_neither_field() {
         slug: None,
         prompt: None,
         spec_path: None,
+        max_usd: None,
     };
     let err = req.validate_payload().unwrap_err();
     // Must be a 422.
@@ -666,6 +668,7 @@ async fn generate_plan_rejects_both_fields() {
         slug: Some("demo".into()),
         prompt: Some("build something".into()),
         spec_path: None,
+        max_usd: None,
     };
     let err = req.validate_payload().unwrap_err();
     assert_eq!(err.status.as_u16(), 422);
@@ -677,6 +680,7 @@ async fn generate_plan_rejects_blank_prompt() {
         slug: None,
         prompt: Some("   ".into()),
         spec_path: None,
+        max_usd: None,
     };
     let err = req.validate_payload().unwrap_err();
     assert_eq!(err.status.as_u16(), 422);
@@ -688,6 +692,7 @@ async fn generate_plan_accepts_prompt_only() {
         slug: None,
         prompt: Some("build a widget".into()),
         spec_path: None,
+        max_usd: None,
     };
     assert!(req.validate_payload().is_ok());
 }
@@ -863,6 +868,7 @@ fn generate_request_refuses_a_prd_slug() {
         slug: Some("demo".into()),
         prompt: None,
         spec_path: None,
+        max_usd: None,
     };
     let error = slug_only.validate_payload().expect_err("a slug is refused");
     assert!(format!("{error:?}").contains("'prompt'"), "{error:?}");
@@ -870,18 +876,21 @@ fn generate_request_refuses_a_prd_slug() {
         slug: Some("demo".into()),
         prompt: Some("Build the widget".into()),
         spec_path: None,
+        max_usd: None,
     };
     assert!(both.validate_payload().is_err());
     let blank = GenerateRequest {
         slug: None,
         prompt: Some("  ".into()),
         spec_path: None,
+        max_usd: None,
     };
     assert!(blank.validate_payload().is_err());
     let neither = GenerateRequest {
         slug: None,
         prompt: None,
         spec_path: None,
+        max_usd: None,
     };
     assert!(neither.validate_payload().is_err());
 }
@@ -909,6 +918,7 @@ async fn generate_plan_from_prompt_calls_the_runtime_with_the_prompt() {
             slug: None,
             prompt: Some("Build a widget library".into()),
             spec_path: None,
+            max_usd: None,
         }),
     )
     .await
@@ -972,6 +982,7 @@ async fn plan_generate_with_a_spec_path_plans_from_the_file() {
         slug: None,
         prompt: Some("Don't run it yet.".into()),
         spec_path: Some("docs/specs/phase-2.md".into()),
+        max_usd: None,
     };
     assert!(request.validate_payload().is_ok());
     let response = generate_plan(State(Arc::clone(&state)), ValidJson(request))
@@ -1003,10 +1014,118 @@ async fn plan_generate_with_a_spec_path_plans_from_the_file() {
                 slug: None,
                 prompt: None,
                 spec_path: Some(path.to_string()),
+                max_usd: None,
             }),
         )
         .await;
         assert!(refused.is_err(), "{path}");
+    }
+}
+
+/// A runtime whose plan generation records the cap it runs under, then
+/// writes the plan (gap-33d458).
+struct CapRuntime {
+    caps: Arc<Mutex<Vec<Option<f64>>>>,
+    notify: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for CapRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("CapRuntime only generates")
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        _prompt: &str,
+        _for_chat_host: bool,
+        max_usd: Option<f64>,
+        _progress: crate::runtime::ProgressReporter,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        self.caps.lock().expect("lock caps").push(max_usd);
+        self.notify.notify_one();
+        let plans_root = workdir.join("plans");
+        Ok(crate::runtime::PlanGenerationResult {
+            plan_targets: vec![plans_root.join(slug)],
+            plans_root,
+            artifacts: Vec::new(),
+            cost_usd: 0.0,
+            source_checks: None,
+        })
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// gap-33d458: `POST /plans/generate` takes the most writing the plan may
+/// spend. The runtime plans under it, and the answer gives it with its
+/// source, `request`. Without one, `[authoring] max_generation_usd` ($2 by
+/// default) applies, and the answer says it came from the config. A cap of
+/// 0, a negative one or one that is not finite is refused.
+#[tokio::test]
+async fn plan_generate_takes_a_spend_cap() {
+    let caps = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
+    let runtime = Arc::new(CapRuntime {
+        caps: Arc::clone(&caps),
+        notify: Arc::clone(&notify),
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let request = |max_usd: Option<f64>| GenerateRequest {
+        slug: None,
+        prompt: Some("Build a widget library".into()),
+        spec_path: None,
+        max_usd,
+    };
+    for (max_usd, cap, source) in [
+        (Some(0.6), json!(0.6), "request"),
+        (None, json!(2.0), "config"),
+    ] {
+        let request = request(max_usd);
+        assert!(request.validate_payload().is_ok());
+        let response = generate_plan(State(Arc::clone(&state)), ValidJson(request))
+            .await
+            .expect("the generation starts")
+            .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the answer");
+        let answer: Value = serde_json::from_slice(&bytes).expect("answer json");
+        assert_eq!(answer["max_usd"], cap, "{answer}");
+        assert_eq!(answer["max_usd_source"], source, "{answer}");
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("the runtime is called");
+    }
+    assert_eq!(*caps.lock().expect("lock caps"), [Some(0.6), Some(2.0)]);
+
+    for max_usd in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+        assert!(
+            request(Some(max_usd)).validate_payload().is_err(),
+            "{max_usd}"
+        );
     }
 }
 
@@ -1069,6 +1188,7 @@ async fn generate_plan_that_writes_no_plan_fails_its_operation() {
             slug: None,
             prompt: Some("a rust app that prints hello world".into()),
             spec_path: None,
+            max_usd: None,
         }),
     )
     .await
@@ -3063,7 +3183,14 @@ async fn a_chat_host_plan_is_generated_for_a_chat_host() {
         let (_dir, state) = test_state_with_runtime(runtime);
 
         let notified = notify.notified();
-        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+        start_plan_generation(
+            &state,
+            "Build a widget library".into(),
+            &origin,
+            None,
+            GenerationCap::resolve(&state, None),
+        )
+        .await;
         tokio::time::timeout(std::time::Duration::from_secs(1), notified)
             .await
             .expect("runtime should be called");
@@ -3097,8 +3224,14 @@ async fn plan_generation_status_reports_its_cost() {
     let origin = crate::runtime::RunOrigin::Mcp {
         client: "hermes".into(),
     };
-    let (op_id, slug) =
-        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        "Build a widget library".into(),
+        &origin,
+        None,
+        GenerationCap::resolve(&state, None),
+    )
+    .await;
 
     let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -3145,6 +3278,7 @@ impl CliRuntime for StagedRuntime {
         slug: &str,
         _prompt: &str,
         _for_chat_host: bool,
+        _max_usd: Option<f64>,
         progress: crate::runtime::ProgressReporter,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
         let stage = |stage: &str, cost_usd: f64| {
@@ -3228,6 +3362,7 @@ async fn plan_generation_status_reports_its_stage() {
         "Build a widget library".into(),
         &crate::runtime::RunOrigin::Http,
         None,
+        GenerationCap::resolve(&state, None),
     )
     .await;
     let status = |app: axum::Router| {
@@ -3294,6 +3429,7 @@ async fn plan_generation_status_outlives_its_handle() {
         "Build a widget library".into(),
         &crate::runtime::RunOrigin::Http,
         None,
+        GenerationCap::resolve(&state, None),
     )
     .await;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {

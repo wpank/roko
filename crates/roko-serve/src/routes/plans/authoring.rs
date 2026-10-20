@@ -170,7 +170,8 @@ pub(super) async fn plan_chat(
 ///
 /// `prompt`, or a `spec_path` in the workspace whose text serve reads
 /// (gap-fe4225), is required and must not be blank; the portal's
-/// "Generate…" field sends a prompt. A `slug` naming a PRD to plan from is
+/// "Generate…" field sends a prompt. A `max_usd`, when given, must be a
+/// number above 0 (gap-33d458). A `slug` naming a PRD to plan from is
 /// refused with 422: the PRD pipeline was removed on 2026-10-02, and plans
 /// come from a request.
 #[derive(Deserialize, Validate)]
@@ -184,6 +185,10 @@ pub(super) struct GenerateRequest {
     /// A spec file in the workspace to plan from, read exactly as written.
     #[serde(default)]
     pub(super) spec_path: Option<String>,
+    /// The most writing the plan may spend, in USD (gap-33d458). Without
+    /// it, `[authoring] max_generation_usd` applies.
+    #[serde(default)]
+    pub(super) max_usd: Option<f64>,
 }
 
 impl RequestPayload for GenerateRequest {
@@ -192,6 +197,14 @@ impl RequestPayload for GenerateRequest {
             return Err(ApiError::unprocessable_entity(
                 "'slug' is no longer accepted: PRDs were removed; send the request to plan \
                  from as 'prompt'",
+            ));
+        }
+        if self
+            .max_usd
+            .is_some_and(|usd| !(usd.is_finite() && usd > 0.0))
+        {
+            return Err(ApiError::unprocessable_entity(
+                "'max_usd' must be a number above 0",
             ));
         }
         if self
@@ -267,9 +280,10 @@ pub(crate) fn plan_request_text(
 /// Derives a unique plan slug from the prompt's first line, then runs the
 /// plan generator through `runtime.generate_plan_from_prompt`.
 ///
-/// Responds 202 with `{ "id": op_id, "plan_id": slug }`.  The slug is known
-/// before the background work starts so the portal's generate hook can use it
-/// immediately.
+/// Responds 202 with `{ "id": op_id, "plan_id": slug, "max_usd",
+/// "max_usd_source" }`: the cap that applies ([`GenerationCap`]). The slug is
+/// known before the background work starts so the portal's generate hook can
+/// use it immediately.
 ///
 /// The operation ends `Completed { result: {"slug", "task_count", "cost_usd"} }`
 /// only when plan `slug` loads afterwards. A generation that fails, or that
@@ -289,12 +303,49 @@ pub(super) async fn generate_plan(
         body.prompt.as_deref(),
         body.spec_path.as_deref(),
     )?;
-    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http, None).await;
+    let cap = GenerationCap::resolve(&state, body.max_usd);
+    let (op_id, slug) =
+        start_plan_generation(&state, prompt_text, &RunOrigin::Http, None, cap).await;
+    let mut answer = json!({ "id": op_id, "plan_id": slug });
+    cap.answer(&mut answer);
 
-    Ok((
-        axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": op_id, "plan_id": slug })),
-    ))
+    Ok((axum::http::StatusCode::ACCEPTED, Json(answer)))
+}
+
+/// The spend cap a plan generation runs under (gap-33d458), as its start
+/// answer gives it, so a host can tell the person the real cap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GenerationCap {
+    /// What its planner calls may cost together, in USD; `None` sets no cap.
+    pub(crate) max_usd: Option<f64>,
+    /// Where it comes from: `request`, or `config` for `[authoring]
+    /// max_generation_usd`.
+    pub(crate) source: &'static str,
+}
+
+impl GenerationCap {
+    /// The cap a request names, else the workspace's, where 0 sets none.
+    pub(crate) fn resolve(state: &AppState, requested: Option<f64>) -> Self {
+        match requested {
+            Some(max_usd) => Self {
+                max_usd: Some(max_usd),
+                source: "request",
+            },
+            None => {
+                let configured = state.load_roko_config().authoring.max_generation_usd;
+                Self {
+                    max_usd: (configured.is_finite() && configured > 0.0).then_some(configured),
+                    source: "config",
+                }
+            }
+        }
+    }
+
+    /// Adds `max_usd` (null when uncapped) and `max_usd_source` to `answer`.
+    pub(crate) fn answer(self, answer: &mut Value) {
+        answer["max_usd"] = json!(self.max_usd);
+        answer["max_usd_source"] = json!(self.source);
+    }
 }
 
 /// Start generating a plan from `prompt_text` in the background, as `POST
@@ -304,12 +355,14 @@ pub(super) async fn generate_plan(
 /// fenced as untrusted data ([`RunOrigin::request_text`], 9117).
 ///
 /// With a `title` (gap-c2efe7), the slug comes from the title, and the written
-/// plan's `[meta] title` is it.
+/// plan's `[meta] title` is it. The planner calls may cost `cap` together
+/// (gap-33d458).
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
     origin: &RunOrigin,
     title: Option<String>,
+    cap: GenerationCap,
 ) -> (String, String) {
     let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
     let prompt_text = origin.request_text(&prompt_text).into_owned();
@@ -372,6 +425,9 @@ pub(crate) async fn start_plan_generation(
                     &slug_for_task,
                     &prompt_text,
                     for_chat_host,
+                    // The cap serve resolved, so the answer says what
+                    // applies; 0 is none.
+                    Some(cap.max_usd.unwrap_or(0.0)),
                     report,
                 )
                 .await;

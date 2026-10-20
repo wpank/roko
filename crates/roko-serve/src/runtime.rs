@@ -662,16 +662,20 @@ pub trait CliRuntime: Send + Sync + 'static {
     /// [`Self::generate_plan_from_prompt`], reporting what the generation is
     /// doing to `progress` each time it moves on (gap-11d870): a JSON object
     /// with its `stage`, `attempt` of `attempts`, `reason`, `model`, `calls`
-    /// and `cost_usd` so far. The default reports nothing.
+    /// and `cost_usd` so far. Its planner calls may cost `max_usd` together
+    /// (gap-33d458), where 0 sets no cap; `None` leaves the cap to `[authoring]
+    /// max_generation_usd`. The default reports nothing and leaves the cap to
+    /// the method it calls.
     async fn generate_plan_reporting(
         &self,
         workdir: &std::path::Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        max_usd: Option<f64>,
         progress: ProgressReporter,
     ) -> anyhow::Result<PlanGenerationResult> {
-        let _ = progress;
+        let _ = (max_usd, progress);
         if for_chat_host {
             self.generate_plan_for_chat_host(workdir, slug, prompt)
                 .await

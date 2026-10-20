@@ -263,7 +263,8 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, false, None).await
+        self.generate_plan(workdir, slug, prompt, false, None, None)
+            .await
     }
 
     async fn generate_plan_for_chat_host(
@@ -272,7 +273,8 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, true, None).await
+        self.generate_plan(workdir, slug, prompt, true, None, None)
+            .await
     }
 
     async fn generate_plan_reporting(
@@ -281,6 +283,7 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        max_usd: Option<f64>,
         progress: ProgressReporter,
     ) -> anyhow::Result<PlanGenerationResult> {
         // gap-11d870: each stage the generator reports, as the JSON object
@@ -291,8 +294,15 @@ impl CliRuntime for RokoCliRuntime {
                     progress(stage);
                 }
             });
-        self.generate_plan(workdir, slug, prompt, for_chat_host, Some(progress))
-            .await
+        self.generate_plan(
+            workdir,
+            slug,
+            prompt,
+            for_chat_host,
+            max_usd,
+            Some(progress),
+        )
+        .await
     }
 
     async fn run_plan(
@@ -923,13 +933,16 @@ impl RokoCliRuntime {
     /// questions, so the planner decides them (bug-7a08a8), and only a model
     /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
     /// run is an error that names why and what it cost, so the operation
-    /// fails. Each stage goes to `progress` as it starts (gap-11d870).
+    /// fails. Each stage goes to `progress` as it starts (gap-11d870). The
+    /// planner calls may cost `max_usd` together (gap-33d458); `None` is
+    /// `[authoring] max_generation_usd`.
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        max_usd: Option<f64>,
         progress: Option<plan_generate::PlanProgressSink>,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
@@ -939,6 +952,7 @@ impl RokoCliRuntime {
             unattended: for_chat_host,
             for_chat_host,
             progress,
+            max_usd,
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,

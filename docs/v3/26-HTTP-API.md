@@ -584,7 +584,7 @@ reference maps each one to its replacement.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/plans/generate` | Write a plan from `{"prompt": "..."}` (202 Accepted with the operation `id` and the new `plan_id`; poll `GET /api/operations/{id}`). Takes `prompt` only: a body with `slug` is rejected with 422 |
+| POST | `/api/plans/generate` | Write a plan from `{"prompt": "..."}`, or from `{"spec_path": "docs/specs/phase-2.md"}`, a spec file in the workspace read exactly as written (a `prompt` beside it adds instructions after the spec). An optional `max_usd`, a number above 0, caps what the planner calls may cost together; without it, `[authoring] max_generation_usd` applies. 202 Accepted with the operation `id`, the new `plan_id`, and the cap that applies: `max_usd` (null when uncapped) and `max_usd_source` (`request` or `config`); poll `GET /api/operations/{id}`. A body with `slug` is rejected with 422 |
 | GET | `/api/plans/{id}/source` | The plan's raw `tasks.toml` as `{ "id", "path", "toml" }` |
 | PUT | `/api/plans/{id}/source` | Replace `tasks.toml` with `{"toml": "..."}`. Validated before writing: 200 `{ "saved": true, ... }`, or 422 `invalid_plan` with the diagnostics and the file untouched; 409 while a run includes the plan |
 | POST | `/api/plans/{id}/validate` | Validate the file on disk, or `{"toml": "..."}` without saving; always 200 with `{ "valid", "errors", "warnings", "diagnostics" }` |
@@ -594,7 +594,7 @@ reference maps each one to its replacement.
 # Write a plan from a prompt, then fetch its tasks.toml
 curl -X POST http://localhost:6677/api/plans/generate \
   -H 'Content-Type: application/json' -d '{"prompt": "Add rate limiting to the API"}'
-# {"id":"<operation-id>","plan_id":"add-rate-limiting-to-the-api"}
+# {"id":"<operation-id>","plan_id":"add-rate-limiting-to-the-api","max_usd":2.0,"max_usd_source":"config"}
 curl http://localhost:6677/api/plans/add-rate-limiting-to-the-api/source
 ```
 
@@ -1124,7 +1124,7 @@ routing stays with the ladder.
 | `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
 | `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it, or its place in the run queue (`state: "queued"`, `position`) while another run holds the workspace; refused before it gets an id when the queue is full or a run outside the server holds the workspace |
 | `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
-| `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
+| `plan_generate` | `prompt` (string) or `spec_path` (string, a spec file in the workspace), one of them required; `title` (string, at most 120 characters); `max_usd` (number above 0, at most `[serve.mcp] max_run_usd`) | The planner's operation as `run_id`, the new plan's `plan_id`, and the cap the planner runs under: `max_usd` (null when uncapped) and `max_usd_source` (`request`, or `config` for `[authoring] max_generation_usd`), as `POST /api/plans/generate` starts it |
 | `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped or taken out of the run queue, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
 | `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary`, `held_at`, the rung's `timeout_secs` and `deadline_at` (`held_at` plus the timeout, RFC 3339: when the rung stops waiting and the task ends unverified; null for a hold without a timeout). Read-only |
 | `confirm_answer` | `run_id`, `task_id`, `attempt_key` (strings, required); `approve` (boolean, required); `note` (string) | The person's answer recorded in the review log, as `POST /api/plans/{id}/tasks/{task_id}/review` records a decision: a yes passes the rung as `confirmed_by_user`, a no fails the attempt with the note as its feedback. `write` scope; a task that waits for no such confirmation is an error |
@@ -1134,7 +1134,9 @@ routing stays with the ladder.
 A run a chat host starts must name its spending cap: `run_prompt` and
 `plan_run` refuse, with a JSON-RPC error and before anything starts, a call
 without `max_usd` or with one above `[serve.mcp] max_run_usd` (default 5.00),
-and the cap becomes the run's budget ceiling. Such a run carries its origin,
+and the cap becomes the run's budget ceiling. `plan_generate` may name a
+`max_usd` too, under the same ceiling; without one, the workspace's
+`[authoring] max_generation_usd` caps the plan writing. Such a run carries its origin,
 `{ "kind": "mcp", "client": "<credential name, or local>" }`: the prompt
 run's `run_started` event and the run's manifest (`.roko/runs/<run_id>/manifest.json`,
 `origin: "mcp:<client>"`) record it. Runs started any other way are not

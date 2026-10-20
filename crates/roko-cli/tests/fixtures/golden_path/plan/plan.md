@@ -59,3 +59,22 @@ the task says to keep the function as it is. Will chose to tighten the
 fixture and rerun the three live runs (find-4003b9, option 2). The third
 escape, a doc example switched off to get `cargo test` green, needed no new
 test: the pre-verify screen rejects it now (gap-f9fa2c).
+
+## Changed after the freeze (2026-10-19)
+
+On 2026-10-19 T5's and T6's acceptance tests gained one more case each, and
+their counts in `tasks.toml` grew with them (3 to 4). No task's description,
+files, order, tier or other checks changed.
+
+- `initials("ßeta omega")` is "SSO" (`accept/alpha_initials.rs`), and
+  `badge("ßeta")` is "[SS] ßeta" (`accept/beta_badge.rs`). The upper case of
+  "ß" is two letters, "SS", and T5's spec upper-cases each word's first
+  character, so both letters stay.
+
+Why: after the 2026-10-18 tightening, two of the three independent reviews of
+the rerun still found a T5 escape that no check saw (find-8b6828). `initials`
+kept only the first character of an upper case (`to_uppercase().next()`), so
+`initials("ßeta")` was "S". The fixture's replay solution upper-cases in full
+(`flat_map(char::to_uppercase)`). The fixture was tightened once more, as on
+2026-10-18 (find-8b6828, option 2), before the next three live runs
+(gap-f30b8e).

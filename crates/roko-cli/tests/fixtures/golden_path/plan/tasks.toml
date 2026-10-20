@@ -3,7 +3,8 @@
 # the seed. Written by hand from plan.md, and frozen before any solution or
 # replay patch existed. No task pins a model: role and tier pick the rung.
 # On 2026-10-18 four acceptance tests gained cases and their counts grew with
-# them (T1, T2, T5, T6; find-4003b9); plan.md says what changed and why.
+# them (T1, T2, T5, T6; find-4003b9), and on 2026-10-19 T5's and T6's gained
+# one more each (find-8b6828); plan.md says what changed and why.
 
 [meta]
 plan = "golden-path"
@@ -175,7 +176,7 @@ read_files = [
 src = "accept/alpha_initials.rs"
 dest = "crates/alpha/tests/accept_initials.rs"
 runner = "cargo test -p alpha --test accept_initials"
-count = 3
+count = 4
 timeout_ms = 600000
 
 [[task]]
@@ -205,7 +206,7 @@ read_files = [
 src = "accept/beta_badge.rs"
 dest = "crates/beta/tests/accept_badge.rs"
 runner = "cargo test -p beta --test accept_badge"
-count = 3
+count = 4
 timeout_ms = 600000
 
 [[task]]

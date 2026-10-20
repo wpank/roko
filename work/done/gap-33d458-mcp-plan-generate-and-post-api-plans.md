@@ -2,7 +2,7 @@
 id = "gap-33d458"
 kind = "gap"
 title = "MCP plan_generate and POST /api/plans/generate take no max_usd, so a chat's cap on plan writing falls back to [authoring] max_generation_usd ($2), and the start answer does not say which cap applies"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/plans"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "d926f2b69"
 source = "round-v7-plugin-wow#P-7"
 discovered_from = "agent:plugin-wow (round v7, P-7)"
 anchors = ["crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation", "crates/roko-cli/src/serve_runtime.rs::generate_plan"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-18bfa2", "gap-fe4225"], 
 
 [[verify]]
 command = "grep -rqw 'fn mcp_plan_generate_takes_a_spend_cap' crates/roko-serve/src && cargo test -p roko-serve --lib -- plan_generate_takes_a_spend_cap"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T21:06:05Z"
+commit = "ee0bb0e0d"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 55d0acda8 (work/gap-33d458: ee0bb0e0d). POST /api/plans/generate and MCP plan_generate take an optional max_usd (finite, above 0; over MCP at most [serve.mcp] max_run_usd via mcp_cap, which run_cap now uses). routes::plans::GenerationCap resolves the cap that applies (the request's, else [authoring] max_generation_usd, 0 none) and serve passes it through CliRuntime::generate_plan_reporting (new max_usd parameter) into PlanRequest.max_usd; both start answers carry max_usd (null when uncapped) and max_usd_source (request|config); docs/v3/26-HTTP-API.md updated. Post-merge verify at d926f2b69 (contains 55d0acda8): grep OK; cargo test -p roko-serve --lib plan_generate_takes_a_spend_cap: 2 passed (HTTP and MCP). Branch: roko-serve lib 1075 passed, 0 failed; roko-serve plan_authoring integration 19 passed; clippy -p roko-serve -p roko-cli -D warnings clean; nightly fmt. $0 smoke through a real roko serve (fake claude_cli planner, replies $0.10 with no plan): HTTP max_usd 0.05 -> answer 0.05/request, progress.max_usd 0.05, stopped after 1 call ('reached its spend cap: its 1 planner call(s) cost $0.1000 of $0.05'); without max_usd -> 2.0/config, 3 calls; MCP 0.05 -> 0.05/request; MCP 9.0 refused above the 5.00 ceiling; HTTP 0 -> 422."
 +++
 
 ## Problem

@@ -1864,6 +1864,7 @@ fn build_schema_tree() -> toml::Value {
     ladder.max_turns.insert("_schema_sentinel".to_string(), 0);
     ladder.max_usd.insert("_schema_sentinel".to_string(), 0.0);
     ladder.max_secs.insert("_schema_sentinel".to_string(), 0);
+    ladder.slow_call_secs = Some(0);
     config.gates.env_passthrough = vec![String::new()];
     config.gates.strip_env = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they

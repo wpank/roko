@@ -288,6 +288,11 @@ pub struct LadderConfig {
     /// without a time bound.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub max_secs: BTreeMap<String, u64>,
+    /// Seconds per model call above which a rung's tries are slow, which a
+    /// run says once with a `rung_slow` event ([`Self::slow_call_secs`],
+    /// gap-3217a0); unset is [`SLOW_CALL_SECS`], `0` turns it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_call_secs: Option<u64>,
 }
 
 /// Fewest turns a try gets by default on a rung it can still climb from
@@ -297,6 +302,12 @@ pub const MIN_TRY_TURNS: u32 = 12;
 /// Fewest seconds a try gets by default on a rung it can still climb from
 /// ([`LadderConfig::try_secs`]).
 pub const MIN_TRY_SECS: u64 = 300;
+
+/// Seconds per model call above which a rung's tries are slow by default
+/// ([`LadderConfig::slow_call_secs`]): a minute, well above the 1 to 10 s a
+/// call takes on the API rungs of round v6 and v7, and below the two minutes
+/// glm-4.7's reasoning took per call on Undertow's phase 1.
+pub const SLOW_CALL_SECS: u64 = 60;
 
 /// D11's cascade plus Sonnet, cheapest first.
 fn default_ladder_rungs() -> Vec<LadderRung> {
@@ -325,6 +336,7 @@ impl Default for LadderConfig {
             max_turns: BTreeMap::new(),
             max_usd: BTreeMap::new(),
             max_secs: BTreeMap::new(),
+            slow_call_secs: None,
         }
     }
 }
@@ -561,6 +573,18 @@ impl LadderConfig {
                 .max(MIN_TRY_SECS)
                 .min(tier_secs)
         })
+    }
+
+    /// Seconds per model call above which a rung's tries are slow
+    /// (gap-3217a0): `slow_call_secs`, else [`SLOW_CALL_SECS`]; `None` when
+    /// it is `0`.
+    #[must_use]
+    pub fn slow_call_secs(&self) -> Option<u64> {
+        match self.slow_call_secs {
+            Some(0) => None,
+            Some(secs) => Some(secs),
+            None => Some(SLOW_CALL_SECS),
+        }
     }
 
     /// What one try may spend on rung `rung`, in USD: its `max_usd`, when

@@ -573,7 +573,7 @@ enum Spec {
     /// H4-B1 on the rungs.
     Frugal(Vec<String>),
     /// H4-BL: the ladder, and each rung model's arm.
-    Ladder(LadderConfig, BTreeMap<String, String>),
+    Ladder(Box<LadderConfig>, BTreeMap<String, String>),
     /// H4-B2 over (model, provider, arm) triples.
     Router(Vec<(String, String, String)>),
     /// H4-B3 over every cell.
@@ -590,7 +590,7 @@ impl Spec {
             Self::Static(arms) => Box::new(CrossFitStatic(arms.clone())),
             Self::Frugal(rungs) => Box::new(FrugalCascade::new(rungs.clone())),
             Self::Ladder(config, arms) => {
-                Box::new(ProductionLadder::new(config.clone(), arms.clone()))
+                Box::new(ProductionLadder::new((**config).clone(), arms.clone()))
             }
             Self::Router(models) => {
                 let models: Vec<(&str, &str, &str)> = models
@@ -649,7 +649,7 @@ fn policy_spec(
                 let why = format!("no arm runs a ladder rung's model ({})", rungs.join(", "));
                 return Ok(Err(why));
             }
-            Spec::Ladder(ladder.clone(), by_model)
+            Spec::Ladder(Box::new(ladder.clone()), by_model)
         }
         "H4-B2" => {
             if by_model.is_empty() {

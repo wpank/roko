@@ -585,6 +585,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         ),
                     },
                 };
+                if let Some(stop) = &bounded {
+                    attempt.ended_at_bound(stop.kind());
+                }
                 let mut settled =
                     attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
                 settled.bound = bounded.as_ref().map(BoundedStop::describe);

@@ -28,6 +28,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/c-factor/trend", get(router_state::cfactor_trend))
         .route("/learn/model-scorecard", get(model_scorecard))
+        .route("/learn/rungs", get(learn_rungs))
         .route("/learning/model-scorecard", get(model_scorecard))
         .route("/learning/efficiency", get(efficiency))
         .route("/learn/efficiency", get(efficiency))
@@ -228,6 +229,35 @@ async fn reflexes(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Api
         "top_rules": top_rules,
         "recent_demotions": demotions,
     })))
+}
+
+/// `GET /api/learn/rungs?runs=N`: how each rung of the model ladder did over
+/// the workspace's runs, the newest `runs` of them (default every run), with
+/// the line that says a higher rung beat a lower one (gap-3217a0).
+async fn learn_rungs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RungsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let workdir = state.workdir.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        let runs_dir = roko_fs::RokoLayout::for_project(&workdir).runs_dir();
+        let runs = roko_learn::telemetry::rung_stats::load_runs(&runs_dir, query.runs);
+        roko_learn::telemetry::rung_stats::RungReport::of(&runs)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("read the runs: {error}")))?;
+    Ok(Json(json!({
+        "runs": report.runs.len(),
+        "rows": report.rows,
+        "misordered": report.misordered.map(|misorder| misorder.line),
+    })))
+}
+
+/// `GET /api/learn/rungs`'s query.
+#[derive(Debug, Default, serde::Deserialize)]
+struct RungsQuery {
+    /// The newest runs to read; every run when absent.
+    runs: Option<usize>,
 }
 
 /// `GET /api/learn/playbooks` — list persisted playbooks with success rates (P2-10).

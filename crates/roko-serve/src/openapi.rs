@@ -425,6 +425,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         experiments,
         gate_thresholds,
         model_scorecard,
+        learn_rungs,
         playbooks,
         provider_outcomes,
         reflexes,
@@ -1759,6 +1760,7 @@ doc_get!(efficiency, "/learn/efficiency", "learning");
 doc_get!(experiments, "/learn/experiments", "learning");
 doc_get!(gate_thresholds, "/learn/gate-thresholds", "learning");
 doc_get!(model_scorecard, "/learn/model-scorecard", "learning");
+doc_get!(learn_rungs, "/learn/rungs", "learning");
 doc_get!(playbooks, "/learn/playbooks", "learning");
 doc_get!(provider_outcomes, "/learn/provider-outcomes", "learning");
 doc_get!(reflexes, "/learn/reflexes", "learning");

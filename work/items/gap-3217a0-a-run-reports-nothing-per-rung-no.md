@@ -82,3 +82,15 @@ $0 run with a slow, time-bounded rung shows all three. Checked by the tests in `
   1+2 as one gap, with the misordered line and `rung_slow` added.
 - The self-model's start rule weighing latency stays out of this item: gap-74893d, after phase 2's data.
 - Phase 2 of Undertow is the live test: its summary with `rungs[]` and any `rung_slow`, next to hermes-pilot's table.
+- **One readout, not a fourth** (the lead's condition, 2026-10-20). `roko learn rungs` and `GET /api/learn/rungs` are
+  the per-try readout, built from the verdicts. Here is how the other two relate to it:
+  - `roko learn telemetry route-report` stays as it is. It audits whether routing is logged honestly (decision
+    sources, ι, ε_honest), which is a different question.
+  - `GET /api/learn/model-scorecard` overlaps. Its tries, pass rate and cost per model come from `efficiency.jsonl`,
+    which has one or more rows per try. Those columns should come from this item's fold, summed per model. Its
+    per-call latency (TTFT, tokens per second) and the cascade router's trials stay, since nothing else measures
+    them. That folding is gap-c0fe41.
+- **Which runs serve's summary covers.** It reads a run's records under the run's own id. That is where a run that
+  serve started keeps them, which is the Hermes path. A CLI `plan run` keeps them under its plans' run ids
+  (`graph-<plan>-<uuid>`), which its event index doesn't name, so serve's summary of a CLI run has no rows. The CLI
+  prints them itself at the end of the run, and `GET /api/learn/rungs` and `roko learn rungs` read every run.

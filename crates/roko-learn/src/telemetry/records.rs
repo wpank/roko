@@ -1037,7 +1037,19 @@ pub struct AttemptVerdictRecord {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
+    /// The rung's bound the try ended at, when it did: [`BOUND_TURNS`],
+    /// [`BOUND_SPEND`] or [`BOUND_TIME`] (gap-3217a0). Its checks then judged
+    /// the work it left (gap-2c9412).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound: Option<String>,
 }
+
+/// [`AttemptVerdictRecord::bound`] of a try that used up its rung's turns.
+pub const BOUND_TURNS: &str = "turns";
+/// [`AttemptVerdictRecord::bound`] of a try that spent its rung's allowance.
+pub const BOUND_SPEND: &str = "spend";
+/// [`AttemptVerdictRecord::bound`] of a try that ran its rung's time.
+pub const BOUND_TIME: &str = "time";
 
 impl AttemptVerdictRecord {
     /// Settle `identity` with `outcome`. Blame and the learning label follow
@@ -1077,6 +1089,7 @@ impl AttemptVerdictRecord {
             trust_exclusions: None,
             verify_depth: None,
             workspace: None,
+            bound: None,
         }
     }
 

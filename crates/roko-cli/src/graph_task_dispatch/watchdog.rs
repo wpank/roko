@@ -375,6 +375,15 @@ impl AttemptProgress {
                 .map_or(Duration::ZERO, |since| now.saturating_duration_since(since))
     }
 
+    /// The model of the call in flight; `None` before a call starts.
+    fn call_model(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .call
+            .as_ref()
+            .map(|call| call.target.model_slug.clone())
+    }
+
     /// Whether the call in flight is to an agent that runs its own loop,
     /// which no refused model call can stop; `false` before a call starts.
     fn call_runs_own_tools(&self) -> bool {
@@ -1088,6 +1097,17 @@ impl GraphTaskDispatcher {
                 stopped_now = at_once,
                 "the try ran its rung's time; it makes no further model call"
             );
+            // The rung runs slow: the run says so once (gap-3217a0).
+            if let Some(rung) = allowance.time_rung() {
+                self.rung_reached_time_bound(
+                    attempt.plan_id,
+                    attempt.task_id,
+                    attempt.attempt,
+                    rung,
+                    &progress.call_model().unwrap_or_default(),
+                    secs,
+                );
+            }
         }
         if !at_once && ran < limit + super::try_allowance::TRY_TIME_GRACE {
             return None;

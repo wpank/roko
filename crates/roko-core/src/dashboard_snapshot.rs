@@ -408,6 +408,37 @@ pub enum DashboardEvent {
         #[serde(default)]
         cached: bool,
     },
+    /// A rung of the model ladder runs slow (gap-3217a0), once per run and
+    /// rung: one of its tries reached the rung's time bound, or its tries
+    /// spent more than `[routing.ladder] slow_call_secs` on each model call.
+    RungSlow {
+        /// The plan of the try that showed it.
+        plan_id: String,
+        /// That try's task.
+        task_id: String,
+        /// That try's ordinal, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The rung.
+        rung: String,
+        /// Its model.
+        #[serde(default)]
+        model: String,
+        /// `time_bound` or `slow_calls`.
+        reason: String,
+        /// The rung's time bound, in seconds, for `time_bound`.
+        #[serde(default)]
+        bound_secs: Option<u64>,
+        /// The seconds its tries spent on each model call, for `slow_calls`.
+        #[serde(default)]
+        secs_per_call: Option<f64>,
+        /// The model calls that average counts.
+        #[serde(default)]
+        model_calls: Option<u32>,
+        /// The finding in words, with the knob that changes it.
+        #[serde(default)]
+        detail: String,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -3436,6 +3467,20 @@ impl DashboardSnapshot {
             // A host reads the check's progress from the event stream
             // (gap-e02ec4); the log keeps its start and end.
             DashboardEvent::SpecGateStep { .. } => {}
+            DashboardEvent::RungSlow {
+                plan_id,
+                task_id,
+                detail,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "rung_slow".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    detail.clone(),
+                );
+            }
             DashboardEvent::ConfirmWaiting {
                 plan_id,
                 task_id,

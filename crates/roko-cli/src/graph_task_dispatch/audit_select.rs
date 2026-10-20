@@ -552,19 +552,43 @@ impl AuditSelector {
 }
 
 impl super::GraphTaskDispatcher {
-    /// The audit workers' phase-B checks: B1 and B3, with every configured
-    /// model a candidate author or reviewer, in `[models]` order, and B2.
+    /// The audit workers' phase-B checks: B1 and B3, with their candidate
+    /// authors ([`Self::audit_authors`]) and reviewers
+    /// ([`Self::audit_reviewers`]), and B2.
     pub(super) fn audit_phase_b(&self) -> PhaseB {
-        let timeout_ms = self
-            .config
+        PhaseB {
+            b1: Some(Arc::new(B1::new(
+                self.audit_authors(),
+                self.config.audit.clone(),
+            ))),
+            b2: Some(Arc::new(B2)),
+            b3: Some(Arc::new(B3::new(
+                self.audit_reviewers(),
+                self.config.audit.clone(),
+            ))),
+        }
+    }
+
+    /// How long one audit model call may take.
+    fn audit_call_timeout_ms(&self) -> u64 {
+        self.config
             .timeouts
             .llm_call_secs
             .max(1)
-            .saturating_mul(1_000);
-        let authors = self
-            .config
+            .saturating_mul(1_000)
+    }
+
+    /// B1's candidate suite authors: the configured models the run's side
+    /// calls may use ([`Self::side_call_models`]), in `[models]` order. In a
+    /// chat host's run B1 never takes a CLI agent; with no API model of
+    /// another family than the implementer's, it is null (bug-082810).
+    pub(super) fn audit_authors(&self) -> Vec<Arc<dyn SuiteAuthor>> {
+        let timeout_ms = self.audit_call_timeout_ms();
+        let models = self.side_call_models();
+        self.config
             .models
             .iter()
+            .filter(|(key, _)| models.allow(key))
             .map(|(key, profile)| {
                 let author = FactoryAuthor::new(
                     Arc::clone(&self.factory),
@@ -574,11 +598,18 @@ impl super::GraphTaskDispatcher {
                 );
                 Arc::new(author) as Arc<dyn SuiteAuthor>
             })
-            .collect();
-        let reviewers = self
-            .config
+            .collect()
+    }
+
+    /// B3's candidate reviewers: the configured models the run's side calls
+    /// may use ([`Self::side_call_models`]), in `[models]` order.
+    pub(super) fn audit_reviewers(&self) -> Vec<Reviewer> {
+        let timeout_ms = self.audit_call_timeout_ms();
+        let models = self.side_call_models();
+        self.config
             .models
             .iter()
+            .filter(|(key, _)| models.allow(key))
             .map(|(key, profile)| {
                 let factory = Arc::clone(&self.factory);
                 let model_key = key.clone();
@@ -601,12 +632,7 @@ impl super::GraphTaskDispatcher {
                     agent,
                 }
             })
-            .collect();
-        PhaseB {
-            b1: Some(Arc::new(B1::new(authors, self.config.audit.clone()))),
-            b2: Some(Arc::new(B2)),
-            b3: Some(Arc::new(B3::new(reviewers, self.config.audit.clone()))),
-        }
+            .collect()
     }
 }
 
@@ -1681,6 +1707,161 @@ mod tests {
         // On the run's audit line, not the task's budget or the plan's.
         assert_eq!(dispatcher.task_spend.task_total("plan/T1"), 0);
         let spent = dispatcher.plan_budget_snapshot("plan").spent_usd;
+        assert!(spent.abs() < f64::EPSILON, "{spent}");
+    }
+
+    /// A config whose `[models]` list the person's Claude CLI first, then
+    /// glm-4.7 on z.ai and gpt-5.4-mini on OpenAI, both over the API, with
+    /// the CLI model as the helpers' fast model too.
+    fn cli_first_config() -> roko_core::config::schema::RokoConfig {
+        use roko_core::agent::ProviderKind;
+
+        let mut config = crate::graph_task_dispatch::tests::fixture_config();
+        config.providers.clear();
+        config.models.clear();
+        let api = |base_url: &str| roko_core::config::schema::ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(base_url.to_string()),
+            command: None,
+            // `PATH` is always set, standing in for a key.
+            api_key_env: Some("PATH".to_string()),
+            ..crate::graph_task_dispatch::tests::cli_provider("")
+        };
+        // A command that exists, so the CLI model is dispatchable: its rows
+        // and helpers would take it.
+        config.providers.insert(
+            "claude_cli".to_string(),
+            crate::graph_task_dispatch::tests::cli_provider("/usr/bin/true"),
+        );
+        config
+            .providers
+            .insert("zai".to_string(), api("http://127.0.0.1:9/zai/v1"));
+        config
+            .providers
+            .insert("openai".to_string(), api("http://127.0.0.1:9/openai/v1"));
+        config.models.insert(
+            "claude-sonnet-4-6".to_string(),
+            model("claude_cli", "claude-sonnet-4-6", Some((3.0, 15.0))),
+        );
+        config.models.insert(
+            "glm-4-7".to_string(),
+            model("zai", "glm-4.7", Some((0.6, 2.2))),
+        );
+        config.models.insert(
+            "gpt-5-4-mini".to_string(),
+            model("openai", "gpt-5.4-mini", Some((0.75, 4.5))),
+        );
+        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        config.routing.fast_task_model = "claude-sonnet-4-6".to_string();
+        config
+    }
+
+    /// bug-082810: in round v7's phase 0 run e578cf71, a run a Hermes chat
+    /// started, the B1 audit's suite author ran as the person's Claude CLI
+    /// (`roko-audit-b1` on claude_cli / claude-sonnet-4-6): B1 takes the first
+    /// configured model of another family than the implementer's, and that
+    /// was the ladder's top rung. A run that holds its outbound tool calls
+    /// for approval, as a chat host's does, calls only the models roko's own
+    /// tool loop runs. Its audit's authors and reviewers and its helper calls
+    /// never name a CLI agent, and B1 takes the API model of another family.
+    /// A run from the command line keeps every model, as before.
+    #[tokio::test]
+    async fn a_chat_host_runs_audit_uses_only_tool_loop_models() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = cli_first_config();
+        let families = config.audit.clone();
+        let cli_run =
+            crate::graph_task_dispatch::tests::make_bare_dispatcher(config.clone(), temp.path())
+                .await;
+        let chat_run = crate::graph_task_dispatch::tests::make_bare_dispatcher(config, temp.path())
+            .await
+            .with_outbound_floor(Some(roko_core::tool::OutboundPolicy::Stage));
+        let models = |dispatcher: &GraphTaskDispatcher| -> Vec<String> {
+            dispatcher
+                .audit_authors()
+                .iter()
+                .map(|author| author.model().to_string())
+                .collect()
+        };
+
+        assert_eq!(
+            models(&cli_run),
+            ["claude-sonnet-4-6", "glm-4.7", "gpt-5.4-mini"]
+        );
+        assert_eq!(models(&chat_run), ["glm-4.7", "gpt-5.4-mini"]);
+        let reviewers: Vec<String> = chat_run
+            .audit_reviewers()
+            .iter()
+            .map(|reviewer| reviewer.model.clone())
+            .collect();
+        assert_eq!(reviewers, ["glm-4.7", "gpt-5.4-mini"]);
+        // B1's author for a glm-4.7 implementer: the first of another family.
+        let implementer = families.family_of("glm-4.7").expect("glm's family");
+        let author = models(&chat_run)
+            .into_iter()
+            .find(|model| families.family_of(model).is_some_and(|f| f != implementer));
+        assert_eq!(author.as_deref(), Some("gpt-5.4-mini"));
+
+        // The helpers: the cheap helper and the judge, though the fast model
+        // the config names is the CLI's.
+        let helper = chat_run.cheap_agent().expect("a helper model");
+        assert_ne!(helper.model_slug(), "claude-sonnet-4-6");
+        let (judge, cross_family) = chat_run.judge_model_key("glm-4.7").expect("a judge");
+        assert_eq!((judge.as_str(), cross_family), ("gpt-5-4-mini", true));
+        let cli_helper = cli_run.cheap_agent().expect("a helper model");
+        assert_eq!(cli_helper.model_slug(), "claude-sonnet-4-6");
+    }
+
+    /// bug-082810: a chat host's run is held to its cap, and its audit's
+    /// model calls are part of it: each call's cost is settled on the plan's
+    /// budget, and the audit is told what the plan has left. A run from the
+    /// command line keeps decision 7103's line: its audits charge no budget.
+    #[tokio::test]
+    async fn a_chat_host_runs_audit_spend_counts_against_its_cap() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = cli_first_config();
+        let cli_run =
+            crate::graph_task_dispatch::tests::make_bare_dispatcher(config.clone(), temp.path())
+                .await
+                .with_plan_budget(1.0, 1.0, false);
+        let chat_run = crate::graph_task_dispatch::tests::make_bare_dispatcher(config, temp.path())
+            .await
+            .with_plan_budget(1.0, 1.0, false)
+            .with_outbound_floor(Some(roko_core::tool::OutboundPolicy::Stage));
+        let unit = crate::audit::worker::AuditUnit {
+            sel_id: "sel-000000000001".to_string(),
+            attempt_key: "run-1:plan:T1:1".to_string(),
+            run_id: "run-1".to_string(),
+            plan_id: "plan".to_string(),
+            task_id: "T1".to_string(),
+            pi: 1.0,
+            base_tree: None,
+            result_tree: None,
+            model: "glm-4.7".to_string(),
+            prediction_id: None,
+            task: crate::audit::worker::AuditTask::default(),
+        };
+        let call = CheckCall {
+            model: "gpt-5.4-mini".to_string(),
+            usage: roko_core::Usage {
+                cost_usd: 0.25,
+                ..roko_core::Usage::default()
+            },
+            success: true,
+        };
+
+        let log = chat_run.audit_call_log();
+        assert_eq!(log.headroom_usd(&unit), Some(1.0));
+        log.record(&unit, "b1", std::slice::from_ref(&call)).await;
+        let spent = chat_run.plan_budget_snapshot("plan").spent_usd;
+        assert!((spent - 0.25).abs() < 1e-6, "{spent}");
+        let left = log.headroom_usd(&unit).expect("the plan's headroom");
+        assert!((left - 0.75).abs() < 1e-6, "{left}");
+
+        let log = cli_run.audit_call_log();
+        assert_eq!(log.headroom_usd(&unit), None);
+        log.record(&unit, "b1", &[call]).await;
+        let spent = cli_run.plan_budget_snapshot("plan").spent_usd;
         assert!(spent.abs() < f64::EPSILON, "{spent}");
     }
 }

@@ -80,6 +80,90 @@ struct EventQuery {
     limit: Option<usize>,
     types: Option<String>,
     source: Option<String>,
+    /// What to leave out ([`Skip`]): `live_text`, `heartbeats`.
+    skip: Option<String>,
+}
+
+/// What a reader of a run's events leaves out with `?skip=` (gap-cb9044).
+/// With trusted live output every reasoning and text delta is one record, so
+/// a long run's index is almost all words that a page reading its history
+/// does not show; the scan passes over them before parsing them, as a
+/// summary passes over [`STREAM_EVENT_TYPES`]. Cursors stay byte offsets, so
+/// a reader can page one index with and without it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Skip {
+    /// `live_text`: an agent's streamed reasoning, and its text while it
+    /// streams. Its tool steps, tool results and final text stay.
+    live_text: bool,
+    /// `heartbeats`: `agent_heartbeat` and `plan_check_heartbeat`.
+    heartbeats: bool,
+}
+
+/// How the index writes an agent's live stream record: an `agent_output`
+/// whose content is a `roko.stream.v1` envelope. The envelope sits escaped
+/// inside the record, so its fields read `\"kind\":\"reasoning\"` there,
+/// and words an agent quotes in a tool result, escaped once more, never
+/// match them.
+const AGENT_OUTPUT_FIELD: &str = "\"type\":\"agent_output\"";
+const STREAM_ENVELOPE_FIELD: &str = "\"content\":\"\\u001eroko.stream.v1 ";
+const ENVELOPE_REASONING: &str = r#"\"kind\":\"reasoning\""#;
+const ENVELOPE_TEXT: &str = r#"\"kind\":\"text\""#;
+const ENVELOPE_LIVE: &str = r#"\"live\":true"#;
+
+/// The heartbeats' `type` fields as the index writes them.
+const HEARTBEAT_TYPE_FIELDS: [&str; 2] = [
+    "\"type\":\"agent_heartbeat\"",
+    "\"type\":\"plan_check_heartbeat\"",
+];
+
+impl Skip {
+    /// `?skip=`, a comma list of `live_text` and `heartbeats`.
+    fn parse(raw: Option<&str>) -> Result<Self, ApiError> {
+        let mut skip = Self::default();
+        for item in raw
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            match item {
+                "live_text" => skip.live_text = true,
+                "heartbeats" => skip.heartbeats = true,
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "skip takes a comma list of live_text and heartbeats",
+                    ));
+                }
+            }
+        }
+        Ok(skip)
+    }
+
+    /// Whether the record whose raw line is `line` is left out.
+    fn matches(self, line: &str) -> bool {
+        let live_text = || {
+            line.contains(AGENT_OUTPUT_FIELD)
+                && line.contains(STREAM_ENVELOPE_FIELD)
+                && (line.contains(ENVELOPE_REASONING)
+                    || (line.contains(ENVELOPE_TEXT) && line.contains(ENVELOPE_LIVE)))
+        };
+        (self.heartbeats
+            && HEARTBEAT_TYPE_FIELDS
+                .iter()
+                .any(|field| line.contains(field)))
+            || (self.live_text && live_text())
+    }
+
+    /// What it leaves out, as `?skip=` names it.
+    fn names(self) -> Vec<&'static str> {
+        [
+            (self.live_text, "live_text"),
+            (self.heartbeats, "heartbeats"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
+    }
 }
 
 /// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21), and which work it
@@ -138,6 +222,8 @@ struct IndexedPage {
     has_more: bool,
     scanned_bytes: u64,
     quarantined_records: usize,
+    /// The records the scan's `skip` passed over unparsed (gap-4de4b9).
+    skipped_records: usize,
     partial_tail: bool,
     events: Vec<IndexedEvent>,
 }
@@ -438,11 +524,12 @@ async fn get_run_events(
     let types = parse_types(query.types.as_deref())?;
     let limit = bounded_limit(query.limit)?;
     let source = parse_source(query.source.as_deref())?;
+    let skip = Skip::parse(query.skip.as_deref())?;
     let io_state = Arc::clone(&state);
     let io_run_id = run_id.clone();
     let cursor = query.cursor.unwrap_or(0);
     let page = blocking_io(move || {
-        read_for_run(
+        read_for_run_skipping(
             &io_state,
             &io_run_id,
             source,
@@ -450,12 +537,21 @@ async fn get_run_events(
             limit,
             MAX_PAGE_SCAN_BYTES,
             &types,
+            &|line: &str| skip.matches(line),
         )
     })
     .await?
     .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no event index")))?;
 
-    Ok(Json(page_json(&run_id, page)).into_response())
+    let skipped_rows = page.skipped_records;
+    let mut page = page_json(&run_id, page);
+    if skip != Skip::default() {
+        page["skipped"] = json!(skip.names());
+        // gap-4de4b9: how many rows the page passed over, so a reader's
+        // count stays the index's true size.
+        page["skipped_rows"] = json!(skipped_rows);
+    }
+    Ok(Json(page).into_response())
 }
 
 /// Explicit alias for clients that cannot set an Accept header.
@@ -503,12 +599,13 @@ async fn run_events_sse(
     };
     if !has_runtime_index {
         let types = parse_types(query.types.as_deref())?;
+        let skip = Skip::parse(query.skip.as_deref())?;
         let header_cursor = headers
             .get("Last-Event-ID")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
         let cursor = header_cursor.or(query.cursor).unwrap_or(0);
-        return Ok(runner_index_sse(state, run_id, cursor, types));
+        return Ok(runner_index_sse(state, run_id, cursor, types, skip));
     }
 
     query.source = Some("runtime".to_string());
@@ -629,12 +726,14 @@ fn runner_index_sse(
     run_id: String,
     cursor: u64,
     types: BTreeSet<String>,
+    skip: Skip,
 ) -> Response {
     struct Follow {
         state: Arc<AppState>,
         run_id: String,
         cursor: u64,
         types: BTreeSet<String>,
+        skip: Skip,
         pending: std::collections::VecDeque<Event>,
         ended: bool,
     }
@@ -643,6 +742,7 @@ fn runner_index_sse(
         run_id,
         cursor,
         types,
+        skip,
         pending: std::collections::VecDeque::new(),
         ended: false,
     };
@@ -657,9 +757,11 @@ fn runner_index_sse(
             let io_state = Arc::clone(&follow.state);
             let io_run_id = follow.run_id.clone();
             let cursor = follow.cursor;
-            // Read every row, whatever `types` asks for, so the run's end is seen.
+            let skip = follow.skip;
+            // Read every row, whatever `types` asks for, so the run's end is
+            // seen; what `skip` leaves out is never the end.
             let page = blocking_io(move || {
-                read_for_run(
+                read_for_run_skipping(
                     &io_state,
                     &io_run_id,
                     Some(EventSource::Runner),
@@ -667,6 +769,7 @@ fn runner_index_sse(
                     MAX_SSE_REPLAY,
                     MAX_PAGE_SCAN_BYTES,
                     &BTreeSet::new(),
+                    &|line: &str| skip.matches(line),
                 )
             })
             .await;
@@ -1361,6 +1464,46 @@ fn read_for_run(
     )
 }
 
+/// [`read_for_run`], passing over each record whose raw line `skip` matches
+/// before it is parsed (gap-cb9044).
+fn read_for_run_skipping(
+    state: &AppState,
+    run_id: &str,
+    requested_source: Option<EventSource>,
+    cursor: u64,
+    limit: usize,
+    scan_bytes: u64,
+    types: &BTreeSet<String>,
+    skip: &dyn Fn(&str) -> bool,
+) -> Result<Option<IndexedPage>, ApiError> {
+    let candidates: &[EventSource] = match requested_source {
+        Some(EventSource::Runner) => &[EventSource::Runner],
+        Some(EventSource::Runtime) => &[EventSource::Runtime],
+        None => &[EventSource::Runner, EventSource::Runtime],
+    };
+    for source in candidates {
+        let Some(path) = source_path(state, run_id, *source) else {
+            continue;
+        };
+        if roko_fs::run_index::open_existing_run_index(&path).is_ok() {
+            return read_index_page_scan(
+                &path,
+                run_id,
+                *source,
+                cursor,
+                limit,
+                scan_bytes,
+                types,
+                state.scrubber.as_ref(),
+                &|_| true,
+                skip,
+            )
+            .map(Some);
+        }
+    }
+    Ok(None)
+}
+
 fn read_for_run_filtered(
     state: &AppState,
     run_id: &str,
@@ -1497,6 +1640,7 @@ fn read_for_summary_within(
     page.quarantined_records = page
         .quarantined_records
         .saturating_add(tail.quarantined_records);
+    page.skipped_records = page.skipped_records.saturating_add(tail.skipped_records);
     page.partial_tail = tail.partial_tail;
     Ok(Some(page))
 }
@@ -1621,6 +1765,7 @@ fn read_index_page_scan(
     let mut offset = cursor;
     let mut scanned_bytes = 0u64;
     let mut quarantined = 0usize;
+    let mut skipped = 0usize;
     let mut partial_tail = false;
     let mut events = Vec::new();
     let mut line = String::new();
@@ -1652,6 +1797,7 @@ fn read_index_page_scan(
             break;
         }
         if skip(&line) {
+            skipped += 1;
             continue;
         }
         let parsed = serde_json::from_str::<Value>(line.trim_end());
@@ -1693,6 +1839,7 @@ fn read_index_page_scan(
         has_more: offset < file_len,
         scanned_bytes,
         quarantined_records: quarantined,
+        skipped_records: skipped,
         partial_tail,
         events,
     })
@@ -1959,6 +2106,11 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     let mut efficiency = Efficiency::default();
     // The first time any row carries: a Graph run has no start event of its own.
     let mut first_time = None;
+    // A running try's model calls as they return (gap-5c3347): what each
+    // attempt's priced calls have cost so far, until it settles and its own
+    // records count it.
+    let mut live_calls = BTreeMap::<(String, String, u64), f64>::new();
+    let mut settled = BTreeSet::<(String, String, u64)>::new();
 
     for item in events {
         let value = &item.value;
@@ -1992,6 +2144,23 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
         if kind == "efficiency_event" {
             efficiency.add(value);
+        }
+        if matches!(kind, "call_cost" | "attempt_settled")
+            && let (Some(plan_id), Some(task_id), Some(attempt)) = (
+                event_plan_id(value),
+                event_task_id(value),
+                event_attempt(value),
+            )
+        {
+            let key = (plan_id.to_string(), task_id.to_string(), attempt);
+            if kind == "attempt_settled" {
+                settled.insert(key);
+            } else if let Some(cost) = decimal(value, "attempt_cost_usd") {
+                live_calls
+                    .entry(key)
+                    .and_modify(|current| *current = current.max(cost))
+                    .or_insert(cost);
+            }
         }
         // Graph runs report a rung's verdict as `gate_result` (bug-28aae1).
         if kind == "gate_result"
@@ -2062,6 +2231,15 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     {
         cost_usd = efficiency.cost_usd;
     }
+    // What the tries that have not settled spent so far (gap-5c3347).
+    let live_cost_usd: f64 = live_calls
+        .iter()
+        .filter(|(key, _)| !settled.contains(*key))
+        .map(|(_, cost)| cost)
+        .sum();
+    if final_cost.is_none() {
+        cost_usd += live_cost_usd;
+    }
     if efficiency.seen && input_tokens == 0 && output_tokens == 0 {
         input_tokens = efficiency.input_tokens;
         output_tokens = efficiency.output_tokens;
@@ -2098,6 +2276,7 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             "cache_write_tokens": cache_write_tokens,
             "total_tokens": total_tokens,
             "cost_usd": cost_usd,
+            "live_cost_usd": live_cost_usd,
             "duration_ms": duration_ms,
         }
     })
@@ -3114,6 +3293,206 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// gap-5c3347: a running try's spend counts in the run's summary as its
+    /// model calls return (`call_cost`), beside the settled tries' own
+    /// records, and stops counting once the try settles.
+    #[test]
+    fn a_running_try_s_spend_reaches_the_run_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let efficiency = |metric: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T1","metric":metric,"value":value});
+        let call = |task: &str, attempt: u32, call: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"call":call,"model":"glm-4.7","input_tokens":1000,"output_tokens":100,"cost_usd":0.01,"attempt_cost_usd":so_far});
+        let settled = |task: &str, attempt: u32| json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"verdict":"passed","cost_usd":0.02});
+        let summary = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            summarize_events(&page.events)["metrics"].clone()
+        };
+        let cost = |metrics: &Value, name: &str| metrics[name].as_f64().expect(name);
+
+        // T1 settled at $0.02; T2's try has made two calls, $0.03 so far.
+        let mut rows = vec![
+            call("T1", 1, 1, 0.01),
+            call("T1", 1, 2, 0.02),
+            settled("T1", 1),
+            efficiency("cost_usd", 0.02),
+            call("T2", 1, 1, 0.01),
+            call("T2", 1, 2, 0.03),
+        ];
+        let running = summary(&rows);
+        assert!(
+            (cost(&running, "cost_usd") - 0.05).abs() < 1e-9,
+            "{running}"
+        );
+        assert!(
+            (cost(&running, "live_cost_usd") - 0.03).abs() < 1e-9,
+            "{running}"
+        );
+
+        // T2's try settles: its own records count it, and nothing is live.
+        rows.extend([settled("T2", 1), efficiency("cost_usd", 0.03)]);
+        let ended = summary(&rows);
+        assert!((cost(&ended, "cost_usd") - 0.05).abs() < 1e-9, "{ended}");
+        assert!(cost(&ended, "live_cost_usd").abs() < 1e-9, "{ended}");
+    }
+
+    /// gap-cb9044: `?skip=live_text,heartbeats` leaves a run's streamed
+    /// reasoning, its live text and its heartbeats out of the event pages,
+    /// unparsed, and keeps its tool steps, its tool results (one that quotes
+    /// the envelope's words included), its final text, its gate lines and
+    /// its structural events. Paging with `next_cursor` crosses the runs of
+    /// skipped records, and the page says what it skipped.
+    #[tokio::test]
+    async fn a_run_events_page_can_skip_live_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        let output = |kind: &str, live: bool, payload: Value| {
+            let mut envelope = json!({"agent_id":"p1/T1","attempt":1,"kind":kind,"payload":payload,"plan_id":"p1","task_id":"T1"});
+            if live {
+                envelope["live"] = json!(true);
+            }
+            json!({"type":"agent_output","run_id":"g1","agent_id":"p1/T1","plan_id":"p1","task_id":"T1","attempt":1,"content":format!("\u{1e}roko.stream.v1 {envelope}")})
+        };
+        let heartbeat = json!({"type":"agent_heartbeat","run_id":"g1","agent_id":"p1/T1","plan_id":"p1","task_id":"T1","elapsed_ms":1000});
+        let mut rows =
+            vec![json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1})];
+        rows.extend((0..40).map(|_| output("reasoning", true, json!({"text":"Let"}))));
+        rows.push(output(
+            "tool_start",
+            true,
+            json!({"tool":"bash","tool_id":"c1","target":"cmake --build"}),
+        ));
+        rows.extend((0..10).map(|_| heartbeat.clone()));
+        rows.push(output(
+            "tool_result",
+            true,
+            json!({"tool_id":"c1","output":"grep found \"kind\":\"reasoning\",\"live\":true"}),
+        ));
+        rows.extend((0..30).map(|_| output("text", true, json!({"text":"Done"}))));
+        rows.push(output(
+            "text",
+            false,
+            json!({"text":"Done: wrote 3 files."}),
+        ));
+        rows.push(json!({"type":"gate_output_line","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","line":"[ 50%] Building CXX object"}));
+        rows.push(json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true}));
+        rows.push(
+            json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}),
+        );
+        write_rows(&index, &rows);
+
+        let page = |cursor: u64| {
+            let state = Arc::clone(&state);
+            async move {
+                let query = EventQuery {
+                    cursor: Some(cursor),
+                    limit: Some(3),
+                    skip: Some("live_text,heartbeats".to_string()),
+                    ..EventQuery::default()
+                };
+                let response = get_run_events(
+                    State(state),
+                    Path("g1".into()),
+                    HeaderMap::new(),
+                    Query(query),
+                )
+                .await
+                .expect("a page");
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body");
+                serde_json::from_slice::<Value>(&body).expect("json")
+            }
+        };
+        let mut kept = Vec::new();
+        let mut cursor = 0;
+        let mut requests = 0;
+        let mut skipped_rows = 0;
+        loop {
+            let page = page(cursor).await;
+            requests += 1;
+            assert_eq!(
+                page["skipped"],
+                json!(["live_text", "heartbeats"]),
+                "{page}"
+            );
+            skipped_rows += page["skipped_rows"].as_u64().expect("skipped_rows");
+            for event in page["events"].as_array().expect("events") {
+                let event = &event["event"];
+                let kind = event["type"].as_str().expect("type").to_string();
+                let content = event["content"].as_str().unwrap_or_default();
+                let stream_kind = content
+                    .split_once(' ')
+                    .and_then(|(_, envelope)| serde_json::from_str::<Value>(envelope).ok())
+                    .and_then(|envelope| envelope["kind"].as_str().map(str::to_string));
+                kept.push(stream_kind.map_or(kind, |stream| format!("agent_output:{stream}")));
+            }
+            if page["has_more"] != json!(true) {
+                break;
+            }
+            cursor = page["next_cursor"].as_u64().expect("next_cursor");
+        }
+        assert_eq!(
+            kept,
+            [
+                "plan_started",
+                "agent_output:tool_start",
+                "agent_output:tool_result",
+                "agent_output:text",
+                "gate_output_line",
+                "gate_result",
+                "run_completed",
+            ]
+        );
+        assert_eq!(requests, 3, "7 kept rows at 3 a page");
+        // gap-4de4b9: what the pages sent and passed over is the whole index.
+        assert_eq!(
+            skipped_rows, 80,
+            "40 reasoning, 10 heartbeats, 30 live text"
+        );
+        assert_eq!(kept.len() + 80, rows.len());
+
+        // Without `skip`, the same index pages every record, and says nothing
+        // was skipped.
+        let all = read_for_run(
+            &state,
+            "g1",
+            None,
+            0,
+            MAX_PAGE_LIMIT,
+            MAX_PAGE_SCAN_BYTES,
+            &BTreeSet::new(),
+        )
+        .unwrap()
+        .expect("an index");
+        assert_eq!(all.events.len(), rows.len());
+        assert!(Skip::parse(Some("live_text,nope")).is_err());
+        assert_eq!(Skip::parse(None).unwrap(), Skip::default());
     }
 
     fn write_rows(path: &FsPath, rows: &[Value]) {

@@ -181,13 +181,42 @@ pub fn gate_plans(
     workdir: &Path,
     config: &SpecQualityConfig,
 ) -> Result<SpecGateReport, crate::spec_red_on_base::Interrupted> {
-    let red_on_base = crate::spec_red_on_base::gate_results(files, workdir, config)?;
+    gate_plans_with(files, workdir, config, &GateRun::default()).map(|(report, _)| report)
+}
+
+/// How the plan-load gate runs its red-on-base check (gap-e02ec4).
+#[derive(Default)]
+pub struct GateRun<'a> {
+    /// `[gates] warm_build_dirs`: the build trees a base checkout keeps
+    /// between runs and starts from; every CMake build tree when `None`.
+    pub warm_build_dirs: Option<&'a [String]>,
+    /// Told of each step of the check as it ends.
+    pub on_step: Option<&'a dyn Fn(&crate::spec_red_on_base::StepDone)>,
+}
+
+/// [`gate_plans`] as `run` asks, with what its red-on-base check did.
+pub fn gate_plans_with(
+    files: &[PathBuf],
+    workdir: &Path,
+    config: &SpecQualityConfig,
+    run: &GateRun<'_>,
+) -> Result<
+    (SpecGateReport, crate::spec_red_on_base::CheckCounts),
+    crate::spec_red_on_base::Interrupted,
+> {
+    let (red_on_base, counts) = crate::spec_red_on_base::gate_results_with(
+        files,
+        workdir,
+        config,
+        run.warm_build_dirs,
+        run.on_step.unwrap_or(&|_| {}),
+    )?;
     let mut report = check_plans(files, workdir, config, &red_on_base);
     if config.is_on() {
         apply_refine_requests(&mut report, &workspace_refine_requests(workdir));
     }
     apply_holdout(&mut report, config.holdout_frac, &holdout_epoch());
-    Ok(report)
+    Ok((report, counts))
 }
 
 /// The self-model's refine requests in every run of the workspace at

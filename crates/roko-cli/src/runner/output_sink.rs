@@ -1508,6 +1508,70 @@ pub fn format_dashboard_event(
                 format!("Ladder exhausted on {rung} ({model}): {suggestion}"),
             )
         }
+        // The spec gate's checks on the base can take minutes before any
+        // agent starts (gap-6a319c): say so, and say when they end.
+        DashboardEvent::SpecGateStarted {
+            tasks_total,
+            steps_total,
+            ..
+        } => {
+            if *tasks_total == 0 {
+                return None;
+            }
+            (
+                String::new(),
+                ">",
+                format!(
+                    "Checking {tasks_total} tasks' checks on the unchanged base (at most \
+                     {steps_total} runs)"
+                ),
+            )
+        }
+        // A step that took a while on the base says so as it ends
+        // (gap-e02ec4); a quick or cached one does not.
+        DashboardEvent::SpecGateStep {
+            plan_id,
+            task_id,
+            run,
+            step,
+            passed,
+            ms,
+            cached,
+        } => {
+            if *cached || *ms < 10_000 {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let secs = *ms as f64 / 1000.0;
+            let ended = if *passed { "passed" } else { "failed" };
+            (
+                format!("[{plan_id}/{task_id}]"),
+                ">",
+                format!("Base run {run}, step {step} {ended} in {secs:.1} s"),
+            )
+        }
+        DashboardEvent::SpecGateFinished {
+            elapsed_ms,
+            blocked,
+            cached,
+            ..
+        } => {
+            if *elapsed_ms < 1_000 {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let secs = *elapsed_ms as f64 / 1000.0;
+            let icon = if *blocked == 0 { "+" } else { "x" };
+            let from_cache = match cached {
+                Some(cached) if *cached > 0 => format!(" ({cached} from the cache)"),
+                _ => String::new(),
+            };
+            (
+                String::new(),
+                icon,
+                format!("Spec gate done in {secs:.1} s, {blocked} tasks blocked{from_cache}"),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))
@@ -1621,6 +1685,8 @@ pub fn format_dashboard_event(
         | DashboardEvent::EffectDecided { .. }
         | DashboardEvent::ConfirmWaiting { .. }
         | DashboardEvent::ConfirmResolved { .. }
+        | DashboardEvent::AttemptMerged { .. }
+        | DashboardEvent::CallCost { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

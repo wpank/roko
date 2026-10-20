@@ -88,8 +88,16 @@ pub struct TimeoutConfig {
     /// calls (bash, read, write, etc.) when no per-tool override is set.
     /// Replaces the previously-hardcoded `120_000` ms default scattered
     /// across `roko-std`, `roko-acp`, `roko-chain`, and tool definitions.
+    /// An agent's tool calls get it unless they ask for their own
+    /// (bug-c22bd9).
     #[serde(default = "default_tool_execution_ms")]
     pub tool_execution_ms: u64,
+
+    /// The most a tool call may ask for with its own `timeout_ms` (`bash`,
+    /// `run_tests`), in milliseconds (bug-c22bd9): a longer ask is cut to it.
+    /// Default 600 000.
+    #[serde(default = "default_tool_execution_max_ms")]
+    pub tool_execution_max_ms: u64,
 
     /// ACP (Agent Client Protocol) request timeout (milliseconds).
     /// Applied to inbound ACP tool dispatches and bridge event handling.
@@ -131,6 +139,10 @@ pub const DEFAULT_LLM_CALL_SECS: u64 = DEFAULT_AGENT_TIMEOUT_SECS;
 /// eval collectors, dream agent configs, SLA budgets, and cooldown filters
 /// that previously hardcoded `120_000`.
 pub const DEFAULT_AGENT_TIMEOUT_MS: u64 = DEFAULT_AGENT_TIMEOUT_SECS * 1_000;
+
+/// The most a tool call may ask for with its own `timeout_ms`, in
+/// **milliseconds** (10 minutes; bug-c22bd9).
+pub const DEFAULT_TOOL_EXECUTION_MAX_MS: u64 = 600_000;
 
 /// Default ACP / tool-execution request timeout in **milliseconds** (2 minutes).
 ///
@@ -175,6 +187,9 @@ const fn default_post_run_cleanup_secs() -> u64 {
 }
 const fn default_tool_execution_ms() -> u64 {
     DEFAULT_ACP_REQUEST_MS
+}
+const fn default_tool_execution_max_ms() -> u64 {
+    DEFAULT_TOOL_EXECUTION_MAX_MS
 }
 const fn default_acp_request_ms() -> u64 {
     DEFAULT_ACP_REQUEST_MS
@@ -284,6 +299,12 @@ impl TimeoutConfig {
         self.tool_execution_ms
     }
 
+    /// The most a tool call may ask for with its own `timeout_ms`, as
+    /// [`Duration`] (bug-c22bd9).
+    pub fn tool_execution_max(&self) -> Duration {
+        Duration::from_millis(self.tool_execution_max_ms)
+    }
+
     /// ACP request timeout as [`Duration`].
     pub fn acp_request(&self) -> Duration {
         Duration::from_millis(self.acp_request_ms)
@@ -333,6 +354,7 @@ impl Default for TimeoutConfig {
             plan_total_secs: default_plan_total_secs(),
             post_run_cleanup_secs: default_post_run_cleanup_secs(),
             tool_execution_ms: default_tool_execution_ms(),
+            tool_execution_max_ms: default_tool_execution_max_ms(),
             acp_request_ms: default_acp_request_ms(),
             graph_node_secs: default_graph_node_secs(),
             lost_effect_secs: default_lost_effect_secs(),
@@ -412,6 +434,7 @@ mod tests {
             plan_total_secs: 7_200,
             post_run_cleanup_secs: 60,
             tool_execution_ms: 60_000,
+            tool_execution_max_ms: 300_000,
             acp_request_ms: 90_000,
             graph_node_secs: 180,
             lost_effect_secs: 300,

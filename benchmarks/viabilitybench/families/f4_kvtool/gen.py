@@ -43,8 +43,52 @@ SPEC = HERE / "spec"
 REPO_DIR = "repo"
 BUNDLE_FILE = "pristine.bundle"
 PLACEHOLDER = re.compile(r"__[A-Z][A-Z_]*__")
-DOCS = {"documented": "kvtool.documented.md", "undocumented": "kvtool.undocumented.md",
-        "legacy_distractor": "kvtool.undocumented.md", "stale_or_contradictory": "kvtool.stale.md"}
+DOCS = {"spelled_out": "kvtool.documented.md", "documented": "kvtool.documented.md",
+        "undocumented": "kvtool.undocumented.md", "legacy_distractor": "kvtool.undocumented.md",
+        "stale_or_contradictory": "kvtool.stale.md"}
+DOCUMENTED = ("spelled_out", "documented")  # the k_doc values whose repo documents both quirks
+# k_doc "spelled_out" (gap-dd670b): the precise spec's own `## kvtool` section, in each latent's convention. No `$`:
+# the spec is rendered with string.Template, and a test holds it to that.
+KVTOOL_SECTION = {
+    "v1": """\
+## kvtool
+
+What the script needs from `bin/kvtool` (`bin/kvtool --help` and `docs/kvtool.md` have the rest):
+
+- `bin/kvtool rename --from PREFIX --to PREFIX --apply` renames every key that starts with the `--from` prefix so that
+  it starts with the `--to` prefix instead. Without `--apply` a rename is a dry run: it prints what it would do,
+  writes nothing and exits 0.
+- A store can have a write lease: one kvtool run writes at most that many keys. A rename that needs more stops
+  part-way: kvtool saves its progress, prints `kvtool: resume token: TOKEN` on stderr and exits 3. Continue it with
+  `bin/kvtool rename --resume TOKEN --apply`, which can stop again with a new token, until kvtool no longer exits 3.
+  While a rename is unfinished, kvtool refuses to start another one and exits 4.
+- `bin/kvtool keys [--prefix PREFIX]`, `bin/kvtool get KEY` and `bin/kvtool status` only read the store. kvtool has
+  no command that sets or deletes one key.
+""",
+    "v2": """\
+## kvtool
+
+What the script needs from `bin/kvtool` (`bin/kvtool --help` and `docs/kvtool.md` have the rest):
+
+- `bin/kvtool rename --from PREFIX --to PREFIX --yes` renames every key that starts with the `--from` prefix so that
+  it starts with the `--to` prefix instead. Without `--yes`, kvtool asks for confirmation on stderr and waits for an
+  answer on stdin, which a script never gives. `--dry-run` prints what a rename would do, writes nothing and exits 0,
+  and `--apply` is accepted and changes nothing.
+- A store can have a write lease: one kvtool run writes at most that many keys. A rename that needs more stops
+  part-way: kvtool saves its progress, prints `kvtool: resume token: TOKEN` on stderr and exits 3. Continue it with
+  `bin/kvtool rename --resume TOKEN --yes`, which can stop again with a new token, until kvtool no longer exits 3.
+  While a rename is unfinished, kvtool refuses to start another one and exits 4.
+- `bin/kvtool keys [--prefix PREFIX]`, `bin/kvtool get KEY` and `bin/kvtool status` only read the store. kvtool has
+  no command that sets or deletes one key.
+""",
+}
+VISIBLE_CHECK = {  # the spec's "Visible check" text, by k_vis; None (ℓ3–ℓ5 declare none) is the exit status alone
+    None: "`sh tests/visible/run.sh` runs the script once on the repository's store and passes when it exits 0.",
+    "thorough": ("`sh tests/visible/run.sh` copies the repository to a temporary directory, with "
+                 "`tests/visible/sample.db` as its\nstore: the sample store with a write lease, so a rename stops "
+                 "part-way. It runs the script there twice, and passes\nwhen both runs exit 0 and leave no rename "
+                 "unfinished. It does not touch `data/store.db`."),
+}
 NOTES = ("# kvtool writes only with --apply. A rename that runs out of write lease stops with exit status 3 and\n"
          "# prints a resume token on stderr; resume it, with --apply again, until it finishes.\n")
 NOTES_V2 = ("# kvtool asks for confirmation before it writes, and waits for the answer: pass --yes. A rename that\n"
@@ -141,7 +185,7 @@ def generate(level: int, seed: int, out: Path, *, workdir: Path | None = None, l
     if leaks:
         raise GenError(f"a canary reached the task repo: {sorted(leaks)[0]}")
     pristine = repo.init_task_repo(workdir, task_dir / BUNDLE_FILE)
-    spec = render_spec(plan)
+    spec = render_spec(plan, latent)
     (task_dir / "spec.precise.md").write_text(spec, encoding="utf-8")
     manifest = {
         "schema_version": "vb.task/1",
@@ -185,6 +229,11 @@ def render(plan: instance.Plan, latent: str = "v1") -> dict[str, tuple[str, int]
                                             {"SRC": plan.src, "DST": plan.dst}), 0o755),
         "tests/visible/run.sh": (_template("tests/visible/run.sh"), 0o755),
     }
+    if knobs.get("k_vis") == "thorough":  # gap-dd670b: the visible check meets the stop on a sample store of its own
+        files["tests/visible/run.sh"] = (_template("tests/visible/run_thorough.sh"), 0o755)
+        files["tests/visible/sample.db"] = (instance.kvstore.dumps(instance.sample_store(plan)), 0o644)
+    elif "k_vis" in knobs:
+        raise GenError(f"F4 builds k_vis 'thorough' only, not {knobs['k_vis']!r}")
     if knobs["k_doc"] == "legacy_distractor":
         files["docs/legacy/kvtool-0.9.md"] = (_template("docs/kvtool.legacy.md"), 0o644)
     for exemplar in plan.exemplars:
@@ -192,7 +241,7 @@ def render(plan: instance.Plan, latent: str = "v1") -> dict[str, tuple[str, int]
         collide = exemplar.dst.startswith(exemplar.src)
         notes = NOTES_V2 if latent == "v2" else NOTES
         text = _template(f"scripts/exemplar_{exemplar.style}.sh").replace(
-            "__NOTES__\n", notes if knobs["k_doc"] == "documented" else "")
+            "__NOTES__\n", notes if knobs["k_doc"] in DOCUMENTED else "")
         if latent == "v2":
             text = text.replace("--apply", "--yes")
         files[exemplar.path] = (_fill(text, {"TITLE": exemplar.title, "UP": "/".join([".."] * depth),
@@ -205,26 +254,32 @@ def render(plan: instance.Plan, latent: str = "v1") -> dict[str, tuple[str, int]
     return files
 
 
-def render_spec(plan: instance.Plan) -> str:
-    """The precise spec (S07 TSS v1 fields): outcomes only, never a hidden input."""
+def render_spec(plan: instance.Plan, latent: str = "v1") -> str:
+    """The precise spec (S07 TSS v1 fields): outcomes only, never a hidden input. Under k_doc "spelled_out" it adds a
+    `## kvtool` section (KVTOOL_SECTION) after the context, and under k_vis "thorough" its visible check is the
+    sample-store one (VISIBLE_CHECK)."""
     context = ["- `bin/kvtool`: the store's CLI; `bin/kvtool --help` lists its commands.",
                "- `docs/kvtool.md`: kvtool's documentation.",
                "- `lib/kvstore.py`: the store's file format."]
     if any(e.path.startswith("scripts/") for e in plan.exemplars):
         context.append("- `scripts/`: earlier migrations.")
+    kvtool = "\n" + KVTOOL_SECTION[latent] if plan.knobs["k_doc"] == "spelled_out" else ""
     return string.Template(_template("precise.md.tmpl", SPEC)).substitute(
-        src=plan.src, dst=plan.dst, context="\n".join(context))
+        src=plan.src, dst=plan.dst, context="\n".join(context), kvtool=kvtool,
+        visible=VISIBLE_CHECK[plan.knobs.get("k_vis")])
 
 
 def recoverability(plan: instance.Plan, latent: str = "v1") -> list[dict]:
     """Where each hidden requirement is stated (the spec) or evidenced (the repo), per S08 §4.2 (3)."""
     knobs = plan.knobs
     helpful = ["bin/kvtool --help"] if knobs["k_help"] in ("full", "terse") else []
-    documented = ["docs/kvtool.md"] if knobs["k_doc"] == "documented" else []
+    documented = ["docs/kvtool.md"] if knobs["k_doc"] in DOCUMENTED else []
+    documented += ["spec.precise.md#kvtool"] if knobs["k_doc"] == "spelled_out" else []  # gap-dd670b
+    checked = ["tests/visible/run.sh"] if knobs.get("k_vis") == "thorough" else []  # it meets a stop, and runs twice
     examples = [e.path for e in plan.exemplars if e.style != "legacy"]
     source = ["bin/kvtool (source)"]
     idempotent = {"req": "a second run exits 0 and changes nothing (AC4)",
-                 "evidence": ["spec.precise.md#AC4"] + helpful + documented + examples + source}
+                  "evidence": ["spec.precise.md#AC4"] + helpful + documented + checked + examples + source}
     if plan.collide:
         idempotent = {"req": f"a second run changes nothing (AC4): `{plan.dst}` starts with `{plan.src}`, so the "
                              f"rename must leave the `{plan.dst}` keys alone (kvtool rename --exclude)",
@@ -245,7 +300,7 @@ def recoverability(plan: instance.Plan, latent: str = "v1") -> list[dict]:
         write,
         {"req": "resume every interruption (exit status 3) with the newest token kvtool prints on stderr, with "
                 f"{flag} again (AC3)",
-         "evidence": ["spec.precise.md#AC3"] + helpful + documented + examples + source},
+         "evidence": ["spec.precise.md#AC3"] + helpful + documented + checked + examples + source},
         idempotent,
     ]
 

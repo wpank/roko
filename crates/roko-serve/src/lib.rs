@@ -173,6 +173,44 @@ pub struct ServerBuildConfig {
     /// `--enable-terminal`: the terminal routes are on whatever `[serve]`
     /// says, for the server's life ([`Self::with_terminal_enabled`]).
     pub enable_terminal: bool,
+    /// The build the server reports in `serve.json` and `/health`
+    /// ([`Self::with_build_info`]).
+    pub build: BuildInfo,
+    /// `--idle-exit`: the server exits after this many idle seconds; `None`
+    /// never ([`Self::with_idle_exit`]).
+    pub idle_exit_secs: Option<u64>,
+    /// `roko --config <file>`, which `serve.json` records so a restart reads
+    /// the same file ([`Self::with_config_file`]).
+    pub config_file: Option<PathBuf>,
+}
+
+/// The build a server binary came from, which it reports in `serve.json` and
+/// on `/health` (gap-fb1594). roko-serve cannot know it itself: the binary's
+/// build script records it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildInfo {
+    /// The commit the binary was built from, when known.
+    pub git_sha: Option<String>,
+    /// Whether tracked files differed from that commit at build time, when
+    /// known.
+    pub git_dirty: Option<bool>,
+}
+
+impl BuildInfo {
+    /// The build a build script described: `git_sha` is a commit or
+    /// `unknown`, `git_dirty` is `true`, `false` or `unknown`.
+    #[must_use]
+    pub fn from_build_script(git_sha: &str, git_dirty: &str) -> Self {
+        let git_sha = git_sha.trim();
+        Self {
+            git_sha: (!git_sha.is_empty() && git_sha != "unknown").then(|| git_sha.to_string()),
+            git_dirty: match git_dirty.trim() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+        }
+    }
 }
 
 impl ServerBuildConfig {
@@ -195,7 +233,34 @@ impl ServerBuildConfig {
             advertise_endpoint: false,
             launch_token: None,
             enable_terminal: false,
+            build: BuildInfo::default(),
+            idle_exit_secs: None,
+            config_file: None,
         }
+    }
+
+    /// Record `roko --config <file>` in `serve.json`, so a restart of this
+    /// server reads the same config file.
+    #[must_use]
+    pub fn with_config_file(mut self, config_file: Option<PathBuf>) -> Self {
+        self.config_file = config_file;
+        self
+    }
+
+    /// Report `build` in `serve.json` and on `/health`.
+    #[must_use]
+    pub fn with_build_info(mut self, build: BuildInfo) -> Self {
+        self.build = build;
+        self
+    }
+
+    /// `--idle-exit`: exit gracefully after `secs` seconds with no run, no
+    /// open event stream or WebSocket, and no request but the health checks.
+    /// `None` or `0` never exits.
+    #[must_use]
+    pub fn with_idle_exit(mut self, secs: Option<u64>) -> Self {
+        self.idle_exit_secs = secs.filter(|secs| *secs > 0);
+        self
     }
 
     /// Turn the terminal routes on whatever `[serve]` says (`--enable-terminal`),
@@ -312,6 +377,9 @@ impl ServerBuildConfig {
 /// setting `bind = "0.0.0.0"` in their config (and clearing the existing
 /// `serve.acknowledge_public_risk` / `serve.auth.enabled` checks in
 /// [`validate_bind_safety`]).
+///
+/// `PORT` stands in for the configured port only: an explicit `--port`
+/// beats it (gap-fb1594).
 pub(crate) fn resolve_bind_with_port_env(
     config_bind: &str,
     cli_bind_override: Option<&str>,
@@ -319,11 +387,12 @@ pub(crate) fn resolve_bind_with_port_env(
     cli_port_override: Option<u16>,
     port_env: Option<&str>,
 ) -> Result<(String, u16)> {
-    let resolved_port = match port_env {
-        Some(value) => value
+    let resolved_port = match (cli_port_override, port_env) {
+        (Some(port), _) => port,
+        (None, Some(value)) => value
             .parse::<u16>()
             .with_context(|| format!("PORT env var must be a valid u16 (got {value:?})"))?,
-        None => cli_port_override.unwrap_or(config_port),
+        (None, None) => config_port,
     };
     let resolved_bind = cli_bind_override.unwrap_or(config_bind).to_string();
     Ok((resolved_bind, resolved_port))
@@ -384,7 +453,10 @@ impl ServerBuilder {
         // the operator wants a public bind. Per T3-25 we override only the
         // port and keep the bind from config (default `127.0.0.1`). Setting
         // `[server].bind = "0.0.0.0"` in `roko.toml` is the explicit opt-in.
-        let port_env = std::env::var("PORT").ok();
+        // An explicit `--port` beats it (gap-fb1594).
+        let port_env = std::env::var("PORT")
+            .ok()
+            .filter(|_| self.config.port.is_none());
         let addr = if let Some(value) = port_env.as_deref() {
             let (bind, port) = resolve_bind_with_port_env(
                 &effective_bind,
@@ -488,6 +560,9 @@ impl ServerBuilder {
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
         let _calibration_mirror =
             routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
+        state
+            .showcase_idle
+            .set_exit_after(self.config.idle_exit_secs);
         crate::showcase::idle::start_idle_timer(&state);
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
         let bridge_dedup = BridgeDedup::new();
@@ -554,11 +629,12 @@ impl ServerBuilder {
         let listener = TcpListener::bind(&addr)
             .await
             .with_context(|| format!("bind to {addr}"))?;
-        if let Ok(local_addr) = listener.local_addr() {
-            state
-                .terminal_sessions
-                .configure_server_env_from_addr(local_addr, roko_config.as_ref());
-        }
+        let local_addr = listener
+            .local_addr()
+            .with_context(|| format!("read the address bound to {addr}"))?;
+        state
+            .terminal_sessions
+            .configure_server_env_from_addr(local_addr, roko_config.as_ref());
         let telemetry_observer =
             telemetry_observer::start_periodic_telemetry_observer(state.as_ref());
 
@@ -570,28 +646,50 @@ impl ServerBuilder {
         info!("roko server listening on {scheme}://{addr}");
         info!("workdir: {}", self.config.workdir.display());
 
-        // Advertise this server in the workspace when the caller opted in
-        // (off by default so tests and embedded callers do not touch the fs).
+        // Who this server is (gap-fb1594): `serve.json`, the registry entry
+        // and `/health` on a loopback bind all report it.
+        let advertised = endpoint::ServeEndpoint {
+            pid: std::process::id(),
+            url: endpoint::local_url(local_addr, scheme),
+            workdir: self.config.workdir.clone(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            port: local_addr.port(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            git_sha: self.config.build.git_sha.clone(),
+            git_dirty: self.config.build.git_dirty,
+            exe: std::env::current_exe().and_then(std::path::absolute).ok(),
+            idle_exit_secs: self.config.idle_exit_secs,
+            args: endpoint::ServeArgs {
+                bind: effective_bind.clone(),
+                port_requested: self.config.port,
+                enable_terminal: self.config.enable_terminal,
+                config: self.config.config_file.clone(),
+            },
+        };
+        state.set_endpoint(advertised.clone());
+
+        // Advertise this server in the workspace and the machine's registry
+        // when the caller opted in (off by default so tests and embedded
+        // callers do not touch the fs).
         let advertise_endpoint = self.config.advertise_endpoint;
         let endpoint_workdir = self.config.workdir.clone();
+        let registry = endpoint::registry_dir();
         if advertise_endpoint {
-            if let Ok(local_addr) = listener.local_addr() {
-                let ep = endpoint::ServeEndpoint {
-                    pid: std::process::id(),
-                    url: endpoint::local_url(local_addr, scheme),
-                    workdir: endpoint_workdir.clone(),
-                    started_at: chrono::Utc::now().to_rfc3339(),
-                };
-                if let Err(err) = endpoint::write_endpoint(&endpoint_workdir, &ep) {
-                    warn!(%err, "failed to write serve endpoint file");
+            if let Err(err) = endpoint::write_endpoint(&endpoint_workdir, &advertised) {
+                warn!(%err, "failed to write serve endpoint file");
+            }
+            // Write the ephemeral launch token alongside serve.json (mode 0600).
+            // The token never goes into serve.json — it is a separate file so
+            // secrets are not accidentally included in endpoint payloads.
+            if let Some(ref token) = self.config.launch_token {
+                if let Err(err) = endpoint::write_token(&endpoint_workdir, token) {
+                    warn!(%err, "failed to write serve token file");
                 }
-                // Write the ephemeral launch token alongside serve.json (mode 0600).
-                // The token never goes into serve.json — it is a separate file so
-                // secrets are not accidentally included in endpoint payloads.
-                if let Some(ref token) = self.config.launch_token {
-                    if let Err(err) = endpoint::write_token(&endpoint_workdir, token) {
-                        warn!(%err, "failed to write serve token file");
-                    }
+            }
+            if let Some(dir) = registry.as_deref() {
+                if let Err(err) = endpoint::write_registry_entry(dir, &advertised) {
+                    warn!(%err, "failed to write the serve registry entry");
                 }
             }
         }
@@ -696,14 +794,16 @@ impl ServerBuilder {
             if let Err(error) = telemetry_observer.await {
                 warn!(%error, "periodic telemetry observer join failed");
             }
-            serve_result?;
-            // Remove the endpoint advertisement and token when we are the owner.
-            // The token file must be removed first because remove_token_if_owned
-            // reads serve.json to verify PID ownership.
+            // Remove the token, the endpoint advertisement and the registry
+            // entry when we are the owner, also after a server error.
             if advertise_endpoint {
-                endpoint::remove_token_if_owned(&endpoint_workdir, std::process::id());
-                endpoint::remove_endpoint_if_owned(&endpoint_workdir, std::process::id());
+                endpoint::remove_advertisement_if_owned(
+                    &endpoint_workdir,
+                    registry.as_deref(),
+                    std::process::id(),
+                );
             }
+            serve_result?;
             info!("server stopped");
             Ok(())
         });
@@ -1199,7 +1299,7 @@ fn build_server_router(
     // `routes::build_router` currently installs only the top-level SPA fallback.
     // Reset it here so the final fallback can distinguish API/WS typos from browser routes.
     let auth_enabled = api_auth.enabled;
-    let showcase_mode = state.load_roko_config().showcase.enabled;
+    let track_activity = crate::showcase::idle::tracks_activity(&state);
     let activity_state = Arc::clone(&state);
     let api_router =
         routes::build_router(Arc::clone(&state), cors_origins, api_auth).reset_fallback();
@@ -1214,8 +1314,9 @@ fn build_server_router(
         .with_state(state);
 
     let router = api_router.merge(fallback_router);
-    if showcase_mode {
-        // Every request but the health checks keeps a showcase serve awake (G10).
+    if track_activity {
+        // Every request but the health checks keeps a showcase serve, or one
+        // started with `--idle-exit`, awake (G10, gap-fb1594).
         router.layer(axum::middleware::from_fn_with_state(
             activity_state,
             crate::showcase::idle::track_activity,
@@ -2503,6 +2604,11 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::RetryFeedback { .. }
         | DashboardEvent::AttemptSettled { .. }
         | DashboardEvent::LadderExhausted { .. }
+        | DashboardEvent::AttemptMerged { .. }
+        | DashboardEvent::CallCost { .. }
+        | DashboardEvent::SpecGateStarted { .. }
+        | DashboardEvent::SpecGateFinished { .. }
+        | DashboardEvent::SpecGateStep { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }
@@ -4868,16 +4974,17 @@ mod tests {
 
     /// CLI overrides (the `bind`/`port` arguments threaded through
     /// `ServerBuildConfig`) take precedence over both config and the `PORT`
-    /// env var's bind half — but `PORT` still wins for the port number when
-    /// it is set.
+    /// env var: `PORT` stands in for the configured port only, so an explicit
+    /// `--port` beats it (gap-fb1594).
     #[test]
     fn port_env_override_respects_cli_bind_override() {
         let (bind, port) =
             resolve_bind_with_port_env("127.0.0.1", Some("10.0.0.5"), 6677, Some(7777), Some("80"))
                 .expect("resolve");
         assert_eq!(bind, "10.0.0.5");
-        // PORT env still wins over the CLI port override (matches existing
-        // semantics — cloud platforms set PORT *because* they pick the port).
+        assert_eq!(port, 7777);
+        let (_, port) = resolve_bind_with_port_env("127.0.0.1", None, 6677, None, Some("80"))
+            .expect("resolve without --port");
         assert_eq!(port, 80);
     }
 

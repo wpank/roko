@@ -11,7 +11,6 @@ use roko_core::tool::{
     ToolPermission, ToolResult, ToolSchema,
 };
 use std::ffi::OsString;
-use std::time::Duration;
 
 use super::child_group;
 
@@ -20,7 +19,10 @@ pub const NAME: &str = "run_tests";
 
 /// Human-readable description sent to the LLM.
 pub const DESCRIPTION: &str = "Run the project's test suite (or a filtered subset) \
-    and return structured pass/fail results.";
+    and return structured pass/fail results. With build \"checks\", run this task's own \
+    checks instead: the verify steps roko runs on your work when you hand off, in order, \
+    stopping at the first that fails and showing the end of its output. Run them after a \
+    change rather than handing off to find out.";
 
 /// Build the [`ToolDef`] for `run_tests`.
 #[must_use]
@@ -36,8 +38,9 @@ pub fn tool_def() -> ToolDef {
         "properties": {
             "build": {
                 "type": "string",
-                "enum": ["cargo", "npm", "go", "pytest", "forge", "make"],
-                "description": "Build system to use for running tests (default: 'cargo')."
+                "enum": ["cargo", "npm", "go", "pytest", "forge", "make", "checks"],
+                "description": "Build system to use for running tests (default: 'cargo'), or \
+                    'checks' for this task's own checks (any language: CMake, ctest, scripts)."
             },
             "filter": {
                 "type": "string",
@@ -45,7 +48,9 @@ pub fn tool_def() -> ToolDef {
             },
             "timeout_ms": {
                 "type": "integer",
-                "description": "Optional timeout override in milliseconds."
+                "description": "Optional wall-clock timeout in milliseconds. Default 120000 \
+                    (`[timeouts] tool_execution_ms`); a longer one is honoured up to 600000 \
+                    (`[timeouts] tool_execution_max_ms`)."
             }
         },
         "additionalProperties": false
@@ -104,6 +109,10 @@ async fn run(
         .get("build")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("cargo");
+    // gap-770cb5: the task's own checks, within the call's time.
+    if build == "checks" {
+        return super::task_checks::run(ctx, ctx.call_timeout(&call).budget, parent_env).await;
+    }
     let filter = call
         .arguments
         .get("filter")
@@ -134,22 +143,20 @@ async fn run(
         parent_env.unwrap_or_else(child_env::process_env),
         &ctx.env_passthrough,
     );
-    let effective_timeout = if ctx.timeout.is_zero() {
-        Duration::from_mins(10)
-    } else {
-        ctx.timeout
-    };
+    // The call's own `timeout_ms`, up to the cap, else the context's
+    // (bug-c22bd9).
+    let timeout = ctx.call_timeout(&call);
     // The run leads a process group of its own, which a cancel or the timeout
     // kills whole (bug-c83c84).
-    let output = match child_group::output_within(cmd, effective_timeout).await {
+    let output = match child_group::output_within(cmd, timeout.budget).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return ToolResult::Err(ToolError::Other(format!("run_tests: spawn failed: {e}")));
         }
         Err(_) => {
-            return ToolResult::Err(ToolError::Timeout {
-                after_ms: u64::try_from(effective_timeout.as_millis()).unwrap_or(u64::MAX),
-            });
+            return ToolResult::Err(
+                timeout.timed_out(u64::try_from(timeout.budget.as_millis()).unwrap_or(u64::MAX)),
+            );
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -260,6 +267,67 @@ mod tests {
     #[test]
     fn truncate_passthrough_when_short() {
         assert_eq!(truncate("short", 400), "short");
+    }
+
+    /// gap-770cb5: `build: "checks"` runs the checks dispatch left for the
+    /// call's attempt, in the checkout, and stops at the first that fails
+    /// with the end of its output; once the work is fixed they pass. A call
+    /// of no attempt, or of one with no checks, says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_tests_runs_the_task_checks() {
+        use super::super::task_checks::{TaskCheck, task_checks_path};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::testing(dir.path());
+        let call = || ToolCall::new("c", NAME, serde_json::json!({"build": "checks"}));
+        let result = run(call(), &ctx, None).await;
+        assert!(
+            matches!(&result, ToolResult::Err(ToolError::Other(why)) if why.contains("no task")),
+            "{result:?}"
+        );
+        ctx.correlation.attempt_id = "run-1:plan-a:T1:1".to_string();
+        let result = run(call(), &ctx, None).await;
+        assert!(
+            matches!(&result, ToolResult::Err(ToolError::Other(why)) if why.contains("no checks")),
+            "{result:?}"
+        );
+
+        let checks = vec![
+            TaskCheck {
+                label: "verify[0:build]".to_string(),
+                command: "echo building; test -f fixed.txt || { echo 'error: not fixed' >&2; \
+                          exit 2; }"
+                    .to_string(),
+                timeout_ms: Some(30_000),
+            },
+            TaskCheck {
+                label: "verify[1:test]".to_string(),
+                command: "echo tested".to_string(),
+                timeout_ms: None,
+            },
+        ];
+        let path = task_checks_path(&ctx.immune_root_path, &ctx.correlation.attempt_id);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(&path, serde_json::to_vec(&checks).expect("json")).expect("checks");
+
+        let result = run(call(), &ctx, None).await;
+        let ToolResult::Err(ToolError::Other(why)) = &result else {
+            panic!("the unfixed work fails its first check: {result:?}");
+        };
+        assert!(
+            why.contains("check 1 of 2 (verify[0:build]) failed (exit 2)"),
+            "{why}"
+        );
+        assert!(why.contains("building\nerror: not fixed"), "{why}");
+
+        std::fs::write(dir.path().join("fixed.txt"), "ok\n").expect("fix");
+        let result = run(call(), &ctx, None).await;
+        let ToolResult::Ok { .. } = &result else {
+            panic!("the fixed work passes: {result:?}");
+        };
+        let text = format!("{result:?}");
+        assert!(text.contains("verify[1:test]"), "{text}");
     }
 
     #[cfg(unix)]

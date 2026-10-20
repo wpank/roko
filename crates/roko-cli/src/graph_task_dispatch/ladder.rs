@@ -489,6 +489,9 @@ impl GraphTaskDispatcher {
                 .zip(timing.attempt_started_at)
                 .and_then(|(settled, started)| u64::try_from(settled - started).ok()),
             exhausted: ladder.is_some_and(|ladder| ladder.exhausted),
+            // Where its time went, as its verdict row says (gap-6a319c).
+            phases: timing.phases.clone(),
+            workspace: verdict.workspace,
         };
         tui.publish_event(roko_core::DashboardEvent::AttemptSettled {
             plan_id: spec.plan_id.clone(),

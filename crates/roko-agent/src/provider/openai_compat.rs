@@ -503,7 +503,13 @@ pub(crate) fn tool_registry_for_options(
         .partition(|tool| !matches!(&tool.source, roko_core::tool::ToolSource::Builtin));
     plugin_tools.extend(runtime_tools);
     plugin_tools.extend(builtin_tools);
-    let mut tools = cap_tools_for_profile(model, plugin_tools);
+    // The caller's essential tools go first, so the cap keeps them
+    // (gap-770cb5).
+    let (mut ordered, rest): (Vec<_>, Vec<_>) = plugin_tools
+        .into_iter()
+        .partition(|tool| options.essential_tools.contains(&tool.name));
+    ordered.extend(rest);
+    let mut tools = cap_tools_for_profile(model, ordered);
     tools.truncate(tool_limit_for_temperament(tools.len()));
 
     let resolver = mcp_runtime.map_or(static_resolver.clone(), |runtime| {
@@ -1888,6 +1894,31 @@ done
         };
 
         assert!(error.to_string().contains("pre_discovered_mcp_runtime"));
+    }
+
+    /// gap-770cb5: a model offered few tools (GLM's eight) keeps the ones
+    /// the caller marks essential: an attempt with checks keeps `run_tests`.
+    #[test]
+    fn a_capped_model_keeps_the_essential_tools() {
+        let glm = ModelProfile {
+            slug: "glm-4.7".to_string(),
+            ..ModelProfile::default()
+        };
+        let names = |options: &AgentOptions| -> Vec<String> {
+            let (_, tools, _) = tool_registry_for_options(&glm, options).expect("catalog");
+            tools.into_iter().map(|tool| tool.name).collect()
+        };
+
+        let plain = names(&AgentOptions::default());
+        assert_eq!(plain.len(), 8, "{plain:?}");
+        assert!(!plain.iter().any(|name| name == "run_tests"), "{plain:?}");
+
+        let with_checks = names(&AgentOptions {
+            essential_tools: vec!["run_tests".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(with_checks.len(), 8, "{with_checks:?}");
+        assert_eq!(with_checks[0], "run_tests", "{with_checks:?}");
     }
 
     #[test]

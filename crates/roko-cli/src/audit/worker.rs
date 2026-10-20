@@ -332,6 +332,14 @@ pub trait CallLog: Send + Sync {
     /// keyed by the audited attempt. Their spend is on the run's audit line,
     /// `budget_frac` of its model spend, and on no task's budget.
     async fn record(&self, unit: &AuditUnit, check: &str, calls: &[CheckCall]);
+
+    /// What `unit`'s plan may still spend when its audits' model calls count
+    /// against the run's cap, as a chat host's run's do (bug-082810); `None`
+    /// when they keep to the run's audit line.
+    fn headroom_usd(&self, unit: &AuditUnit) -> Option<f64> {
+        let _ = unit;
+        None
+    }
 }
 
 /// The phase-B checks a worker runs; a missing one leaves its label null.
@@ -587,6 +595,18 @@ impl Worker {
         let Some(usd_left) = self.budget_left() else {
             self.log_exhausted();
             return true;
+        };
+        // A run held to its cap, as a chat host's is, counts its audits'
+        // calls against it (bug-082810): an audit gets no more than its plan
+        // has left, and its model checks are null once that is nothing.
+        let usd_left = match self
+            .context
+            .call_log
+            .as_ref()
+            .and_then(|log| log.headroom_usd(&unit))
+        {
+            Some(headroom) => usd_left.min(headroom.max(0.0)),
+            None => usd_left,
         };
         let queue = queue_dir(&self.context.vault);
         let Some(_lock) = lock(&queue, &unit.sel_id) else {
@@ -1478,6 +1498,41 @@ mod tests {
         assert!(unknown.refuse_call().is_some());
     }
 
+    /// A call log that writes no rows and says the audited plan has
+    /// `headroom` USD left.
+    struct Headroom(f64);
+
+    #[async_trait::async_trait]
+    impl CallLog for Headroom {
+        async fn record(&self, _unit: &AuditUnit, _check: &str, _calls: &[CheckCall]) {}
+
+        fn headroom_usd(&self, _unit: &AuditUnit) -> Option<f64> {
+            Some(self.0)
+        }
+    }
+
+    /// bug-082810: a chat host's run is held to its cap, and its audits are
+    /// part of it. An audit is given no more than its plan has left, however
+    /// much the run's audit line would allow, and nothing once the plan has
+    /// nothing left.
+    #[test]
+    fn an_audit_is_given_no_more_than_its_plan_has_left() {
+        let config = AuditConfig {
+            budget_frac: 1.0,
+            per_audit_usd: 0.30,
+            ..AuditConfig::default()
+        };
+        let (given, _) =
+            spend_on_audits_logged(config.clone(), 10.0, 0.0, 2, Some(Arc::new(Headroom(0.05))));
+        assert_eq!(given, [0.05, 0.05]);
+        let (given, _) =
+            spend_on_audits_logged(config.clone(), 10.0, 0.0, 1, Some(Arc::new(Headroom(0.0))));
+        assert_eq!(given, [0.0]);
+        // Without a cap to keep to, the audit line alone bounds it.
+        let (given, _) = spend_on_audits_logged(config, 10.0, 0.0, 1, None);
+        assert_eq!(given, [0.30]);
+    }
+
     /// A phase-B check that wants to spend `want` and spends what its audit
     /// allows of it, as calls held to the audit's allowance do; it keeps what
     /// each audit gave it.
@@ -1505,6 +1560,17 @@ mod tests {
         run_spend: f64,
         want: f64,
         units: u32,
+    ) -> (Vec<f64>, Vec<LedgerRecord>) {
+        spend_on_audits_logged(config, run_spend, want, units, None)
+    }
+
+    /// [`spend_on_audits`] with `call_log` accounting the audits' calls.
+    fn spend_on_audits_logged(
+        config: AuditConfig,
+        run_spend: f64,
+        want: f64,
+        units: u32,
+        call_log: Option<Arc<dyn CallLog>>,
     ) -> (Vec<f64>, Vec<LedgerRecord>) {
         use crate::audit::worktree::tests::{repo_with, tree_of, write};
 
@@ -1538,7 +1604,7 @@ mod tests {
             },
             gaming: GamingWatch::new(&vault),
             learner: None,
-            call_log: None,
+            call_log,
         };
         let worker = AuditWorker::start(context).expect("the worker starts");
         for n in 1..=units {

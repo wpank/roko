@@ -248,6 +248,35 @@ impl CancelToken for AtomicCancel {
 
 // ─── ToolContext ──────────────────────────────────────────────────────────
 
+/// A tool call's wall-clock budget ([`ToolContext::call_timeout`],
+/// bug-c22bd9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallTimeout {
+    /// How long the call may run.
+    pub budget: Duration,
+    /// What the call asked for, when `[timeouts] tool_execution_max_ms` cut
+    /// it to `budget`.
+    pub clamped_from: Option<Duration>,
+}
+
+impl CallTimeout {
+    /// The error of a call that ran out of its budget after `after_ms`: a
+    /// timeout, which says so when the call had asked for more than the cap
+    /// allows.
+    #[must_use]
+    pub fn timed_out(&self, after_ms: u64) -> crate::tool::ToolError {
+        match self.clamped_from {
+            None => crate::tool::ToolError::Timeout { after_ms },
+            Some(asked) => crate::tool::ToolError::Other(format!(
+                "timed out after {after_ms} ms: the call asked for {} ms, and a call may ask \
+                 for at most {} ms ([timeouts] tool_execution_max_ms)",
+                asked.as_millis(),
+                self.budget.as_millis()
+            )),
+        }
+    }
+}
+
 /// Runtime context threaded through every [`ToolHandler::execute`] call.
 ///
 /// The dispatcher constructs one [`ToolContext`] per call, populating it
@@ -277,6 +306,10 @@ pub struct ToolContext {
     /// Wall-clock budget for this call (from
     /// [`ToolDef::timeout_ms`](crate::tool::ToolDef::timeout_ms)).
     pub timeout: Duration,
+    /// The most a call that asks for its own budget (`bash`'s and
+    /// `run_tests`' `timeout_ms`) may get: `[timeouts] tool_execution_max_ms`
+    /// (bug-c22bd9). See [`Self::call_timeout`].
+    pub max_timeout: Duration,
     /// Capability flags granted to this handler (the intersection of the
     /// role's [`ToolPermissions`](crate::ToolPermissions) and any
     /// per-call restrictions).
@@ -326,6 +359,7 @@ impl ToolContext {
             immune_root_path: normalize_immune_root(&worktree_path),
             worktree_path,
             timeout,
+            max_timeout: timeout,
             capabilities,
             allowed_tools: None,
             denied_tools: None,
@@ -362,6 +396,7 @@ impl ToolContext {
             immune_root_path: normalize_immune_root(&worktree_path),
             worktree_path,
             timeout,
+            max_timeout: timeout,
             capabilities,
             allowed_tools: None,
             denied_tools: None,
@@ -385,6 +420,7 @@ impl ToolContext {
             immune_root_path: normalize_immune_root(&worktree_path),
             worktree_path,
             timeout: Duration::from_secs(60),
+            max_timeout: Duration::from_secs(60),
             capabilities: ToolPermission {
                 read: true,
                 write: true,
@@ -421,6 +457,7 @@ impl ToolContext {
             immune_root_path: normalize_immune_root(&worktree_path),
             worktree_path,
             timeout: Duration::from_secs(30),
+            max_timeout: Duration::from_secs(30),
             capabilities: ToolPermission::read_only(),
             allowed_tools: None,
             denied_tools: None,
@@ -432,6 +469,47 @@ impl ToolContext {
             external_actions: Arc::new(RwLock::new(Vec::new())),
             taint_level: Arc::new(RwLock::new(CamelTaintLevel::External)),
             correlation: CorrelationEnvelope::empty(),
+        }
+    }
+
+    /// Let a call that asks for its own budget get up to `max_timeout`
+    /// (`[timeouts] tool_execution_max_ms`, bug-c22bd9).
+    #[must_use]
+    pub const fn with_max_timeout(mut self, max_timeout: Duration) -> Self {
+        self.max_timeout = max_timeout;
+        self
+    }
+
+    /// The budget of `call` to a tool that takes a `timeout_ms` argument
+    /// (`bash`, `run_tests`; bug-c22bd9): what the call asks for, up to
+    /// [`Self::max_timeout`], else [`Self::timeout`].
+    #[must_use]
+    pub fn call_timeout(&self, call: &crate::tool::ToolCall) -> CallTimeout {
+        let default = if self.timeout.is_zero() {
+            Duration::from_millis(crate::defaults::DEFAULT_REQUEST_TIMEOUT_MS)
+        } else {
+            self.timeout
+        };
+        let cap = self.max_timeout.max(default);
+        let asked = call
+            .arguments
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis);
+        match asked {
+            Some(asked) if asked > cap => CallTimeout {
+                budget: cap,
+                clamped_from: Some(asked),
+            },
+            Some(asked) => CallTimeout {
+                budget: asked,
+                clamped_from: None,
+            },
+            None => CallTimeout {
+                budget: default,
+                clamped_from: None,
+            },
         }
     }
 
@@ -604,6 +682,33 @@ pub trait ToolHandler: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-c22bd9: a call that asks for its own budget gets it up to the
+    /// cap, a longer ask is cut to the cap and the timeout says so, and a
+    /// call that asks for nothing gets the context's timeout.
+    #[test]
+    fn call_timeout_honours_the_ask_up_to_the_cap() {
+        let ctx =
+            ToolContext::testing("/tmp/call-timeout").with_max_timeout(Duration::from_secs(600));
+        let call = |args: serde_json::Value| crate::tool::ToolCall::new("c", "bash", args);
+
+        let asked = ctx.call_timeout(&call(serde_json::json!({"timeout_ms": 90_000})));
+        assert_eq!(asked.budget, Duration::from_secs(90));
+        assert_eq!(asked.clamped_from, None);
+
+        let capped = ctx.call_timeout(&call(serde_json::json!({"timeout_ms": 900_000})));
+        assert_eq!(capped.budget, Duration::from_secs(600));
+        assert_eq!(capped.clamped_from, Some(Duration::from_secs(900)));
+        let message = capped.timed_out(600_000).to_string();
+        assert!(message.contains("asked for 900000 ms"), "{message}");
+
+        let default = ctx.call_timeout(&call(serde_json::json!({"command": "true"})));
+        assert_eq!(default.budget, Duration::from_secs(60));
+        assert!(matches!(
+            default.timed_out(60_000),
+            crate::tool::ToolError::Timeout { after_ms: 60_000 }
+        ));
+    }
 
     #[test]
     fn noop_audit_sink_accepts_signals() {

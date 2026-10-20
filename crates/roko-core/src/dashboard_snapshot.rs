@@ -305,6 +305,109 @@ pub enum DashboardEvent {
         #[serde(default)]
         suggestion: String,
     },
+    /// A Graph task's passed attempt was merged onto its plan branch, or
+    /// was not (gap-6a319c): the step after its `attempt_settled`.
+    AttemptMerged {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// How long the merge took, in ms.
+        #[serde(default)]
+        merge_ms: u64,
+        /// `accepted` (on the plan branch), `conflict` (its work conflicts
+        /// with the plan's accepted work, so the task starts over) or `kept`
+        /// (its verdict does not let its work land; the checkout is kept).
+        #[serde(default)]
+        outcome: String,
+    },
+    /// A model call of a Graph task's attempt returned (gap-5c3347): what it
+    /// used and cost, and what the attempt's calls have cost so far. Published
+    /// as each call returns, so a run's spend moves during a try; the
+    /// attempt's `attempt_settled` stays the record of what it spent.
+    CallCost {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The call's number among the attempt's model calls, from 1.
+        #[serde(default)]
+        call: u32,
+        /// The model that served it.
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        output_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        /// What it cost, in USD; `None` when no rate prices its model.
+        #[serde(default)]
+        cost_usd: Option<f64>,
+        /// What the attempt's priced calls have cost so far, this one
+        /// included.
+        #[serde(default)]
+        attempt_cost_usd: f64,
+    },
+    /// The plan-load spec gate started (gap-6a319c): before any task runs,
+    /// it scores the plans' tasks and, with `[spec_quality] red_on_base`,
+    /// runs each implementer task's checks on the unchanged base.
+    SpecGateStarted {
+        /// The plans it checks.
+        #[serde(default)]
+        plan_ids: Vec<String>,
+        /// The tasks whose checks it runs on the base; 0 when it runs none.
+        #[serde(default)]
+        tasks_total: u32,
+        /// At most how many check runs that takes: each task's steps, twice.
+        #[serde(default)]
+        steps_total: u32,
+    },
+    /// The plan-load spec gate ended (gap-6a319c).
+    SpecGateFinished {
+        /// How long it ran, in ms.
+        #[serde(default)]
+        elapsed_ms: u64,
+        /// The tasks whose checks ran on the base; `None` when not counted.
+        #[serde(default)]
+        tasks_checked: Option<u32>,
+        /// The check runs it made; `None` when not counted.
+        #[serde(default)]
+        steps_run: Option<u32>,
+        /// The tasks whose result came from an earlier check; `None` when
+        /// not counted.
+        #[serde(default)]
+        cached: Option<u32>,
+        /// The tasks it refused, which stop the run before any dispatch.
+        #[serde(default)]
+        blocked: u32,
+    },
+    /// A step of the plan-load spec gate's red-on-base check ended
+    /// (gap-e02ec4): one per step it ran on the base, and one per step of a
+    /// task whose earlier runs the cache gave, so a host can show the check's
+    /// progress against `spec_gate_started.steps_total`.
+    SpecGateStep {
+        plan_id: String,
+        task_id: String,
+        /// The run, from 1: each task's steps run twice.
+        #[serde(default)]
+        run: u32,
+        /// The step's number among the task's steps, from 1.
+        #[serde(default)]
+        step: u32,
+        /// Whether it exited 0.
+        #[serde(default)]
+        passed: bool,
+        /// How long it ran, in ms.
+        #[serde(default)]
+        ms: u64,
+        /// Whether its result came from an earlier check of the unchanged task.
+        #[serde(default)]
+        cached: bool,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -1140,6 +1243,106 @@ pub struct AttemptSettlement {
     /// Whether its failure exhausted the ladder: no rung or retry left.
     #[serde(default)]
     pub exhausted: bool,
+    /// Where its time went (gap-6a319c); `None` from an emitter that does
+    /// not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phases: Option<AttemptPhases>,
+    /// The checkout it ran in (gap-6a319c); `None` from an emitter that does
+    /// not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<AttemptWorkspace>,
+}
+
+/// Where a Graph attempt's time went (gap-6a319c), as its settlement and its
+/// `roko.verdict/1` row (`timing.phases`) carry it. Times are in ms, and one
+/// that was not measured is `None`, never 0. The phases of the try itself
+/// add up to its `duration_ms`: `prompt_ms + model_ms + tools_ms + checks_ms
+/// + other_ms`. Its whole wall time adds `queue_ms` and `workspace_ms`
+/// before it and the merge (`attempt_merged`) after it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptPhases {
+    /// Waiting before the try opened: for an agent slot, the plan's pause,
+    /// its budget and disk admission.
+    #[serde(default)]
+    pub queue_ms: Option<u64>,
+    /// Getting its checkout ready before it opened: a new worktree, with its
+    /// warm build trees, or the task's earlier checkout.
+    #[serde(default)]
+    pub workspace_ms: Option<u64>,
+    /// Assembling its prompt.
+    #[serde(default)]
+    pub prompt_ms: Option<u64>,
+    /// From the provider call's start to its first streamed token. Part of
+    /// `model_ms`.
+    #[serde(default)]
+    pub ttft_ms: Option<u64>,
+    /// The provider call's time outside tool calls: the model's turns, and a
+    /// wait for the provider's own concurrency limit.
+    #[serde(default)]
+    pub model_ms: Option<u64>,
+    /// The model turns the provider call took.
+    #[serde(default)]
+    pub model_calls: Option<u32>,
+    /// Time inside tool calls, overlapping calls counted once.
+    #[serde(default)]
+    pub tools_ms: Option<u64>,
+    /// The tool calls the agent made.
+    #[serde(default)]
+    pub tool_calls: Option<u32>,
+    /// The tools that took longest, at most [`ATTEMPT_PHASE_TOOLS`], the
+    /// longest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_by_name: Vec<ToolTime>,
+    /// Its checks: the pre-verify screen and the verify steps.
+    #[serde(default)]
+    pub checks_ms: Option<u64>,
+    /// Each verify step, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckTime>,
+    /// The rest of `duration_ms`: roko's own work between the phases.
+    #[serde(default)]
+    pub other_ms: Option<u64>,
+}
+
+/// Most tools [`AttemptPhases::tools_by_name`] lists.
+pub const ATTEMPT_PHASE_TOOLS: usize = 5;
+
+/// One tool's share of an attempt's tool time (gap-6a319c).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolTime {
+    /// The tool, as the provider named it.
+    pub tool: String,
+    /// Its calls.
+    pub calls: u32,
+    /// Its calls' time together, in ms.
+    pub ms: u64,
+}
+
+/// One verify step of an attempt (gap-6a319c).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckTime {
+    /// The step, as its gate result names it (`verify[0:build]`).
+    pub name: String,
+    /// How long it ran, in ms.
+    #[serde(default)]
+    pub ms: Option<u64>,
+    /// Whether it passed; `None` when it was skipped.
+    #[serde(default)]
+    pub passed: Option<bool>,
+}
+
+/// The checkout a Graph attempt ran in (gap-6a319c): what made its builds
+/// warm, when they were.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptWorkspace {
+    /// It ran in its task's checkout from an earlier try, whose builds it
+    /// kept.
+    #[serde(default)]
+    pub reused: bool,
+    /// The build trees its checkout held when it started: warm copies of
+    /// the person's (gap-6754ab), or an earlier try's.
+    #[serde(default)]
+    pub warm_build_trees: u32,
 }
 
 /// The tokens of one attempt, as [`DashboardEvent::AttemptSettled`]
@@ -3194,6 +3397,45 @@ impl DashboardSnapshot {
             // S10's calibration view reads the export from the event stream
             // (6134); the snapshot keeps none of it.
             DashboardEvent::SelfModelCalibration { .. } => {}
+            // The timeline reads merges from the event stream (gap-6a319c), and
+            // a host its live spend (gap-5c3347).
+            DashboardEvent::AttemptMerged { .. } | DashboardEvent::CallCost { .. } => {}
+            DashboardEvent::SpecGateStarted {
+                plan_ids,
+                tasks_total,
+                ..
+            } => {
+                let message = if *tasks_total == 0 {
+                    "scoring the plans' tasks".to_string()
+                } else {
+                    format!("checking {tasks_total} tasks' checks on the unchanged base")
+                };
+                self.push_event_log(
+                    ts,
+                    "spec_gate_started".to_string(),
+                    plan_ids.join(","),
+                    String::new(),
+                    message,
+                );
+            }
+            DashboardEvent::SpecGateFinished {
+                elapsed_ms,
+                blocked,
+                ..
+            } => {
+                #[allow(clippy::cast_precision_loss)]
+                let secs = *elapsed_ms as f64 / 1000.0;
+                self.push_event_log(
+                    ts,
+                    "spec_gate_finished".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("done in {secs:.1} s; {blocked} tasks blocked"),
+                );
+            }
+            // A host reads the check's progress from the event stream
+            // (gap-e02ec4); the log keeps its start and end.
+            DashboardEvent::SpecGateStep { .. } => {}
             DashboardEvent::ConfirmWaiting {
                 plan_id,
                 task_id,

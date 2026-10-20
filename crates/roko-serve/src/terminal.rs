@@ -1272,8 +1272,10 @@ pub async fn ws_terminal(
         .terminal_sessions
         .attach_session(&id, 80, 24, None, None);
 
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
     crate::routes::ws_size_limits(ws)
-        .on_upgrade(move |socket| handle_ws(socket, id, state, attach_result))
+        .on_upgrade(move |socket| open.hold(handle_ws(socket, id, state, attach_result)))
 }
 
 /// The 400 every route returns for an id that cannot name a session.

@@ -144,7 +144,8 @@ BL12 = "D43's proposed line for S05's first slice, still open"
 # only to its lines.
 [[experiment]]
 id = "pilot"
-experiment_ids = ["PILOT-A", "PILOT-B"]   # S09 E1a (gap-c33709) and E1b (gap-327242)
+experiment_ids = ["PILOT-A", "PILOT-B", "PILOT-A-RECAL"]   # S09 E1a (gap-c33709), E1b (gap-327242), and Pilot A's
+                                                           # re-run after the ℓ1–ℓ2 re-tune (gap-dd670b)
 lines = ["BL0", "BL8"]                    # BL0, plus fd_api's five BL8 runs in Pilot A
 cap_usd = 15                              # W10 stage 1: the whole pilot stays within $15 billed
 

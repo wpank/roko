@@ -43,6 +43,7 @@ use sha2::Digest;
 
 use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
+use super::live_tool_calls::ToolTiming;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 use crate::audit::labels::{VsLearner, VsLearners};
@@ -451,6 +452,7 @@ impl AttemptBook {
             trust_exclusions: None,
             verify_depth: None,
             forecast: std::sync::OnceLock::new(),
+            setup: AttemptSetup::default(),
             run,
         }
     }
@@ -501,10 +503,31 @@ pub(super) struct AttemptContext {
     /// The self-model's forecast of the attempt, as its route event carries
     /// it (gap-aaaaae); unset until the self-model forecasts it.
     forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
+    /// What came before the attempt opened (gap-6a319c): its waits and its
+    /// checkout's preparation, in ms, and the checkout.
+    setup: AttemptSetup,
     run: Arc<RunAttempts>,
 }
 
+/// What came before an attempt opened (gap-6a319c).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct AttemptSetup {
+    /// Waiting for an agent slot, the plan's pause, its budget and disk
+    /// admission, in ms.
+    pub queue_ms: Option<u64>,
+    /// Getting its checkout ready, in ms.
+    pub workspace_ms: Option<u64>,
+    /// Its checkout, when it has one of its own.
+    pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
+}
+
 impl AttemptContext {
+    /// What came before the attempt opened: its waits, its checkout's
+    /// preparation and the checkout (gap-6a319c).
+    pub(super) fn record_setup(&mut self, setup: AttemptSetup) {
+        self.setup = setup;
+    }
+
     /// Prompt assembly finished.
     pub(super) fn prompt_assembled(&mut self) {
         self.timing.prompt_assembled_at = Some(now_ms());
@@ -765,6 +788,20 @@ impl AttemptContext {
         verdict.timing.first_token_at = first_token_at;
         verdict.timing.ttft_source = Some(ttft_source.to_string());
         verdict.timing.settled_at = Some(now_ms());
+        // Where its time went (gap-6a319c), from its timestamps, its tool
+        // calls and its verify steps.
+        let tools = verdict
+            .timing
+            .dispatch_started_at
+            .zip(verdict.timing.dispatch_ended_at)
+            .map(|(start, end)| self.live_tool_calls.timing(start, end));
+        verdict.timing.phases = Some(attempt_phases(
+            &verdict.timing,
+            tools.as_ref(),
+            &verdict.steps,
+            &self.setup,
+        ));
+        verdict.workspace = self.setup.workspace;
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
         verdict.cost = attempt_cost(dispatch);
@@ -1168,6 +1205,90 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// Where an attempt's time went (gap-6a319c): the spans between its
+/// `timing` stamps, the provider call split by its `tools`, and each of its
+/// verify `steps`. A span whose ends are not both stamped is `None`.
+fn attempt_phases(
+    timing: &AttemptTiming,
+    tools: Option<&ToolTiming>,
+    steps: &[VerifyStepVerdict],
+    setup: &AttemptSetup,
+) -> roko_core::dashboard_snapshot::AttemptPhases {
+    let span = |from: Option<i64>, to: Option<i64>| {
+        from.zip(to)
+            .and_then(|(from, to)| u64::try_from(to - from).ok())
+    };
+    let duration = span(timing.attempt_started_at, timing.settled_at);
+    let prompt = span(timing.attempt_started_at, timing.prompt_assembled_at);
+    let dispatch = span(timing.dispatch_started_at, timing.dispatch_ended_at);
+    let checks = span(timing.verify_started_at, timing.verify_ended_at);
+    // The provider call is model time but for its tool calls: all of it
+    // when it made none, and unknown when one's result never showed.
+    let tools_ms = tools.and_then(|tools| {
+        if tools.tool_calls == 0 {
+            Some(0)
+        } else {
+            tools.tools_ms
+        }
+    });
+    let model_ms = dispatch
+        .zip(tools_ms)
+        .map(|(dispatch, tools)| dispatch.saturating_sub(tools));
+    // What the other phases leave of the attempt: a phase it never reached
+    // took no time.
+    let other_ms = duration.map(|duration| {
+        duration.saturating_sub(prompt.unwrap_or(0) + dispatch.unwrap_or(0) + checks.unwrap_or(0))
+    });
+    roko_core::dashboard_snapshot::AttemptPhases {
+        queue_ms: setup.queue_ms,
+        workspace_ms: setup.workspace_ms,
+        prompt_ms: prompt,
+        ttft_ms: span(timing.dispatch_started_at, timing.first_token_at),
+        model_ms,
+        model_calls: tools.and_then(|tools| tools.model_calls),
+        tools_ms,
+        tool_calls: tools.map(|tools| tools.tool_calls),
+        tools_by_name: tools.map(|tools| tools.by_name.clone()).unwrap_or_default(),
+        checks_ms: checks,
+        checks: steps
+            .iter()
+            .zip(check_names(steps))
+            .map(|(step, name)| roko_core::dashboard_snapshot::CheckTime {
+                name,
+                ms: step.duration_ms,
+                passed: step.passed,
+            })
+            .collect(),
+        other_ms,
+    }
+}
+
+/// The names `steps` have on their gate results. The verdict names a task's
+/// verify step `verify:0/test`, or `custom:build` for a phase the gate
+/// pipeline does not know, and lists those steps in order; their gate results
+/// name them by their place, `verify[0:test]` and `verify[1:build]`. Any
+/// other step keeps its rung.
+fn check_names(steps: &[VerifyStepVerdict]) -> Vec<String> {
+    let mut verify_steps = 0_usize;
+    steps
+        .iter()
+        .map(|step| {
+            let phase = step
+                .rung
+                .strip_prefix("verify:")
+                .and_then(|rest| rest.split_once('/'))
+                .map(|(_, phase)| phase)
+                .or_else(|| step.rung.strip_prefix("custom:"));
+            let Some(phase) = phase else {
+                return step.rung.clone();
+            };
+            let index = verify_steps;
+            verify_steps += 1;
+            super::verification::verify_step_label(index, phase)
+        })
+        .collect()
+}
+
 /// Whether the agent produced any output before the call ended.
 pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> bool {
     dispatch.events.iter().any(|event| {
@@ -1460,7 +1581,7 @@ mod tests {
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn,
         make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, no_auto_fix,
-        spawn_openai_mock, verify_step,
+        spawn_openai_mock, tool_call_turn, verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -2008,6 +2129,324 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert_eq!(timing.first_token_at, None);
         assert_eq!(timing.ttft_source.as_deref(), Some("unavailable"));
         assert_eq!(timing.verify_started_at, None);
+    }
+
+    /// gap-6a319c: an attempt's phases come from its stamps, its tool calls
+    /// and its verify steps, and those of the try itself add up to its
+    /// duration; a provider call whose tool results never showed leaves the
+    /// split of model and tool time unknown.
+    #[test]
+    fn attempt_phases_add_up_to_its_duration() {
+        let timing = AttemptTiming {
+            attempt_started_at: Some(10_000),
+            prompt_assembled_at: Some(10_050),
+            dispatch_started_at: Some(10_060),
+            first_token_at: Some(10_460),
+            dispatch_ended_at: Some(20_060),
+            verify_started_at: Some(20_100),
+            verify_ended_at: Some(58_100),
+            settled_at: Some(58_200),
+            ..AttemptTiming::default()
+        };
+        let tools = ToolTiming {
+            tools_ms: Some(3_000),
+            tool_calls: 4,
+            by_name: vec![roko_core::dashboard_snapshot::ToolTime {
+                tool: "bash".to_string(),
+                calls: 4,
+                ms: 3_000,
+            }],
+            model_calls: Some(5),
+        };
+        let steps = [VerifyStepVerdict {
+            rung: "verify:0/test".to_string(),
+            command_sha256: None,
+            passed: Some(true),
+            exit_code: Some(0),
+            duration_ms: Some(37_900),
+            timed_out: false,
+            skipped: false,
+            skip_reason: None,
+            confirmed_by_user: false,
+        }];
+        let setup = AttemptSetup {
+            queue_ms: Some(1_200),
+            workspace_ms: Some(400),
+            workspace: None,
+        };
+
+        let phases = attempt_phases(&timing, Some(&tools), &steps, &setup);
+
+        assert_eq!(phases.queue_ms, Some(1_200));
+        assert_eq!(phases.workspace_ms, Some(400));
+        assert_eq!(phases.prompt_ms, Some(50));
+        assert_eq!(phases.ttft_ms, Some(400));
+        assert_eq!(phases.model_ms, Some(7_000));
+        assert_eq!(phases.tools_ms, Some(3_000));
+        assert_eq!((phases.model_calls, phases.tool_calls), (Some(5), Some(4)));
+        assert_eq!(phases.checks_ms, Some(38_000));
+        assert_eq!(phases.checks.len(), 1);
+        assert_eq!(phases.checks[0].name, "verify[0:test]");
+        assert_eq!(phases.checks[0].ms, Some(37_900));
+        let parts = [
+            phases.prompt_ms,
+            phases.model_ms,
+            phases.tools_ms,
+            phases.checks_ms,
+            phases.other_ms,
+        ];
+        let sum: u64 = parts.iter().map(|part| part.expect("measured")).sum();
+        assert_eq!(sum, 48_200, "{phases:?}");
+
+        let unknown = ToolTiming {
+            tools_ms: None,
+            ..tools
+        };
+        let phases = attempt_phases(&timing, Some(&unknown), &steps, &setup);
+        assert_eq!((phases.model_ms, phases.tools_ms), (None, None));
+        assert_eq!(phases.other_ms, Some(150));
+
+        // A phase the gate pipeline does not know is `custom:<phase>` in the
+        // verdict; its gate result numbers it among the task's verify steps.
+        let rungs = [
+            "verify:0/test",
+            "custom:build",
+            "pre_verify:no_changes",
+            "custom:",
+        ];
+        let steps: Vec<VerifyStepVerdict> = rungs
+            .iter()
+            .map(|rung| VerifyStepVerdict {
+                rung: (*rung).to_string(),
+                ..VerifyStepVerdict::default()
+            })
+            .collect();
+        assert_eq!(
+            check_names(&steps),
+            [
+                "verify[0:test]",
+                "verify[1:build]",
+                "pre_verify:no_changes",
+                "verify[2]"
+            ]
+        );
+    }
+
+    /// gap-6a319c: a dispatched attempt's verdict row carries its phases, and
+    /// they add up to its duration.
+    #[tokio::test]
+    async fn attempt_phases_reach_the_verdict_row() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let timing = &attempts[1]["timing"];
+        let phases = &timing["phases"];
+        let ms = |name: &str| {
+            phases[name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("no {name}: {phases}"))
+        };
+        let duration = timing["settled_at"].as_i64().expect("settled")
+            - timing["attempt_started_at"].as_i64().expect("started");
+        let parts = ms("prompt_ms") + ms("model_ms") + ms("tools_ms") + ms("checks_ms");
+        assert_eq!(
+            parts + ms("other_ms"),
+            u64::try_from(duration).expect("a positive duration"),
+            "{phases}"
+        );
+        assert!(ms("ttft_ms") >= 150, "{phases}");
+        assert!(phases["queue_ms"].is_u64(), "{phases}");
+        // The name the step's gate result has.
+        assert_eq!(
+            phases["checks"][0]["name"], "verify[0:structural]",
+            "{phases}"
+        );
+        assert_eq!(phases["checks"][0]["passed"], true);
+    }
+
+    /// gap-5c3347: a try's spend reaches the hub as each model call returns,
+    /// not only when the try settles: one `call_cost` per call, priced at its
+    /// model's rates, with the attempt's spend so far growing with each.
+    #[tokio::test]
+    async fn a_running_try_reports_its_spend_per_model_call() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("notes.txt"), "notes\n").expect("seed notes");
+        // Two calls read the notes and the third answers; call n reads
+        // 1,000 x n tokens and writes 100, at $1 and $2 per million.
+        let read = serde_json::json!({ "path": "notes.txt" });
+        let mut turns = vec![
+            tool_call_turn("call-1", "read_file", read.clone()),
+            tool_call_turn("call-2", "read_file", read),
+            final_turn("done"),
+        ];
+        for (call, turn) in (1_u32..).zip(&mut turns) {
+            turn["usage"] = serde_json::json!({
+                "prompt_tokens": 1_000 * call,
+                "completion_tokens": 100,
+                "total_tokens": 1_000 * call + 100
+            });
+        }
+        let (base_url, _requests) = spawn_openai_mock(turns);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path())
+            .await
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+
+        // The calls' costs, in the order the hub published them, and where
+        // the attempt's settlement came.
+        let mut calls = Vec::new();
+        let mut settled_after = None;
+        while let Ok(envelope) = events.try_recv() {
+            match envelope.payload {
+                DashboardEvent::CallCost {
+                    task_id,
+                    attempt,
+                    call,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    attempt_cost_usd,
+                    ..
+                } => {
+                    assert_eq!((task_id.as_str(), attempt), (task.id.as_str(), 1));
+                    assert_eq!(model, "api-model-1");
+                    calls.push((
+                        call,
+                        input_tokens,
+                        output_tokens,
+                        cost_usd,
+                        attempt_cost_usd,
+                    ));
+                }
+                DashboardEvent::AttemptSettled { .. } => settled_after = Some(calls.len()),
+                _ => {}
+            }
+        }
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(
+            settled_after,
+            Some(3),
+            "every call's cost came before the try settled"
+        );
+        let mut total = 0.0;
+        for (n, (call, input, output, cost, so_far)) in (1_u32..).zip(&calls) {
+            let expected = 0.001 * f64::from(n) + 0.000_2;
+            total += expected;
+            assert_eq!(
+                (*call, *input, *output),
+                (n, 1_000 * u64::from(n), 100),
+                "{calls:?}"
+            );
+            let cost = cost.expect("the model's rates price the call");
+            assert!(
+                (cost - expected).abs() < 1e-6,
+                "call {n} cost ${cost}, not ${expected}"
+            );
+            assert!(
+                (so_far - total).abs() < 1e-6,
+                "after call {n}: ${so_far}, not ${total}"
+            );
+        }
+    }
+
+    /// gap-770cb5: an agent in a C++ task runs its task's own checks mid-try
+    /// with `run_tests` and `build: "checks"`. It sees the compiler's error,
+    /// fixes the file, sees the checks pass, and the try passes first time.
+    #[tokio::test]
+    async fn a_cmake_task_can_run_its_checks_mid_try() {
+        let temp = tempdir().expect("tempdir");
+        // A build check that prints what CMake would, and fails until
+        // src/voice.cpp returns 1.
+        std::fs::write(
+            temp.path().join("check.sh"),
+            "echo '[ 50%] Building CXX object CMakeFiles/undertow.dir/src/voice.cpp.o'\n\
+             if ! grep -q 'return 1' src/voice.cpp 2>/dev/null; then\n\
+             echo 'src/voice.cpp:1:1: error: voice() needs a body' >&2\n\
+             exit 2\n\
+             fi\n\
+             echo '[100%] Built target undertow'\n",
+        )
+        .expect("check.sh");
+        let checks = serde_json::json!({ "build": "checks" });
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("c1", "run_tests", checks.clone()),
+            tool_call_turn("c2", "write_file", fix),
+            tool_call_turn("c3", "run_tests", checks),
+            final_turn("done"),
+            final_turn("done"),
+        ]);
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path()).await;
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("build", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try passes first time");
+
+        // What each run_tests call told the agent: the tool message answering it.
+        let answer = |call: &str| -> String {
+            let requests = requests.lock();
+            requests
+                .iter()
+                .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
+                .find(|message| message["role"] == "tool" && message["tool_call_id"] == call)
+                .and_then(|message| message["content"].as_str().map(str::to_string))
+                .unwrap_or_else(|| panic!("no answer to {call}"))
+        };
+        let first = answer("c1");
+        assert!(
+            first.contains("check 1 of 1 (verify[0:build]) failed (exit 2)"),
+            "{first}"
+        );
+        assert!(first.contains("error: voice() needs a body"), "{first}");
+        let second = answer("c3");
+        assert!(second.contains("\"status\":\"ok\""), "{second}");
+        assert!(second.contains("verify[0:build]"), "{second}");
+        // The checks were left for the try only.
+        let left = temp.path().join(".roko/state/task-checks");
+        let files = std::fs::read_dir(&left).map_or(0, Iterator::count);
+        assert_eq!(files, 0, "the try's checks file outlived it");
     }
 
     /// `api-model` on an OpenAI-compatible provider the mock at `base_url`

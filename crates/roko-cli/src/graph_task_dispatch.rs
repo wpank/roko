@@ -15,7 +15,7 @@
 //! remains the production plan route until #256 atomically activates the
 //! streaming path after lease acquisition.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -56,6 +56,7 @@ mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;
+mod call_cost;
 mod check_output;
 mod decision_log;
 mod diff_snapshot;
@@ -85,6 +86,7 @@ mod sibling_settle;
 mod step_ratchet;
 mod streaming;
 mod supervision;
+mod task_checks;
 mod test_runners;
 mod try_allowance;
 mod tui_forward;
@@ -187,6 +189,19 @@ impl From<roko_core::config::serve::LiveAgentOutput> for LiveAgentOutput {
     }
 }
 
+tokio::task_local! {
+    /// How long a dispatch waited for its agent slot, in ms (gap-6a319c):
+    /// [`crate::graph_execution::agent_slots::AgentSlotDispatcher`] sets it
+    /// around the dispatch it lets through, which counts it in the attempt's
+    /// queue time.
+    pub(crate) static SLOT_WAIT_MS: u64;
+}
+
+/// Milliseconds since `since`.
+fn elapsed_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Real runner/provider adapter injected into `TaskExecutorCell` factories.
 pub struct GraphTaskDispatcher {
     factory: Arc<SharedAgentFactory>,
@@ -217,6 +232,9 @@ pub struct GraphTaskDispatcher {
     /// Checkout generation per task (`"{plan_id}/{task_id}"`): see
     /// [`Self::worktree_generation`].
     worktree_generations: parking_lot::Mutex<HashMap<String, u32>>,
+    /// The checkouts this run's attempts have run in, so that an attempt
+    /// knows when it runs in an earlier try's (gap-6a319c).
+    checkouts_used: parking_lot::Mutex<HashSet<PathBuf>>,
     /// Optional TUI bridge for forwarding live agent output events to the
     /// dashboard. When set, completed dispatch events (text deltas, tool
     /// calls, tool outputs) are published through the StateHub so the TUI
@@ -357,6 +375,17 @@ pub struct GraphTaskDispatcher {
     outbound_floor: Option<roko_core::tool::OutboundPolicy>,
 }
 
+/// The `[models.*]` keys a run's side calls may use
+/// ([`GraphTaskDispatcher::side_call_models`]): any, or only those listed.
+struct SideCallModels(Option<HashSet<String>>);
+
+impl SideCallModels {
+    /// Whether a side call may use `model_key`.
+    fn allow(&self, model_key: &str) -> bool {
+        self.0.as_ref().is_none_or(|keys| keys.contains(model_key))
+    }
+}
+
 impl GraphTaskDispatcher {
     /// Construct a dispatcher sharing the plan run's provider runtime.
     #[must_use]
@@ -380,6 +409,7 @@ impl GraphTaskDispatcher {
             workspace_provider: None,
             disk_admission: None,
             worktree_generations: parking_lot::Mutex::new(HashMap::new()),
+            checkouts_used: parking_lot::Mutex::new(HashSet::new()),
             tui_bridge: None,
             live_agent_output: None,
             gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
@@ -790,12 +820,44 @@ impl GraphTaskDispatcher {
     }
 
     /// Return a helper agent wired to the model chosen by
-    /// [`select_cheap_model_key`], or `None` when no model is dispatchable.
-    /// Used for best-effort error enrichment, quality judgment and gate
-    /// reflection calls, which count toward the attempt being verified
-    /// ([`HelperAgent`]).
+    /// [`select_cheap_model_key`] among those the run's side calls may use
+    /// ([`Self::side_call_models`]), or `None` when no such model is
+    /// dispatchable. Used for best-effort error enrichment, quality judgment
+    /// and gate reflection calls, which count toward the attempt being
+    /// verified ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
-        select_cheap_model_key(&self.config).map(|model_key| self.helper_agent(model_key))
+        let models = self.side_call_models();
+        select_cheap_model_key(&self.config, |key| models.allow(key))
+            .map(|model_key| self.helper_agent(model_key))
+    }
+
+    /// The helper model that judges an attempt `executor` (a model slug) ran
+    /// ([`routing_context::select_judge_model_key`], 9123), among the models
+    /// the run's side calls may use.
+    fn judge_model_key(&self, executor: &str) -> Option<(String, bool)> {
+        let models = self.side_call_models();
+        routing_context::select_judge_model_key(&self.config, executor, |key| models.allow(key))
+    }
+
+    /// Whether this run's tasks hold their outbound tool calls for approval,
+    /// as a chat host's run does ([`Self::with_outbound_floor`], gap-cf427e).
+    fn stages_outbound(&self) -> bool {
+        self.outbound_floor
+            .is_some_and(|floor| floor != roko_core::tool::OutboundPolicy::Allow)
+    }
+
+    /// The models this run's side calls may use: an audit's suite authors
+    /// and reviewers, and the helper calls. Any configured model, except in a
+    /// run that holds its outbound tool calls for approval, as a chat host's
+    /// does: only the models roko's own tool loop runs with their credentials
+    /// set ([`RokoConfig::tool_loop_models`]), the rule its ladder keeps
+    /// (gap-cf427e). Such a run never calls a person's CLI agent or login
+    /// (bug-082810).
+    fn side_call_models(&self) -> SideCallModels {
+        SideCallModels(
+            self.stages_outbound()
+                .then(|| self.config.tool_loop_models().into_iter().collect()),
+        )
     }
 
     /// A helper agent wired to `model_key`, as [`Self::cheap_agent`] builds
@@ -989,6 +1051,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        // What the attempt waits for before it opens counts as its queue
+        // (gap-6a319c), the agent slot it waited for included.
+        let entered = Instant::now();
+        let slot_wait_ms = SLOT_WAIT_MS.try_with(|ms| *ms).unwrap_or(0);
         // A paused run starts no attempt, a retry included (G10).
         operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
@@ -1128,6 +1194,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             None => None,
         };
 
+        let queue_ms = slot_wait_ms.saturating_add(elapsed_ms(entered));
+        let acquiring = Instant::now();
+
         // ── Worktree isolation: acquire ─────────────────────────────────
         //
         // When a workspace provider is configured, acquire an isolated
@@ -1179,6 +1248,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
             (Some(scratch), _) => scratch.dir().to_path_buf(),
             (None, Some(lease)) => lease.path.clone(),
             (None, None) => self.workdir.clone(),
+        };
+        // gap-6a319c: the checkout's preparation and what made it warm.
+        let setup = attempt::AttemptSetup {
+            queue_ms: Some(queue_ms),
+            workspace_ms: Some(elapsed_ms(acquiring)),
+            workspace: lease
+                .as_ref()
+                .map(|lease| self.attempt_workspace(&lease.path)),
         };
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git
@@ -1274,6 +1351,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // dies from here on, the attempt keeps its key and counts as
         // abandoned.
         let mut attempt = self.open_attempt(spec, &task, ctx);
+        attempt.record_setup(setup);
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).
         self.record_diff_base(
@@ -1466,9 +1544,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
             knowledge_ids: decision_log::included_knowledge_ids(&dispatch_plan),
-            allowance: allowance
-                .clone()
-                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+            allowance: self.metered_calls(
+                allowance
+                    .clone()
+                    .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+                &spec.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);
@@ -1550,6 +1633,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             Some(attempt.live_tool_calls()),
         );
 
+        // gap-770cb5: the agent can run its task's checks mid-try.
+        let left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
         attempt.dispatch_started();
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
@@ -1585,6 +1670,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let dispatch_result =
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
+        drop(left_checks);
         if let Some(supervised) = supervised {
             supervised
                 .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));
@@ -2019,7 +2105,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 handed_on = Some(lease.clone());
             } else {
-                accepted = self
+                let merging = Instant::now();
+                let merged = self
                     .accept_attempt(
                         spec,
                         &task,
@@ -2029,7 +2116,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         lease,
                         ctx,
                     )
-                    .await?;
+                    .await;
+                self.publish_attempt_merged(spec, &task, &settled, &merged, elapsed_ms(merging));
+                accepted = merged?;
             }
         }
         // A scratch_dir attempt's result is copied back into the workspace,
@@ -3142,36 +3231,51 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
                 let Some(request) = read_mock_request(&mut stream) else {
                     return;
                 };
-                // A request that asks to stream gets the same answer as SSE
-                // chunks: an attempt streams whenever its progress is tracked
-                // (bug-3a3b0f), with or without the stall watchdog.
                 let streamed = request["stream"] == serde_json::Value::Bool(true);
                 requests.lock().push(request);
-                let wire = if streamed {
-                    let mut body = String::new();
-                    for chunk in openai_stream_chunks(&response) {
-                        body.push_str(&format!("data: {chunk}\n\n"));
-                    }
-                    body.push_str("data: [DONE]\n\n");
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
-                    )
-                } else {
-                    let body = response.to_string();
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
+                let wire = openai_mock_wire(&response, streamed);
                 let _ = stream.write_all(wire.as_bytes());
             }
         });
         (base_url, captured)
     }
 
+    /// The HTTP response a stand-in OpenAI-compatible server sends for the
+    /// chat completion `response`: a [`rate_limited_turn`] as HTTP 429 with
+    /// its `Retry-After`; any other as SSE chunks when the request asked to
+    /// stream, as an attempt does whenever its progress is tracked
+    /// (bug-3a3b0f), else as JSON.
+    pub(super) fn openai_mock_wire(response: &serde_json::Value, streamed: bool) -> String {
+        if let Some(retry_after) = response
+            .get(RATE_LIMITED_TURN)
+            .and_then(serde_json::Value::as_u64)
+        {
+            let body = serde_json::json!({ "error": response["error"] }).to_string();
+            format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else if streamed {
+            let mut body = String::new();
+            for chunk in openai_stream_chunks(response) {
+                body.push_str(&format!("data: {chunk}\n\n"));
+            }
+            body.push_str("data: [DONE]\n\n");
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            )
+        } else {
+            let body = response.to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+    }
+
     /// A chat-completion `response` as the SSE chunks a streaming provider
-    /// sends for it: the message's content and tool calls as one delta, then
-    /// its finish reason, then its usage.
+    /// sends for it: the message's reasoning, content and tool calls as one
+    /// delta, then its finish reason, then its usage.
     fn openai_stream_chunks(response: &serde_json::Value) -> Vec<serde_json::Value> {
         let choice = &response["choices"][0];
         let message = &choice["message"];
@@ -3179,6 +3283,12 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         let calls = message["tool_calls"]
             .as_array()
             .filter(|calls| !calls.is_empty());
+        if let Some(reasoning) = message["reasoning_content"]
+            .as_str()
+            .filter(|reasoning| !reasoning.is_empty())
+        {
+            delta["reasoning_content"] = serde_json::json!(reasoning);
+        }
         if let Some(content) = message["content"]
             .as_str()
             .filter(|content| !content.is_empty())
@@ -3258,7 +3368,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
 
     /// The JSON body of the HTTP request on `stream`; `None` when the
     /// client hung up before its headers.
-    fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
+    pub(super) fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
         use std::io::Read;
 
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
@@ -3313,6 +3423,23 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             }],
             "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
         })
+    }
+
+    /// The key of a [`rate_limited_turn`]'s `Retry-After`.
+    const RATE_LIMITED_TURN: &str = "__rate_limited_retry_after_secs";
+
+    /// A call the provider refuses with HTTP 429 and a `Retry-After` of
+    /// `retry_after_secs`, with z.ai's error body (bug-4b6844).
+    /// [`spawn_openai_mock`] answers it so whether the request streams or not.
+    pub(super) fn rate_limited_turn(retry_after_secs: u64) -> serde_json::Value {
+        let mut turn = serde_json::json!({
+            "error": {
+                "code": "1302",
+                "message": "Rate limit reached for requests"
+            }
+        });
+        turn[RATE_LIMITED_TURN] = serde_json::json!(retry_after_secs);
+        turn
     }
 
     pub(super) fn final_turn(text: &str) -> serde_json::Value {

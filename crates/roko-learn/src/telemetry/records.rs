@@ -2063,15 +2063,55 @@ pub struct PredictionCandidate {
 
 /// What the predictor would do for the attempt, so that a shadow pick can be scored against the
 /// pick routing made without it (as `router_pick` is for G56).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PredictionDecision {
     /// The arm it would choose; `null` when it would dispatch nothing.
     pub would_choose: Option<String>,
     /// The arm routing chooses without it, when known.
     #[serde(default)]
     pub default: Option<String>,
-    /// Its action: `dispatch`, `climb`, `skip`, `retry`, `refine_spec` or `abandon`.
+    /// Its action: `start`, `dispatch`, `climb`, `skip`, `retry`, `refine_spec`, `abandon` or
+    /// `pinned`.
     pub action: String,
+    /// On a chain's first attempt under policy (b), both start rules' picks with their numbers,
+    /// whichever one `would_choose` follows (gap-74893d); absent otherwise, and in rows
+    /// written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_rules: Option<StartRulePicks>,
+}
+
+/// Both start rules' picks for a chain's first attempt (gap-74893d), so that a run's
+/// predictions show what the rule `[self_model] start_rule` did not set would have done.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartRulePicks {
+    /// The rule `would_choose` follows: `expected_total` or `break_even`.
+    pub rule: String,
+    /// S04 §4.4's break-even rule.
+    pub break_even: BreakEvenPick,
+    /// The rule that weighs time: the lowest expected total to a verified pass.
+    pub expected_total: ExpectedTotalPick,
+}
+
+/// The break-even rule's pick (S04 §4.4, decision 6101).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BreakEvenPick {
+    /// The arm it would start on.
+    pub pick: Option<String>,
+    /// Per candidate, cheapest first, the bar c_j/c_{j+1} + m_b its `p_vs_lcb` had to beat;
+    /// `null` on the last rung.
+    pub bars: Vec<Option<f64>>,
+}
+
+/// The expected-total rule's pick (gap-74893d).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExpectedTotalPick {
+    /// The arm it would start on.
+    pub pick: Option<String>,
+    /// λ, the price it put on an hour of a try's wall time, in USD.
+    pub usd_per_hour: f64,
+    /// Per candidate, cheapest first, the expected total in USD, cost plus λ·time, to a
+    /// verified pass for a task started there; `null` where it is infinite.
+    pub totals_usd: Vec<Option<f64>>,
 }
 
 // ── Line envelope ─────────────────────────────────────────────────────

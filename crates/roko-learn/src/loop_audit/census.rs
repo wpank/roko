@@ -2601,6 +2601,7 @@ mod tests {
                     would_choose: Some("model-a".to_string()),
                     default: Some("model-c".to_string()),
                     action: "dispatch".to_string(),
+                    start_rules: None,
                 };
                 let identity = AttemptIdentity::new(&key);
                 let prediction =

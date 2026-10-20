@@ -100,7 +100,19 @@ pub struct RouteChoice {
 /// log-normal: E[c] = q50·exp(σ²/2), σ = ln(q90/q50)/Φ⁻¹(0.9).
 #[must_use]
 pub fn expected_cost(forecast: &CandidateForecast) -> f64 {
-    let (q50, q90) = (forecast.cost_q50, forecast.cost_q90);
+    log_normal_mean(forecast.cost_q50, forecast.cost_q90)
+}
+
+/// An arm's expected wall time per attempt, in seconds, from its latency quantiles the way
+/// [`expected_cost`] reads the cost's (gap-74893d).
+#[must_use]
+pub fn expected_latency(forecast: &CandidateForecast) -> f64 {
+    log_normal_mean(forecast.lat_q50_s, forecast.lat_q90_s)
+}
+
+/// The mean of the log-normal whose median is `q50` and whose 90th percentile is `q90`: `q50`
+/// when the two give no spread.
+fn log_normal_mean(q50: f64, q90: f64) -> f64 {
     let sigma = if q90 > q50 && q50 > 0.0 {
         (q90 / q50).ln() / normal_quantile(0.9)
     } else {

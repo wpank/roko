@@ -47,6 +47,32 @@ const PYTHON_PROJECT_FILES: &[&str] = &[
 /// output and vendored code (bug-574c45).
 const NOT_THE_PROJECT: &[&str] = &["build", "node_modules", "target", "third_party", "vendor"];
 
+/// Build tools that run only beside their manifest (bug-72dc0d): each tool,
+/// the subcommands that need the manifest, and the manifest's file names.
+/// The tool looks for it in its directory and the directories above.
+const MANIFESTS: &[(&str, &[&str], &[&str])] = &[
+    (
+        "cargo",
+        &[
+            "b", "bench", "build", "c", "check", "clippy", "d", "doc", "fix", "fmt", "metadata",
+            "nextest", "r", "run", "rustc", "t", "test", "tree",
+        ],
+        &["Cargo.toml"],
+    ),
+    (
+        "go",
+        &["build", "generate", "list", "run", "test", "vet"],
+        &["go.mod"],
+    ),
+    (
+        "npm",
+        &["ci", "run", "run-script", "start", "t", "test"],
+        &["package.json"],
+    ),
+    ("pnpm", &["run", "start", "t", "test"], &["package.json"]),
+    ("yarn", &["run", "start", "test"], &["package.json"]),
+];
+
 /// The longest a step the base settles may run when generation or `plan
 /// validate` runs it to see how it comes out (bug-27f00b).
 const SETTLED_TIMEOUT: Duration = Duration::from_secs(10);
@@ -219,6 +245,10 @@ pub(super) fn runners_block(workdir: &Path, probe: &Probe) -> Option<String> {
     if workdir.join("go.mod").is_file() && !probe.command("go") {
         lines.push("- Go: `go` is NOT installed here.".to_string());
     }
+    // bug-8723fc: a project of another kind has no cargo build to check.
+    if !lines.is_empty() && !workdir.join("Cargo.toml").is_file() {
+        lines.push("- Rust: there is no `Cargo.toml` here, so no check runs `cargo`.".to_string());
+    }
     (!lines.is_empty()).then(|| {
         format!(
             "## Test runners\n\n\
@@ -251,7 +281,7 @@ fn holds_extension(dir: &Path, extension: &str, depth: usize) -> bool {
 /// not build output or vendored code, holds a `CMakeLists.txt`: a seed's
 /// `tests/spec/CMakeLists.txt` makes a CMake project before the top one is
 /// written.
-fn holds_cmake_lists(dir: &Path, depth: usize) -> bool {
+pub(super) fn holds_cmake_lists(dir: &Path, depth: usize) -> bool {
     if dir.join("CMakeLists.txt").is_file() {
         return true;
     }
@@ -555,15 +585,72 @@ pub fn implementers_without_a_shell(plan: &TasksFile) -> Vec<(String, String)> {
 /// Extensions of the source files a CMake target lists (bug-daa54e).
 const CMAKE_SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "m", "mm"];
 
+/// File extensions of C and C++ headers.
+const C_HEADERS: &[&str] = &["h", "hh", "hpp", "hxx"];
+
+/// Give each implementer task that writes C or C++ files and has no verify
+/// step a check that builds them with the workspace's CMake (bug-8723fc):
+/// configure and build with the preset named for the files' first directory,
+/// or the first preset (`cmake --preset core && cmake --build --preset core`).
+/// The TOML fix-up gives only a task that writes Rust a cargo check, so a task
+/// in a workspace with no build roko knows keeps no step. Returns one line per
+/// step added.
+pub(super) fn repair_build_checks(
+    plan: &mut TasksFile,
+    workdir: &Path,
+    probe: &Probe,
+) -> Vec<String> {
+    let Some(cmake) = super::build_system::CmakeCommands::of(workdir) else {
+        return Vec::new();
+    };
+    let mut added = Vec::new();
+    for task in &mut plan.tasks {
+        let implementer = task
+            .role
+            .as_deref()
+            .is_none_or(|role| role == "implementer");
+        let source = task.files.iter().find(|file| {
+            Path::new(file)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    CMAKE_SOURCES.contains(&extension) || C_HEADERS.contains(&extension)
+                })
+        });
+        let Some(source) = source.filter(|_| implementer && task.verify.is_empty()) else {
+            continue;
+        };
+        if !probe.command("cmake") {
+            continue;
+        }
+        let command = cmake.build_command(source.split('/').next());
+        added.push(format!(
+            "{}: added `{command}`: it had no verify step, and this workspace builds with CMake",
+            task.id
+        ));
+        task.verify.push(crate::task_parser::VerifyStep {
+            phase: "compile".to_string(),
+            command,
+            fail_msg: Some("the task's sources must build".to_string()),
+            timeout_ms: crate::task_parser::default_verify_timeout(),
+            scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
+        });
+    }
+    added
+}
+
 /// Add to each task that creates a C or C++ source the CMake file that must
 /// list it (bug-daa54e): the nearest `CMakeLists.txt` above the source, one
 /// that exists or that the task or a task before it writes, unless it
 /// collects its sources with a glob. Phase 1's oscillator, filter and envelope
 /// tasks each created a source under `core/`, whose `CMakeLists.txt` names
 /// every source, without listing that file: each edit was out of scope. A
-/// build-registration file may sit in several tasks' `files` without keeping
-/// them apart ([`roko_graph::exclusion::is_registration_file`]). Returns one
-/// line per file added.
+/// build-registration file may sit in several tasks' `files`: generation
+/// counts it as neither split ownership nor an overlap
+/// ([`roko_graph::exclusion::is_registration_file`]). Returns one line per
+/// file added.
 pub(super) fn repair_build_lists(plan: &mut TasksFile, workdir: &Path) -> Vec<String> {
     let mut repairs = Vec::new();
     for index in 0..plan.tasks.len() {
@@ -1506,6 +1593,48 @@ fn inside_workspace(path: &str) -> Option<String> {
     })
 }
 
+/// Why `program` with `args` cannot run in `workdir` (bug-72dc0d): it is a
+/// build tool whose manifest neither the workspace (or a directory above it)
+/// has nor a task writes before the step runs, such as `cargo test -p
+/// undertow_core` in a CMake project. `None` when it is no such tool, or a
+/// flag points it at a manifest elsewhere.
+fn missing_manifest(
+    program: &str,
+    args: &[String],
+    workdir: &Path,
+    written: &[String],
+) -> Option<String> {
+    let (_, subcommands, manifests) = MANIFESTS.iter().find(|(tool, _, _)| *tool == program)?;
+    let elsewhere = ["--manifest-path", "--prefix", "--dir", "--cwd", "-C"];
+    if args.iter().any(|arg| {
+        elsewhere
+            .iter()
+            .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+    }) {
+        return None;
+    }
+    let subcommand = args
+        .iter()
+        .find(|arg| !arg.starts_with('-') && !arg.starts_with('+'))?;
+    // `go run main.go` builds the files it is given, with no module.
+    if !subcommands.contains(&subcommand.as_str())
+        || (program == "go" && args.iter().any(|arg| arg.ends_with(".go")))
+    {
+        return None;
+    }
+    let present = workdir
+        .ancestors()
+        .any(|dir| manifests.iter().any(|name| dir.join(name).is_file()));
+    let comes = manifests.iter().any(|name| is_written(written, name));
+    (!present && !comes).then(|| {
+        format!(
+            "it runs `{program} {subcommand}`, which needs a `{}`: this workspace has none, and \
+             no task writes one before it runs",
+            manifests[0]
+        )
+    })
+}
+
 /// Why `command` cannot pass, if it cannot: the first problem found.
 fn step_problem(
     command: &str,
@@ -1513,17 +1642,23 @@ fn step_problem(
     written: &[String],
     probe: &Probe,
 ) -> Option<String> {
+    // After a `cd`, a command runs in a directory this check does not follow.
+    let mut moved = false;
     for segment in shell_segments(command) {
         let words = command_words(&segment);
         let Some((program, args)) = words.split_first() else {
             continue;
         };
         let program = program.as_str();
+        moved |= matches!(program, "cd" | "pushd");
         if BUILTINS.contains(&program) || program.contains('/') {
             continue;
         }
         if !probe.command(program) {
             return Some(format!("`{program}` is not installed"));
+        }
+        if !moved && let Some(why) = missing_manifest(program, args, workdir, written) {
+            return Some(why);
         }
         let module = (matches!(program, "python" | "python3")
             && args.first().is_some_and(|arg| arg == "-m"))
@@ -2006,6 +2141,7 @@ pub(super) mod tests {
             "grep -q 'fn test_sc1' crates/seq/tests/tm_sc1.rs && cargo test -p seq --test tm_sc1",
             &["crates/seq/src/tm.rs"],
         );
+        std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").expect("a cargo workspace");
         let repairs = repair(&mut plan, temp.path(), &probe);
         assert_eq!(
             repairs,
@@ -2599,6 +2735,44 @@ pub(super) mod tests {
         ] {
             assert_eq!(reads(command), None, "{command}");
         }
+    }
+
+    /// bug-72dc0d: phase 2's planner checked a CMake project's tasks with
+    /// `cargo`. A build tool whose manifest neither the workspace nor a
+    /// directory above it has, and no task writes before the step runs,
+    /// cannot run there; with its manifest, one a task writes, a flag that
+    /// points elsewhere, or after a `cd`, it can.
+    #[test]
+    fn a_build_tool_without_its_manifest_cannot_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let probe = Probe::with(&[("cargo", true), ("go", true), ("npm", true)], &[]);
+        let problem = |command: &str, written: &[&str]| {
+            let written: Vec<String> = written.iter().map(|path| (*path).to_string()).collect();
+            step_problem(command, temp.path(), &written, &probe)
+        };
+        let why = problem(
+            "test -f core/src/rumble.cpp && cargo test -p undertow_core rumble",
+            &["core/src/rumble.cpp"],
+        )
+        .expect("no Cargo.toml");
+        assert!(
+            why.contains("`cargo test`") && why.contains("`Cargo.toml`"),
+            "{why}"
+        );
+        assert!(problem("cargo check --workspace", &[]).is_some());
+        assert!(problem("npm test", &[]).is_some());
+        assert!(problem("go test ./...", &[]).is_some());
+        for command in [
+            "go run main.go",
+            "cargo --version",
+            "cargo test --manifest-path sub/Cargo.toml",
+            "cd sub && cargo test",
+        ] {
+            assert_eq!(problem(command, &[]), None, "{command}");
+        }
+        assert_eq!(problem("cargo test -p roko", &["Cargo.toml"]), None);
+        std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").expect("a manifest");
+        assert_eq!(problem("cargo test -p undertow_core rumble", &[]), None);
     }
 
     /// The prompt says which runners this machine has.

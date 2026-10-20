@@ -9712,6 +9712,53 @@ exec sleep 60
         }
     }
 
+    /// bug-daa54e: two tasks that each add their source to
+    /// `core/CMakeLists.txt` overlap only on that list. In a shared tree
+    /// their nodes keep it, so the engine runs them one at a time; with a
+    /// worktree per task nothing holds them apart, and they run together.
+    #[test]
+    fn a_shared_build_list_serializes_tasks_only_in_a_shared_tree() {
+        let plan_task = |source: &str| roko_graph::convert::PlanTaskInfo {
+            title: format!("Add {source}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec![
+                format!("core/src/{source}.cpp"),
+                "core/CMakeLists.txt".to_string(),
+            ],
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let graph = roko_graph::convert::plan_to_graph(
+            "p",
+            "plans/p",
+            &[
+                ("T1".to_string(), plan_task("oscillator")),
+                ("T2".to_string(), plan_task("filter")),
+            ],
+            2,
+        )
+        .expect("plan graph");
+        let overlap = |graph: &roko_graph::Graph| {
+            let paths = |id: &str| graph.get_node(id).expect("a task node").exclusive.clone();
+            roko_graph::exclusion::first_overlap(&paths("T1"), &paths("T2"))
+                .map(|(path, _)| path.to_string())
+        };
+        let mut shared = graph.clone();
+        drop_exclusion_for_worktrees(&mut shared, false);
+        assert_eq!(overlap(&shared).as_deref(), Some("core/CMakeLists.txt"));
+        let mut isolated = graph;
+        drop_exclusion_for_worktrees(&mut isolated, true);
+        assert_eq!(overlap(&isolated), None);
+    }
+
     /// Stands in for a rich-topology task executor under
     /// `--worktree-per-task`: runs its attempt in a worktree from `provider`
     /// and hands that worktree on to the task's gate.

@@ -2,7 +2,7 @@
 id = "gap-0a126f"
 kind = "gap"
 title = "A try's binary files show no size anywhere: the review hold and the run diff give a 4.3 MB WAV as binary +0/-0 with no bytes, so a person approving Undertow's renders can't tell them from a 200 MB mistake"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "7b29eb18a"
 source = "round-v7-roko-ladder#binary-outputs"
 discovered_from = "agent:roko-ladder (round v7 binary-outputs test, roko c25301eef)"
 anchors = ["crates/roko-serve/src/routes/run_result.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-ba0c40", "gap-ca983a"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_binary_file_in_a_run_diff_says_its_size' crates/ && cargo test -p roko-serve --lib -- a_binary_file_in_a_run_diff_says_its_size"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T15:29:25Z"
+commit = "7b29eb18a"
+by = "roko-ladder"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-20T14:40:13Z"
+forced = false
+evidence = "7b29eb18a: GET /api/runs/{id}/diff gives each binary file bytes_before and bytes_after (one git --literal-pathspecs ls-tree -r -l -z per side, run_result.rs blob_sizes; null on the side it is missing from), since a binary file counts no lines; text files unchanged. The review hold's sizes are split into gap-ca983a (filed here, depends on bug-ba0c40, whose files it would touch). Test a_binary_file_in_a_run_diff_says_its_size (modified WAV 1000->2000 bytes, an added PNG with [ ] and a space in its name, a deleted binary, a text file without sizes): red with the sizes switched off (left (Null, Null), right (1000, 2000)), green now. Checks: roko-serve lib 1070 passed plus its 15 integration targets; clippy -D warnings (roko-serve) and nightly rustfmt clean. Found by the round v7 binary-outputs test (3 PNGs 1.30-1.85 MB, a 4.32 MB WAV through a plan run: binary +0/-0 everywhere)."
 +++
 
 ## Problem

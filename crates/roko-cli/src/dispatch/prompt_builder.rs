@@ -180,6 +180,9 @@ pub struct PromptContext {
     /// The other plans running in the same working tree now, with the areas
     /// they write ([`DispatchContext::concurrent_plans`]).
     pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The build trees the attempt's checkout holds
+    /// ([`DispatchContext::warm_build_trees`]).
+    pub warm_build_trees: Vec<String>,
     /// The plan's `brief.md`, which `roko plan prepare` writes (gap-d6fd85).
     pub plan_brief: String,
     /// The arms of the attempt's chain ([`DispatchContext::arm_set`]).
@@ -301,6 +304,7 @@ impl PromptContext {
             workspace_context,
             error_patterns: ctx.error_patterns.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
+            warm_build_trees: ctx.warm_build_trees.clone(),
             plan_brief,
             arm_set: ctx.arm_set.clone(),
             knowledge_section: ctx.knowledge_section,
@@ -1684,6 +1688,10 @@ fn build_runner_context(
         parts.push(verify);
     }
 
+    if let Some(trees) = render_build_trees(ctx) {
+        parts.push(trees);
+    }
+
     if !ctx.impact_context.is_empty() {
         parts.push(format!("# Change impact\n{}", ctx.impact_context));
     }
@@ -1789,12 +1797,35 @@ fn render_verify_commands(ctx: &PromptContext) -> Option<String> {
     Some(format!("# Verify\nAfter editing, run:\n{list}{note}"))
 }
 
+/// The `# Prebuilt build trees` line: the checkout's warm build trees
+/// ([`PromptContext::warm_build_trees`]) are to be built in, not deleted or
+/// configured afresh, which rebuilds the whole project (gap-9d7381). `None`
+/// when the checkout holds none.
+fn render_build_trees(ctx: &PromptContext) -> Option<String> {
+    let quoted: Vec<String> = ctx
+        .warm_build_trees
+        .iter()
+        .map(|tree| format!("`{tree}`"))
+        .collect();
+    let (names, is, them) = match quoted.split_last()? {
+        (last, []) => (last.clone(), "is", "it"),
+        (last, rest) => (format!("{} and {last}", rest.join(", ")), "are", "them"),
+    };
+    Some(format!(
+        "# Prebuilt build trees\n{names} {is} already built in this checkout: build in {them} \
+         incrementally, and don't delete {them} or reconfigure {them} from scratch (`rm -rf`, \
+         `cmake --fresh`), which rebuilds everything."
+    ))
+}
+
 /// The runner context of a role with no cross-plan context (`context: 0` in
 /// [`roko_compose::budget_for`]: QuickReviewer and AutoFixer). It holds only
-/// what checking the task turns on: its verify commands and, on a retry, the
-/// failing gate's feedback (gap-c8bfc8).
+/// what checking the task turns on: its verify commands, the checkout's
+/// prebuilt build trees and, on a retry, the failing gate's feedback
+/// (gap-c8bfc8).
 fn minimal_runner_context(ctx: &PromptContext) -> String {
     let mut parts: Vec<String> = render_verify_commands(ctx).into_iter().collect();
+    parts.extend(render_build_trees(ctx));
     if ctx.attempt > 0 {
         if let Some(feedback) = &ctx.gate_feedback {
             parts.push(render_gate_feedback(feedback));
@@ -3272,6 +3303,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             attempt_key: None,
             arm_set: None,
             knowledge_section: true,
@@ -4724,6 +4756,48 @@ covers = ["AC1"]
         assert!(!context.contains("# Plans Running Beside This One"));
     }
 
+    /// gap-9d7381: an agent whose checkout holds warm build trees
+    /// (gap-6754ab) is told to build in them, not delete or reconfigure
+    /// them; one whose checkout holds none hears nothing of them.
+    #[test]
+    fn a_checkout_with_warm_build_trees_is_told_to_keep_them() {
+        let mut dispatch_ctx = ctx();
+        let trees = vec!["build/core".to_string(), "build/plugin".to_string()];
+        dispatch_ctx.warm_build_trees = trees;
+        let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        assert!(
+            context.contains(
+                "# Prebuilt build trees\n`build/core` and `build/plugin` are already built in \
+                 this checkout: build in them incrementally, and don't delete them or \
+                 reconfigure them from scratch (`rm -rf`, `cmake --fresh`), which rebuilds \
+                 everything."
+            ),
+            "{context}"
+        );
+        // A role without plan context builds too, and hears it as well.
+        let minimal = minimal_runner_context(&pctx);
+        assert!(minimal.contains("# Prebuilt build trees\n"), "{minimal}");
+
+        dispatch_ctx.warm_build_trees = vec!["build/plugin".to_string()];
+        let one = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &one).expect("runner context");
+        assert!(
+            context.contains(
+                "`build/plugin` is already built in this checkout: build in it incrementally, \
+                 and don't delete it or reconfigure it from scratch"
+            ),
+            "{context}"
+        );
+
+        let none = PromptContext::from_task(&task(), &ctx());
+        let context = build_runner_context(&task(), &none).expect("runner context");
+        assert!(!context.contains("# Prebuilt build trees"), "{context}");
+        assert!(!context.contains("already built"), "{context}");
+        let minimal = minimal_runner_context(&none);
+        assert!(!minimal.contains("# Prebuilt build trees"), "{minimal}");
+    }
+
     /// gap-404fdb: the context-depth hints shape the prompt. `skills` brings
     /// in each named skill from the skill library, `research_before_edit` asks
     /// for research first, and `context_weight` scales the plan context:
@@ -5034,6 +5108,7 @@ covers = ["AC1"]
             workspace_context: String::new(),
             error_patterns: Default::default(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             plan_brief: String::new(),
             arm_set: None,
             knowledge_section: true,

@@ -178,6 +178,7 @@ fn dispatch_context(workdir: &Path, key: &AttemptKey, arms: Arc<ArmSet>) -> Disp
         cached_workspace_map: String::new(),
         cached_workspace_context: String::new(),
         concurrent_plans: Vec::new(),
+        warm_build_trees: Vec::new(),
         attempt_key: Some(key.clone()),
         arm_set: Some(arms),
         knowledge_section: true,

@@ -196,6 +196,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            warm_build_trees: self.checkout_build_trees(&lease.path),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
             knowledge_section: attempt.knowledge_section(),

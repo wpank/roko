@@ -173,6 +173,11 @@ pub struct DispatchContext {
     /// The other plans running in the same working tree now, each with the
     /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.
     pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The build trees the attempt's own checkout holds, relative to it
+    /// (`build/plugin`): given warm from the person's checkout (gap-6754ab)
+    /// or built there by an earlier try. The prompt tells the agent to build
+    /// in them, not delete them (gap-9d7381). Empty in the shared checkout.
+    pub warm_build_trees: Vec<String>,
     /// The attempt this dispatch is: the unit of its route's exploration
     /// draw (S02.P1-3). `None` outside Graph dispatch, and then the route
     /// never explores.
@@ -658,6 +663,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             attempt_key: None,
             arm_set: None,
             knowledge_section: true,

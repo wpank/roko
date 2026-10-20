@@ -132,6 +132,19 @@ impl GraphTaskDispatcher {
         self.factory.dispatcher().routing_ladder()
     }
 
+    /// The rung `task` starts on by the ladder alone, which a plan run's
+    /// time-left estimate keys past tasks by (gap-c1045f). `None` for a task
+    /// a model hint pins, and without a ladder rung that runs here.
+    pub(crate) fn planned_start_rung(&self, task: &TaskDef) -> Option<String> {
+        if task.model_hint.is_some() || task.hints.preferred_model.is_some() {
+            return None;
+        }
+        let role = task.role.as_deref().unwrap_or("implementer");
+        self.routing_ladder()?
+            .start(role, task.tier_class(), task.hints.rung.as_deref())
+            .map(|rung| rung.name)
+    }
+
     /// Least retry budget of a task that does not author `max_retries`:
     /// enough to climb the ladder while it routes tasks (`--model` stops
     /// that), else none.

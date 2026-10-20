@@ -2969,6 +2969,78 @@ pub(super) mod tests {
         );
     }
 
+    /// gap-ff78e1: `plan validate` warns about a step that cannot pass as
+    /// written, as generation finds it (PLAN_059): a runner this machine does
+    /// not have, a test its file does not define, a file that does not exist
+    /// and no task writes. A step another rule names is left to it: a later
+    /// task's file is PLAN_058's, roko's own state PLAN_056's.
+    #[test]
+    fn plan_validate_warns_about_steps_that_cannot_pass() {
+        let (temp, _) = fixture("true", &[]);
+        let plan_dir = temp.path().join("plans/p");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        let step = |command: &str| format!("[[task.verify]]\nphase = \"test\"\ncommand = {command:?}\n");
+        let toml = [
+            "[meta]\nplan = \"p\"\ntotal = 2\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"t\"\nstatus = \"ready\"\nrole = \"implementer\"\n\
+             tier = \"focused\"\nfiles = [\"synth/osc.py\"]\n"
+                .to_string(),
+            step("roko-no-such-runner check synth"),
+            step("python3 -m unittest tests.test_osc.OscillatorTest.test_lowpass_low_gain"),
+            step("grep -q seq docs/notes.md"),
+            step("grep -q Filter synth/filter.py"),
+            step("grep -q done .roko/state/graph/p/checkpoint.json"),
+            step("python3 -m unittest tests.test_osc.OscillatorTest.test_engine_0_produces_output"),
+            "[[task]]\nid = \"T2\"\ntitle = \"t\"\nstatus = \"ready\"\nrole = \"implementer\"\n\
+             tier = \"focused\"\nfiles = [\"synth/filter.py\"]\ndepends_on = [\"T1\"]\n"
+                .to_string(),
+            step("grep -q Filter synth/filter.py"),
+        ]
+        .join("\n");
+        std::fs::write(plan_dir.join("tasks.toml"), toml).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let found = |rule: &str| {
+            report.plans[0]
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.rule_id == rule)
+                .map(|diagnostic| (diagnostic.severity, diagnostic.message.as_str()))
+                .collect::<Vec<_>>()
+        };
+        let warning = crate::plan_validate::Severity::Warning;
+        assert_eq!(
+            found("PLAN_059"),
+            [
+                (
+                    warning,
+                    "task 'T1' verify step 1 cannot pass as written: `roko-no-such-runner` is not \
+                     installed"
+                ),
+                (
+                    warning,
+                    "task 'T1' verify step 2 cannot pass as written: it names \
+                     `test_lowpass_low_gain`, which `tests/test_osc.py` does not define and no \
+                     task writes"
+                ),
+                (
+                    warning,
+                    "task 'T1' verify step 3 cannot pass as written: it needs `docs/notes.md`, \
+                     which does not exist and no task writes before it runs"
+                ),
+            ],
+            "{:?}",
+            report.plans[0].diagnostics
+        );
+        // Steps 4 and 5 are another rule's.
+        assert_eq!(found("PLAN_058").len(), 1, "{:?}", report.plans[0].diagnostics);
+        assert_eq!(found("PLAN_056").len(), 1, "{:?}", report.plans[0].diagnostics);
+    }
+
     /// bug-daa54e: round v7's phase-1 spec says its oscillator, filter and
     /// envelope tasks, which run in parallel, each add their source to
     /// `core/CMakeLists.txt`, and the plan left that file out of their

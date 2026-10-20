@@ -2,15 +2,16 @@
 id = "bug-59782c"
 kind = "bug"
 title = "The source-check coverage repair adds a missing check's step with no expect, so a check the source calls a regression check loses pass_on_base (2.1's P2.1.09 in T3)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "a12d2a60f"
 source = "round-v7-hermes-pilot#K-p2-1-plan"
 discovered_from = "agent:hermes-pilot (round v7 phase 2.1 plan, op 742f8afd)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::SourceCheck"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_repaired_regression_check_step_passes_on_base' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_repaired_regression_check_step_passes_on_base"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-20T23:26:30Z"
+commit = "18aaf6257"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged be7c29f0b (work/bug-7c6f1b: 18aaf6257). SourceCheck.regression from the check's own text ('regression check', pass_on_base, 'passes on the base too') or a sentence calling its label one ('P2.1.08 and P2.1.09 are regression checks'; the appositive 'P2.1.04, and P2.1.09, a regression check of ...' marks neither). assign_runs: a step it adds for regression checks only has expect = pass_on_base and its repair line says so; an extended step takes it when it then runs only regression checks and loses it when it runs another. Post-merge verify at be7c29f0b: grep OK; a_repaired_regression_check_step_passes_on_base passed. $0 replay of 2.1's draft: T3's added P2.1.09 step has expect = pass_on_base (before: none)."
 +++
 
 ## Problem

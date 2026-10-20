@@ -2,15 +2,16 @@
 id = "bug-7c6f1b"
 kind = "bug"
 title = "A generated plan's files can name a path that doesn't exist while the task's own read_files names the real file of that name: 2.1's plan lists core/src/envelope.h (and voice.h, filter.h, oscillator.h) for core/include/undertow/*.h, in files and in the task text, under a spec that says no new files"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "a12d2a60f"
 source = "round-v7-hermes-pilot#K-p2-1-plan"
 discovered_from = "agent:hermes-pilot (round v7 phase 2.1 plan, op 742f8afd)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/plan_validate.rs::missing_prerequisite_diagnostic"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_missing_files_path_takes_the_read_files_path_of_the_same_name' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_missing_files_path_takes_the_read_files_path_of_the_same_name"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-20T23:26:28Z"
+commit = "825836174"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged be7c29f0b (work/bug-7c6f1b: 825836174). plan_generate/file_paths.rs, run right after the draft's first repairs: a files entry the workspace lacks, listed by no other task, takes the existing same-named file its task reads (read_files; two such reads are no answer), in files and in the task's title, description, acceptance, goal, non-goals, assumptions and open questions (a longer name left alone), logged as a repair. Only under 'No new files' (says_no_new_files) does an entry without such a read take the workspace's one file of that name, and any entry still missing is a refusal sent back to the planner (the lead approved the design). Post-merge verify at be7c29f0b: grep OK; a_missing_files_path_takes_the_read_files_path_of_the_same_name passed (with a_repaired_regression_check_step_passes_on_base). Branch: roko-cli lib 3944 passed, 1 failed (bug-3203c4's delivery-cancel flake, which passed alone with the 164 plan_generate tests), clippy -D warnings clean, nightly fmt. $0 replay of 2.1's draft (the written plan without roko's SC9 step; spec at 53bcee0): before (roko-main-d7d1fbb8b) the real 9206-byte write with T1/T2/T4/T5 on core/src/<name>.h; after: 1 call, 10/10 kept, files and text on core/include/undertow/<name>.h, validate 0 diagnostics; a draft listing core/src/envelope_state.h: asked again twice, then refused with 'T1 lists core/src/envelope_state.h in its files, which does not exist, and the source says no new files'."
 +++
 
 ## Problem

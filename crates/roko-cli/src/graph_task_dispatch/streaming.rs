@@ -216,10 +216,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        let timeout_ms =
+            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // A try on a rung the task can still climb from is bounded, as on the
-        // batch path (gap-3e770b).
-        let rung_allowance =
-            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, max_turns);
+        // batch path (gap-3e770b, bug-f0007b).
+        let rung_allowance = self.rung_allowance(
+            &task,
+            &attempt,
+            &dispatch_plan,
+            ladder_step,
+            max_turns,
+            timeout_ms / 1_000,
+        );
         if let Some(turns) = rung_allowance
             .as_ref()
             .and_then(|allowance| allowance.turns)
@@ -229,8 +237,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
         let contract = self.task_contract(role, spec, &task);
-        let timeout_ms =
-            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         self.log_prompts(
             spec,
             &task.id,
@@ -570,7 +576,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     ),
                     (None, None) => match &budget_stop {
                         Some(TryStop::Plan(reason)) => Settlement::budget_exhausted(reason),
-                        Some(TryStop::Rung(reason)) => Settlement::allowance_spent(reason),
+                        Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
+                            Settlement::allowance_spent(reason)
+                        }
                         None => Settlement::provider_failure(
                             dispatch.result.output.body.as_text().unwrap_or_default(),
                             first_token_seen(&dispatch),
@@ -720,7 +728,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
         match budget_stop.filter(|_| !verified) {
             Some(TryStop::Plan(reason)) => return Err(RokoError::gateway("budget", false, reason)),
-            Some(TryStop::Rung(reason)) => {
+            Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
                 return Err(RokoError::Agent {
                     backend: outcome.provider_id.clone(),
                     message: format!("{RUNG_ALLOWANCE}: {reason}"),

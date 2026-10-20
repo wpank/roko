@@ -34,6 +34,11 @@
 //! only at the end is not: the Codex and Gemini CLIs stop only at their
 //! timeout, and the Cursor CLI at a count of its tool calls (gap-ccbf26).
 //!
+//! A try whose rung bounds its time is checked every [`STALL_CHECK_INTERVAL`]
+//! as well (bug-f0007b): its time runs from the start of its provider call,
+//! less any wait for the provider's concurrency permit, and once it reaches
+//! the bound the try ends there ([`super::try_allowance`]).
+//!
 //! Silence counts only while the agent waits on its model:
 //!
 //! - every event the agent streams is progress, text and reasoning deltas
@@ -152,6 +157,11 @@ struct ProgressState {
     /// (`[conductor] report_at_end_stall_secs`); `None` leaves such a call
     /// to the hard timeout until it first reports anything (backlog 1126).
     report_at_end_grace: Option<Duration>,
+    /// Since when the call waits for its provider's concurrency permit.
+    queued_since: Option<Instant>,
+    /// How long the attempt's calls waited for their provider's permit
+    /// before that, which its try's time leaves out (bug-f0007b).
+    queued_for: Duration,
     /// Tool calls the agent made whose results have not arrived yet.
     open_tool_calls: HashSet<String>,
     /// The provider call the attempt waits on, once one started.
@@ -164,6 +174,15 @@ struct ProgressState {
     /// The watchdog, the conductor or a stopping plan run cancelled the
     /// call.
     interrupted: bool,
+}
+
+impl ProgressState {
+    /// The call no longer waits for its provider's permit, as of `at`.
+    fn end_queue(&mut self, at: Instant) {
+        if let Some(since) = self.queued_since.take() {
+            self.queued_for += at.saturating_duration_since(since);
+        }
+    }
 }
 
 /// A provider call in flight: its target, and the models failover passed
@@ -281,7 +300,10 @@ impl AttemptProgress {
             // first-output grace, count from then (bug-eba31d). Neither is
             // progress the agent reported.
             state.queued = *waiting;
-            if !*waiting {
+            if *waiting {
+                state.queued_since.get_or_insert(at);
+            } else {
+                state.end_queue(at);
                 state.last_event = state.last_event.map(|_| at);
                 state.quiet_since = state.quiet_since.map(|_| at);
             }
@@ -289,6 +311,7 @@ impl AttemptProgress {
         }
         state.last_event = Some(at);
         state.queued = false;
+        state.end_queue(at);
         match event {
             LiveAgentEvent::ToolStep { id, .. }
             | LiveAgentEvent::Unscreened(StreamEventKind::ToolCallEnd { id, .. }) => {
@@ -330,6 +353,7 @@ impl AttemptProgress {
         state.quiet_since = Some(at);
         state.reports_at_end = !streams_as_it_goes(target.provider_kind);
         state.queued = false;
+        state.end_queue(at);
         state.call = Some(CallInFlight { target, failover });
         state.calls += 1;
         state.usage = StreamedUsage::default();
@@ -339,6 +363,26 @@ impl AttemptProgress {
     /// the agent's, before it the provider's.
     pub(super) fn reported_progress(&self) -> bool {
         self.inner.lock().last_event.is_some()
+    }
+
+    /// How long, by `now`, the attempt's calls waited for their provider's
+    /// concurrency permit (bug-f0007b).
+    fn queued_for(&self, now: Instant) -> Duration {
+        let state = self.inner.lock();
+        state.queued_for
+            + state
+                .queued_since
+                .map_or(Duration::ZERO, |since| now.saturating_duration_since(since))
+    }
+
+    /// Whether the call in flight is to an agent that runs its own loop,
+    /// which no refused model call can stop; `false` before a call starts.
+    fn call_runs_own_tools(&self) -> bool {
+        self.inner
+            .lock()
+            .call
+            .as_ref()
+            .is_some_and(|call| crate::dispatch_v2::runs_own_tools(&call.target))
     }
 
     /// The provider call in flight, by its number, with the usage it
@@ -523,6 +567,10 @@ pub(super) enum AttemptInterrupted {
     /// Its agent runs its own loop, and what it streamed spent its rung's
     /// allowance for one try, for this reason (gap-3e770b).
     AllowanceSpent(String),
+    /// It ran its rung's time, `secs` seconds, for this reason: an agent
+    /// that runs its own loop at the bound, roko's own loop
+    /// [`super::try_allowance::TRY_TIME_GRACE`] past it (bug-f0007b).
+    TimeBound { secs: u64, reason: String },
 }
 
 impl AttemptInterrupted {
@@ -552,8 +600,9 @@ impl AttemptInterrupted {
             )),
             // No retry can pay for it (bug-4fabd0).
             Self::BudgetExhausted(reason) => RokoError::gateway("budget", false, reason.clone()),
-            // A failed try on its rung, which the task retries (gap-3e770b).
-            Self::AllowanceSpent(reason) => RokoError::Agent {
+            // A failed try on its rung, which the task retries (gap-3e770b,
+            // bug-f0007b).
+            Self::AllowanceSpent(reason) | Self::TimeBound { reason, .. } => RokoError::Agent {
                 backend: "graph-task-executor".to_string(),
                 message: format!("{}: {reason}", super::try_allowance::RUNG_ALLOWANCE),
             },
@@ -567,7 +616,9 @@ impl AttemptInterrupted {
             Self::Restarted(_) | Self::Stopped | Self::StoppedByOperator => {
                 TaskDispatchOutcomeKind::Cancelled
             }
-            Self::BudgetExhausted(_) | Self::AllowanceSpent(_) => TaskDispatchOutcomeKind::Failed,
+            Self::BudgetExhausted(_) | Self::AllowanceSpent(_) | Self::TimeBound { .. } => {
+                TaskDispatchOutcomeKind::Failed
+            }
         }
     }
 }
@@ -583,7 +634,8 @@ impl AttemptInterrupted {
 /// - A cancellation, a stopping plan run's or the operator's included,
 ///   teaches nothing (bug-2b1ddc).
 /// - A stop for the plan budget is the harness's (gap-ca1c92).
-/// - A try that spent its rung's allowance failed on its rung (gap-3e770b).
+/// - A try that spent its rung's allowance (gap-3e770b), or ran its rung's
+///   time (bug-f0007b), failed on its rung.
 /// - Anything else, a conductor restart included, is a provider failure.
 pub(super) fn failed_call_settlement(
     interrupted: Option<&AttemptInterrupted>,
@@ -596,7 +648,10 @@ pub(super) fn failed_call_settlement(
             progress.is_some_and(AttemptProgress::reported_progress),
         ),
         Some(AttemptInterrupted::BudgetExhausted(reason)) => Settlement::budget_exhausted(reason),
-        Some(AttemptInterrupted::AllowanceSpent(reason)) => Settlement::allowance_spent(reason),
+        Some(
+            AttemptInterrupted::AllowanceSpent(reason)
+            | AttemptInterrupted::TimeBound { reason, .. },
+        ) => Settlement::allowance_spent(reason),
         Some(
             AttemptInterrupted::Restarted(_)
             | AttemptInterrupted::Stopped
@@ -753,7 +808,8 @@ impl GraphTaskDispatcher {
     /// ([`WatchedAttempt::stop`]), or whose task the operator stops
     /// ([`OperatorStops`]) returns [`AttemptInterrupted`], as does one whose
     /// agent runs its own loop once what it streamed reaches what `allowance`
-    /// can pay for (gap-ca1c92), the plan's or the rung's (gap-3e770b);
+    /// can pay for (gap-ca1c92), the plan's or the rung's (gap-3e770b), and
+    /// one that ran the time `allowance` gives its try (bug-f0007b);
     /// `dispatch` is dropped with it, which cancels
     /// the provider call, and `progress` then gives the call and what it
     /// streamed ([`AttemptProgress::interrupted_call`]), with or without a
@@ -788,6 +844,11 @@ impl GraphTaskDispatcher {
         budget_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         budget_check.tick().await;
         let mut streamed_spend = StreamedSpend::default();
+        // A try whose rung bounds its time (bug-f0007b).
+        let time_limit = allowance.and_then(TryAllowance::time_limit);
+        let mut time_check = tokio::time::interval(STALL_CHECK_INTERVAL);
+        time_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        time_check.tick().await;
         let restarted = async {
             match supervised {
                 Some(supervised) => supervised.restarted().await,
@@ -840,6 +901,14 @@ impl GraphTaskDispatcher {
                         return Err(stalled);
                     }
                 }
+                _ = time_check.tick(), if time_limit.is_some() => {
+                    if let Some(stop) = allowance.and_then(|allowance| {
+                        self.try_time_stop(allowance, progress, started_at, attempt)
+                    }) {
+                        progress.interrupted();
+                        return Err(stop);
+                    }
+                }
                 _ = budget_check.tick(), if allowance.is_some() => {
                     if let Some(stop) = allowance.and_then(|allowance| {
                         self.streamed_spend_refusal(allowance, progress, &mut streamed_spend)
@@ -865,6 +934,9 @@ impl GraphTaskDispatcher {
                                     "an agent that runs its own loop spent its rung's allowance"
                                 );
                                 AttemptInterrupted::AllowanceSpent(reason)
+                            }
+                            TryStop::Time { secs, reason } => {
+                                AttemptInterrupted::TimeBound { secs, reason }
                             }
                         });
                     }
@@ -977,6 +1049,57 @@ impl GraphTaskDispatcher {
         allowance.record_call(spent, true);
         allowance.refuse_call()?;
         allowance.stop(None)
+    }
+
+    /// Whether a try `allowance` bounds in time must stop now (bug-f0007b).
+    /// Its time runs from `started_at`, less what its calls waited for their
+    /// provider's permit. At the bound it is marked reached, so roko's own
+    /// tool loop makes no further model call and ends the try itself; an
+    /// agent that runs its own loop is stopped at once, and a call of roko's
+    /// loop still running [`TRY_TIME_GRACE`] later is stopped too.
+    ///
+    /// [`TRY_TIME_GRACE`]: super::try_allowance::TRY_TIME_GRACE
+    fn try_time_stop(
+        &self,
+        allowance: &TryAllowance,
+        progress: &AttemptProgress,
+        started_at: Instant,
+        attempt: &WatchedAttempt<'_>,
+    ) -> Option<AttemptInterrupted> {
+        let limit = allowance.time_limit()?;
+        let now = Instant::now();
+        let ran = now
+            .saturating_duration_since(started_at)
+            .saturating_sub(progress.queued_for(now));
+        if ran < limit {
+            return None;
+        }
+        let first = allowance.time_stop().is_none();
+        let TryStop::Time { secs, reason } = allowance.reach_time_bound()? else {
+            return None;
+        };
+        let at_once = progress.call_runs_own_tools();
+        if first {
+            tracing::info!(
+                plan_id = attempt.plan_id,
+                task_id = attempt.task_id,
+                attempt = attempt.attempt_key,
+                %reason,
+                stopped_now = at_once,
+                "the try ran its rung's time; it makes no further model call"
+            );
+        }
+        if !at_once && ran < limit + super::try_allowance::TRY_TIME_GRACE {
+            return None;
+        }
+        tracing::info!(
+            plan_id = attempt.plan_id,
+            task_id = attempt.task_id,
+            attempt = attempt.attempt_key,
+            ran_secs = ran.as_secs(),
+            "stopping the try's provider call at its time bound"
+        );
+        Some(AttemptInterrupted::TimeBound { secs, reason })
     }
 
     /// Check `watch` now and publish what it found: a warning for a silent
@@ -2300,6 +2423,97 @@ exec sleep 60
             Some(FIRST_OUTPUT_GRACE)
         );
         assert!(!progress.reported_progress(), "waiting is no progress");
+    }
+
+    /// bug-f0007b: a try's time runs from its call's start, less its waits
+    /// for the provider's permit. At its rung's bound roko's own tool loop is
+    /// told to make no further model call, and its call is stopped
+    /// [`TRY_TIME_GRACE`] later; an agent that runs its own loop is stopped
+    /// at the bound.
+    ///
+    /// [`TRY_TIME_GRACE`]: super::super::try_allowance::TRY_TIME_GRACE
+    #[tokio::test]
+    async fn a_try_stops_at_its_time_bound() {
+        use super::super::try_allowance::{RungAllowance, TRY_TIME_GRACE};
+
+        let temp = tempdir().expect("tempdir");
+        let config = Arc::new(watched_config(Path::new("/bin/true")));
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf());
+        let claude =
+            crate::dispatch_v2::ProviderDispatchResolver::new(config).resolve("graph-model");
+        let mut api = claude.clone();
+        api.provider_kind = ProviderKind::OpenAiCompat;
+        api.runtime = crate::dispatch_v2::ProviderRuntime::AgentResultBridge {
+            provider_kind: ProviderKind::OpenAiCompat,
+        };
+        let attempt = WatchedAttempt {
+            agent_id: "p1/T01",
+            plan_id: "p1",
+            task_id: "T01",
+            attempt_key: "run:p1:T01:1",
+            attempt: 1,
+            stop: None,
+        };
+        let rung = RungAllowance {
+            rung: "mid".to_string(),
+            turns: None,
+            usd: None,
+            secs: Some(60),
+        };
+        let ago = |seconds: u64| {
+            Instant::now()
+                .checked_sub(secs(seconds))
+                .expect("the clock reaches back")
+        };
+        let started = |target: &crate::dispatch_v2::ProviderDispatchSpec| {
+            let progress = AttemptProgress::default();
+            progress.call_started(target.clone(), FailoverChain::default());
+            (
+                TryAllowance::new(None, Some(&rung)).expect("a time bound"),
+                progress,
+            )
+        };
+
+        let (allowance, progress) = started(&api);
+        let check = |ran: u64| dispatcher.try_time_stop(&allowance, &progress, ago(ran), &attempt);
+        assert_eq!(check(59), None);
+        assert_eq!(allowance.refuse_call(), None, "within its time");
+        assert_eq!(check(61), None, "roko's loop ends the try itself");
+        let refused = allowance.refuse_call().expect("no further model call");
+        assert!(refused.contains("rung `mid`: 60 s"), "{refused}");
+        assert!(
+            matches!(
+                check(60 + TRY_TIME_GRACE.as_secs() + 1),
+                Some(AttemptInterrupted::TimeBound { secs: 60, .. })
+            ),
+            "a call still running past the grace is stopped"
+        );
+
+        let (waited, queued) = started(&api);
+        let t0 = ago(61);
+        queued.observe_at(&LiveAgentEvent::Queued { waiting: true }, t0);
+        queued.observe_at(&LiveAgentEvent::Queued { waiting: false }, t0 + secs(30));
+        assert_eq!(
+            dispatcher.try_time_stop(&waited, &queued, t0, &attempt),
+            None
+        );
+        assert_eq!(
+            waited.refuse_call(),
+            None,
+            "the permit wait is not its time"
+        );
+
+        let (own, cli) = started(&claude);
+        assert!(
+            matches!(
+                dispatcher.try_time_stop(&own, &cli, ago(61), &attempt),
+                Some(AttemptInterrupted::TimeBound { secs: 60, .. })
+            ),
+            "an agent that runs its own loop is stopped at the bound"
+        );
     }
 
     /// bug-eba31d: with `max_concurrent = 1`, an attempt queued behind a long

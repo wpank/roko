@@ -208,7 +208,8 @@ pub(crate) struct FitAudit {
     pub(crate) duplicates: usize,
     /// Units left.
     pub(crate) units: usize,
-    /// Of those, the units the model trains on: labelled, and not a failover substitute.
+    /// Of those, the units the model learns: the labelled ones, a failover substitute's
+    /// included (bug-a35286), though the prequential scores leave the substitutes out.
     pub(crate) training_units: usize,
 }
 
@@ -285,6 +286,7 @@ pub(crate) fn fit_offline(
     let mut model = SelfModel::new(snapshot);
     let mut window = CalibrationWindow::new(model.version.clone()).keeping(gate.keeps());
     let mut scored = Vec::new();
+    let mut learned = 0;
     for unit in runs.units.iter().chain(fresh.iter().copied()) {
         let Some(passed) = unit.label.y_gate else {
             continue;
@@ -295,6 +297,7 @@ pub(crate) fn fit_offline(
         // chose it: it is neither scored nor in the window, as in the live sink (bug-a35286).
         if unit.failover {
             model.observe_with(unit, &task, w);
+            learned += 1;
             continue;
         }
         let forecasts = model.forecast(&task, std::slice::from_ref(&unit.arm));
@@ -312,6 +315,7 @@ pub(crate) fn fit_offline(
         };
         window.push(&model.version, outcome);
         model.observe_with(unit, &task, w);
+        learned += 1;
     }
     let report = (scored.len() >= gate.window).then(|| gate.evaluate(&window));
     let calibration = match &report {
@@ -328,7 +332,7 @@ pub(crate) fn fit_offline(
             raw_units,
             duplicates: raw_units - units,
             units,
-            training_units: scored.len(),
+            training_units: learned,
         },
         predictor_version: model.version.to_string(),
         price_snapshot_id: snapshot.id().to_string(),

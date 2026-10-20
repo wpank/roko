@@ -4,21 +4,61 @@
 //! files and directories it writes in a working tree shared with other nodes.
 //! The engine's ready-queue scheduler never runs two nodes whose paths overlap
 //! at the same time, and `roko plan validate` flags plan tasks that could.
+//!
+//! A build-registration file ([`is_registration_file`]) is the exception
+//! (bug-daa54e): a list of sources or modules, such as a `CMakeLists.txt`,
+//! that tasks which can run in parallel each add an entry to. Two nodes that
+//! both name the same one do not overlap on it, so they still run together;
+//! a clash in it at merge time costs a retry instead.
 
 use std::path::{Component, Path, PathBuf};
+
+/// The file names of build-registration files: lists of sources or modules
+/// that parallel tasks each add an entry to (bug-daa54e).
+pub const REGISTRATION_FILES: &[&str] = &[
+    "BUILD",
+    "BUILD.bazel",
+    "CMakeLists.txt",
+    "Cargo.toml",
+    "__init__.py",
+    "index.js",
+    "index.ts",
+    "meson.build",
+    "mod.rs",
+];
+
+/// Whether `path` names a build-registration file ([`REGISTRATION_FILES`]).
+///
+/// It goes by the file name alone. The scheduler lets nodes that both name
+/// one run together, plan generation lets several tasks list one, and a merge
+/// may combine both sides' added lines in one.
+#[must_use]
+pub fn is_registration_file(path: &str) -> bool {
+    lexical(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| REGISTRATION_FILES.contains(&name))
+}
 
 /// The first path in `wanted` that overlaps a path in `held`, together with
 /// the path it overlaps.
 ///
 /// Two paths overlap when they name the same file, or when one names a
-/// directory that holds the other.
+/// directory that holds the other; two that name the same build-registration
+/// file do not ([`is_registration_file`]).
 #[must_use]
 pub fn first_overlap<'a>(wanted: &'a [String], held: &'a [String]) -> Option<(&'a str, &'a str)> {
     wanted.iter().find_map(|path| {
         held.iter()
-            .find(|other| overlaps(path, other))
+            .find(|other| overlaps(path, other) && !shared_registration(path, other))
             .map(|other| (path.as_str(), other.as_str()))
     })
+}
+
+/// Whether two declared paths name the same build-registration file, which
+/// tasks share rather than hold.
+fn shared_registration(left: &str, right: &str) -> bool {
+    lexical(left) == lexical(right) && is_registration_file(left)
 }
 
 /// Whether two declared paths name the same file, or one names a directory
@@ -87,6 +127,37 @@ mod tests {
         assert!(!overlaps("", "src/lib.rs"));
         assert!(!overlaps(".", "src/lib.rs"));
         assert!(!overlaps(" ", " "));
+    }
+
+    /// bug-daa54e: phase 1's three parallel tasks each add their source to
+    /// `core/CMakeLists.txt`. Naming the same registration file is no overlap,
+    /// so they run together; a directory that holds one still overlaps it, and
+    /// so does a second, overlapping path of the same nodes.
+    #[test]
+    fn a_shared_registration_file_is_no_overlap() {
+        let oscillator = paths(&["core/src/oscillator.cpp", "core/CMakeLists.txt"]);
+        let filter = paths(&["core/src/filter.cpp", "./core/CMakeLists.txt"]);
+        assert_eq!(first_overlap(&oscillator, &filter), None);
+        assert_eq!(
+            first_overlap(&oscillator, &paths(&["core"])),
+            Some(("core/src/oscillator.cpp", "core"))
+        );
+        let both = paths(&["core/CMakeLists.txt", "core/src/oscillator.cpp"]);
+        assert_eq!(
+            first_overlap(&oscillator, &both),
+            Some(("core/src/oscillator.cpp", "core/src/oscillator.cpp"))
+        );
+        for path in [
+            "CMakeLists.txt",
+            "crates/x/src/mod.rs",
+            "pkg/__init__.py",
+            "web/src/index.ts",
+        ] {
+            assert!(is_registration_file(path), "{path}");
+        }
+        for path in ["core/src/engine.cpp", "crates/x/src/lib.rs", "package.json"] {
+            assert!(!is_registration_file(path), "{path}");
+        }
     }
 
     #[test]

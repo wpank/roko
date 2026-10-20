@@ -2,15 +2,16 @@
 id = "gap-586507"
 kind = "gap"
 title = "A resumed run re-attaches an exhausted task's last-try checkout and starts from that broken tree: the best-try ratchet (gap-fefdf5) keeps the best try in memory only, so a resume of run 82b7e069 would have put T2 and T3 back on their broken trees"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "b1f9301a0"
 source = "round-v7-roko-ladder#ratchet-resume"
 discovered_from = "agent:team-lead (the pilot's phase-2 review), 2026-10-20"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/best_try.rs", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-fefdf5", "bug-ba0c40"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_resumed_task_starts_from_its_best_try' crates/roko-cli/ && cargo test -p roko-cli --lib -- best_try"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-20T22:34:04Z"
+commit = "b1f9301a0"
+forced = false
+evidence = "Tests in graph_task_dispatch/best_try.rs, with two dispatchers standing in for two processes of one checkpoint run (begin_plan_run + attach_retry_feedback on each, so the second re-attaches the kept checkout; $0, fake Claude CLI): a_resumed_task_starts_from_its_best_try (process A: try 1 passes 2 of 3 steps, try 2 breaks one; process B's first try sees a.txt = A and no c.txt, and passes) and a_resumed_task_that_passed_nothing_starts_clean (process A's try passes nothing; process B's first try finds the checkout clean). Both red before the change: the resumed try saw the last try's tree. With them: best_try, retry_feedback and step_ratchet tests 16 passed; roko-cli lib 3942 passed, 1 failed (a_cancel_stops_the_post_merge_regression_check, load-flaky, bug-3203c4); clippy -D warnings and nightly fmt clean; attempt_workspace.rs untouched."
 +++
 
 ## Problem

@@ -940,11 +940,24 @@ pub enum DashboardEvent {
     /// Published after `AgentSpawned` or `AgentCompleted` events so the TUI
     /// can display the current agent relationship graph.
     AgentTopologyUpdated { topology: crate::AgentTopology },
-    /// Critical-path ETA updated after a task state change.
+    /// Critical-path ETA updated after a task state change, and every minute
+    /// while tasks run (gap-c1045f).
     CriticalPathEtaUpdated {
         plan_id: String,
-        /// Remaining minutes on the critical path. `None` clears the value.
+        /// Remaining minutes on the critical path, the estimate's median.
+        /// `None` clears the value.
         eta_minutes: Option<u32>,
+        /// The same estimate's 90th percentile, when it has one: a reader
+        /// shows "about `eta_minutes`, up to this".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        eta_p90_minutes: Option<u32>,
+        /// When it was computed, in ms since the Unix epoch, so a reader can
+        /// show its age.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_at_ms: Option<u64>,
+        /// What it rests on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        basis: Option<EtaBasis>,
     },
     /// A cost anomaly (spike) was detected by the anomaly detector.
     CostAnomaly {
@@ -1153,6 +1166,22 @@ pub const PLAN_SET_PENDING_PHASE: &str = "pending";
 
 /// Most candidates a [`DashboardEvent::RouteDecided`] carries.
 pub const ROUTE_EVENT_CANDIDATES: usize = 5;
+
+/// What a run's time-left estimate rests on, as
+/// [`DashboardEvent::CriticalPathEtaUpdated`] carries it (gap-c1045f), so a
+/// reader can say "from 12 runs" or "a guess".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EtaBasis {
+    /// The weakest source any unfinished task's duration came from:
+    /// `history` (three or more past tasks of its start rung and tier),
+    /// `scaled` (past tasks of other tiers or rungs, scaled by the tiers'
+    /// size bounds) or `guess` (no past task: half the attempt timeout).
+    pub source: String,
+    /// The past tasks behind the estimate.
+    pub tasks: u32,
+    /// The runs they come from.
+    pub runs: u32,
+}
 
 /// One candidate a route weighed, as [`DashboardEvent::RouteDecided`]
 /// carries it.

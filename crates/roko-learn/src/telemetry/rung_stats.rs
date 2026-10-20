@@ -18,6 +18,10 @@
 //! [`misordered`] compares the rungs of one role. A higher rung that is both
 //! cheaper and faster per verified pass than a lower one, each with at least
 //! [`MIN_PASSES`] verified passes, comes out as one line with the numbers.
+//!
+//! [`task_times`] reads the same records per task: how long each task that
+//! reached a verified pass took, under the rung it started on and its tier,
+//! which a plan run's time-left estimate learns from (gap-c1045f).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -249,6 +253,72 @@ pub fn load_runs(runs_dir: &Path, last: Option<usize>) -> Vec<RunRecords> {
         .take(last.unwrap_or(usize::MAX))
         .filter_map(|(_, dir)| RunRecords::load(&dir).ok())
         .collect()
+}
+
+/// How long one task took to reach a verified pass, from its first try's
+/// start to the settlement of the try that passed (gap-c1045f).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskTime {
+    /// The run it ran in.
+    pub run_id: String,
+    /// The rung its first try ran on, when the ladder routed it.
+    pub rung: Option<String>,
+    /// Its tier, from its first try's open line.
+    pub tier: Option<String>,
+    /// The seconds it took.
+    pub secs: f64,
+}
+
+/// The time each task of `runs` took to reach a verified pass
+/// ([`TaskTime`]); a task that never passed gives none.
+#[must_use]
+pub fn task_times<'a>(runs: impl IntoIterator<Item = &'a RunRecords>) -> Vec<TaskTime> {
+    let mut times = Vec::new();
+    for run in runs {
+        let tiers: HashMap<&str, &str> = run
+            .opens
+            .iter()
+            .filter_map(|line| {
+                let open = &line.record;
+                Some((open.identity.attempt_key.as_str(), open.tier.as_deref()?))
+            })
+            .collect();
+        let mut chains: BTreeMap<&str, Vec<&AttemptVerdictRecord>> = BTreeMap::new();
+        for line in &run.verdicts {
+            let verdict = &line.record;
+            chains
+                .entry(verdict.identity.chain_key.as_str())
+                .or_default()
+                .push(verdict);
+        }
+        for tries in chains.values_mut() {
+            tries.sort_by_key(|verdict| verdict.identity.attempt);
+            let Some(pass) = tries
+                .iter()
+                .find(|verdict| verdict.learning_label == Some(1))
+            else {
+                continue;
+            };
+            let first = tries[0];
+            let started = first.timing.attempt_started_at;
+            let Some(millis) = started
+                .zip(pass.timing.settled_at)
+                .and_then(|(start, end)| end.checked_sub(start))
+                .filter(|millis| *millis > 0)
+            else {
+                continue;
+            };
+            times.push(TaskTime {
+                run_id: run.run_id.clone(),
+                rung: first.ladder.as_ref().and_then(|ladder| ladder.rung.clone()),
+                tier: tiers
+                    .get(first.identity.attempt_key.as_str())
+                    .map(|tier| (*tier).to_string()),
+                secs: millis as f64 / 1_000.0,
+            });
+        }
+    }
+    times
 }
 
 /// What a row adds up as its tries are read.
@@ -566,6 +636,55 @@ mod tests {
             run.verdicts.push(stamped(verdict));
         }
         run
+    }
+
+    /// gap-c1045f: a task's time runs from its first try's start to the
+    /// settlement of its verified pass, under the rung its first try ran on and
+    /// its tier; a task that never passed gives none.
+    #[test]
+    fn task_times_run_from_the_first_try_to_the_pass() {
+        use AttemptOutcome::{GateFailed, Passed};
+        let mut run = RunRecords {
+            run_id: RUN.to_string(),
+            ..RunRecords::default()
+        };
+        let tries = [
+            ("T1", 1, "mid", "integrative", GateFailed, 0, 600),
+            ("T1", 2, "strong", "integrative", Passed, 600, 660),
+            ("T2", 1, "mid", "architectural", Passed, 0, 1_800),
+            ("T3", 1, "cheap", "focused", GateFailed, 0, 300),
+        ];
+        for (task, attempt, rung, tier, outcome, start, end) in tries {
+            let identity = AttemptIdentity::new(&AttemptKey::new(RUN, "plan", task, attempt));
+            let mut open = AttemptOpenRecord::new(identity.clone(), 0);
+            open.tier = Some(tier.to_string());
+            run.opens.push(stamped(open));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.ladder = Some(AttemptLadder {
+                rung: Some(rung.to_string()),
+                index: Some(0),
+                step: 0,
+                reason: LadderReason::Start,
+                exhausted: false,
+                router_pick: None,
+            });
+            verdict.timing.attempt_started_at = Some(start * 1_000);
+            verdict.timing.settled_at = Some(end * 1_000);
+            run.verdicts.push(stamped(verdict));
+        }
+        let times = task_times(std::iter::once(&run));
+        let got: Vec<(Option<&str>, Option<&str>, f64)> = times
+            .iter()
+            .map(|time| (time.rung.as_deref(), time.tier.as_deref(), time.secs))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Some("mid"), Some("integrative"), 660.0),
+                (Some("mid"), Some("architectural"), 1_800.0),
+            ]
+        );
+        assert!(times.iter().all(|time| time.run_id == RUN));
     }
 
     /// gap-3217a0: each rung's row counts its tries by how they ended, takes

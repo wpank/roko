@@ -1604,6 +1604,20 @@ async fn run_graph_plan_body(
     let graph_tui_bridge = crate::runner::graph_tui_bridge::GraphTuiBridge::new(
         crate::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );
+    // A plan's time left learns from how long the workspace's past tasks took,
+    // with half the attempt timeout as the guess for a task they don't cover
+    // (gap-c1045f).
+    let past_runs = roko_learn::telemetry::rung_stats::load_runs(
+        &graph_layout.runs_dir(),
+        Some(crate::runner::eta::HISTORY_RUNS),
+    );
+    graph_tui_bridge.use_eta_history(
+        crate::runner::eta::TaskDurations::new(
+            roko_learn::telemetry::rung_stats::task_times(&past_runs),
+            roko_config.timeouts.agent_dispatch_secs as f64 / 2.0,
+        ),
+        roko_config.conductor.max_agents,
+    );
 
     // ── T0 reflex store ───────────────────────────────────────────────
     //
@@ -3877,6 +3891,8 @@ impl FlowWatch {
             node_titles,
             gate_verdicts,
         );
+        // The time left, again every minute while tasks run (gap-c1045f).
+        ctx.graph_tui_bridge.refresh_eta();
         self.statuses = current;
     }
 
@@ -4223,6 +4239,20 @@ async fn run_one_plan(
     // ── Graph TUI bridge: emit PlanStarted + per-node TaskStarted ──
     let plan_task_count = tasks.len();
     graph_tui_bridge.plan_started(&plan.id, plan_task_count);
+    // Its time left follows its tasks: what each waits for, the rung it starts
+    // on and its tier (gap-c1045f).
+    let eta_tasks = plan
+        .tasks
+        .tasks
+        .iter()
+        .map(|task| crate::runner::eta::EtaTask {
+            id: task.id.clone(),
+            depends_on: task.depends_on.clone(),
+            rung: ctx.graph_task_dispatcher.planned_start_rung(task),
+            tier: task.tier_class(),
+        })
+        .collect();
+    graph_tui_bridge.plan_tasks(&plan.id, eta_tasks);
     graph_tui_bridge.log_event(
         "graph.plan_executing",
         &format!(

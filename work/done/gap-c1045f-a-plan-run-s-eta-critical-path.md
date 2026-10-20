@@ -2,15 +2,16 @@
 id = "gap-c1045f"
 kind = "gap"
 title = "A plan run's ETA (critical_path_eta_updated) is elapsed / done x remaining, sent only when a task completes: it ignores the running tasks, the DAG and task sizes (run c91b63ea: 12, 26, 14 min when 74, 52, 38 were left)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "M"
 subsystem = ["roko-cli/runner"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "e3d26d10e"
 source = "round-v7-hermes-pilot#E-p2-run-c91b63ea"
 discovered_from = "agent:hermes-pilot (round v7 phase 2, run c91b63ea)"
 anchors = ["crates/roko-cli/src/runner/graph_tui_bridge.rs::EtaTracker"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn eta_counts_running_parallel_tasks_and_the_task_after_them' crates/roko-cli/src && cargo test -p roko-cli --lib -- eta_counts_running_parallel_tasks_and_the_task_after_them"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-20T23:48:09Z"
+commit = "e3d26d10e"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-20T22:27:33Z"
+forced = false
+evidence = "e3d26d10e. runner/eta.rs: each unfinished task's duration on the rung the ladder starts it on is log-normal, fitted to rung_stats::task_times (first try's start to its verified pass, by start rung and tier) over the workspace's last 20 runs, this run's passed tasks added live: history (3+ of the same rung and tier), scaled (the rung's or every rung's, by TaskTier::max_loc), or guess (half the attempt timeout); a running task counts the conditional median and p90 of D - a given D > a; the plan's estimate is the longest path along depends_on and at least the total over [conductor] max_agents. GraphTuiBridge takes the plan's tasks (plan_tasks, from plan_runner with GraphTaskDispatcher::planned_start_rung) and publishes on every task start and finish and, through refresh_eta in the status poll, every 60 s while tasks run; critical_path_eta_updated keeps eta_minutes (the median) and gains eta_p90_minutes, computed_at_ms and basis {source, tasks, runs}; a plan without known tasks keeps the proportional figure. The literal verify passes on the branch: eta_counts_running_parallel_tasks_and_the_task_after_them (T1 short, T2 and T3 in parallel, then T4: after T1 the estimate is about 30 min where elapsed x 3 says 12; after T2 it counts T3's 20 minutes of running); also a_plan_with_known_tasks_publishes_a_range, durations_fall_back_from_history_to_a_guess, task_times_run_from_the_first_try_to_the_pass, normal_cdf against normal_quantile. Full lib suites: roko-cli 3945, roko-core 2045, roko-learn 1391, roko-serve 1075; fmt and clippy clean. $0 e2e (tmp/hermes-roko-v7/roko-speed/bench/eta-bench.sh, the C++ fixture, a 4-task diamond on a 30 s-a-turn stand-in): a fresh workspace said 'about 45 min, up to 118, a guess' and refreshed every minute, then 'about 2 min, history (3 tasks)' once three tasks had passed, with 64 s left; a second run with the first's records said 'about 4 min, up to 6, history (4 tasks, 1 run)' at its start with 4.2 min left, then 3, 2, 2, 1 min as 2.6, 1.6, 1.1 and 0.1 min were left."
 +++
 
 ## Problem

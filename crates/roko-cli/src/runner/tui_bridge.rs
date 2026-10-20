@@ -684,6 +684,28 @@ impl TuiBridge {
         self.sender.publish(DashboardEvent::CriticalPathEtaUpdated {
             plan_id: plan_id.to_string(),
             eta_minutes,
+            eta_p90_minutes: None,
+            computed_at_ms: None,
+            basis: None,
+        });
+    }
+
+    /// Critical-path ETA as a range (gap-c1045f): the median and 90th
+    /// percentile minutes left, when it was computed, and what it rests on.
+    pub fn critical_path_eta_range(
+        &self,
+        plan_id: &str,
+        eta_minutes: u32,
+        eta_p90_minutes: u32,
+        computed_at_ms: u64,
+        basis: roko_core::dashboard_snapshot::EtaBasis,
+    ) {
+        self.sender.publish(DashboardEvent::CriticalPathEtaUpdated {
+            plan_id: plan_id.to_string(),
+            eta_minutes: Some(eta_minutes),
+            eta_p90_minutes: Some(eta_p90_minutes),
+            computed_at_ms: Some(computed_at_ms),
+            basis: Some(basis),
         });
     }
 

@@ -1801,6 +1801,47 @@ mod tests {
         runtime.gate.add_permits(1);
     }
 
+    /// gap-b78706: `GET /api/plans/{id}` says whether the plan has a run a
+    /// resume would continue, as `plan_run`'s refusal names it, so a chat
+    /// host can ask its person before any paid work is approved. It reads
+    /// the checkpoint and starts nothing; a plan whose last run finished, or
+    /// that has no checkpoint, has none.
+    #[tokio::test]
+    async fn a_plan_says_whether_it_has_a_run_a_resume_would_continue() {
+        let failed = checkpoint_of(FAILED_RUN, "failed", &["T1", "T2"], &["T3"]);
+        let runtime = Arc::new(HeldPlans::with_checkpoints(failed.clone(), Vec::new()));
+        let (_dir, _state, router) = state_and_router(runtime.clone(), open_config());
+        let plan = || {
+            let router = router.clone();
+            async move {
+                let request = Request::builder()
+                    .uri("/api/plans/alpha")
+                    .body(Body::empty())
+                    .expect("a request");
+                let response = router.oneshot(request).await.expect("a response");
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("a body");
+                serde_json::from_slice::<Value>(&bytes).expect("JSON")
+            }
+        };
+
+        let body = plan().await;
+        assert_eq!(body["id"], "alpha", "{body}");
+        assert_eq!(body["resumable_run"], json!(failed), "{body}");
+        assert!(runtime.run_ids().is_empty(), "nothing ran");
+
+        let later = checkpoint_of(LATER_RUN, "succeeded", &["T1", "T2", "T3"], &[]);
+        *runtime.checkpoint.lock().expect("lock the checkpoint") = Some(later);
+        let body = plan().await;
+        assert!(body["resumable_run"].is_null(), "{body}");
+        *runtime.checkpoint.lock().expect("lock the checkpoint") = None;
+        let body = plan().await;
+        assert!(body["resumable_run"].is_null(), "{body}");
+        assert!(body.get("resumable_run").is_some(), "always said: {body}");
+    }
+
     /// bug-cbdb6b: `from_run` puts back the checkpoint of a run that a run
     /// starting over set aside, sets the current one aside in its place, and
     /// resumes it; `fresh` with `resume` or `from_run` contradicts itself,

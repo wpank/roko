@@ -2,7 +2,7 @@
 id = "bug-7683aa"
 kind = "bug"
 title = "One audit false green saturates the self-model's false-green head: a VS 0 label at weight 1/π = 20 moves OnlineLogit by about 9.7 per feature in one step, so once warm p_fg is 1.0 for every arm and P(VS) is 0 everywhere (start-rung demo v7-after-ad16cc844, task 13 on)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/self_model"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "d1758ed63"
 source = "round-v7-roko-speed#C-demo"
 discovered_from = "agent:roko-speed (round v7, gap-74893d's start-rung demo after-run)"
 anchors = ["crates/roko-learn/src/self_model/logit.rs::OnlineLogit", "crates/roko-learn/src/self_model/model.rs::forecast_arm"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-7c041c", "gap-74893d"], 
 
 [[verify]]
 command = "grep -rqw 'fn one_audit_false_green_does_not_saturate_the_false_green_head' crates/roko-learn/src && cargo test -p roko-learn --lib one_audit_false_green_does_not_saturate_the_false_green_head"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T21:20:26Z"
+commit = "d1758ed63"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-20T19:23:20Z"
+forced = false
+evidence = "d1758ed63. The false-green head is now FalseGreenHead (self_model/false_green.rs): a Beta-binomial rate with a prior worth N = 400 pseudo-passes at 5% (FALSE_GREEN_STRENGTH = 1/(π_floor·p0), π_floor = S05's 0.05 audit floor, roko_gate EPS_FLOOR), a global rate and one per model shrunk towards it, counts not discounted. SelfModel learns it from VS-labelled passes (observe_with, observe_vs) and reads it once warm (forecast_arm); L1's GateForecaster keeps the per-rung heads only; a state saved before loads with a fresh head. The literal verify passes on the branch: one_audit_false_green_does_not_saturate_the_false_green_head (warm model, one VS 0 audit at weight 20: the labelled arm's p_fg about 0.138, an unlabelled arm's 0.095, P(VS) above 0.8·p_gate; 200 more converge above 0.95); also the_head_moves_by_the_weight_against_its_prior and the existing late-VS test. Full lib suites: roko-core 2044, roko-learn 1390, roko-serve 1073, roko-cli 3937 with one failure, bug-e362a1's known heartbeat flake, which passes alone; learn_self_model bin tests 5; fmt and clippy clean. Start-rung demo on the fixed binary (tmp/hermes-roko-v6/learning-research/evidence/start-rung/v7-fg-*): six draws with explore_epsilon 0 all route every warm task on mid (24 of 24) with the false-green head peaking at 0.138-0.282 after one to three definite VS 0 audits (the old head went to 1.0 and sent every task to strong); the six lessons-off conditions pass in four draws, and the two misses are the cost condition over tasks 6-20 at 59.3% and 59.6% against its 60% bar, with identical routing, while over tasks 7-20 all six are 63.6-65.3% (the emulation's ceiling is 64.7%). Two draws with roko's default exploration: 6 of 6 (-61%), and 5 of 6 (-47%) after an exploration draw on cheap at task 12 dropped the gate for two tasks."
 +++
 
 ## Problem

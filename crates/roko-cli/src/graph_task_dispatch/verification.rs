@@ -270,6 +270,13 @@ impl GraphTaskDispatcher {
             // persisted after they settled.
             let mut blocked_by_sibling: Option<String> = None;
             let total_steps = u32::try_from(steps.len()).unwrap_or(u32::MAX);
+            // The steps the task's earlier tries passed: once one of them
+            // fails, the later steps run anyway, so a try that traded one
+            // step for another shows it (gap-fefdf5).
+            let passed_before = self
+                .gate_retry_context
+                .passed_steps(&spec.plan_id, &task.id);
+            let mut regressed_now = false;
 
             for (i, (step_label, step)) in steps.iter().enumerate() {
                 // How feedback and events quote the step: a pinned acceptance
@@ -278,7 +285,9 @@ impl GraphTaskDispatcher {
                 // Fail fast: once a step has failed (or P4-03 declared the
                 // attempt doomed), report later steps as skipped instead of
                 // paying for, say, a full compile after a cheap grep failed.
-                if promise_terminated || !failures.is_empty() {
+                // A failed step an earlier try passed is the exception: the
+                // later steps run, so a trade shows (gap-fefdf5).
+                if promise_terminated || (!failures.is_empty() && !regressed_now) {
                     skipped_steps.push(format!("{step_label} (`{shown}`)"));
                     step_verdicts.push(skipped_step_verdict(i, step));
                     continue;
@@ -557,6 +566,8 @@ impl GraphTaskDispatcher {
                 if !verdict.passed {
                     timed_out |= roko_gate::verdict_timed_out(&verdict);
                     failures.push(step_failure(step_label, shown, step, &verdict));
+                    regressed_now |= passed_before
+                        .contains(&step_ratchet::step_identity(step_label, &step.command));
                 }
                 step_verdicts.push(ran_step_verdict(i, step, &verdict, exit_code));
                 ran_steps.push((step.phase.clone(), verdict));
@@ -920,6 +931,18 @@ impl GraphTaskDispatcher {
                 // rather than raw compiler noise. Falls back deterministically
                 // when no model is configured or the call fails.
                 let raw_for_feedback = failures.join("\n---\n");
+                // The task's best try so far, whose files the next try starts
+                // from when this one passed fewer steps (gap-fefdf5).
+                let kept = self
+                    .settle_best_try(
+                        spec,
+                        task,
+                        attempt_number.saturating_add(1),
+                        &effective_workdir,
+                        &steps,
+                        &step_outcomes,
+                    )
+                    .await;
                 // The diagnosis feeds the retry prompt, so it stays inline but
                 // is bounded by `timeouts.llm_call_secs`; on timeout the retry
                 // proceeds with the raw gate output alone.
@@ -954,7 +977,7 @@ impl GraphTaskDispatcher {
                 // starts gets it even after this run's retries ran out.
                 if let Some(feedback) = GateFeedback::from_raw(&raw_for_feedback) {
                     let diagnosis = step_ratchet::regression_note(&regressed, &enriched_diagnosis);
-                    let feedback = feedback.with_diagnosis(&diagnosis);
+                    let feedback = feedback.with_diagnosis(&diagnosis).with_kept(kept);
                     let next_attempt = attempt_number.saturating_add(1);
                     let retries_left = spec
                         .max_retries
@@ -1074,6 +1097,7 @@ impl GraphTaskDispatcher {
             );
             // Clear any stale gate retry context on success.
             self.gate_retry_context.clear(&spec.plan_id, &task.id);
+            self.best_tries.forget(&spec.plan_id, &task.id);
         }
 
         self.forget_diff_base(attempt_key);

@@ -303,6 +303,7 @@ async fn retry_attempt_includes_gate_feedback_in_assembled_prompt() {
         clippy_warnings: vec![],
         raw_output: "...".into(),
         diagnosis: None,
+        kept: None,
     });
 
     let plan = dispatcher.plan(&task, &dctx).expect("plan");

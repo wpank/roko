@@ -55,6 +55,7 @@ mod attempt_workspace;
 mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
+mod best_try;
 mod budget;
 mod call_cost;
 mod check_output;
@@ -236,6 +237,9 @@ pub struct GraphTaskDispatcher {
     /// The checkouts this run's attempts have run in, so that an attempt
     /// knows when it runs in an earlier try's (gap-6a319c).
     checkouts_used: parking_lot::Mutex<HashSet<PathBuf>>,
+    /// Each task's best try so far, whose files a retry starts from after a
+    /// try that passed fewer verify steps (gap-fefdf5).
+    best_tries: best_try::BestTries,
     /// Optional TUI bridge for forwarding live agent output events to the
     /// dashboard. When set, completed dispatch events (text deltas, tool
     /// calls, tool outputs) are published through the StateHub so the TUI
@@ -414,6 +418,7 @@ impl GraphTaskDispatcher {
             disk_admission: None,
             worktree_generations: parking_lot::Mutex::new(HashMap::new()),
             checkouts_used: parking_lot::Mutex::new(HashSet::new()),
+            best_tries: best_try::BestTries::default(),
             tui_bridge: None,
             live_agent_output: None,
             gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
@@ -1280,6 +1285,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 .as_ref()
                 .map(|lease| self.attempt_workspace(&lease.path)),
         };
+        // A try that passed fewer verify steps than the task's best one left
+        // its checkout to start from the best try's files (gap-fefdf5).
+        if let Some(lease) = &lease {
+            self.restore_best_try(spec, &task, &lease.path).await;
+        }
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git
         // command here then fails: clear a stale one before the agent starts

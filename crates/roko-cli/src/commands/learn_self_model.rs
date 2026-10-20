@@ -930,6 +930,7 @@ mod tests {
                 would_choose: None,
                 default: None,
                 action: "dispatch".to_string(),
+                start_rules: None,
             };
             AttemptPredictionRecord::new(identity(task), predictor, Vec::new(), decision)
         };

@@ -13,7 +13,9 @@
 //!
 //! In active mode (6130), while the calibration gate holds, the rung the self-model would
 //! choose becomes the chain's start rung: dispatch hands it to the router, which draws it
-//! through S03's route table and logs its propensity.
+//! through S03's route table and logs its propensity. Policy (b) chooses it by `[self_model]
+//! start_rule`: by default the rung with the lowest expected total, cost plus λ·time, to a
+//! verified pass, else S04 §4.4's break-even (gap-74893d).
 //!
 //! After a gate pass (6132), policy (b) weighs the attempt's false-green risk r = p_fg: it asks
 //! DP3 (`verify_depth`) for the deepest verify depth d* whose check pays, r·L_fg·d_j > c_j, and
@@ -34,13 +36,15 @@ use std::sync::Arc;
 
 use roko_core::audit_types::VerifyDepth;
 use roko_core::config::schema::RokoConfig;
-use roko_core::config::self_model::{SelfModelConfig, SelfModelMode, SelfModelPolicy};
+use roko_core::config::self_model::{
+    SelfModelConfig, SelfModelMode, SelfModelPolicy, SelfModelStartRule,
+};
 use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_learn::self_model::baselines::K_MAX;
 use roko_learn::self_model::cascade::{
-    BREAK_EVEN_MARGIN, DepthOption, FALSE_GREEN_RISK_MAX, FailureContext, PassAction, StepAction,
-    after_failure, after_pass, start_rung,
+    DepthOption, FALSE_GREEN_RISK_MAX, FailureContext, PassAction, StartRules, StepAction,
+    after_failure, after_pass,
 };
 use roko_learn::self_model::features::{ContentFeatures, FEATURE_SCHEMA_VERSION, TaskFeatures};
 use roko_learn::self_model::gate::{
@@ -52,8 +56,8 @@ use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, P_ABANDON, RouteActio
 use roko_learn::self_model::spec_features::{SPEC_RECORDS_FILE, SpecFeatureIndex, SpecVector};
 use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
 use roko_learn::telemetry::records::{
-    AttemptPredictionRecord, PredictionCandidate, PredictionDecision, PredictionPredictor,
-    b3_digest,
+    AttemptPredictionRecord, BreakEvenPick, ExpectedTotalPick, PredictionCandidate,
+    PredictionDecision, PredictionPredictor, StartRulePicks, b3_digest,
 };
 use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
 
@@ -105,6 +109,9 @@ const REFINE_SPEC: &str = "refine_spec";
 
 /// The action a policy names when no rung is likely to pass the task (6133).
 const ABANDON: &str = "abandon";
+
+/// The action policy (b) names on a chain's first attempt: the rung to start on.
+const START: &str = "start";
 
 /// The event that hands a refine request to S07's plan-load gate, in the run's spec ledger
 /// and its event log (6133).
@@ -497,10 +504,16 @@ impl SelfModelRuntime {
             .iter()
             .map(|forecast| forecast.arm.to_string())
             .collect();
+        // Both start rules' picks, whichever one routes (gap-74893d).
+        let start_rules = (action == START).then(|| {
+            let rules = self.start_rules(&forecasts, candidates);
+            self.start_rule_picks(&rules, &arms)
+        });
         let decision = PredictionDecision {
             would_choose: would_choose.and_then(|index| arms.get(index).cloned()),
             default: arms.get(candidates.default).cloned(),
             action: action.to_string(),
+            start_rules,
         };
         let features_json = serde_json::to_vec(&features).unwrap_or_default();
         let predictor = PredictionPredictor {
@@ -683,6 +696,35 @@ impl SelfModelRuntime {
         (to < candidates.rungs.len()).then_some(StepAction::Climb { to })
     }
 
+    /// Both start rules on `forecasts` for a chain's first attempt under policy (b)
+    /// (gap-74893d), from the floor decision 6101 B1 sets: the lowest rung when a task may start
+    /// below its tier's rung, else the ladder's own start.
+    fn start_rules(&self, forecasts: &[CandidateForecast], candidates: &Candidates) -> StartRules {
+        let floor = if self.settings.allow_downward_start {
+            0
+        } else {
+            candidates.default
+        };
+        StartRules::of(forecasts, floor, self.settings.time_value_usd_per_s())
+    }
+
+    /// `rules` as a prediction row records them, each pick named by its arm among `arms`.
+    fn start_rule_picks(&self, rules: &StartRules, arms: &[String]) -> StartRulePicks {
+        let arm = |index: Option<usize>| index.and_then(|index| arms.get(index).cloned());
+        StartRulePicks {
+            rule: start_rule_name(self.settings.start_rule).to_string(),
+            break_even: BreakEvenPick {
+                pick: arm(rules.break_even),
+                bars: rules.bars.clone(),
+            },
+            expected_total: ExpectedTotalPick {
+                pick: arm(rules.expected_total),
+                usd_per_hour: self.settings.time_value_usd_per_hour,
+                totals_usd: rules.totals.clone(),
+            },
+        }
+    }
+
     /// The candidate the policy would choose, and its action's name. `spec_score`, S07's score
     /// of the task's spec over 1, lets either policy ask for a clearer spec (6133).
     fn decide(
@@ -715,14 +757,12 @@ impl SelfModelRuntime {
                 let failed_on = self.last_rung.lock().get(&identity.chain_key).copied();
                 match failed_on.filter(|_| identity.attempt > 1) {
                     None => {
-                        // Decision 6101 B1 lets a task start below its tier's rung.
-                        let floor = if self.settings.allow_downward_start {
-                            0
-                        } else {
-                            candidates.default
+                        let rules = self.start_rules(forecasts, candidates);
+                        let start = match self.settings.start_rule {
+                            SelfModelStartRule::ExpectedTotal => rules.expected_total,
+                            SelfModelStartRule::BreakEven => rules.break_even,
                         };
-                        let start = start_rung(forecasts, BREAK_EVEN_MARGIN);
-                        (start.map(|start| start.max(floor)), "start")
+                        (start, START)
                     }
                     Some(rung) => {
                         let current = candidates
@@ -1309,6 +1349,14 @@ const fn mode_name(mode: SelfModelMode) -> &'static str {
     }
 }
 
+/// The rule's name in `[self_model] start_rule`.
+const fn start_rule_name(rule: SelfModelStartRule) -> &'static str {
+    match rule {
+        SelfModelStartRule::ExpectedTotal => "expected_total",
+        SelfModelStartRule::BreakEven => "break_even",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use roko_core::config::routing::LadderRung;
@@ -1463,6 +1511,122 @@ mod tests {
                 "{default} vs {}",
                 off[task]
             );
+            // gap-74893d: a chain's first attempt logs both start rules' picks with their
+            // numbers, under the default rule; a pinned attempt logs neither.
+            let rules = &row["decision"]["start_rules"];
+            assert_eq!(
+                rules.is_null(),
+                row["decision"]["action"] != "start",
+                "{row}"
+            );
+            if rules.is_null() {
+                continue;
+            }
+            assert_eq!(rules["rule"], "expected_total", "{row}");
+            let arms: Vec<&str> = candidates
+                .iter()
+                .filter_map(|candidate| candidate["arm"].as_str())
+                .collect();
+            for pick in [
+                &rules["break_even"]["pick"],
+                &rules["expected_total"]["pick"],
+            ] {
+                assert!(
+                    pick.as_str().is_some_and(|arm| arms.contains(&arm)),
+                    "{row}"
+                );
+            }
+            let bars = rules["break_even"]["bars"].as_array().expect("bars");
+            let totals = rules["expected_total"]["totals_usd"]
+                .as_array()
+                .expect("totals");
+            assert_eq!((bars.len(), totals.len()), (2, 2), "{row}");
+            assert_eq!(rules["expected_total"]["usd_per_hour"], 3.0, "{row}");
+        }
+    }
+
+    /// gap-74893d: `[self_model] start_rule` picks a chain's start rung, and the prediction row
+    /// gets both rules' picks either way. On Undertow's phase-1 forecasts for T3's first try
+    /// (round v7), `expected_total` at $3 an hour starts on strong, while `break_even` keeps
+    /// S04 §4.4's pick, cheap, exactly as before.
+    #[test]
+    fn the_start_rule_setting_picks_the_start_and_both_picks_are_logged() {
+        use roko_learn::telemetry::{AttemptKey, ForecastBasis};
+
+        let forecast = |model: &str, p: f64, lcb: f64, cost: (f64, f64), latency: (f64, f64)| {
+            CandidateForecast {
+                arm: ArmKey::roko("p", model),
+                p_gate: p,
+                p_fg: 0.0,
+                p_vs: p,
+                p_vs_lcb: lcb,
+                cost_q50: cost.0,
+                cost_q90: cost.1,
+                lat_q50_s: latency.0,
+                lat_q90_s: latency.1,
+                cold_start: false,
+                basis: ForecastBasis::Prior,
+                cost_prior: false,
+                latency_prior: false,
+            }
+        };
+        let t3 = [
+            forecast(
+                "gpt-oss-120b",
+                0.51381,
+                0.31364,
+                (0.01275, 0.05221),
+                (332.6, 1361.7),
+            ),
+            forecast(
+                "glm-4.7",
+                0.67248,
+                0.56486,
+                (0.12498, 0.36864),
+                (440.3, 1635.1),
+            ),
+            forecast(
+                "gpt-5.4-mini",
+                0.15377,
+                0.03864,
+                (0.05053, 0.1772),
+                (42.0, 192.5),
+            ),
+        ];
+        let arms: Vec<String> = t3.iter().map(|forecast| forecast.arm.to_string()).collect();
+        // The ladder's own start is mid, as on Undertow.
+        let candidates = Candidates {
+            arms: t3.iter().map(|forecast| forecast.arm.clone()).collect(),
+            rungs: vec![0, 1, 2],
+            default: 1,
+            step: 0,
+            pinned: false,
+        };
+        let identity = AttemptIdentity::new(&AttemptKey::new(RUN, "plan", "T3", 1));
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        for (rule, start) in [
+            (SelfModelStartRule::ExpectedTotal, 2),
+            (SelfModelStartRule::BreakEven, 0),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let settings = SelfModelConfig {
+                start_rule: rule,
+                ..SelfModelConfig::default()
+            };
+            let state = temp.path().join("state-v1.json");
+            let runtime = SelfModelRuntime::new(settings, state, SelfModel::new(&snapshot));
+            let decided = runtime.decide(&identity, &t3, &candidates, 3, None);
+            assert_eq!(decided, (Some(start), START), "{rule:?}");
+            let rules = runtime.start_rules(&t3, &candidates);
+            let picks = runtime.start_rule_picks(&rules, &arms);
+            assert_eq!(picks.rule, start_rule_name(rule));
+            assert_eq!(picks.break_even.pick.as_ref(), Some(&arms[0]), "{picks:?}");
+            assert_eq!(
+                picks.expected_total.pick.as_ref(),
+                Some(&arms[2]),
+                "{picks:?}"
+            );
+            assert!(picks.expected_total.totals_usd.iter().all(Option::is_some));
         }
     }
 

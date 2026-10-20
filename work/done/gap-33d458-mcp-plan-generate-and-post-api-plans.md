@@ -66,3 +66,11 @@ plans for a person needs to set that cap and say what it is.
 The tests in `[[verify]]` pass. Over HTTP and over MCP, a request's `max_usd` reaches the runtime and is echoed with
 source `request`. Without one, the config's cap is used and echoed with source `config`. A cap of 0, a negative cap or
 a non-number is refused, and over MCP so is a cap above `max_run_usd`.
+
+## Notes
+
+- The `[serve.mcp] max_run_usd` ceiling on `plan_generate`'s `max_usd` stays (the lead, 2026-10-20): a chat host
+  cannot raise plan writing above what it may spend on a run.
+- Known limit: the pipeline checks the cap after each planner call, so the call that crosses it is paid in full. The
+  $0 smoke spent $0.10 against a $0.05 cap after one call, then stopped ("reached its spend cap: its 1 planner
+  call(s) cost $0.1000 of $0.05"). A cap below one call's cost still allows that one call.

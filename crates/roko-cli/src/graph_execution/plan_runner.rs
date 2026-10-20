@@ -187,11 +187,14 @@ pub enum PlanRunInterrupt {
     /// The operator closed the TUI while plans were still running. It exits
     /// as SIGINT does.
     TuiClosed,
+    /// The run's time limit, `[timeouts] plan_total_secs`, elapsed
+    /// (bug-bfb75a). It exits as SIGTERM does.
+    TimeLimit,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Interrupt,
         Self::Terminate,
         Self::Hangup,
@@ -199,6 +202,7 @@ impl PlanRunInterrupt {
         Self::Conductor,
         Self::Cancel,
         Self::TuiClosed,
+        Self::TimeLimit,
     ];
 
     /// Conventional shell status for the signal: 128 + signal number.
@@ -206,13 +210,13 @@ impl PlanRunInterrupt {
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt | Self::Cancel | Self::TuiClosed => 130,
-            Self::Terminate | Self::Deadline | Self::Conductor => 143,
+            Self::Terminate | Self::Deadline | Self::Conductor | Self::TimeLimit => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name, `deadline`, `conductor`, `cancel` or `tui-closed`, for
-    /// logs, summaries and the checkpoint's stop cause.
+    /// Signal name, `deadline`, `conductor`, `cancel`, `tui-closed` or
+    /// `time-limit`, for logs, summaries and the checkpoint's stop cause.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -223,6 +227,7 @@ impl PlanRunInterrupt {
             Self::Conductor => "conductor",
             Self::Cancel => "cancel",
             Self::TuiClosed => "tui-closed",
+            Self::TimeLimit => "time-limit",
         }
     }
 
@@ -238,6 +243,7 @@ impl PlanRunInterrupt {
             Self::Conductor => "a conductor watcher",
             Self::Cancel => "a cancel request",
             Self::TuiClosed => "closing the TUI",
+            Self::TimeLimit => "the run's time limit ([timeouts] plan_total_secs)",
         }
     }
 
@@ -250,6 +256,7 @@ impl PlanRunInterrupt {
             Self::Conductor => 5,
             Self::Cancel => 6,
             Self::TuiClosed => 7,
+            Self::TimeLimit => 8,
         }
     }
 
@@ -262,6 +269,7 @@ impl PlanRunInterrupt {
             5 => Some(Self::Conductor),
             6 => Some(Self::Cancel),
             7 => Some(Self::TuiClosed),
+            8 => Some(Self::TimeLimit),
             _ => None,
         }
     }
@@ -1203,7 +1211,7 @@ async fn run_graph_plan_body(
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
-    let _fast_deadline = super::fast_lane::arm_plan_deadline(&interrupt);
+    let fast_deadline = super::fast_lane::arm_plan_deadline(&interrupt);
 
     let plans_dir: &Path = &plans_dir;
     let workdir: &Path = &workdir;
@@ -1262,6 +1270,12 @@ async fn run_graph_plan_body(
     // alone, before the manifest, the feedback facade and the dispatcher are
     // built, so every reader sees one value.
     apply_run_switches(&mut roko_config, frozen_learning, no_holdout, no_audit);
+    // `[timeouts] plan_total_secs` bounds the run's wall-clock time
+    // (bug-bfb75a); a FAST run keeps its own, shorter deadline.
+    let _time_limit = fast_deadline
+        .is_none()
+        .then(|| super::time_limit::arm(&interrupt, &roko_config, run_start.elapsed()))
+        .flatten();
     // Every check the run starts builds with a job cap at a lower priority
     // (bug-b3849c): `[gates] cargo_jobs` and `[gates] nice`.
     let gate_limits = roko_config.gates.gate_limits();
@@ -8128,6 +8142,9 @@ exec sleep 60
         assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
         assert_eq!(PlanRunInterrupt::Conductor.label(), "conductor");
+        // bug-bfb75a: the run's time limit exits as SIGTERM does too.
+        assert_eq!(PlanRunInterrupt::TimeLimit.exit_code(), 143);
+        assert_eq!(PlanRunInterrupt::TimeLimit.label(), "time-limit");
         // bug-1d09e8: a cancel request and a closed TUI exit as SIGINT does,
         // each named for what it was.
         for (interrupt, label, cause) in [

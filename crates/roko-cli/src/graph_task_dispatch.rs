@@ -1448,29 +1448,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
-        // A try on a rung the task can still climb from is bounded: it gets
-        // the rung's turns, however many a turn-cap stop raised the cap to,
-        // and may spend no more than the rung's allowance (gap-3e770b).
-        let rung_allowance =
-            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, tier_turns);
-        if let Some(allowance) = &rung_allowance {
-            if let Some(turns) = allowance.turns {
-                max_turns = max_turns.min(turns);
-            }
-            tracing::info!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                rung = %allowance.rung,
-                max_turns,
-                max_usd = ?allowance.usd,
-                "the try on this rung is bounded; a try that uses its allowance up fails on the \
-                 rung"
-            );
-        }
-        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
-        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
-
-        let contract = self.task_contract(role, spec, &task);
         let base_timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // The last attempt ran out of time with partial work on disk: give
@@ -1488,6 +1465,37 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
             raised
         });
+        // A try on a rung the task can still climb from is bounded: it gets
+        // the rung's turns, however many a turn-cap stop raised the cap to,
+        // may spend no more than the rung's allowance (gap-3e770b), and may
+        // run for a share of the attempt's time (bug-f0007b).
+        let rung_allowance = self.rung_allowance(
+            &task,
+            &attempt,
+            &dispatch_plan,
+            ladder_step,
+            tier_turns,
+            timeout_ms / 1_000,
+        );
+        if let Some(allowance) = &rung_allowance {
+            if let Some(turns) = allowance.turns {
+                max_turns = max_turns.min(turns);
+            }
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                rung = %allowance.rung,
+                max_turns,
+                max_usd = ?allowance.usd,
+                max_secs = ?allowance.secs,
+                "the try on this rung is bounded; a try that uses its allowance up fails on the \
+                 rung"
+            );
+        }
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
+        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
+
+        let contract = self.task_contract(role, spec, &task);
         let mut prompt = dispatch_plan.prompt.user_prompt.clone();
         if let Some(previous) = turn_cap_resume {
             prompt.push_str(&turn_cap_resume_note(previous, max_turns));
@@ -1692,8 +1700,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
             (Ok(dispatched), None) => dispatched,
             (Err(error), None) => {
                 // An agent that runs its own loop and spent its rung's
-                // allowance resumes its work on its next try (gap-3e770b).
-                if let Some(watchdog::AttemptInterrupted::AllowanceSpent(reason)) = &ended_by {
+                // allowance, or a try that ran its rung's time, resumes its
+                // work on its next try (gap-3e770b, bug-f0007b).
+                if let Some(
+                    watchdog::AttemptInterrupted::AllowanceSpent(reason)
+                    | watchdog::AttemptInterrupted::TimeBound { reason, .. },
+                ) = &ended_by
+                {
                     self.keep_allowance_stop(&spec.plan_id, &task.id, reason);
                 }
                 // A call that failed once the run began to stop, such as an
@@ -1886,7 +1899,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // spend limit the attempt gave it (gap-e14344): the harness
             // stopped it, and no retry can pay for that call either.
             // A try that spent its rung's allowance stopped the same ways
-            // (gap-3e770b), and failed on its rung.
+            // (gap-3e770b), as did one that ran its rung's time (bug-f0007b),
+            // and failed on its rung.
             let budget_stop = match allowance.as_deref() {
                 Some(allowance) => allowance.stop(own_budget_stop(&dispatch)),
                 None => own_budget_stop(&dispatch).map(TryStop::Plan),
@@ -1897,7 +1911,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let settlement = match (&stopped, &budget_stop) {
                 (Some(cancelled), _) => Settlement::provider_call_error(cancelled),
                 (None, Some(TryStop::Plan(reason))) => Settlement::budget_exhausted(reason),
-                (None, Some(TryStop::Rung(reason))) => Settlement::allowance_spent(reason),
+                (None, Some(TryStop::Rung(reason) | TryStop::Time { reason, .. })) => {
+                    Settlement::allowance_spent(reason)
+                }
                 (None, None) => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
             };
             let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
@@ -1934,13 +1950,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     );
                     return Err(RokoError::gateway("budget", false, reason));
                 }
-                Some(TryStop::Rung(reason)) => {
+                Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
                     tracing::info!(
                         plan_id = %spec.plan_id,
                         task_id = %task.id,
                         %reason,
-                        "the try spent its rung's allowance; it failed on the rung, and its work \
-                         stays in its checkout"
+                        "the try used up its rung's allowance; it failed on the rung, and its \
+                         work stays in its checkout"
                     );
                     self.keep_allowance_stop(&spec.plan_id, &task.id, &reason);
                     return Err(RokoError::Agent {

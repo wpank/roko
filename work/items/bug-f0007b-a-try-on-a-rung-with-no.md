@@ -9,11 +9,14 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-20
 source = "round-v6-dogfood-desktop#L1-notch"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L1, 2026-10-17)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/try_allowance.rs::RungAllowance", "crates/roko-core/src/config/routing.rs::LadderConfig", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::StallWatch"]
-links = { depends_on = [], blocks = [], related = ["gap-2c9412"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-2c9412", "bug-bfb75a"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_try_that_runs_its_time_is_judged_by_its_checks' crates/roko-cli/src && cargo test -p roko-cli --lib a_try_that_runs_its_time_is_judged_by_its_checks"
 +++
 
 ## Problem
@@ -78,6 +81,10 @@ A try that reaches its rung's time or spend bound is judged by its checks and, f
 left for the next rung. A replay of this run's shape under a $0.25 cap reaches strong instead of stopping on mid.
 
 ## Notes
+
+- Round v7 (2026-10-20, the lead's ask): phase 1 of Undertow (run `0bed5c58`) had T2's single try run 46 min on glm-4.7
+  (23 turns, 98,839 output tokens, mostly reasoning; it passed). The lead chose option (a): a per-rung try time
+  bound, `[routing.ladder] max_secs`, with a default, that ends the try and judges its work by its checks.
 
 - Evidence: `tmp/hermes-roko-v6/findings/dogfood-desktop.md`.
   - The take is `tmp/hermes-roko-v6/media/pipeline/work/takes/l1-g2-page-2134`; the climb video is the guide's climb slot.

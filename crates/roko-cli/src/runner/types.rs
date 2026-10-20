@@ -82,7 +82,9 @@ impl ControlCommand {
     }
 }
 
-/// Effective plan wall-clock timeout in seconds.
+/// Effective plan wall-clock timeout in seconds; `0` is none. A Graph plan
+/// run stops once it has run this long (bug-bfb75a,
+/// [`crate::graph_execution::time_limit`]).
 ///
 /// `[timeouts].plan_total_secs` is the canonical setting. If that field is
 /// still at its default but the legacy `[runner].plan_timeout_secs` field was
@@ -92,7 +94,7 @@ impl ControlCommand {
 /// Projects should migrate to `[timeouts].plan_total_secs` in their `roko.toml`.
 #[must_use]
 pub fn effective_plan_timeout_secs(roko_config: &RokoConfig) -> u64 {
-    let timeout_secs = roko_config.timeouts.plan_total_secs.max(1);
+    let timeout_secs = roko_config.timeouts.plan_total_secs;
     let runner_secs = roko_config.runner.plan_timeout_secs;
     if roko_config.timeouts.plan_total_secs == DEFAULT_PLAN_TIMEOUT_SECS
         && runner_secs != DEFAULT_PLAN_TIMEOUT_SECS

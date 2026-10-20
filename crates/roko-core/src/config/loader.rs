@@ -1443,6 +1443,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "retrieval.role_token_budgets",
     "routing.ladder.max_turns",
     "routing.ladder.max_usd",
+    "routing.ladder.max_secs",
     "tools.profiles",
 ];
 
@@ -1857,11 +1858,12 @@ fn build_schema_tree() -> toml::Value {
     // roko.toml.
     config.routing.disabled_providers = vec![String::new()];
     config.routing.fallback_models = vec![String::new()];
-    // The ladder's try allowances map rung names to turns and USD (dynamic
-    // map sections, gap-3e770b).
+    // The ladder's try allowances map rung names to turns, USD and seconds
+    // (dynamic map sections, gap-3e770b, bug-f0007b).
     let ladder = &mut config.routing.ladder;
     ladder.max_turns.insert("_schema_sentinel".to_string(), 0);
     ladder.max_usd.insert("_schema_sentinel".to_string(), 0.0);
+    ladder.max_secs.insert("_schema_sentinel".to_string(), 0);
     config.gates.env_passthrough = vec![String::new()];
     config.gates.strip_env = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they

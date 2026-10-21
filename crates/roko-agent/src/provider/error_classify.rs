@@ -283,20 +283,25 @@ fn is_http_status_word(word: &str) -> bool {
 
 /// Classify the lowercase text of a failed provider call into the class name
 /// provider health records: `provider_exhausted`, `insufficient_credits`,
-/// `auth_failure`, `rate_limit`, `timeout`, `server_error`,
-/// `empty_response` or `unknown`.
+/// `auth_failure`, `request_refused`, `model_not_found`, `rate_limit`,
+/// `timeout`, `server_error`, `empty_response` or `unknown`.
 ///
 /// The order matters: a usage-window refusal mentions limits and quotas, and
 /// a billing message can mention a quota, so both come before the
-/// rate-limit wording (gap-28ceb9); a login failure comes before them all
-/// but those two, so a CLI that is not logged in is never retried as a
-/// transient error (backlog 1113).
+/// rate-limit wording (gap-28ceb9); a request the provider refused is named
+/// by its status ([`refusal_class`]), whatever its words say (bug-35b190); a
+/// login failure comes before the rest, so a CLI that is not logged in is
+/// never retried as a transient error (backlog 1113).
 #[must_use]
 pub fn classify_failure_text(lower: &str) -> &'static str {
     if detect_provider_exhaustion(lower).is_some() {
         "provider_exhausted"
     } else if is_billing_message(lower) {
         "insufficient_credits"
+    } else if let Some(status) = refused_request_status(lower) {
+        refusal_class(status)
+    } else if lower.contains("model not found") {
+        "model_not_found"
     } else if is_auth_failure_text(lower) {
         "auth_failure"
     } else if lower.contains("rate limit")
@@ -396,29 +401,130 @@ pub fn classify_rate_limited(message: &str, retry_after_ms: Option<u64>) -> Prov
 /// moves on. `body` is the response body, JSON or text.
 #[must_use]
 pub fn billing_refusal(body: &str) -> ProviderError {
-    let json = serde_json::from_str::<Value>(body.trim()).ok();
-    let field = |pointers: &[&str]| {
-        json.as_ref().and_then(|json| {
-            pointers
-                .iter()
-                .find_map(|pointer| match json.pointer(pointer) {
-                    Some(Value::String(text)) => Some(text.trim().to_string()),
-                    Some(Value::Number(number)) => Some(number.to_string()),
-                    _ => None,
-                })
-        })
-    };
-    let words = field(&["/error/message", "/message", "/error"])
-        .filter(|words| !words.is_empty())
-        .unwrap_or_else(|| humanize_line(body));
-    let message = match field(&["/error/code", "/code"]) {
-        Some(code) if !code.is_empty() => format!("{words} (code {code})"),
-        _ => words,
+    let said = ProviderWords::of(body);
+    let message = match said.code {
+        Some(code) => format!("{} (code {code})", said.words),
+        None => said.words,
     };
     ProviderError::ProviderExhausted {
         resets_at_ms: None,
         message: bounded_message(&message),
     }
+}
+
+/// What a provider's error response says: its own words (`/error/message`,
+/// `/message` or `/error` of a JSON body, else the text) and the code and
+/// parameter it named.
+struct ProviderWords {
+    words: String,
+    code: Option<String>,
+    param: Option<String>,
+}
+
+impl ProviderWords {
+    /// The words of response `body`, JSON or text.
+    fn of(body: &str) -> Self {
+        let json = serde_json::from_str::<Value>(body.trim()).ok();
+        let field = |pointers: &[&str]| {
+            json.as_ref()
+                .and_then(|json| {
+                    pointers
+                        .iter()
+                        .find_map(|pointer| match json.pointer(pointer) {
+                            Some(Value::String(text)) => Some(text.trim().to_string()),
+                            Some(Value::Number(number)) => Some(number.to_string()),
+                            _ => None,
+                        })
+                })
+                .filter(|text| !text.is_empty())
+        };
+        Self {
+            words: field(&["/error/message", "/message", "/error"])
+                .unwrap_or_else(|| humanize_line(body)),
+            code: field(&["/error/code", "/code"]),
+            param: field(&["/error/param", "/param"]),
+        }
+    }
+}
+
+/// What [`ProviderError::RequestRefused`] says between the provider and the
+/// status: `openai refused the request (HTTP 400): …` (bug-35b190).
+pub const REQUEST_REFUSED_MARKER: &str = "refused the request (HTTP";
+
+/// Most characters of a refusal's words a [`ProviderError::RequestRefused`]
+/// keeps, from their start.
+const REFUSAL_MESSAGE_MAX_CHARS: usize = 400;
+
+/// What an HTTP 4xx from `provider` with response `body` (JSON or text) is,
+/// besides a rate limit (429) and an auth failure (401) (bug-35b190): a
+/// billing refusal when it is a 402 or its words say the account can't pay
+/// (bug-390e4b), a context overflow for a 400 that says the context is too
+/// long, a timeout for a 408, else a [`ProviderError::RequestRefused`] with
+/// the provider's own words and the parameter and code it named. Sending the
+/// same request again gets the same answer.
+#[must_use]
+pub fn classify_http_refusal(provider: &str, status: u16, body: &str) -> ProviderError {
+    let said = ProviderWords::of(body);
+    let lower = said.words.to_ascii_lowercase();
+    let billing_code = said
+        .code
+        .as_deref()
+        .is_some_and(|code| is_billing_message(&code.to_ascii_lowercase()));
+    if status == 402 || billing_code || is_billing_message(&lower) {
+        return billing_refusal(body);
+    }
+    if status == 408 {
+        return ProviderError::Timeout;
+    }
+    if status == 400
+        && (said.code.as_deref() == Some("context_length_exceeded")
+            || is_context_overflow_text(&lower))
+    {
+        return ProviderError::ContextOverflow;
+    }
+    let named: Vec<String> = [
+        said.param.map(|param| format!("param {param}")),
+        said.code.map(|code| format!("code {code}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let words = said.words.split_whitespace().collect::<Vec<_>>().join(" ");
+    let message = if named.is_empty() {
+        words
+    } else {
+        format!("{words} ({})", named.join(", "))
+    };
+    let mut kept: String = message.chars().take(REFUSAL_MESSAGE_MAX_CHARS).collect();
+    if kept.len() < message.len() {
+        kept.push('…');
+    }
+    ProviderError::RequestRefused {
+        provider: provider.to_string(),
+        status,
+        message: kept,
+    }
+}
+
+/// The failure class of a request a provider refused with HTTP `status`
+/// (bug-35b190): `auth_failure` for a 401 or 403 (a bad key, or a key that may
+/// not use the model), `model_not_found` for a 404, else `request_refused`.
+#[must_use]
+pub const fn refusal_class(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "auth_failure",
+        404 => "model_not_found",
+        _ => "request_refused",
+    }
+}
+
+/// The HTTP status of the refused request lowercase failure text reports, as
+/// [`ProviderError::RequestRefused`] renders it; `None` when it reports none.
+#[must_use]
+pub fn refused_request_status(lower: &str) -> Option<u16> {
+    let marker = REQUEST_REFUSED_MARKER.to_ascii_lowercase();
+    let rest = after(lower, &marker)?.trim_start();
+    rest.get(..3)?.parse().ok()
 }
 
 // ---- Usage-window exhaustion ---------------------------------------------
@@ -731,15 +837,19 @@ fn classify_bad_request(body: &Value) -> ProviderError {
         .and_then(Value::as_str)
         .unwrap_or("");
     let lower = msg.to_ascii_lowercase();
-    if lower.contains("context_length_exceeded")
-        || lower.contains("maximum context length")
-        || lower.contains("token limit")
-        || (lower.contains("context") && (lower.contains("token") || lower.contains("length")))
-    {
+    if is_context_overflow_text(&lower) {
         ProviderError::ContextOverflow
     } else {
         ProviderError::Other(format!("HTTP 400: {msg}"))
     }
+}
+
+/// Whether a 400's lowercase words say the request's context is too long.
+fn is_context_overflow_text(lower: &str) -> bool {
+    lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("token limit")
+        || (lower.contains("context") && (lower.contains("token") || lower.contains("length")))
 }
 
 // ---- Turn cap ------------------------------------------------------------

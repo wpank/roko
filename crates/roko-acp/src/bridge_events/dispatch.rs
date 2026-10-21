@@ -656,7 +656,12 @@ pub(crate) async fn run_openai_compat_cognitive_task(
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
     let roko_config = config_with_session_effort(roko_config, effort);
-    let resolved = resolve_model(&roko_config, model_key);
+    let mut resolved = resolve_model(&roko_config, model_key);
+    // The tool loops below send the session's effort to a model that names
+    // none of its own (bug-29014c).
+    resolved.profile = resolved
+        .profile
+        .map(|profile| profile.with_reasoning_effort_or(&roko_config.agent.default_effort));
 
     info!(
         session_id,
@@ -772,8 +777,9 @@ pub(crate) async fn run_openai_compat_cognitive_task(
 ///    decide how to pass effort/thinking to the upstream API:
 ///    - **Anthropic API**: maps to `thinking.budget_tokens` via the Anthropic model
 ///      caller (see `roko-agent/src/model_call/anthropic.rs`).
-///    - **OpenAI-compat**: maps to `reasoning_effort` request field when the
-///      provider supports it.
+///    - **OpenAI-compat**: maps to the `reasoning_effort` request field for an
+///      OpenAI reasoning model (the GPT-5 family and the o-series) whose
+///      `[models.*]` entry sets no `reasoning_effort` of its own (bug-29014c).
 ///    - **Claude CLI**: maps to the `--thinking` flag.
 ///
 /// ## Known gap

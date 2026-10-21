@@ -1762,6 +1762,7 @@ fn build_schema_tree() -> toml::Value {
         use_max_completion_tokens: true,
         temperature: Some(0.0),
         seed: Some(0),
+        reasoning_effort: Some(crate::agent::ReasoningEffort::Medium),
         ..ModelProfile::default()
     };
     config
@@ -3371,6 +3372,48 @@ seed = 42
         let model = &loaded.config().models["local-model"];
         assert_eq!(model.temperature, Some(0.2));
         assert_eq!(model.seed, Some(42));
+    }
+
+    /// bug-29014c: a model's own reasoning effort is a known key, so a load
+    /// keeps it instead of stripping it as unknown.
+    #[test]
+    fn a_models_reasoning_effort_survives_a_load() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.gpt-5-4]
+provider = "openai"
+slug = "gpt-5.4"
+reasoning_effort = "high"
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options).expect("load");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.message.contains("unknown") && diagnostic.key.starts_with("models.")
+            })
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        assert!(unknown.is_empty(), "{unknown:?}");
+        assert_eq!(
+            loaded.config().models["gpt-5-4"].reasoning_effort,
+            Some(crate::agent::ReasoningEffort::High)
+        );
     }
 
     #[test]

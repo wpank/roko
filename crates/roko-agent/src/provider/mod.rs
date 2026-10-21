@@ -423,6 +423,15 @@ pub fn create_agent_for_model(
     if options.tool_timeout_max.is_none() {
         options.tool_timeout_max = Some(config.timeouts.tool_execution_max());
     }
+    // A model that names no reasoning effort of its own runs at the
+    // request's, else at `[agent] default_effort` (bug-29014c).
+    let effort = options
+        .effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+        .unwrap_or(&config.agent.default_effort);
+    let profile = profile.with_reasoning_effort_or(effort);
     // The CaMeL data-LLM boundary covers the tool loops roko runs itself:
     // the adapters that execute tools in process (gap-b0d514).
     if options.data_llm.is_none()
@@ -500,6 +509,9 @@ pub fn data_llm_boundary(
                 profile.provider
             ))
         })?;
+    // At `[agent] default_effort`, unless the model names its own
+    // (bug-29014c).
+    let profile = profile.with_reasoning_effort_or(&config.agent.default_effort);
     let poster = Arc::new(crate::http::ReqwestPoster::new());
     let backend = crate::tool_loop::backends::create_tool_loop_backend(
         &provider,
@@ -1798,6 +1810,232 @@ mod tests {
         config
     }
 
+    /// A chat server that answers `count` requests "ok", as a stream when the
+    /// request asks for one, and keeps each request's JSON body.
+    fn spawn_capturing_chat_server(
+        count: usize,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&bodies);
+        let handle = thread::spawn(move || {
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set read timeout");
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let body = loop {
+                    let n = stream.read(&mut chunk).expect("read request");
+                    assert!(n > 0, "request closed early");
+                    buf.extend_from_slice(&chunk[..n]);
+                    let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("content length");
+                    if buf.len() >= end + 4 + length {
+                        break buf[end + 4..end + 4 + length].to_vec();
+                    }
+                };
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body).expect("json request body");
+                let streamed = body["stream"] == serde_json::json!(true);
+                let model = body["model"].clone();
+                captured.lock().expect("capture lock").push(body);
+                let usage = serde_json::json!({
+                    "prompt_tokens": 11,
+                    "completion_tokens": 1,
+                    "total_tokens": 12
+                });
+                let wire = if streamed {
+                    let mut wire = String::from(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: \
+                         close\r\n\r\n",
+                    );
+                    let chunk = |choices: serde_json::Value| {
+                        serde_json::json!({
+                            "id": "c1",
+                            "object": "chat.completion.chunk",
+                            "model": model,
+                            "choices": choices,
+                        })
+                    };
+                    let mut done = chunk(serde_json::json!([]));
+                    done["usage"] = usage;
+                    for event in [
+                        chunk(serde_json::json!([{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "ok"},
+                            "finish_reason": null
+                        }])),
+                        chunk(serde_json::json!([{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }])),
+                        done,
+                    ] {
+                        wire.push_str(&format!("data: {event}\n\n"));
+                    }
+                    wire.push_str("data: [DONE]\n\n");
+                    wire
+                } else {
+                    let response = serde_json::json!({
+                        "id": "chatcmpl-test",
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": usage
+                    })
+                    .to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n{response}",
+                        response.len()
+                    )
+                };
+                stream.write_all(wire.as_bytes()).expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+        (format!("http://{addr}"), bodies, handle)
+    }
+
+    /// bug-29014c: an OpenAI reasoning model's requests carry
+    /// `reasoning_effort`, plain and streamed, through roko's tool loop and
+    /// its tool-less agent: `[agent] default_effort` when the model names no
+    /// effort of its own, its own when it does, and a request's own effort
+    /// over the default. A model outside the GPT-5 family and the o-series
+    /// gets no such field.
+    #[tokio::test]
+    async fn an_openai_reasoning_model_request_carries_reasoning_effort() {
+        use roko_core::agent::ReasoningEffort;
+
+        // Each model: its key, slug, own effort, whether it calls tools, and
+        // the effort its request asks for.
+        let models = [
+            ("gpt-5-4-mini", "gpt-5.4-mini", None, true, None),
+            (
+                "gpt-5-4",
+                "gpt-5.4",
+                Some(ReasoningEffort::High),
+                true,
+                None,
+            ),
+            ("gpt-5-4-nano", "gpt-5.4-nano", None, true, Some("low")),
+            ("glm-4-7", "glm-4.7", None, true, None),
+            ("gpt-5-4-text", "gpt-5.4-mini", None, false, None),
+        ];
+        // Each run: the model, whether it streams, the effort sent.
+        let runs = [
+            ("gpt-5-4-mini", false, Some("medium")),
+            ("gpt-5-4-mini", true, Some("medium")),
+            ("gpt-5-4", false, Some("high")),
+            ("gpt-5-4", true, Some("high")),
+            ("gpt-5-4-nano", false, Some("low")),
+            ("gpt-5-4-nano", true, Some("low")),
+            ("glm-4-7", false, None),
+            ("glm-4-7", true, None),
+            ("gpt-5-4-text", false, Some("medium")),
+        ];
+        let (base_url, bodies, server) = spawn_capturing_chat_server(runs.len());
+        let mut config = RokoConfig::default();
+        config.agent.default_effort = "medium".to_string();
+        // Its own provider id: the process-wide rate limiter is shared.
+        config.providers.insert(
+            "effort-openai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(format!("{base_url}/v1")),
+                api_key_env: Some("PATH".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        for (key, slug, reasoning_effort, supports_tools, _) in models {
+            config.models.insert(
+                key.to_string(),
+                ModelProfile {
+                    provider: "effort-openai".to_string(),
+                    slug: slug.to_string(),
+                    context_window: 128_000,
+                    max_output: Some(1_024),
+                    supports_tools,
+                    tool_format: "openai_json".to_string(),
+                    reasoning_effort,
+                    ..ModelProfile::default()
+                },
+            );
+        }
+        let workdir = tempdir().expect("tempdir");
+
+        for (key, streamed, _) in runs {
+            let (_, _, _, _, effort) = models
+                .iter()
+                .find(|model| model.0 == key)
+                .expect("a configured model");
+            let options = AgentOptions {
+                timeout_ms: Some(5_000),
+                name: "effort-agent".to_string(),
+                effort: effort.map(str::to_string),
+                working_dir: Some(workdir.path().to_path_buf()),
+                immune_root: Some(workdir.path().to_path_buf()),
+                ..AgentOptions::default()
+            };
+            let agent = create_agent_for_model(&config, key, options).expect("create agent");
+            let result = if streamed {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                result
+            } else {
+                agent.run(&prompt("hello"), &Context::now()).await
+            };
+            assert!(
+                result.success,
+                "{key} (streamed: {streamed}): {}",
+                result.output.body.as_text().unwrap_or_default()
+            );
+        }
+        server.join().expect("server thread");
+
+        let bodies = bodies.lock().expect("capture lock");
+        assert_eq!(bodies.len(), runs.len());
+        for ((key, streamed, sent), body) in runs.iter().zip(bodies.iter()) {
+            assert_eq!(
+                body["stream"].as_bool().unwrap_or(false),
+                *streamed,
+                "{key}: {body}"
+            );
+            assert_eq!(
+                body.get("reasoning_effort")
+                    .and_then(serde_json::Value::as_str),
+                *sent,
+                "{key} (streamed: {streamed}): {body}"
+            );
+        }
+    }
+
     /// gap-b0d514: `[agent.data_llm]` builds its boundary from a model roko
     /// calls over an API, and refuses a model it does not know or cannot call.
     #[test]
@@ -1897,6 +2135,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
         config

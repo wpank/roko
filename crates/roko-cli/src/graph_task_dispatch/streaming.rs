@@ -328,6 +328,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // gap-770cb5: the agent can run its task's checks mid-try.
         let left_checks = self.leave_task_checks(&task, &attempt_key);
         attempt.dispatch_started();
+        attempt.record_effort(request.effort.clone());
         progress.call_started(
             crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
                 .resolve(&request.model_key),

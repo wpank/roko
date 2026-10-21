@@ -452,6 +452,7 @@ impl AttemptBook {
             trust_exclusions: None,
             verify_depth: None,
             bound: None,
+            effort: None,
             forecast: std::sync::OnceLock::new(),
             setup: AttemptSetup::default(),
             run,
@@ -503,6 +504,9 @@ pub(super) struct AttemptContext {
     verify_depth: Option<VerifyDepthRecord>,
     /// The rung's bound the try ended at, for its verdict (gap-3217a0).
     bound: Option<&'static str>,
+    /// The reasoning effort the attempt's request asked for, which its
+    /// verdict records where the model takes one (bug-29014c).
+    effort: Option<String>,
     /// The self-model's forecast of the attempt, as its route event carries
     /// it (gap-aaaaae); unset until the self-model forecasts it.
     forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
@@ -539,6 +543,12 @@ impl AttemptContext {
     /// The provider call starts.
     pub(super) fn dispatch_started(&mut self) {
         self.timing.dispatch_started_at = Some(now_ms());
+    }
+
+    /// The attempt's request asks for reasoning effort `effort`, which its
+    /// verdict records where the model that ran takes one (bug-29014c).
+    pub(super) fn record_effort(&mut self, effort: Option<String>) {
+        self.effort = effort;
     }
 
     /// The provider call returned.
@@ -811,7 +821,12 @@ impl AttemptContext {
             &self.setup,
         ));
         verdict.workspace = self.setup.workspace;
-        verdict.executed = executed_model(model_requested, dispatch, self.failover);
+        verdict.executed = executed_model(
+            model_requested,
+            dispatch,
+            self.failover,
+            self.effort.as_deref(),
+        );
         verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
         verdict.cost = attempt_cost(dispatch);
         // What the attempt's tokens cost at the run's price snapshot, the
@@ -1359,11 +1374,13 @@ fn failure_class(
 /// The model that ran: the one the bridge launched, which after failover
 /// is not the requested one, and the one the provider reported serving,
 /// which is `None` when it named none (bug-31438d). `failover` lists the
-/// models passed over first (bug-35379d).
+/// models passed over first (bug-35379d); `effort` is the reasoning effort
+/// the request asked for (bug-29014c).
 fn executed_model(
     model_requested: &str,
     dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
     failover: FailoverChain,
+    effort: Option<&str>,
 ) -> ExecutedModel {
     let mut executed = ExecutedModel {
         model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
@@ -1381,6 +1398,7 @@ fn executed_model(
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
         executed.sampling = request_sampling(&dispatch.target);
+        executed.reasoning_effort = request_reasoning_effort(&dispatch.target, effort);
         executed.tool_policy = dispatch.tool_policy.clone();
     }
     executed
@@ -1400,6 +1418,25 @@ fn request_sampling(
             roko_agent::provider::openai_compat::request_sampling(provider, model)
         })
         .unwrap_or_default()
+}
+
+/// The `reasoning_effort` the attempt's requests carried (bug-29014c): the
+/// model's own, else `effort`, the request's, for an OpenAI reasoning model.
+/// `None` for any other model, or when the target named no provider config
+/// or profile.
+fn request_reasoning_effort(
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+    effort: Option<&str>,
+) -> Option<String> {
+    let (provider, model) = target
+        .provider_config
+        .as_ref()
+        .zip(target.model_profile.as_ref())?;
+    let model = model
+        .clone()
+        .with_reasoning_effort_or(effort.unwrap_or_default());
+    roko_agent::provider::openai_compat::request_reasoning_effort(provider, &model)
+        .map(str::to_string)
 }
 
 /// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
@@ -2575,6 +2612,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let recorded = costs[0]["cost_usd"].as_f64().expect("cost row");
         assert!(billed > 0.0, "{verdict}");
         assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
+    }
+
+    /// bug-29014c: an attempt on an OpenAI reasoning model sends `[agent]
+    /// default_effort` as its `reasoning_effort`, or the model's own effort
+    /// when it names one, and its verdict records what was sent.
+    #[tokio::test]
+    async fn a_verdict_records_the_reasoning_effort_sent() {
+        use roko_core::agent::ReasoningEffort;
+
+        for (own, sent) in [(None, "medium"), (Some(ReasoningEffort::High), "high")] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            let answer = final_turn("done");
+            let (base_url, requests) = spawn_openai_mock(vec![answer.clone(), answer]);
+            let mut config = priced_api_config(base_url);
+            config.agent.default_effort = "medium".to_string();
+            let model = config.models.get_mut("api-model").expect("api model");
+            model.slug = "gpt-5.4-mini".to_string();
+            model.reasoning_effort = own;
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(roko.join("runs")),
+                ..GraphFeedbackContext::default()
+            };
+            let dispatcher = make_bare_dispatcher(config, temp.path())
+                .await
+                .with_feedback(feedback);
+            let task = TaskDef {
+                model_hint: Some("api-model".to_string()),
+                timeout_secs: FIXTURE_HANG_GUARD_SECS,
+                verify: vec![verify_step("structural", "true")],
+                ..make_task_def("focused")
+            };
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+
+            let request = requests
+                .lock()
+                .first()
+                .cloned()
+                .expect("the attempt's call");
+            assert_eq!(request["reasoning_effort"], sent, "{request}");
+            let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+            let verdict = &attempts[1];
+            assert_eq!(verdict["executed"]["reasoning_effort"], sent, "{verdict}");
+        }
     }
 
     /// The verdict and the cost row of one verified attempt of `slug` on the

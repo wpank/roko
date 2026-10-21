@@ -10,9 +10,13 @@
 //! [`WorktreeManager::begin_plan_run`] bases the plan's attempts on the plan
 //! branch that process accepted work onto, and the attempt checkouts it kept
 //! are re-attached rather than refused.
+//!
+//! New build output that the task's `files` do not name stays out of the
+//! attempt's commit ([`super::build_output`], bug-ba0c40).
 
 use std::path::Path;
 
+use super::build_output::{self, LeftOut};
 use super::git_ops::{ISOLATION_DIRS, ensure_git_success, read_gitdir};
 use super::{
     AcceptedWorktree, AttemptAcceptance, OperationLifecycle, PlanRun, UnionMerge, WorktreeError,
@@ -44,7 +48,7 @@ impl WorktreeManager {
         lifecycle: &OperationLifecycle,
     ) -> Result<AcceptedWorktree, WorktreeError> {
         self.validate_git_policy(false).await?;
-        let attempt_commit = self
+        let (attempt_commit, left_out) = self
             .commit_attempt(&handle, plan_id, task_id, acceptance, lifecycle)
             .await?;
         let commit_oid = self
@@ -54,6 +58,7 @@ impl WorktreeManager {
             handle,
             attempt_commit,
             commit_oid,
+            left_out,
         };
         self.accepted
             .lock()
@@ -80,7 +85,8 @@ impl WorktreeManager {
     ) -> Result<bool, WorktreeError> {
         let handle = &accepted.handle;
         // Besides its committed work, the checkout holds only roko's own
-        // config copies, which acceptance left out of the commit.
+        // config copies and the attempt's build output, which acceptance left
+        // out of the commit.
         for dir in ISOLATION_DIRS {
             let copy = handle.path.join(dir);
             let tracked = self
@@ -92,6 +98,7 @@ impl WorktreeManager {
                 std::fs::remove_dir_all(&copy)?;
             }
         }
+        self.remove_left_out(handle, &accepted.left_out).await?;
         self.remove_locked(&handle.id, lifecycle).await?;
         if !delete_branch {
             return Ok(false);
@@ -318,9 +325,11 @@ impl WorktreeManager {
     }
 
     /// Commit everything the attempt's checkout holds on its own branch and
-    /// return that commit. A checkout with nothing to commit still gets a
-    /// commit, so the acceptance is on record. Leaves out the config copies
-    /// roko itself put in the checkout.
+    /// return that commit, with the build output it left out. A checkout with
+    /// nothing to commit still gets a commit, so the acceptance is on record.
+    /// Leaves out the config copies roko itself put in the checkout, and new
+    /// build output the task's `files` do not name, which the commit's
+    /// message lists (bug-ba0c40).
     async fn commit_attempt(
         &self,
         handle: &WorktreeHandle,
@@ -328,7 +337,7 @@ impl WorktreeManager {
         task_id: &str,
         acceptance: &AttemptAcceptance,
         lifecycle: &OperationLifecycle,
-    ) -> Result<String, WorktreeError> {
+    ) -> Result<(String, LeftOut), WorktreeError> {
         let checkout = handle.path.as_path();
         let attempt_ref = format!("refs/heads/{}", handle.branch);
         // An agent may have switched the checkout to another branch.
@@ -362,16 +371,32 @@ impl WorktreeManager {
         let mut add = vec!["add", "--all", "--", "."];
         add.extend(excludes.iter().map(String::as_str));
         ensure_git_success(self.mutation_at(checkout, &add, lifecycle).await?)?;
+        let left_out = self
+            .leave_out_build_output(checkout, &parent, &acceptance.files, lifecycle)
+            .await?;
         let tree = self
             .mutation_stdout(checkout, &["write-tree"], lifecycle)
             .await?;
 
-        let subject = if acceptance.title.trim().is_empty() {
+        let mut head = if acceptance.title.trim().is_empty() {
             format!("roko: {plan_id}/{task_id}")
         } else {
             format!("roko: {plan_id}/{task_id}: {}", acceptance.title.trim())
         };
-        let message = with_trailers(&subject, plan_id, task_id, acceptance);
+        if !left_out.is_empty() {
+            tracing::warn!(
+                plan_id,
+                task_id,
+                attempt_key = %acceptance.attempt_key,
+                files = left_out.count,
+                left_out = %left_out.paths().collect::<Vec<_>>().join(", "),
+                "left the attempt's build output that its task's files do not name out of its \
+                 commit"
+            );
+            head.push_str("\n\n");
+            head.push_str(&left_out.note());
+        }
+        let message = with_trailers(&head, plan_id, task_id, acceptance);
         let mut commit_tree = ACCEPT_IDENTITY.to_vec();
         commit_tree.extend([
             "commit-tree",
@@ -400,7 +425,67 @@ impl WorktreeManager {
             )
             .await?,
         )?;
-        Ok(commit)
+        Ok((commit, left_out))
+    }
+
+    /// Take the new build output that the task's `files` do not name out of
+    /// `checkout`'s index, which `git add --all` filled from it, and return
+    /// what that was ([`LeftOut`], bug-ba0c40). `base` is the commit the
+    /// index is to be committed on. The files stay on disk.
+    async fn leave_out_build_output(
+        &self,
+        checkout: &Path,
+        base: &str,
+        files: &[String],
+        lifecycle: &OperationLifecycle,
+    ) -> Result<LeftOut, WorktreeError> {
+        let added = self
+            .probe_listing(checkout, &build_output::added_paths_args(base))
+            .await?;
+        let base_dirs = self
+            .probe_listing(checkout, &build_output::base_dirs_args(base))
+            .await?;
+        let left_out = build_output::left_out(checkout, &added, &base_dirs, files);
+        if left_out.is_empty() {
+            return Ok(left_out);
+        }
+        let scratch = tempfile::tempdir()?;
+        let pathspecs = scratch.path().join("pathspecs");
+        std::fs::write(&pathspecs, left_out.pathspecs())?;
+        let from_file = format!("--pathspec-from-file={}", pathspecs.display());
+        ensure_git_success(
+            self.mutation_at(checkout, &build_output::unstage_args(&from_file), lifecycle)
+                .await?,
+        )?;
+        Ok(left_out)
+    }
+
+    /// Remove from `handle`'s checkout the build output its acceptance left
+    /// out of the commit, `left_out`, so that the checkout can go: each path
+    /// its `HEAD` does not hold.
+    async fn remove_left_out(
+        &self,
+        handle: &WorktreeHandle,
+        left_out: &LeftOut,
+    ) -> Result<(), WorktreeError> {
+        for path in left_out.dirs.iter().chain(&left_out.files) {
+            let tracked = self
+                .git_probe_output_at(&handle.path, &["cat-file", "-e", &format!("HEAD:{path}")])
+                .await?
+                .status
+                .success();
+            if tracked {
+                continue;
+            }
+            let on_disk = handle.path.join(path);
+            match std::fs::symlink_metadata(&on_disk) {
+                Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&on_disk)?,
+                Ok(_) => std::fs::remove_file(&on_disk)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Fold `attempt_commit` into the plan branch and return its new tip.
@@ -844,6 +929,22 @@ impl WorktreeManager {
             .await?)
     }
 
+    /// Stdout of a successful probe, as it is: a listing, which may be
+    /// empty.
+    async fn probe_listing(
+        &self,
+        current_dir: &Path,
+        args: &[&str],
+    ) -> Result<Vec<u8>, WorktreeError> {
+        let output = self.git_probe_output_at(current_dir, args).await?;
+        if !output.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(output.stdout)
+    }
+
     /// Trimmed stdout of a successful mutation.
     async fn mutation_stdout(
         &self,
@@ -861,9 +962,10 @@ impl WorktreeManager {
     }
 }
 
-/// `subject`, then the trailers that tie a commit to its attempt.
+/// `head`, the subject and any paragraphs below it, then the trailers that
+/// tie a commit to its attempt.
 fn with_trailers(
-    subject: &str,
+    head: &str,
     plan_id: &str,
     task_id: &str,
     acceptance: &AttemptAcceptance,
@@ -875,7 +977,7 @@ fn with_trailers(
         ..
     } = acceptance;
     format!(
-        "{subject}\n\n\
+        "{head}\n\n\
          Roko-Plan: {plan_id}\n\
          Roko-Task: {task_id}\n\
          Roko-Attempt: {attempt_key}\n\
@@ -896,16 +998,22 @@ pub struct ReviewDiff {
     pub patch: String,
 }
 
-/// What `checkout` changed since its `HEAD`, new files included and the
-/// config copies roko put there left out, as [`WorktreeManager::accept_attempt`]
-/// would commit it. The diff is built in a temporary index, so the
-/// checkout's own index and files stay as they are.
+/// What `checkout` changed since its `HEAD`, as
+/// [`WorktreeManager::accept_attempt`] would commit it.
+///
+/// New files are included. The config copies roko put there are left out,
+/// and so is the new build output that the task's `files` do not name
+/// ([`LeftOut`]). The diff is built in a temporary index, so the checkout's
+/// own index and files stay as they are.
 ///
 /// # Errors
 ///
 /// Returns [`WorktreeError::GitFailed`] when a git command fails, or
 /// [`WorktreeError::IoError`] when the temporary index cannot be made.
-pub async fn attempt_review_diff(checkout: &Path) -> Result<ReviewDiff, WorktreeError> {
+pub async fn attempt_review_diff(
+    checkout: &Path,
+    files: &[String],
+) -> Result<ReviewDiff, WorktreeError> {
     let scratch = tempfile::tempdir()?;
     let index = scratch.path().join("index");
     let git = |args: &[&str]| {
@@ -942,6 +1050,15 @@ pub async fn attempt_review_diff(checkout: &Path) -> Result<ReviewDiff, Worktree
     let mut add = vec!["add", "--all", "--", "."];
     add.extend(excludes.iter().map(String::as_str));
     run(git(&add)).await?;
+    let added = run(git(&build_output::added_paths_args(&base))).await?;
+    let base_dirs = run(git(&build_output::base_dirs_args(&base))).await?;
+    let left_out = build_output::left_out(checkout, added.as_bytes(), base_dirs.as_bytes(), files);
+    if !left_out.is_empty() {
+        let pathspecs = scratch.path().join("pathspecs");
+        std::fs::write(&pathspecs, left_out.pathspecs())?;
+        let from_file = format!("--pathspec-from-file={}", pathspecs.display());
+        run(git(&build_output::unstage_args(&from_file))).await?;
+    }
     let numstat = run(git(&[
         "diff",
         "--cached",

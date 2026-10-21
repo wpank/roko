@@ -135,6 +135,7 @@ fn eff(s: &mut DashboardSnapshot, plan: &str, task: &str, metric: &str, v: f64, 
         &DashboardEvent::EfficiencyEvent {
             plan_id: plan.into(),
             task_id: task.into(),
+            attempt: None,
             metric: metric.into(),
             value: v,
         },

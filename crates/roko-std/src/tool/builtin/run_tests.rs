@@ -4,25 +4,33 @@
 //! Concurrency: [`ToolConcurrency::Serial`] (tests often share fixtures).
 //! Idempotent: no.
 
+use std::ffi::{OsStr, OsString};
+use std::io::Read as _;
+use std::path::Path;
+use std::time::Instant;
+
 use async_trait::async_trait;
 use roko_core::child_env;
 use roko_core::tool::{
     ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolError, ToolHandler,
     ToolPermission, ToolResult, ToolSchema,
 };
-use std::ffi::OsString;
+use serde_json::{Map, Value};
 
 use super::child_group;
+use super::task_checks::{self, TAIL_BYTES, TAIL_LINES, tail_of, task_checks_path};
 
 /// Canonical `snake_case` name.
 pub const NAME: &str = "run_tests";
 
 /// Human-readable description sent to the LLM.
-pub const DESCRIPTION: &str = "Run the project's test suite (or a filtered subset) \
-    and return structured pass/fail results. With build \"checks\", run this task's own \
-    checks instead: the verify steps roko runs on your work when you hand off, in order, \
-    stopping at the first that fails and showing the end of its output. Run them after a \
-    change rather than handing off to find out.";
+pub const DESCRIPTION: &str = "Run the project's tests (or a filtered subset) and \
+    return structured results: whether they passed, the counts it can read, and the end \
+    of the output, where the failures are. Without build, the runner is the one the \
+    checkout's root fits. With build \"checks\", run this task's own checks instead: the \
+    verify steps roko runs on your work when you hand off, in order, stopping at the first \
+    that fails and showing the end of its output. Run them after a change rather than \
+    handing off to find out.";
 
 /// Build the [`ToolDef`] for `run_tests`.
 #[must_use]
@@ -38,13 +46,22 @@ pub fn tool_def() -> ToolDef {
         "properties": {
             "build": {
                 "type": "string",
-                "enum": ["cargo", "npm", "go", "pytest", "forge", "make", "checks"],
-                "description": "Build system to use for running tests (default: 'cargo'), or \
-                    'checks' for this task's own checks (any language: CMake, ctest, scripts)."
+                "enum": [
+                    "cargo", "npm", "node", "go", "pytest", "unittest", "forge", "make", "checks"
+                ],
+                "description": "Test runner: cargo (cargo test), npm (npm test), node \
+                    (node --test, for *.test.ts and *.test.js files), go, pytest, unittest \
+                    (python3 -m unittest), forge or make (make test); or 'checks' for this \
+                    task's own checks (any language: CMake, ctest, scripts). Default: the \
+                    runner the checkout's root fits (Cargo.toml: cargo, a package.json test \
+                    script: npm, go.mod: go, foundry.toml: forge, a Makefile test target: \
+                    make, node or Python test files: node or unittest)."
             },
             "filter": {
                 "type": "string",
-                "description": "Test name filter / pattern to run a subset of tests."
+                "description": "Test name filter / pattern to run a subset of tests. For \
+                    node, a test file's path or part of it, else a test name pattern; for \
+                    unittest, a test module, class or method name."
             },
             "timeout_ms": {
                 "type": "integer",
@@ -62,17 +79,22 @@ pub fn tool_def() -> ToolDef {
 
 /// Handler for `run_tests` (§36.29).
 ///
-/// Wraps `bash` by invoking the build-system-appropriate test command
-/// (`cargo test`, `npm test`, `go test ./...`, …) selected by the
-/// `build` argument. Falls back to `cargo test` when unspecified.
+/// Runs the test command of the runner `build` names (`cargo test`,
+/// `npm test`, `node --test`, `go test ./...`, …), or of the one the
+/// checkout's root fits when it names none.
 ///
-/// The result structure is:
+/// The result is structured whether the tests pass or fail (bug-1f8db7):
 ///
 /// ```json
-/// { "build": "...", "status": "ok"|"failed", "passed": N, "failed": N, "ignored": N }
+/// { "build": "...", "status": "ok"|"failed", "exit_code": N,
+///   "passed": N, "failed": N, "ignored": N, "output": "..." }
 /// ```
 ///
-/// Full stdout is included when the tests fail.
+/// `exit_code` is there when the tests fail, and the counts when the
+/// output's summary could be read; `output` is the output's end. A runner
+/// that cannot start, a run past its time, and a call naming no runner the
+/// checkout fits are errors, which say what is missing and which runners
+/// the checkout's tests do fit.
 ///
 /// The tests run with the environment verify steps get
 /// ([`child_env::apply_gate_env`]): agent-written tests see no provider key,
@@ -92,6 +114,86 @@ impl ToolHandler for Handler {
     }
 }
 
+/// A test runner `build` can name.
+#[derive(Debug)]
+struct Runner {
+    /// Its `build` value.
+    build: &'static str,
+    /// The program it runs.
+    program: &'static str,
+    /// The command it amounts to, as an agent would type it.
+    command: &'static str,
+    /// The program's arguments before a filter.
+    args: &'static [&'static str],
+}
+
+/// The runners, best first when a checkout fits several; `checks` runs the
+/// task's own checks instead.
+static RUNNERS: [Runner; 8] = [
+    Runner {
+        build: "cargo",
+        program: "cargo",
+        command: "cargo test",
+        args: &["test", "--workspace"],
+    },
+    Runner {
+        build: "npm",
+        program: "npm",
+        command: "npm test",
+        args: &["test"],
+    },
+    Runner {
+        build: "go",
+        program: "go",
+        command: "go test ./...",
+        args: &["test", "./..."],
+    },
+    Runner {
+        build: "forge",
+        program: "forge",
+        command: "forge test",
+        args: &["test"],
+    },
+    Runner {
+        build: "make",
+        program: "make",
+        command: "make test",
+        args: &["test"],
+    },
+    Runner {
+        build: "node",
+        program: "node",
+        command: "node --test",
+        args: &["--test"],
+    },
+    Runner {
+        build: "pytest",
+        program: "python3",
+        command: "python3 -m pytest",
+        args: &["-m", "pytest"],
+    },
+    Runner {
+        build: "unittest",
+        program: "python3",
+        command: "python3 -m unittest",
+        args: &["-m", "unittest", "discover"],
+    },
+];
+
+/// The lines of a passing run's output the agent gets back.
+const PASSED_TAIL_LINES: usize = 15;
+
+/// The most bytes of them.
+const PASSED_TAIL_BYTES: usize = 2 * 1024;
+
+/// The most Python test directories one `unittest` call discovers from.
+const MAX_UNITTEST_DIRS: usize = 8;
+
+/// The runner `build` names.
+fn runner(build: &str) -> Option<&'static Runner> {
+    RUNNERS.iter().find(|runner| runner.build == build)
+}
+
 /// Run `call`. The tests inherit `parent_env` in place of roko's own
 /// environment when given, filtered by the same policy.
 async fn run(
@@ -104,102 +206,460 @@ async fn run(
             "run_tests requires exec capability".into(),
         ));
     }
-    let build = call
-        .arguments
-        .get("build")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("cargo");
-    // gap-770cb5: the task's own checks, within the call's time.
-    if build == "checks" {
-        return super::task_checks::run(ctx, ctx.call_timeout(&call).budget, parent_env).await;
-    }
+    let requested = match call.arguments.get("build").and_then(Value::as_str) {
+        // gap-770cb5: the task's own checks, within the call's time.
+        Some("checks") => {
+            return task_checks::run(ctx, ctx.call_timeout(&call).budget, parent_env).await;
+        }
+        Some(build) => match runner(build) {
+            Some(runner) => Some(runner),
+            None => {
+                return ToolResult::Err(ToolError::Other(format!(
+                    "run_tests: unknown build system `{build}`"
+                )));
+            }
+        },
+        None => None,
+    };
     let filter = call
         .arguments
         .get("filter")
-        .and_then(serde_json::Value::as_str);
-    let (program, args) = match build {
-        "cargo" => ("cargo", vec!["test", "--workspace"]),
-        "npm" => ("npm", vec!["test"]),
-        "go" => ("go", vec!["test", "./..."]),
-        "pytest" => ("python3", vec!["-m", "pytest"]),
-        "forge" => ("forge", vec!["test"]),
-        "make" => ("make", vec!["test"]),
-        other => {
-            return ToolResult::Err(ToolError::Other(format!(
-                "run_tests: unknown build system `{other}`"
-            )));
-        }
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|filter| !filter.is_empty());
+    let env = parent_env.unwrap_or_else(child_env::process_env);
+    let path = env
+        .iter()
+        .find(|(name, _)| name == "PATH")
+        .map(|(_, value)| value.clone());
+    let mut checkout = Checkout {
+        root: ctx.worktree(),
+        path: path.as_deref(),
+        ctx,
+        project: None,
     };
-    let mut cmd = tokio::process::Command::new(program);
-    for arg in &args {
-        cmd.arg(arg);
+    // bug-1f8db7: a runner that cannot start here is an error that says so,
+    // and names the runners this checkout's tests do fit.
+    let runner = match requested {
+        Some(runner) => runner,
+        None => match checkout.pick() {
+            Ok(runner) => runner,
+            Err(why) => return checkout.cannot_run(&why, None),
+        },
+    };
+    if let Some(why) = checkout.missing(runner) {
+        return checkout.cannot_run(&why, Some(runner));
     }
-    if let Some(f) = filter {
-        cmd.arg(f);
+    let runs = match runner.build {
+        "node" => vec![node_args(filter, &checkout.project().node_tests)],
+        "unittest" => {
+            let root = checkout.root;
+            checkout.project().unittest_runs(filter, root)
+        }
+        _ => vec![
+            runner
+                .args
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .chain(filter.map(String::from))
+                .collect(),
+        ],
+    };
+    let (output, failure) = match run_all(runner, &runs, &call, ctx, &env).await {
+        Ok(ran) => ran,
+        Err(Unfinished::NotStarted(error)) => return checkout.could_not_start(runner, &error),
+        Err(Unfinished::TimedOut(error)) => return ToolResult::Err(error),
+    };
+    if runner.build == "pytest" && failure.is_some() && output.contains("No module named pytest") {
+        return checkout.cannot_run(
+            "build \"pytest\" runs `python3 -m pytest`, and pytest is not installed for \
+             python3 (No module named pytest).",
+            Some(runner),
+        );
     }
-    cmd.current_dir(ctx.worktree());
-    child_env::apply_gate_env(
-        cmd.as_std_mut(),
-        parent_env.unwrap_or_else(child_env::process_env),
-        &ctx.env_passthrough,
-    );
+    ToolResult::structured(outcome(runner.build, filter, failure, &output).to_string())
+}
+
+/// Why a call's runs did not all finish.
+enum Unfinished {
+    /// One could not start.
+    NotStarted(std::io::Error),
+    /// The call's time ran out.
+    TimedOut(ToolError),
+}
+
+/// Run `runner`'s program with each of `runs` in turn, in the checkout,
+/// within the call's time: their output, stdout before stderr, and the exit
+/// code of the first that failed (`None` inside for a signal).
+async fn run_all(
+    runner: &Runner,
+    runs: &[Vec<String>],
+    call: &ToolCall,
+    ctx: &ToolContext,
+    env: &[(String, OsString)],
+) -> Result<(String, Option<Option<i32>>), Unfinished> {
     // The call's own `timeout_ms`, up to the cap, else the context's
     // (bug-c22bd9).
-    let timeout = ctx.call_timeout(&call);
-    // The run leads a process group of its own, which a cancel or the timeout
-    // kills whole (bug-c83c84).
-    let output = match child_group::output_within(cmd, timeout.budget).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => {
-            return ToolResult::Err(ToolError::Other(format!("run_tests: spawn failed: {e}")));
+    let timeout = ctx.call_timeout(call);
+    let started = Instant::now();
+    let mut output = String::new();
+    let mut failure = None;
+    for args in runs {
+        let mut cmd = tokio::process::Command::new(runner.program);
+        cmd.args(args).current_dir(ctx.worktree());
+        child_env::apply_gate_env(cmd.as_std_mut(), env.to_vec(), &ctx.env_passthrough);
+        // The run leads a process group of its own, which a cancel or the
+        // timeout kills whole (bug-c83c84).
+        let left = timeout.budget.saturating_sub(started.elapsed());
+        let ran = match child_group::output_within(cmd, left).await {
+            Ok(Ok(ran)) => ran,
+            Ok(Err(error)) => return Err(Unfinished::NotStarted(error)),
+            Err(_) => {
+                return Err(Unfinished::TimedOut(timeout.timed_out(
+                    u64::try_from(timeout.budget.as_millis()).unwrap_or(u64::MAX),
+                )));
+            }
+        };
+        if runs.len() > 1 {
+            output.push_str(&format!("$ {} {}\n", runner.program, args.join(" ")));
         }
-        Err(_) => {
-            return ToolResult::Err(
-                timeout.timed_out(u64::try_from(timeout.budget.as_millis()).unwrap_or(u64::MAX)),
-            );
+        output.push_str(&String::from_utf8_lossy(&ran.stdout));
+        output.push('\n');
+        output.push_str(&String::from_utf8_lossy(&ran.stderr));
+        if !ran.status.success() && failure.is_none() {
+            failure = Some(ran.status.code());
         }
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let combined = format!("{stdout}\n{stderr}");
-    let counts = parse_counts(&combined);
-    let payload = serde_json::json!({
-        "build": build,
-        "status": if output.status.success() { "ok" } else { "failed" },
-        "passed": counts.passed,
-        "failed": counts.failed,
-        "ignored": counts.ignored,
-        "output": if output.status.success() { serde_json::Value::Null } else { serde_json::Value::String(combined.clone()) },
-    });
-    if output.status.success() {
-        ToolResult::structured(payload.to_string())
-    } else {
-        ToolResult::Err(ToolError::Other(format!(
-            "run_tests: {} tests failed — {}",
-            counts.failed,
-            truncate(&combined, 400)
-        )))
+    }
+    Ok((output, failure))
+}
+
+/// What a call has learnt of the checkout its tests run in.
+struct Checkout<'a> {
+    /// The checkout's root.
+    root: &'a Path,
+    /// The `PATH` the tests get, when roko has one.
+    path: Option<&'a OsStr>,
+    ctx: &'a ToolContext,
+    /// What its root says about its tests, once a step needed it.
+    project: Option<Project>,
+}
+
+impl Checkout<'_> {
+    /// What the checkout's root says about its tests, read on first use.
+    fn project(&mut self) -> &Project {
+        let root = self.root;
+        self.project.get_or_insert_with(|| Project::scan(root))
+    }
+
+    /// The runner for a call naming none: the first the checkout fits whose
+    /// program is on `PATH`, or why there is none.
+    fn pick(&mut self) -> Result<&'static Runner, String> {
+        let (root, path) = (self.root, self.path);
+        let fits = self.project().fits();
+        if let Some(runner) = fits
+            .iter()
+            .copied()
+            .find(|runner| path.is_none_or(|path| on_path(runner.program, path, root)))
+        {
+            return Ok(runner);
+        }
+        Err(match fits.first() {
+            Some(runner) => format!(
+                "this checkout's tests fit build \"{}\" (`{}`), and `{}` is not installed \
+                 here (it is not on PATH).",
+                runner.build, runner.command, runner.program
+            ),
+            None => "no test runner fits this checkout's root: it has no Cargo.toml, \
+                     package.json with a \"test\" script, go.mod, foundry.toml, Makefile with \
+                     a test target, or node or Python test files. Pass build."
+                .to_string(),
+        })
+    }
+
+    /// Why `runner` cannot run here, if it cannot: its program is not on
+    /// `PATH`, or `npm` has no test script to run.
+    fn missing(&mut self, runner: &Runner) -> Option<String> {
+        if let Some(path) = self.path
+            && !on_path(runner.program, path, self.root)
+        {
+            return Some(format!(
+                "build \"{}\" runs `{}`, and `{}` is not installed here (it is not on PATH).",
+                runner.build, runner.command, runner.program
+            ));
+        }
+        if runner.build != "npm" {
+            return None;
+        }
+        let why = match self.project().npm_test_script {
+            Some(true) => return None,
+            Some(false) => "its package.json has no \"test\" script",
+            None => "there is no package.json",
+        };
+        Some(format!(
+            "build \"npm\" runs `npm test`, which needs a package.json with a \"test\" script \
+             at the checkout's root, and {why}."
+        ))
+    }
+
+    /// The error for a run of `runner` that did not start.
+    fn could_not_start(&mut self, runner: &Runner, error: &std::io::Error) -> ToolResult {
+        if !self.root.is_dir() {
+            return ToolResult::Err(ToolError::Other(format!(
+                "run_tests: the checkout {} does not exist",
+                self.root.display()
+            )));
+        }
+        let why = if error.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "build \"{}\" runs `{}`, and `{}` was not found: {error}.",
+                runner.build, runner.command, runner.program
+            )
+        } else {
+            format!("`{}` could not start: {error}.", runner.command)
+        };
+        self.cannot_run(&why, Some(runner))
+    }
+
+    /// The error for a call whose runner cannot run, for `why`: it ends with
+    /// the runners this checkout's tests fit that can, and with `checks`
+    /// when the call's task has checks.
+    fn cannot_run(&mut self, why: &str, runner: Option<&Runner>) -> ToolResult {
+        let (root, path) = (self.root, self.path);
+        let fits: Vec<String> = self
+            .project()
+            .fits()
+            .into_iter()
+            .filter(|fit| runner.is_none_or(|runner| fit.build != runner.build))
+            .filter(|fit| path.is_none_or(|path| on_path(fit.program, path, root)))
+            .map(|fit| format!("build \"{}\" (`{}`)", fit.build, fit.command))
+            .collect();
+        let mut message = format!("run_tests: {why}");
+        if !fits.is_empty() {
+            message.push_str(&format!(
+                " This checkout's tests fit {}.",
+                fits.join(" or ")
+            ));
+        }
+        let attempt = &self.ctx.correlation.attempt_id;
+        if !attempt.is_empty() && task_checks_path(&self.ctx.immune_root_path, attempt).is_file() {
+            message.push_str(" Build \"checks\" runs this task's own checks.");
+        }
+        ToolResult::Err(ToolError::Other(message))
     }
 }
 
-#[derive(Default)]
+/// What a checkout's root says about how its tests run.
+#[derive(Debug, Default)]
+struct Project {
+    /// The runners its manifests fit, best first: cargo, npm (a package.json
+    /// with a test script), go, forge and make (a Makefile test target).
+    manifests: Vec<&'static Runner>,
+    /// `None` without a package.json, else whether it has a test script.
+    npm_test_script: Option<bool>,
+    /// Whether it configures pytest.
+    pytest_config: bool,
+    /// Node test files (`*.test.ts`, `*.test.js`, …) below it.
+    node_tests: Vec<String>,
+    /// Python test files (`test*.py`, `*_test.py`) below it.
+    python_tests: Vec<String>,
+}
+
+/// Directories a scan for test files skips: dependencies, build output and
+/// caches, besides hidden ones.
+const SKIPPED_DIRS: [&str; 7] = [
+    "node_modules",
+    "target",
+    "__pycache__",
+    "venv",
+    "site-packages",
+    "dist",
+    "build",
+];
+
+/// The most directory entries a scan for test files reads.
+const SCAN_ENTRIES: usize = 20_000;
+
+/// How many directories deep below the root it looks.
+const SCAN_DEPTH: usize = 8;
+
+/// The most bytes of a manifest a scan reads.
+const MANIFEST_BYTES: u64 = 1024 * 1024;
+
+impl Project {
+    /// Read what the checkout at `root` says about its tests.
+    fn scan(root: &Path) -> Self {
+        let read = |name: &str| read_manifest(&root.join(name));
+        let npm_test_script = read("package.json").map(|text| has_npm_test_script(&text));
+        let make_test = ["GNUmakefile", "makefile", "Makefile"]
+            .into_iter()
+            .filter_map(read)
+            .any(|text| has_make_test_target(&text));
+        let manifests = [
+            ("cargo", root.join("Cargo.toml").is_file()),
+            ("npm", npm_test_script == Some(true)),
+            ("go", root.join("go.mod").is_file()),
+            ("forge", root.join("foundry.toml").is_file()),
+            ("make", make_test),
+        ]
+        .into_iter()
+        .filter(|(_, fits)| *fits)
+        .filter_map(|(build, _)| runner(build))
+        .collect();
+        let pytest_config = root.join("pytest.ini").is_file()
+            || root.join("conftest.py").is_file()
+            || read("pyproject.toml").is_some_and(|text| text.contains("[tool.pytest"))
+            || read("setup.cfg").is_some_and(|text| text.contains("[tool:pytest]"))
+            || read("tox.ini").is_some_and(|text| text.contains("[pytest]"));
+        let (node_tests, python_tests) = test_files(root);
+        Self {
+            manifests,
+            npm_test_script,
+            pytest_config,
+            node_tests,
+            python_tests,
+        }
+    }
+
+    /// The runners this checkout's tests fit, best first.
+    fn fits(&self) -> Vec<&'static Runner> {
+        let tests = [
+            ("node", !self.node_tests.is_empty()),
+            ("pytest", self.pytest_config),
+            ("unittest", !self.python_tests.is_empty()),
+        ]
+        .into_iter()
+        .filter(|(_, fits)| *fits)
+        .filter_map(|(build, _)| runner(build));
+        self.manifests.iter().copied().chain(tests).collect()
+    }
+
+    /// `python3 -m unittest discover` from each directory holding Python
+    /// test files, but not from a package inside another of them: discovery
+    /// from that one finds its tests. `filter` picks tests by module, class
+    /// or method name (`-k`).
+    fn unittest_runs(&self, filter: Option<&str>, root: &Path) -> Vec<Vec<String>> {
+        let mut dirs: Vec<&str> = self
+            .python_tests
+            .iter()
+            .map(|file| file.rsplit_once('/').map_or(".", |(dir, _)| dir))
+            .collect();
+        dirs.sort_unstable();
+        dirs.dedup();
+        let all = dirs.clone();
+        dirs.retain(|dir| {
+            let inside_another = all.iter().any(|other| {
+                other != dir && (*other == "." || dir.starts_with(&format!("{other}/")))
+            });
+            !(inside_another && root.join(dir).join("__init__.py").is_file())
+        });
+        if dirs.is_empty() {
+            dirs.push(".");
+        }
+        dirs.truncate(MAX_UNITTEST_DIRS);
+        let pattern = filter.map(|filter| {
+            let name = filter.rsplit('/').next().unwrap_or(filter);
+            name.strip_suffix(".py").unwrap_or(name)
+        });
+        dirs.into_iter()
+            .map(|dir| {
+                ["-m", "unittest", "discover", "-s", dir]
+                    .into_iter()
+                    .chain(pattern.into_iter().flat_map(|pattern| ["-k", pattern]))
+                    .map(String::from)
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+/// `node --test`'s arguments for `filter`: the test files whose path holds
+/// it, else a test name pattern. A checkout with TypeScript test files runs
+/// them with Node's type stripping.
+fn node_args(filter: Option<&str>, tests: &[String]) -> Vec<String> {
+    let files: Vec<&String> = filter.map_or_else(Vec::new, |filter| {
+        tests.iter().filter(|test| test.contains(filter)).collect()
+    });
+    let mut args = Vec::new();
+    if tests
+        .iter()
+        .any(|test| matches!(extension(test), "ts" | "mts" | "cts"))
+    {
+        args.push("--experimental-strip-types".to_string());
+    }
+    args.push("--test".to_string());
+    if let Some(filter) = filter
+        && files.is_empty()
+    {
+        args.push(format!("--test-name-pattern={filter}"));
+    }
+    args.extend(files.into_iter().cloned());
+    args
+}
+
+/// The structured answer of a run that ran: `failure` holds the exit code of
+/// the first run that failed (`None` inside for a signal).
+fn outcome(build: &str, filter: Option<&str>, failure: Option<Option<i32>>, output: &str) -> Value {
+    let mut payload = Map::new();
+    payload.insert("build".into(), build.into());
+    let status = if failure.is_some() { "failed" } else { "ok" };
+    payload.insert("status".into(), status.into());
+    if let Some(code) = failure {
+        payload.insert("exit_code".into(), code.into());
+    }
+    if let Some(counts) = read_counts(output) {
+        payload.insert("passed".into(), counts.passed.into());
+        payload.insert("failed".into(), counts.failed.into());
+        payload.insert("ignored".into(), counts.ignored.into());
+        if counts.passed == 0 && counts.failed == 0 && counts.ignored == 0 {
+            let note = if filter.is_some() {
+                "no test matched the filter"
+            } else {
+                "no tests ran"
+            };
+            payload.insert("note".into(), note.into());
+        }
+    }
+    let (lines, bytes) = if failure.is_some() {
+        (TAIL_LINES, TAIL_BYTES)
+    } else {
+        (PASSED_TAIL_LINES, PASSED_TAIL_BYTES)
+    };
+    payload.insert(
+        "output".into(),
+        tail_of(output.trim_end(), lines, bytes).into(),
+    );
+    Value::Object(payload)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
 struct Counts {
     passed: u32,
     failed: u32,
     ignored: u32,
 }
 
-fn parse_counts(output: &str) -> Counts {
-    let mut c = Counts::default();
+/// The counts in a run's summary lines, in cargo's, Node's or `unittest`'s
+/// words, whichever runner printed them (`make test` may run any of them).
+fn read_counts(output: &str) -> Option<Counts> {
+    cargo_counts(output)
+        .or_else(|| node_counts(output))
+        .or_else(|| unittest_counts(output))
+}
+
+/// Cargo's `test result: ok. 5 passed; 2 failed; 1 ignored` lines, summed.
+fn cargo_counts(output: &str) -> Option<Counts> {
+    let mut counts = Counts::default();
+    let mut found = false;
     for line in output.lines() {
-        let t = line.trim();
-        if t.starts_with("test result:") {
-            c.passed += extract(t, "passed");
-            c.failed += extract(t, "failed");
-            c.ignored += extract(t, "ignored");
+        let line = line.trim();
+        if line.starts_with("test result:") {
+            found = true;
+            counts.passed += extract(line, "passed");
+            counts.failed += extract(line, "failed");
+            counts.ignored += extract(line, "ignored");
         }
     }
-    c
+    found.then_some(counts)
 }
 
 fn extract(line: &str, label: &str) -> u32 {
@@ -215,15 +675,205 @@ fn extract(line: &str, label: &str) -> u32 {
     0
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
+/// `node --test`'s summary: `# pass 7`, `# fail 1`, … as TAP prints them, or
+/// `ℹ pass 7` as its spec reporter does.
+fn node_counts(output: &str) -> Option<Counts> {
+    let mut counts = Counts::default();
+    let mut found = false;
+    for line in output.lines() {
+        let line = line.trim();
+        let Some(summary) = line.strip_prefix("# ").or_else(|| line.strip_prefix("ℹ ")) else {
+            continue;
+        };
+        let Some((label, number)) = summary.split_once(' ') else {
+            continue;
+        };
+        let Ok(number) = number.trim().parse::<u32>() else {
+            continue;
+        };
+        match label {
+            "pass" => counts.passed += number,
+            "fail" | "cancelled" => counts.failed += number,
+            "skipped" | "todo" => counts.ignored += number,
+            _ => continue,
+        }
+        found |= matches!(label, "pass" | "fail");
     }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
+    found.then_some(counts)
+}
+
+/// `unittest`'s `Ran 8 tests in 0.001s` and `FAILED (failures=1, errors=1,
+/// skipped=2)` or `OK (skipped=2)`: what ran less what failed or was skipped
+/// passed.
+fn unittest_counts(output: &str) -> Option<Counts> {
+    let mut counts = Counts::default();
+    let mut found = false;
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(ran) = line.strip_prefix("Ran ")
+            && let Some((number, rest)) = ran.split_once(' ')
+            && rest.starts_with("test")
+            && let Ok(number) = number.parse::<u32>()
+        {
+            counts.passed += number;
+            found = true;
+            continue;
+        }
+        let Some(detail) = line
+            .strip_prefix("FAILED (")
+            .or_else(|| line.strip_prefix("OK ("))
+        else {
+            continue;
+        };
+        for part in detail.trim_end_matches(')').split(',') {
+            let Some((label, number)) = part.trim().split_once('=') else {
+                continue;
+            };
+            let Ok(number) = number.parse::<u32>() else {
+                continue;
+            };
+            match label {
+                "failures" | "errors" | "unexpected successes" => counts.failed += number,
+                "skipped" => counts.ignored += number,
+                _ => continue,
+            }
+            counts.passed = counts.passed.saturating_sub(number);
+        }
     }
-    format!("{}…", &s[..end])
+    found.then_some(counts)
+}
+
+/// The test files below `root`: Node's (`*.test.ts`, `*-test.js`, …) and
+/// Python's (`test*.py`, `*_test.py`), as paths relative to it.
+///
+/// The scan skips hidden directories and [`SKIPPED_DIRS`], follows no
+/// symlink, and reads at most [`SCAN_ENTRIES`] entries [`SCAN_DEPTH`] deep.
+fn test_files(root: &Path) -> (Vec<String>, Vec<String>) {
+    let mut node = Vec::new();
+    let mut python = Vec::new();
+    let mut dirs = vec![(root.to_path_buf(), 0_usize)];
+    let mut entries_read = 0_usize;
+    'scan: while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            entries_read += 1;
+            if entries_read > SCAN_ENTRIES {
+                break 'scan;
+            }
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if depth < SCAN_DEPTH && !name.starts_with('.') && !SKIPPED_DIRS.contains(&name) {
+                    dirs.push((entry.path(), depth + 1));
+                }
+                continue;
+            }
+            let tests = if is_node_test(name) {
+                &mut node
+            } else if is_python_test(name) {
+                &mut python
+            } else {
+                continue;
+            };
+            if kind.is_file()
+                && let Ok(relative) = entry.path().strip_prefix(root)
+            {
+                tests.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    node.sort();
+    python.sort();
+    (node, python)
+}
+
+/// `name`'s extension, or "" without one.
+fn extension(name: &str) -> &str {
+    name.rsplit_once('.').map_or("", |(_, extension)| extension)
+}
+
+/// Whether `name` is a test file `node --test` runs.
+fn is_node_test(name: &str) -> bool {
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    matches!(extension, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts")
+        && (stem == "test"
+            || stem.starts_with("test-")
+            || [".test", "-test", "_test"]
+                .iter()
+                .any(|suffix| stem.ends_with(suffix)))
+}
+
+/// Whether `name` is a test file `unittest` or pytest finds.
+fn is_python_test(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        extension == "py" && (stem.starts_with("test") || stem.ends_with("_test"))
+    })
+}
+
+/// Whether `package_json` has a test script other than npm's placeholder.
+fn has_npm_test_script(package_json: &str) -> bool {
+    serde_json::from_str::<Value>(package_json)
+        .ok()
+        .and_then(|manifest| {
+            manifest
+                .get("scripts")?
+                .get("test")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .is_some_and(|script| !script.trim().is_empty() && !script.contains("no test specified"))
+}
+
+/// Whether `makefile` has a `test` target.
+fn has_make_test_target(makefile: &str) -> bool {
+    makefile.lines().any(|line| {
+        !line.starts_with(['\t', ' ', '.', '#'])
+            && line.split_once(':').is_some_and(|(targets, rest)| {
+                !rest.starts_with('=') && targets.split_whitespace().any(|target| target == "test")
+            })
+    })
+}
+
+/// The text of the manifest at `path`, at most [`MANIFEST_BYTES`] of it.
+fn read_manifest(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut text = String::new();
+    file.take(MANIFEST_BYTES).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// Whether `program` is an executable file in a directory of `path`, a
+/// relative one taken from the checkout's `root`, where the tests run.
+fn on_path(program: &str, path: &OsStr, root: &Path) -> bool {
+    std::env::split_paths(path).any(|dir| {
+        let dir = if dir.is_relative() {
+            root.join(dir)
+        } else {
+            dir
+        };
+        is_executable(&dir.join(program))
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && (meta.permissions().mode() & 0o111) != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file() || path.with_extension("exe").is_file()
 }
 
 #[cfg(test)]
@@ -231,48 +881,405 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_counts_reads_summary_line() {
+    fn cargo_counts_read_the_summary_line() {
         let out = "test result: ok. 5 passed; 2 failed; 1 ignored; 0 measured";
-        let c = parse_counts(out);
-        assert_eq!(c.passed, 5);
-        assert_eq!(c.failed, 2);
-        assert_eq!(c.ignored, 1);
+        assert_eq!(
+            cargo_counts(out),
+            Some(Counts {
+                passed: 5,
+                failed: 2,
+                ignored: 1
+            })
+        );
     }
 
     #[test]
-    fn parse_counts_aggregates_multiple_lines() {
+    fn cargo_counts_add_up_every_summary_line() {
         let out = "test result: ok. 3 passed; 0 failed; 0 ignored\n\
                    test result: FAILED. 2 passed; 1 failed; 0 ignored";
-        let c = parse_counts(out);
-        assert_eq!(c.passed, 5);
-        assert_eq!(c.failed, 1);
+        let counts = cargo_counts(out).expect("counts");
+        assert_eq!(counts.passed, 5);
+        assert_eq!(counts.failed, 1);
     }
 
     #[test]
-    fn parse_counts_zero_on_empty() {
-        let c = parse_counts("");
-        assert_eq!(c.passed, 0);
-        assert_eq!(c.failed, 0);
-        assert_eq!(c.ignored, 0);
+    fn no_summary_line_reads_no_counts() {
+        assert_eq!(read_counts(""), None);
+        assert_eq!(read_counts("make: Nothing to be done for `test'."), None);
+    }
+
+    /// bug-1f8db7: the golden path's TypeScript tests run under `node --test`
+    /// and its Python ones under `unittest`; their summaries are read too.
+    #[test]
+    fn node_and_unittest_summaries_are_read() {
+        let tap = "not ok 2 - fails on purpose\n1..2\n# tests 2\n# suites 0\n# pass 1\n\
+                   # fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 159.8";
+        assert_eq!(
+            read_counts(tap),
+            Some(Counts {
+                passed: 1,
+                failed: 1,
+                ignored: 0
+            })
+        );
+        let unittest = "......F.s\n------\nRan 9 tests in 0.003s\n\nFAILED (failures=1, \
+                        skipped=1)";
+        assert_eq!(
+            read_counts(unittest),
+            Some(Counts {
+                passed: 7,
+                failed: 1,
+                ignored: 1
+            })
+        );
+        assert_eq!(
+            read_counts("Ran 1 test in 0.000s\n\nOK"),
+            Some(Counts {
+                passed: 1,
+                failed: 0,
+                ignored: 0
+            })
+        );
     }
 
     #[test]
-    fn truncate_adds_ellipsis_when_long() {
-        let long = "a".repeat(500);
-        let short = truncate(&long, 10);
-        assert!(short.ends_with('…'));
-        assert!(short.chars().count() <= 12);
+    fn test_files_and_manifests_are_recognised() {
+        assert!(is_node_test("strings.test.ts"));
+        assert!(is_node_test("camel_case.accept.test.ts"));
+        assert!(is_node_test("test-utils.mjs"));
+        assert!(!is_node_test("strings.ts"));
+        assert!(!is_node_test("latest.js"));
+        assert!(is_python_test("test_textutil.py"));
+        assert!(is_python_test("textutil_test.py"));
+        assert!(!is_python_test("textutil.py"));
+        assert!(has_npm_test_script(r#"{"scripts":{"test":"node --test"}}"#));
+        assert!(!has_npm_test_script(r#"{"type":"module"}"#));
+        assert!(!has_npm_test_script(
+            r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#
+        ));
+        assert!(has_make_test_target(
+            "all: build\n\ntest: build\n\tcargo test\n"
+        ));
+        assert!(!has_make_test_target(
+            ".PHONY: test\nTEST := 1\nbuild:\n\techo test:\n"
+        ));
+    }
+
+    /// A checkout like the golden path's: Rust at the root, Python tests in
+    /// `py/`, TypeScript tests in `ts/` with a package.json and no test script.
+    fn polyglot_checkout() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        for (file, text) in [
+            ("Cargo.toml", "[workspace]\n"),
+            ("py/textutil.py", "def shout(s):\n    return s.upper()\n"),
+            ("py/test_textutil.py", "import unittest\n"),
+            ("ts/package.json", "{\n  \"type\": \"module\"\n}\n"),
+            (
+                "ts/strings.ts",
+                "export const reverse = (s: string) => s;\n",
+            ),
+            (
+                "ts/strings.test.ts",
+                "import { test } from \"node:test\";\n",
+            ),
+            (
+                "ts/camel_case.accept.test.ts",
+                "import { test } from \"node:test\";\n",
+            ),
+            ("target/debug/test_stale.py", ""),
+            ("ts/node_modules/dep/index.test.js", ""),
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+            std::fs::write(path, text).expect("write");
+        }
+        dir
     }
 
     #[test]
-    fn truncate_passthrough_when_short() {
-        assert_eq!(truncate("short", 400), "short");
+    fn a_scan_finds_the_runners_a_polyglot_checkout_fits() {
+        let checkout = polyglot_checkout();
+
+        let project = Project::scan(checkout.path());
+
+        let fits: Vec<&str> = project.fits().iter().map(|runner| runner.build).collect();
+        assert_eq!(fits, ["cargo", "node", "unittest"]);
+        assert_eq!(project.npm_test_script, None);
+        assert_eq!(
+            project.node_tests,
+            ["ts/camel_case.accept.test.ts", "ts/strings.test.ts"]
+        );
+        assert_eq!(project.python_tests, ["py/test_textutil.py"]);
+        assert_eq!(
+            project.unittest_runs(Some("py/test_textutil.py"), checkout.path()),
+            [[
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "py",
+                "-k",
+                "test_textutil"
+            ]]
+        );
+        assert_eq!(
+            node_args(Some("camel_case"), &project.node_tests),
+            [
+                "--experimental-strip-types",
+                "--test",
+                "ts/camel_case.accept.test.ts"
+            ]
+        );
+        assert_eq!(
+            node_args(Some("shout"), &project.node_tests),
+            [
+                "--experimental-strip-types",
+                "--test",
+                "--test-name-pattern=shout"
+            ]
+        );
+    }
+
+    /// A directory of stand-in runners, each a script that records its
+    /// arguments in `args.txt` in the directory it runs in, prints `stdout`
+    /// and exits with `code`, for a `PATH` holding nothing else.
+    #[cfg(unix)]
+    fn runners(bin: &Path, scripts: &[(&str, &str, i32)]) -> Vec<(String, OsString)> {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (program, stdout, code) in scripts {
+            let path = bin.join(program);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\nprintf '%s\\n' '{stdout}'\n\
+                     exit {code}\n"
+                ),
+            )
+            .expect("write runner");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod runner");
+        }
+        vec![("PATH".to_string(), bin.as_os_str().to_os_string())]
+    }
+
+    #[cfg(unix)]
+    fn call(arguments: serde_json::Value) -> ToolCall {
+        ToolCall::new("c", NAME, arguments)
+    }
+
+    /// bug-1f8db7: in the golden-path runs `build: "npm"` failed with "spawn
+    /// failed: No such file or directory (os error 2)": npm was not
+    /// installed, and the checkout's TypeScript tests run under `node --test`.
+    /// The error says which runner is missing and which runners fit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_missing_runner_is_named_with_the_runners_that_fit() {
+        let checkout = polyglot_checkout();
+        let bin = tempfile::tempdir().expect("bin");
+        let env = runners(bin.path(), &[("node", "# pass 1", 0), ("cargo", "", 0)]);
+        let ctx = ToolContext::testing(checkout.path());
+
+        let result = run(
+            call(serde_json::json!({ "build": "npm", "filter": "strings.test.ts" })),
+            &ctx,
+            Some(env),
+        )
+        .await;
+
+        let ToolResult::Err(ToolError::Other(why)) = &result else {
+            panic!("a missing runner is an error: {result:?}");
+        };
+        assert!(
+            why.contains("`npm` is not installed here (it is not on PATH)"),
+            "{why}"
+        );
+        assert!(
+            why.contains(
+                "This checkout's tests fit build \"cargo\" (`cargo test`) or build \"node\" \
+                 (`node --test`)."
+            ),
+            "{why}"
+        );
+        assert!(!why.contains("spawn failed"), "{why}");
+    }
+
+    /// bug-1f8db7: npm installed is not enough: `npm test` needs a test
+    /// script at the checkout's root.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn npm_without_a_test_script_says_so() {
+        let checkout = polyglot_checkout();
+        let bin = tempfile::tempdir().expect("bin");
+        let env = runners(bin.path(), &[("npm", "", 0), ("node", "", 0)]);
+        let ctx = ToolContext::testing(checkout.path());
+
+        let result = run(call(serde_json::json!({ "build": "npm" })), &ctx, Some(env)).await;
+
+        let ToolResult::Err(ToolError::Other(why)) = &result else {
+            panic!("npm has nothing to run: {result:?}");
+        };
+        assert!(why.contains("and there is no package.json"), "{why}");
+        assert!(why.contains("build \"node\" (`node --test`)"), "{why}");
+        assert!(!checkout.path().join("args.txt").exists(), "npm ran: {why}");
+    }
+
+    /// bug-1f8db7: `build: "node"` runs the TypeScript tests the golden path
+    /// writes, with type stripping, and a filter naming a file runs that
+    /// file. A failing run is a structured result, not a tool failure.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn node_runs_the_typescript_tests_and_a_failure_is_a_result() {
+        let checkout = polyglot_checkout();
+        let bin = tempfile::tempdir().expect("bin");
+        let env = runners(
+            bin.path(),
+            &[(
+                "node",
+                "not ok 1 - camelCase joins words\n# pass 3\n# fail 1",
+                1,
+            )],
+        );
+        let ctx = ToolContext::testing(checkout.path());
+
+        let result = run(
+            call(serde_json::json!({ "build": "node", "filter": "camel_case" })),
+            &ctx,
+            Some(env),
+        )
+        .await;
+
+        let ToolResult::Ok { is_structured, .. } = &result else {
+            panic!("a failing run is a result: {result:?}");
+        };
+        assert!(is_structured);
+        let payload: Value = serde_json::from_str(&result.text_content()).expect("json");
+        assert_eq!(payload["build"], "node");
+        assert_eq!(payload["status"], "failed");
+        assert_eq!(payload["exit_code"], 1);
+        assert_eq!(payload["passed"], 3);
+        assert_eq!(payload["failed"], 1);
+        assert!(
+            payload["output"]
+                .as_str()
+                .is_some_and(|output| output.contains("not ok 1 - camelCase joins words")),
+            "{payload}"
+        );
+        let args = std::fs::read_to_string(checkout.path().join("args.txt")).expect("args");
+        assert_eq!(
+            args,
+            "--experimental-strip-types\n--test\nts/camel_case.accept.test.ts\n"
+        );
+    }
+
+    /// bug-1f8db7: a call naming no runner gets the one the checkout fits
+    /// that is installed: here `unittest`, from the directory its tests are
+    /// in, as the golden path's own checks run them.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_call_naming_no_runner_gets_one_the_checkout_fits() {
+        let checkout = tempfile::tempdir().expect("checkout");
+        let tests = checkout.path().join("py");
+        std::fs::create_dir_all(&tests).expect("py");
+        std::fs::write(tests.join("test_textutil.py"), "import unittest\n").expect("test");
+        let bin = tempfile::tempdir().expect("bin");
+        let env = runners(bin.path(), &[("python3", "Ran 2 tests in 0.001s", 0)]);
+        let ctx = ToolContext::testing(checkout.path());
+
+        let result = run(call(serde_json::json!({})), &ctx, Some(env)).await;
+
+        let payload: Value = serde_json::from_str(&result.text_content())
+            .unwrap_or_else(|error| panic!("{error}: {result:?}"));
+        assert_eq!(payload["build"], "unittest");
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["passed"], 2);
+        let args = std::fs::read_to_string(checkout.path().join("args.txt")).expect("args");
+        assert_eq!(args, "-m\nunittest\ndiscover\n-s\npy\n");
+    }
+
+    /// bug-1f8db7: `python3 -m pytest` without pytest says pytest is missing
+    /// and that the checkout's tests fit `unittest`, rather than reporting a
+    /// test failure.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_missing_pytest_module_is_named() {
+        let checkout = polyglot_checkout();
+        let bin = tempfile::tempdir().expect("bin");
+        let env = runners(
+            bin.path(),
+            &[("python3", "/usr/bin/python3: No module named pytest", 1)],
+        );
+        let ctx = ToolContext::testing(checkout.path());
+
+        let result = run(
+            call(serde_json::json!({ "build": "pytest" })),
+            &ctx,
+            Some(env),
+        )
+        .await;
+
+        let ToolResult::Err(ToolError::Other(why)) = &result else {
+            panic!("pytest is missing: {result:?}");
+        };
+        assert!(why.contains("pytest is not installed for python3"), "{why}");
+        assert!(
+            why.contains("build \"unittest\" (`python3 -m unittest`)"),
+            "{why}"
+        );
+    }
+
+    /// bug-1f8db7: a failing `cargo test` is a result with the failure in
+    /// it. Cargo prints the failure last; the 400 characters of the old
+    /// error showed only the passing crates before it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_cargo_test_returns_its_failure() {
+        let checkout = polyglot_checkout();
+        let bin = tempfile::tempdir().expect("bin");
+        let mut stdout = String::new();
+        for krate in 0..30 {
+            stdout.push_str(&format!(
+                "running 1 test\ntest tests::case_{krate} ... ok\n\ntest result: ok. 1 \
+                 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n\n"
+            ));
+        }
+        stdout.push_str(
+            "running 1 test\ntest tests::shout ... FAILED\n\nfailures:\n\n---- tests::shout \
+             stdout ----\nthread tests::shout panicked: expected HELLO, got hello\n\ntest \
+             result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+        );
+        let env = runners(bin.path(), &[("cargo", stdout.as_str(), 101)]);
+        let ctx = ToolContext::testing(checkout.path());
+
+        let result = run(
+            call(serde_json::json!({ "build": "cargo" })),
+            &ctx,
+            Some(env),
+        )
+        .await;
+
+        let ToolResult::Ok { .. } = &result else {
+            panic!("a failing run is a result: {result:?}");
+        };
+        let payload: Value = serde_json::from_str(&result.text_content()).expect("json");
+        assert_eq!(payload["status"], "failed");
+        assert_eq!(payload["exit_code"], 101);
+        assert_eq!(payload["passed"], 30);
+        assert_eq!(payload["failed"], 1);
+        let output = payload["output"].as_str().expect("output");
+        assert!(
+            output.contains("thread tests::shout panicked: expected HELLO, got hello"),
+            "{output}"
+        );
+        assert!(output.len() <= TAIL_BYTES, "{}", output.len());
     }
 
     /// gap-770cb5: `build: "checks"` runs the checks dispatch left for the
     /// call's attempt, in the checkout, and stops at the first that fails
     /// with the end of its output; once the work is fixed they pass. A call
-    /// of no attempt, or of one with no checks, says so.
+    /// of no attempt, or of one with no checks, says so. bug-1f8db7: a
+    /// failing check is a result, as a failing test run is.
     #[cfg(unix)]
     #[tokio::test]
     async fn run_tests_runs_the_task_checks() {
@@ -312,14 +1319,17 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&checks).expect("json")).expect("checks");
 
         let result = run(call(), &ctx, None).await;
-        let ToolResult::Err(ToolError::Other(why)) = &result else {
-            panic!("the unfixed work fails its first check: {result:?}");
+        let ToolResult::Ok { .. } = &result else {
+            panic!("the unfixed work's failing check is a result: {result:?}");
         };
+        let payload: Value = serde_json::from_str(&result.text_content()).expect("json");
+        assert_eq!(payload["status"], "failed");
+        let summary = payload["summary"].as_str().expect("summary");
         assert!(
-            why.contains("check 1 of 2 (verify[0:build]) failed (exit 2)"),
-            "{why}"
+            summary.contains("check 1 of 2 (verify[0:build]) failed (exit 2)"),
+            "{summary}"
         );
-        assert!(why.contains("building\nerror: not fixed"), "{why}");
+        assert_eq!(payload["output"], "building\nerror: not fixed");
 
         std::fs::write(dir.path().join("fixed.txt"), "ok\n").expect("fix");
         let result = run(call(), &ctx, None).await;
@@ -328,6 +1338,7 @@ mod tests {
         };
         let text = format!("{result:?}");
         assert!(text.contains("verify[1:test]"), "{text}");
+        assert!(text.contains(r#"\"status\":\"ok\""#), "{text}");
     }
 
     #[cfg(unix)]

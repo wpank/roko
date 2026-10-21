@@ -990,6 +990,7 @@ impl RokoCliRuntime {
                 .source_checks
                 .as_ref()
                 .and_then(|checks| serde_json::to_value(checks).ok()),
+            repairs: outcome.repairs,
         })
     }
 
@@ -2773,6 +2774,7 @@ enabled = false
                     task_id,
                     metric,
                     value,
+                    ..
                 } if metric == "cost_usd" => Some((plan_id, task_id, value)),
                 _ => None,
             })

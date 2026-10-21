@@ -21,7 +21,10 @@
 //!   ([`roko_gate::attempt_diff`], S05 check A1): a weakened, deleted or
 //!   skipped test, an edited verify script, `tasks.toml`, pinned acceptance
 //!   test or gate config. Changes outside the task's `files` are logged,
-//!   and rejected only under `[gates] diff_scope = "enforce"`;
+//!   and rejected only under `[gates] diff_scope = "enforce"`. Build output
+//!   is neither (`roko_gate::attempt_diff::BUILD_OUTPUT_DIRS`): acceptance
+//!   leaves the new build output that the task's `files` do not name out of
+//!   the attempt's commit (bug-ba0c40);
 //! - it is an implementer attempt at a task that names `files`, and the task
 //!   has changed nothing, or added only stub lines
 //!   ([`roko_gate::analyze_diff`]): "no changes". Other roles, refactors

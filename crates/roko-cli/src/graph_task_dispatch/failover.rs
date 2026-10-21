@@ -2871,10 +2871,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
 
     /// bug-62ae1e, phase 2.2's loop: another try's call holds the mid rung's
     /// endpoint at the one call at once a rate limit showed it takes, so the
-    /// limiter holds the task's call back as a rate limit. The try waits for
-    /// the slot instead of handing itself to the strong rung's model: once
-    /// that call ends, it calls the mid model again and finishes there. The
-    /// held calls never count against the provider's health.
+    /// limiter holds the task's call back. The call waits for its slot
+    /// (bug-33a61f) instead of the try handing itself to the strong rung's
+    /// model: once that call ends, it goes out and the mid model finishes the
+    /// task. The held call never counts against the provider's health.
     #[tokio::test]
     async fn a_held_call_waits_for_a_slot_instead_of_a_substitute() {
         const RUN: &str = "held-for-a-slot";
@@ -2939,6 +2939,121 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             .get("mid_api")
             .map_or(0, |health| health.total_failures);
         assert_eq!(failures, 0, "a held call is not the provider's failure");
+    }
+
+    /// [`spawn_openai_mock`], calling `on_request` with each request's index
+    /// and the mock's base URL before it answers that request.
+    fn spawn_hooked_openai_mock(
+        responses: Vec<serde_json::Value>,
+        mut on_request: impl FnMut(usize, &str) + Send + 'static,
+    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
+        use std::io::Write;
+
+        use crate::graph_task_dispatch::tests::{openai_mock_wire, read_mock_request};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
+        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let requests = Arc::clone(&captured);
+        let url = base_url.clone();
+        std::thread::spawn(move || {
+            for (index, response) in responses.into_iter().enumerate() {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let Some(request) = read_mock_request(&mut stream) else {
+                    return;
+                };
+                let streamed = request["stream"] == serde_json::Value::Bool(true);
+                requests.lock().push(request);
+                on_request(index, &url);
+                let wire = openai_mock_wire(&response, streamed);
+                let _ = stream.write_all(wire.as_bytes());
+            }
+        });
+        (base_url, captured)
+    }
+
+    /// bug-33a61f: a call the limiter holds back mid-run waits for its slot
+    /// in place, marked queued, and the agent's conversation goes on. When
+    /// the agent's first call reaches the mid rung's provider, another try's
+    /// call joins it and a 429 teaches the endpoint takes one call at once,
+    /// so the agent's next call is held until that call ends, 8 s later. It
+    /// then goes out in the same run, carrying the first call's tool result.
+    /// The mid rung bounds a try at 5 s, and the attempt's watchdog leaves the
+    /// queued wait out of that time, as it does out of a stall's silence, so
+    /// the run's third call still goes out.
+    #[tokio::test]
+    async fn a_call_held_mid_run_waits_and_continues_its_conversation() {
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let (base_url, requests) = spawn_hooked_openai_mock(
+            vec![
+                tool_call_turn(
+                    "call-write",
+                    "write_file",
+                    serde_json::json!({ "path": "hello.txt", "content": "hi on mid" }),
+                ),
+                tool_call_turn(
+                    "call-read",
+                    "read_file",
+                    serde_json::json!({ "path": "hello.txt" }),
+                ),
+                final_turn("wrote hello.txt"),
+            ],
+            |index, base_url| {
+                if index > 0 {
+                    return;
+                }
+                let endpoint = roko_agent::openai_compat_backend::chat_endpoint(base_url);
+                let limiter = roko_agent::openai_compat_backend::shared_rate_limiter();
+                let other = limiter.admit(&endpoint).expect("another try's call");
+                limiter.note_rate_limited(&endpoint);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(8));
+                    drop(other);
+                });
+            },
+        );
+        let (dispatcher, _health) = held_rung_dispatcher(&claude, &base_url, &temp, |config| {
+            config.routing.ladder.max_secs = [("mid".to_string(), 5)].into();
+        })
+        .await;
+        let spec = make_spec(&mid_rung_task());
+        let ctx = CellContext::new().with_run_id("held-mid-run".to_string());
+
+        let started = Instant::now();
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("mid finishes the task in one run");
+        assert!(
+            started.elapsed() >= Duration::from_secs(7),
+            "the held call waited for its slot"
+        );
+        assert!(logged_models(&models).is_empty(), "no substitute ran");
+        let requests = requests.lock();
+        assert_eq!(
+            requests.len(),
+            3,
+            "write, read, done: one run, never restarted nor stopped at its time bound"
+        );
+        let continued = requests[1]["messages"].as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["role"] == "tool" && message["tool_call_id"] == "call-write")
+        });
+        assert!(
+            continued,
+            "the held call carries the first call's tool result: {}",
+            requests[1]
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("hello.txt")).expect("hello.txt"),
+            "hi on mid"
+        );
     }
 
     /// bug-62ae1e: a try the mid rung's provider rate-limits, with nothing

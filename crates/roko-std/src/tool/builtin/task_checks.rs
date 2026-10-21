@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 use super::child_group;
 
 /// The lines of a failing check's output the agent gets back.
-const TAIL_LINES: usize = 60;
+pub(super) const TAIL_LINES: usize = 60;
 
 /// The most bytes of them.
-const TAIL_BYTES: usize = 8 * 1024;
+pub(super) const TAIL_BYTES: usize = 8 * 1024;
 
 /// One of an attempt's checks, as dispatch leaves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +72,8 @@ pub enum ChecksOutcome {
         stdout: String,
         /// What it printed on stderr.
         stderr: String,
+        /// The checks that passed before it: each one's label and seconds.
+        passed: Vec<(String, f64)>,
     },
     /// A check did not finish in time.
     TimedOut {
@@ -109,31 +111,37 @@ pub(super) async fn run(
         }
     };
     match run_checks(&checks, ctx, budget, parent_env).await {
-        ChecksOutcome::Passed(ran) => {
-            let ran: Vec<serde_json::Value> = ran
-                .iter()
-                .map(|(label, secs)| serde_json::json!({ "check": label, "passed": true, "secs": secs }))
-                .collect();
-            ToolResult::structured(
-                serde_json::json!({ "build": "checks", "status": "ok", "checks": ran }).to_string(),
-            )
-        }
+        ChecksOutcome::Passed(ran) => ToolResult::structured(
+            serde_json::json!({ "build": "checks", "status": "ok", "checks": checks_json(&ran) })
+                .to_string(),
+        ),
         ChecksOutcome::Failed {
             index,
             code,
             secs,
             stdout,
             stderr,
+            passed,
         } => {
             let exit = code.map_or_else(|| "a signal".to_string(), |code| format!("exit {code}"));
-            ToolResult::Err(ToolError::Other(format!(
-                "run_tests: check {} of {} ({}) failed ({exit}) after {secs} s; the output's \
-                 end:\n{}",
-                index + 1,
-                checks.len(),
-                checks[index].label,
-                tail(&format!("{stdout}{stderr}"))
-            )))
+            // bug-1f8db7: a failing check is the tool's answer, not a tool
+            // failure: as an error it would count toward a contract's
+            // consecutive-failure limit while the agent fixes its work.
+            ToolResult::structured(
+                serde_json::json!({
+                    "build": "checks",
+                    "status": "failed",
+                    "summary": format!(
+                        "check {} of {} ({}) failed ({exit}) after {secs} s",
+                        index + 1,
+                        checks.len(),
+                        checks[index].label
+                    ),
+                    "checks": checks_json(&passed),
+                    "output": tail(&format!("{stdout}{stderr}")),
+                })
+                .to_string(),
+            )
         }
         ChecksOutcome::TimedOut { index, limit } => ToolResult::Err(ToolError::Other(format!(
             "run_tests: check {} ({}) did not finish within {} s; pass a larger timeout_ms (at \
@@ -199,6 +207,7 @@ pub async fn run_checks(
                 secs,
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                passed: ran,
             };
         }
         ran.push((check.label.clone(), secs));
@@ -206,14 +215,28 @@ pub async fn run_checks(
     ChecksOutcome::Passed(ran)
 }
 
+/// Checks that passed, each with its label and seconds, as `run_tests`
+/// lists them.
+fn checks_json(passed: &[(String, f64)]) -> Vec<serde_json::Value> {
+    passed
+        .iter()
+        .map(|(label, secs)| serde_json::json!({ "check": label, "passed": true, "secs": secs }))
+        .collect()
+}
+
 /// The last [`TAIL_LINES`] lines of `text`, at most [`TAIL_BYTES`] of them.
 fn tail(text: &str) -> String {
+    tail_of(text, TAIL_LINES, TAIL_BYTES)
+}
+
+/// The last `max_lines` lines of `text`, at most `max_bytes` of them.
+pub(super) fn tail_of(text: &str, max_lines: usize, max_bytes: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    let kept = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
-    if kept.len() <= TAIL_BYTES {
+    let kept = lines[lines.len().saturating_sub(max_lines)..].join("\n");
+    if kept.len() <= max_bytes {
         return kept;
     }
-    let mut start = kept.len() - TAIL_BYTES;
+    let mut start = kept.len() - max_bytes;
     while !kept.is_char_boundary(start) {
         start += 1;
     }

@@ -74,7 +74,7 @@ pub mod validate;
 use self::cancel::wait_cancelled;
 use self::parallel::partition_by_concurrency;
 use self::timeout::with_timeout;
-use self::truncate::{bounded_json_bytes, bounded_serialized_bytes, truncate_result};
+use self::truncate::{bounded_json_bytes, bounded_serialized_bytes, text_is_json, truncate_result};
 use self::validate::validate;
 
 use roko_core::defaults::DEFAULT_MAX_CONCURRENT_TOOLS;
@@ -1578,6 +1578,7 @@ fn apply_production_result_filter(
             is_structured,
             artifacts,
         } => {
+            let sent_json = is_structured && text_is_json(&content);
             let filtered: Vec<roko_core::tool::ToolResultContent> = content
                 .into_iter()
                 .map(|block| match block {
@@ -1591,14 +1592,11 @@ fn apply_production_result_filter(
                 .collect();
             // bug-0f30c7: the filter's `[external:<tool>]` note, or a cut,
             // makes a JSON payload text. It is then text, so the immune screen
-            // does not withhold it as malformed JSON.
-            let is_structured = is_structured
-                && filtered.iter().all(|block| match block {
-                    roko_core::tool::ToolResultContent::Text { text } => {
-                        serde_json::from_str::<serde_json::Value>(text).is_ok()
-                    }
-                    _ => true,
-                });
+            // does not withhold it as malformed JSON. bug-1f8db7: only JSON
+            // the filter broke is text; a payload the handler sent as
+            // structured that was never JSON stays structured, and the screen
+            // still withholds it as the handler's own malformed result.
+            let is_structured = is_structured && (!sent_json || text_is_json(&filtered));
             ToolResult::Ok {
                 content: filtered,
                 is_structured,
@@ -3366,6 +3364,237 @@ mod tests {
             result.text_content(),
             r#"[external:run_tests] {"status":"ok"}"#
         );
+    }
+
+    /// The real `run_tests` tool behind the production safety chain (its
+    /// result filter, scrub, caps and immune screen), under a layer that
+    /// admits the tool as a role listing it does.
+    fn run_tests_dispatcher() -> (ToolDispatcher, ToolDef) {
+        use roko_std::tool::builtin::run_tests;
+
+        let def = run_tests::tool_def();
+        let registry: Arc<dyn ToolRegistry> =
+            Arc::new(VecToolRegistry::from_tools(vec![def.clone()]));
+        let resolver = resolver_from([(
+            run_tests::NAME,
+            Arc::new(run_tests::Handler) as Arc<dyn ToolHandler>,
+        )]);
+        let dispatcher = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive());
+        (dispatcher, def)
+    }
+
+    /// The tool boundary records the immune screen wrote under `workspace`:
+    /// one for each result it withheld.
+    fn tool_boundary_records(workspace: &std::path::Path) -> Vec<Signal> {
+        crate::immune_evidence::query_evidence_signals(
+            workspace,
+            &Kind::Custom(crate::tool_immune::TOOL_BOUNDARY_RECORD_KIND.to_string()),
+            None,
+            crate::immune_evidence::MAX_IMMUNE_EVIDENCE_SIGNALS,
+        )
+        .expect("query tool boundary records")
+    }
+
+    /// bug-1f8db7: in the golden-path runs of 2026-10-19 the immune boundary
+    /// scored every passing `run_tests` result `invalid_structured_result`,
+    /// withheld it and isolated the tool for the run, so no agent saw a test
+    /// result and every later call was refused. The real tool's passing
+    /// result reaches the model now, the screen finds no anomaly in it, and
+    /// the next call runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_passing_run_tests_result_is_not_an_immune_anomaly() {
+        let workspace = tempfile::tempdir().unwrap();
+        // `make test` stands in for the project's runner, printing what a
+        // passing `cargo test` prints.
+        std::fs::write(
+            workspace.path().join("Makefile"),
+            "test:\n\t@echo 'running 3 tests'\n\
+             \t@echo 'test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured'\n",
+        )
+        .unwrap();
+        let (dispatcher, def) = run_tests_dispatcher();
+        let context = ToolContext::testing(workspace.path());
+
+        for call in ["first", "next"] {
+            let result = dispatcher
+                .dispatch(
+                    ToolCall::new(call, "run_tests", serde_json::json!({ "build": "make" })),
+                    &context,
+                )
+                .await;
+
+            assert!(
+                matches!(result, ToolResult::Ok { .. }),
+                "the {call} call must reach the model: {result:?}"
+            );
+            let text = result.text_content();
+            assert!(text.contains(r#""status":"ok""#), "{text}");
+            assert!(text.contains(r#""passed":3"#), "{text}");
+            let anomaly = crate::tool_immune::detect_tool_result_anomaly(&def, &result);
+            assert!(anomaly.dimensions.is_empty(), "{anomaly:?}");
+        }
+        assert!(
+            tool_boundary_records(workspace.path()).is_empty(),
+            "the boundary withheld a passing result"
+        );
+    }
+
+    /// bug-1f8db7: a failing test run is the tool's answer, not a tool
+    /// failure. Its failures reach the model, the end of the output where
+    /// they are included, and the next call runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_test_run_is_returned_and_the_next_call_runs() {
+        let workspace = tempfile::tempdir().unwrap();
+        // What a failing `cargo test` prints: the failure comes last, after
+        // more passing crates than the 400 characters a failure used to show.
+        let mut failing = String::from("test:\n");
+        for krate in 0..20 {
+            failing.push_str(&format!(
+                "\t@echo 'test result: ok. 1 passed; 0 failed; 0 ignored (crate {krate})'\n"
+            ));
+        }
+        failing.push_str(
+            "\t@echo \"thread 'tests::shout' panicked: expected HELLO, got hello\"\n\
+             \t@echo 'test result: FAILED. 0 passed; 1 failed; 0 ignored'\n\
+             \t@exit 101\n",
+        );
+        let makefile = workspace.path().join("Makefile");
+        std::fs::write(&makefile, failing).unwrap();
+        let (dispatcher, _) = run_tests_dispatcher();
+        let context = ToolContext::testing(workspace.path());
+        let call =
+            |id: &str| ToolCall::new(id, "run_tests", serde_json::json!({ "build": "make" }));
+
+        let failed = dispatcher.dispatch(call("failing"), &context).await;
+
+        assert!(
+            matches!(failed, ToolResult::Ok { .. }),
+            "a failing run is a result: {failed:?}"
+        );
+        let text = failed.text_content();
+        assert!(text.contains(r#""status":"failed""#), "{text}");
+        assert!(text.contains(r#""failed":1"#), "{text}");
+        assert!(text.contains("expected HELLO, got hello"), "{text}");
+
+        std::fs::write(&makefile, "test:\n\t@echo 'test result: ok. 21 passed'\n").unwrap();
+        let passed = dispatcher.dispatch(call("fixed"), &context).await;
+
+        assert!(
+            matches!(passed, ToolResult::Ok { .. }),
+            "the next call must run: {passed:?}"
+        );
+        assert!(
+            passed.text_content().contains(r#""status":"ok""#),
+            "{passed:?}"
+        );
+        assert!(tool_boundary_records(workspace.path()).is_empty());
+    }
+
+    /// bug-1f8db7: the boundary still withholds a result its handler sent as
+    /// structured that was never JSON, though the production filter's note
+    /// makes every payload of the tool non-JSON, and it isolates the tool.
+    #[tokio::test]
+    async fn a_handler_s_malformed_structured_result_is_still_withheld() {
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "run_tests",
+            ToolPermission::executes(),
+            ToolConcurrency::Serial,
+        )]));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let resolver = resolver_from([(
+            "run_tests",
+            Arc::new(FixedResultHandler {
+                name: "run_tests",
+                calls: Arc::clone(&calls),
+                result: ToolResult::Ok {
+                    content: vec![roko_core::tool::ToolResultContent::text("{not-json")],
+                    is_structured: true,
+                    artifacts: Vec::new(),
+                },
+            }) as Arc<dyn ToolHandler>,
+        )]);
+        let workspace = tempfile::tempdir().unwrap();
+        let dispatcher = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive());
+        let context = ToolContext::testing(workspace.path());
+        let call = |id: &str| ToolCall::new(id, "run_tests", serde_json::json!({}));
+
+        let withheld = dispatcher.dispatch(call("malformed"), &context).await;
+        let refused = dispatcher.dispatch(call("next"), &context).await;
+
+        assert!(
+            matches!(
+                &withheld,
+                ToolResult::Err(ToolError::PermissionDenied(message))
+                    if message.contains("denied by immune boundary")
+            ),
+            "{withheld:?}"
+        );
+        assert!(
+            matches!(
+                &refused,
+                ToolResult::Err(ToolError::PermissionDenied(message))
+                    if message.contains("isolated by the immune boundary")
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(tool_boundary_records(workspace.path()).len(), 1);
+    }
+
+    /// bug-1f8db7: a structured result longer than the result cap is cut,
+    /// and the cut payload reaches the model as text, not as a malformed
+    /// result that isolates the tool.
+    #[tokio::test]
+    async fn a_cut_structured_result_reaches_the_model_as_text() {
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "long_json",
+            ToolPermission::read_only(),
+            ToolConcurrency::Serial,
+        )]));
+        let payload =
+            serde_json::json!({ "status": "failed", "output": "x".repeat(4_096) }).to_string();
+        let resolver = resolver_from([(
+            "long_json",
+            Arc::new(FixedResultHandler {
+                name: "long_json",
+                calls: Arc::new(AtomicUsize::new(0)),
+                result: ToolResult::structured(payload),
+            }) as Arc<dyn ToolHandler>,
+        )]);
+        let workspace = tempfile::tempdir().unwrap();
+        let dispatcher = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive())
+            .with_max_result_bytes(1_024);
+        let context = ToolContext::testing(workspace.path());
+
+        for id in ["long", "next"] {
+            let result = dispatcher
+                .dispatch(
+                    ToolCall::new(id, "long_json", serde_json::json!({})),
+                    &context,
+                )
+                .await;
+
+            assert!(
+                matches!(
+                    result,
+                    ToolResult::Ok {
+                        is_structured: false,
+                        ..
+                    }
+                ),
+                "{result:?}"
+            );
+            let text = result.text_content();
+            assert!(text.starts_with('{'), "{text}");
+            assert!(text.ends_with(truncate::TRUNCATION_MARKER), "{text}");
+            assert!(text.len() <= 1_024, "{}", text.len());
+        }
+        assert!(tool_boundary_records(workspace.path()).is_empty());
     }
 
     #[tokio::test]

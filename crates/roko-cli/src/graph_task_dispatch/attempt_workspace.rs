@@ -317,6 +317,7 @@ impl GraphTaskDispatcher {
                 attempt_key: settled.attempt_key().to_string(),
                 verdict: verdict.as_str().to_string(),
                 title: self.commit_title(&spec.plan_id, task),
+                files: task.files.clone(),
             };
             Some(provider.accept(lease, &request).await)
         } else {
@@ -465,6 +466,7 @@ impl GraphTaskDispatcher {
                 attempt_key: settled.attempt_key().to_string(),
                 verdict: verdict.as_str().to_string(),
                 title: self.commit_title(&spec.plan_id, task),
+                files: task.files.clone(),
             };
             match provider.accept(lease, &request).await {
                 Ok(acceptance) => {
@@ -714,7 +716,7 @@ impl GraphTaskDispatcher {
         let layout = roko_fs::RokoLayout::for_project(&self.workdir);
         let hold_path = layout.review_hold(&spec.plan_id, &task.id);
         let attempt_key = settled.attempt_key().to_string();
-        let diff = crate::orchestrator::worktree::attempt_review_diff(&lease.path)
+        let diff = crate::orchestrator::worktree::attempt_review_diff(&lease.path, &task.files)
             .await
             .map_err(|error| {
                 RokoError::Rejected(format!(

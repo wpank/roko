@@ -22,7 +22,7 @@ use crate::provider::{
 };
 use crate::tool_loop::ToolLoop;
 use crate::tool_loop::agent_wrapper::ToolLoopAgent;
-use crate::tool_loop::backends::create_openai_compat_backend;
+use crate::tool_loop::backends::create_observed_openai_compat_backend;
 use crate::translate::{StrictOpenAiTranslator, Translator};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
@@ -69,7 +69,12 @@ impl ProviderAdapter for CerebrasAdapter {
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
             let poster = Arc::new(ReqwestPoster::new());
-            let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
+            let backend = create_observed_openai_compat_backend(
+                &tool_loop_provider,
+                model,
+                poster,
+                options.live_output.clone(),
+            )?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
                 .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
@@ -77,6 +82,9 @@ impl ProviderAdapter for CerebrasAdapter {
                     usize::try_from(model.context_window).unwrap_or(usize::MAX),
                 )
                 .with_few_shot_messages(coding_few_shot_examples())
+                // A streamed call waits its provider's `timeout_ms` for a
+                // response, not the attempt's timeout (bug-5e597a).
+                .with_request_timeout_ms(provider.timeout_ms)
                 .with_optional_data_llm(options.data_llm.clone())
                 .with_optional_turn_budget(options.turn_budget.clone())
                 .with_optional_hand_off_check(options.hand_off_check.clone());

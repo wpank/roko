@@ -7,14 +7,18 @@ Before the first task, `preflight` emits the plan of a stand-in task into a scra
 
 1. emits a one-task plan, named by the task's alias and never by its key (`planemit.plan_slug`, bug-3c921e), and the
    workspace roko.toml into the task's workdir, which is Roko's workspace (`planemit`);
-2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`.
+2. runs `roko --repo <ws> --model <m> plan validate --strict --dag --json <ws>/plans`; a plan that fails is
+   `infra_error`, unless only `ADVISORY_RULES` warnings failed it (`advisory_only`): PLAN_TIER_SIZE's word limit
+   meets the spec text every arm gets, and `plan run` never checks it. The transcript keeps those warnings.
    A routed arm's command lines name no `--model`, which would pin its start rung past the ladder (planemit's ladder
    mode; bug-0b7695);
 3. reserves every attempt Roko may make on the run's budget line (`Ledger.reserve`: `max_retries` + 1 attempts, each
    an equal share of the task's worst case, $0 when unbilled), because Roko retries without the driver. A refusal
    ends the task `aborted_cap` (reason `budget`) before any model call. Then it runs
    `roko --repo <ws> --model <m> plan run <plan> --no-tui` (never `roko run`), in its own session, killed at the
-   task's wall-clock cap (status `timeout`);
+   task's wall-clock cap (status `timeout`). An arm whose `[roko]` table says `audit = false` adds `--no-audit`
+   (`run_switches`): Roko audits a share of its passes by default since 22ac6f06b (gap-d76b1b), and an audit
+   dispatches models besides the arm's own (bug-082810), so a pinned arm turns them off;
 4. reads Roko's records (`read_evidence`), makes one attempt per dispatch and checks each (`settle`);
 5. appends one ledger row per attempt, which releases its reservation, and releases the reservations of the attempts
    Roko did not make. It copies Roko's records to `<run_dir>/s01/<key>/`, and removes `roko.toml`,
@@ -123,7 +127,9 @@ match, so the attempts fail as `no_proxy_traffic`.
   S05 §0.1 counts only a `passed` verdict as Roko's completion, so the census gives the run 0, and the report counts
   it apart, never as a reported pass.
 - `timeout`: the wall-clock cap.
-- `infra_error`: a failed validation, a failed check above, or a run Roko did not finish.
+- `infra_error`: a failed validation, a failed check above, or a run Roko did not finish. Also a task that failed or
+  timed out after the provider refused some of its forwarded calls for the account, 401 or 402 in the proxy's log
+  (`account_refusals`): Roko calls that a failed attempt, but the run measured the provider account, not the arm.
 
 **Process measures** (S09 §4.9, gap-04e8e2). Each attempt records its plan task (`T01`), its cost class and its busy
 time, and `records.py` sums them into the record:
@@ -151,6 +157,9 @@ API:
     settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None,
            swap=None, rungs=()) -> (list[RokoAttempt], list[str])
     arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
+    run_switches(arm) -> list[str]                                # `plan run`'s switches: --no-audit for audit = false
+    advisory_only(checked: Ran) -> list[dict] | None              # a validation failed only on ADVISORY_RULES
+    account_refusals(proxy_rows) -> list[str]                     # the provider refused the account (a failure: infra)
     RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path
 """
 
@@ -187,6 +196,12 @@ PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the met
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
 OFFLINE_KEY = "placeholder"  # in Roko's environment, which its agent's shell inherits: neutral (bug-d68575)
 VALIDATE_TIMEOUT_S = 120.0
+# `plan validate` warnings that advise a planner on a plan's shape, which `plan run` never checks, so `--strict` failing
+# on them alone does not fail the task (step 2). PLAN_TIER_SIZE (gap-1d1fa6) flags a description over its tier's word
+# limit (focused: 350), and a benchmark task's description is the spec text every arm gets, which the arm may neither
+# shorten nor split: 10 of the 20 pilot instances run 371-458 words.
+ADVISORY_RULES = frozenset({"PLAN_TIER_SIZE"})
+ACCOUNT_STATUSES = frozenset({401, 402})  # a provider refusing the account (key, billing), not the request
 EGRESS_LOG = "egress.jsonl"  # in the run directory, for a claude_cli arm (3318), as run_cli.py's own
 CLI_CACHE_WRITE_TTL = "1h"  # 3318: fr_claude's subscription turns write the 1-hour cache, as fd_claude.toml's do
 # The stand-in task `preflight` emits a plan for: a family task's shape (one source file, visible tests run by
@@ -302,18 +317,21 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             env = {**env, **agent_env.proxy_env(egress_proxy.url)}
         build = _build(binary, env, settings.get("build") or None, transcript, jail)
         head = _head(binary, ctx.workdir, None if spec.rungs else ctx.model)
-        checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
-                        env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)), jail)
+        checked = _roko([*head, "plan", "validate", "--strict", "--dag", "--json", str(ctx.workdir / "plans")],
+                        ctx.workdir, env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)), jail)
         transcript.append(checked.event("validate"))
-        if checked.returncode != 0:
+        advisory = advisory_only(checked)
+        if checked.returncode != 0 and advisory is None:
             raise RunnerError(f"the emitted plan failed `plan validate --strict --dag` (exit {checked.returncode}): "
-                              f"{(checked.stdout + checked.stderr).strip()[-300:]}")
+                              f"{_validate_summary(checked)}")
+        if checked.returncode != 0:
+            transcript.append({"event": "validate_advisory", "diagnostics": advisory})
         keys = [f"{ctx.chain_key}:{number}" for number in range(1, max_retries + 2)]
         _reserve(ctx.ledger, keys, task_bound / (max_retries + 1) if ctx.billed else 0.0)
         reserved = keys
         dispatched = True
-        ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui"], ctx.workdir, env, _left(ctx, clock),
-                    jail)
+        ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui", *run_switches(ctx.arm)], ctx.workdir,
+                    env, _left(ctx, clock), jail)
         transcript.append(ran.event("run"))
         evidence = read_evidence(ctx.workdir, emitted.slug, proxy_rows=_proxy_rows(ctx))
         attempts, problems = settle(evidence, chain_key=ctx.chain_key, model=ctx.model,
@@ -321,8 +339,11 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                                     reserved_usd=task_bound / (max_retries + 1), max_attempts=max_retries + 1,
                                     roko_build=build, swap=ctx.model_swap, rungs=spec.rungs)
         transcript += [_attempt_event(attempt, episode) for attempt, episode in zip(attempts, evidence.episodes)]
-        transcript.append({"event": "check", "problems": problems})
+        refusals = account_refusals(evidence.proxy_rows)
+        transcript.append({"event": "check", "problems": problems, "account_refusals": refusals})
         status, reason = _status(ran, evidence, problems)
+        if refusals and status in ("failed", "timeout"):  # the account failed it, not the arm (`account_refusals`)
+            status, reason = "infra_error", "; ".join(refusals)
     except ledger.BudgetError as err:  # no room on the budget line: `plan run` never started
         status, reason = "aborted_cap", "budget"
         transcript.append({"event": "stop", "kind": status, "reason": str(err)})
@@ -418,6 +439,59 @@ def arm_prompt(arm: dict) -> dict[str, str]:
     return planemit.template_identity(ladder=_routed(arm),
                                       provider_kind=arm.get("roko", {}).get("provider_kind", "openai_compat"),
                                       overlay=bool(arm.get("overlay")))
+
+
+def account_refusals(rows: list[dict] | None) -> list[str]:
+    """The task's forwarded calls the provider refused for the account rather than the request (`ACCOUNT_STATUSES`: 401
+    for the key, 402 for billing), as one `provider_account` line, or none. A task that then failed or timed out is
+    `infra_error`: Roko reports such a refusal as a failed attempt, but the run measured the account, not the arm
+    (Pilot B, 2026-10-20: Cerebras answered 402 to the last 9 tasks of a unit). A task that completed keeps its
+    outcome, as a routed arm's does when its ladder drops the refused rung (the shakedown's D7). An injected fault and
+    the proxy's own refusals are never forwarded."""
+    refused: dict[int, int] = {}
+    for row in rows or ():
+        if row.get("forwarded") and row.get("status") in ACCOUNT_STATUSES:
+            refused[row["status"]] = refused.get(row["status"], 0) + 1
+    if not refused:
+        return []
+    return ["provider_account: the provider refused " + ", ".join(
+        f"{count} call(s) with HTTP {status}" for status, count in sorted(refused.items()))]
+
+
+def advisory_only(checked: Ran) -> list[dict] | None:
+    """The diagnostics of a `plan validate --strict --dag --json` that failed only on ADVISORY_RULES warnings, or None
+    when it failed otherwise: a timeout, another exit, an output that is not its JSON report (the first document; the
+    DAG analysis follows), an error, or any other diagnostic."""
+    if checked.timed_out or checked.returncode != 1:
+        return None
+    try:
+        report, _ = json.JSONDecoder().raw_decode(checked.stdout.lstrip())
+        diagnostics = [one for plan in report["plans"] for one in plan["diagnostics"]]
+        errors = report["totals"]["errors"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if errors != 0 or not diagnostics or not all(
+            isinstance(one, dict) and one.get("severity") == "warning" and one.get("rule_id") in ADVISORY_RULES
+            for one in diagnostics):
+        return None
+    return [{"rule_id": one["rule_id"], "message": str(one.get("message", ""))[:300]} for one in diagnostics]
+
+
+def _validate_summary(checked: Ran) -> str:
+    """A failed validation's diagnostics as `RULE: message` lines, else the tail of what it printed."""
+    try:
+        report, _ = json.JSONDecoder().raw_decode(checked.stdout.lstrip())
+        lines = [f"{one.get('rule_id')}: {one.get('message')}" for plan in report["plans"]
+                 for one in plan["diagnostics"]]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        lines = []
+    return "; ".join(lines)[:300] if lines else (checked.stdout + checked.stderr).strip()[-300:]
+
+
+def run_switches(arm: dict) -> list[str]:
+    """`plan run`'s switches from the arm's `[roko]` table (step 3): `audit = false` gives `--no-audit`, which sets
+    `[audit] enabled = false` for the run (gap-d76b1b). Without the key the run keeps Roko's default."""
+    return ["--no-audit"] if arm.get("roko", {}).get("audit") is False else []
 
 
 def _routed(arm: dict) -> bool:

@@ -266,6 +266,7 @@ mod tests {
                 artifacts: Vec::new(),
                 cost_usd: 0.0,
                 source_checks: None,
+                repairs: Vec::new(),
             })
         }
 

@@ -35,6 +35,8 @@ tier = "focused"
 max_retries = 2
 max_parallel = 3                      # roko plan run --max-parallel: the arm's own parallelism (3319 plan point 2)
 skip_enrichment = true                # explicit per arm (B §2.3)
+audit = false                         # `plan run --no-audit`: Roko audits by default since 22ac6f06b, and an
+                                      # audit dispatches models outside the arm (gap-c7c462, bug-082810)
 egress_allow = ["api.anthropic.com:443"]   # 3305's allowlist (egress.DEFAULT_ALLOW), for the planner session
 
 [planner]

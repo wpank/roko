@@ -2,15 +2,16 @@
 id = "bug-ba0c40"
 kind = "bug"
 title = "roko commits and delivers an attempt's undeclared build output: run 1's T7 ran cargo from crates/alpha under a relative CARGO_TARGET_DIR, and 233 build files (7.4 MB) under crates/alpha/target/ landed on the delivered branch; acceptance stages everything not ignored and the scope check only logs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/worktree"]
 created = 2026-10-19
-updated = 2026-10-19
-last_verified = 2026-10-19
+updated = 2026-10-20
+last_verified = 2026-10-20
+last_verified_rev = "953af63d7"
 source = "gap-f30b8e golden-path rerun, live run 1 (2026-10-19)"
 discovered_from = "gap-f30b8e"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/acceptance.rs::commit_attempt", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/tests/golden_path_acceptance.rs::plan_command"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-f30b8e", "find-5bcba7"],
 
 [[verify]]
 command = "grep -rqw 'fn an_attempts_undeclared_build_output_is_not_committed' crates/roko-cli/src && cargo test -p roko-cli --lib an_attempts_undeclared_build_output_is_not_committed"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T17:08:06Z"
+commit = "953af63d7"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-20T14:02:51Z"
+forced = false
+evidence = "953af63d7 keeps an attempt's new build output that its task's files do not name out of its commit. crates/roko-cli/src/orchestrator/worktree/build_output.rs (new): a path the attempt adds is build output when it lies in a directory that holds no file of its base and is named target, node_modules, __pycache__ or .pytest_cache or marked by its tool (a CACHEDIR.TAG with the tag's signature, CMake's CMakeCache.txt), or is a .pyc file; a files entry keeps it only by reaching into the build directory, except under an unmarked target, which may be a source module. acceptance.rs commit_attempt stages as before, lists what the index adds to HEAD, takes the left-out paths out of the index (git rm --cached) and names them in the commit message and a warning; AcceptedWorktree::left_out records them and release_accepted removes them, so the delivered checkout still goes; attempt_review_diff takes the task's files. AttemptAcceptance and WorkspaceAcceptRequest carry the task's files (dispatcher, provider adapter, PlanGateCell); roko-gate exposes BUILD_OUTPUT_DIRS, BUILD_OUTPUT_EXTENSIONS and covers. golden_path_acceptance: plan_command removes CARGO_TARGET_DIR instead of setting the relative target, and assert_merges_green checks that every path the delivered branch changes is in some task's files. Checked through heavy.sh on the committed code: the verify an_attempts_undeclared_build_output_is_not_committed passes (before the fix, the old git add --all staging puts crates/a/target/* in the commit, replayed on the test's layout in a scratch repo), as do build_output_an_attempt_staged_is_left_out_too and build_output.rs's 2 unit tests; 141 lib tests under orchestrator::worktree, attempt_workspace, graph_execution::workspaces and plan_handback, and 28 under red_flags, graph_execution::batch and find-5bcba7's a_failed_plan_check_goes_back_to_the_task_whose_file_it_names and a_plan_check_is_not_handed_back_to_no_purpose; roko-gate attempt_diff (10) and roko-graph plan_gate and workspace (52); the 7 CI golden-path canaries (18 tests) and golden_path_acceptance (2 passed, live ignored; golden_path_fixture_plan_merges_green ran in full with node, output uncaptured); nightly rustfmt and cargo clippy -p roko-gate -p roko-graph -p roko-cli --no-deps -- -D warnings clean. Filed bug-346498 and bug-aee1cb (6d12064ee)."
 +++
 
 ## Problem

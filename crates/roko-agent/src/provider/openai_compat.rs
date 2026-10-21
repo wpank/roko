@@ -31,7 +31,7 @@ use crate::provider::{
     build_provider_tool_dispatcher, tool_limit_for_temperament,
     tool_loop_max_iterations_for_options, with_tool_observability,
 };
-use crate::tool_loop::backends::create_openai_compat_backend;
+use crate::tool_loop::backends::create_observed_openai_compat_backend;
 use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
 use crate::translate::Translator;
 use crate::translate::capability::{cap_tools_for_profile, translator_for_openai_compat};
@@ -214,15 +214,17 @@ pub(crate) fn base_url_for_tool_loop(provider: &ProviderConfig) -> String {
 /// [`shared_rate_limiter`]: crate::openai_compat_backend::shared_rate_limiter
 #[must_use]
 pub fn rate_limit_endpoint(provider: &ProviderConfig) -> Option<String> {
-    matches!(
-        provider.kind,
-        ProviderKind::OpenAiCompat
-            | ProviderKind::PerplexityApi
-            | ProviderKind::Hermes
-            | ProviderKind::OpenClaw
-            | ProviderKind::CerebrasApi
-    )
-    .then(|| crate::openai_compat_backend::chat_endpoint(&base_url_for_tool_loop(provider)))
+    // Each kind's base URL as `create_openai_compat_backend` defaults it.
+    let default = match provider.kind {
+        ProviderKind::OpenAiCompat | ProviderKind::Hermes | ProviderKind::OpenClaw => {
+            "https://api.openai.com/v1"
+        }
+        ProviderKind::PerplexityApi => "https://api.perplexity.ai",
+        ProviderKind::CerebrasApi => "https://api.cerebras.ai/v1",
+        _ => return None,
+    };
+    let base_url = provider.base_url.as_deref().unwrap_or(default);
+    Some(crate::openai_compat_backend::chat_endpoint(base_url))
 }
 
 /// The process's own calls in flight to `provider` from roko's tool loop,
@@ -597,7 +599,12 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
             let poster = Arc::new(ReqwestPoster::new());
-            let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
+            let backend = create_observed_openai_compat_backend(
+                &tool_loop_provider,
+                model,
+                poster,
+                options.live_output.clone(),
+            )?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
                 .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
@@ -606,6 +613,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 )
                 // Priced as its provider bills it (find-c3da60).
                 .with_model_profile(model.clone().with_provider_cache_rate(provider))
+                // A streamed call waits its provider's `timeout_ms` for a
+                // response, not the attempt's timeout (bug-5e597a).
+                .with_request_timeout_ms(provider.timeout_ms)
                 .with_optional_data_llm(options.data_llm.clone())
                 .with_optional_turn_budget(options.turn_budget.clone())
                 .with_optional_hand_off_check(options.hand_off_check.clone());
@@ -721,6 +731,36 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    /// bug-33a61f: the rate limiter keys a provider's calls by the chat
+    /// endpoint its backend calls, each kind's default base URL included, and
+    /// keys none for a provider no OpenAI-compatible backend calls.
+    #[test]
+    fn rate_limit_endpoint_is_the_chat_endpoint_its_backend_calls() {
+        let provider = |kind, base_url: Option<&str>| ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            ..ProviderConfig::default()
+        };
+        let endpoint = |kind, base_url| rate_limit_endpoint(&provider(kind, base_url));
+        assert_eq!(
+            endpoint(
+                ProviderKind::OpenAiCompat,
+                Some("https://api.z.ai/api/paas/v4/")
+            )
+            .as_deref(),
+            Some("https://api.z.ai/api/paas/v4/chat/completions")
+        );
+        assert_eq!(
+            endpoint(ProviderKind::CerebrasApi, None).as_deref(),
+            Some("https://api.cerebras.ai/v1/chat/completions")
+        );
+        assert_eq!(
+            endpoint(ProviderKind::PerplexityApi, None).as_deref(),
+            Some("https://api.perplexity.ai/chat/completions")
+        );
+        assert_eq!(endpoint(ProviderKind::ClaudeCli, None), None);
     }
 
     fn spawn_chat_server(
@@ -2499,5 +2539,130 @@ done
     #[test]
     fn parse_allowed_tools_csv_empty_string_returns_none() {
         assert!(parse_allowed_tools_csv(Some("")).is_none());
+    }
+
+    /// A chat server that reads one request, holds its response headers for
+    /// `hold`, as a reasoning model can (Z.ai's glm-4.7), then streams the
+    /// answer "ok". A client that gave up meanwhile is no error.
+    fn spawn_late_sse_server(hold: Duration) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set read timeout");
+            let mut buf = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                });
+                if length.is_none_or(|length| body.len() >= length) {
+                    break;
+                }
+            }
+            thread::sleep(hold);
+            let events = [
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}"#,
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}"#,
+                "[DONE]",
+            ];
+            let mut wire = String::from(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            for event in events {
+                wire.push_str(&format!("data: {event}\n\n"));
+            }
+            let _ = stream.write_all(wire.as_bytes());
+            let _ = stream.flush();
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// bug-5e597a: a streamed call waits for its response as long as its
+    /// provider's `timeout_ms` says, not 120 s whatever it says, and not
+    /// the attempt's own timeout (`AgentOptions::timeout_ms`). Phase 3's
+    /// glm-4.7 calls held their response past 120 s with `timeout_ms =
+    /// 300000` set, and two tries were lost.
+    #[tokio::test]
+    async fn a_providers_timeout_ms_bounds_a_streamed_calls_wait_for_its_response() {
+        let provider = |base_url: &str, timeout_ms: u64| ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(format!("{base_url}/v1")),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(timeout_ms),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+            stream_usage: None,
+            billing: None,
+        };
+        // Its own provider id: the process-wide rate limiter is shared.
+        let model = ModelProfile {
+            provider: "late-reasoner".to_string(),
+            slug: "glm-4.7".to_string(),
+            context_window: 128_000,
+            max_output: Some(1_024),
+            supports_tools: true,
+            tool_format: "openai_json".to_string(),
+            ..Default::default()
+        };
+        // An attempt's timeout, much longer than the provider's.
+        let options = AgentOptions {
+            timeout_ms: Some(60_000),
+            ..AgentOptions::default()
+        };
+        let streamed = |base_url: String, timeout_ms: u64| {
+            let agent = OpenAiCompatAdapter
+                .create_agent(&provider(&base_url, timeout_ms), &model, &options)
+                .expect("create tool-loop agent");
+            async move {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let started = std::time::Instant::now();
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                (result, started.elapsed())
+            }
+        };
+
+        // The response comes after 1.5 s; the provider waits 0.4 s for it.
+        let (base_url, server) = spawn_late_sse_server(Duration::from_millis(1_500));
+        let (result, took) = streamed(base_url, 400).await;
+        let text = result.output.body.as_text().unwrap_or_default().to_string();
+        assert!(!result.success, "{text}");
+        assert!(text.contains("no response within 400ms"), "{text}");
+        assert!(took < Duration::from_millis(1_400), "it waited {took:?}");
+        server.join().expect("server thread");
+
+        // The provider waits 5 s: the late response is the answer.
+        let (base_url, server) = spawn_late_sse_server(Duration::from_millis(600));
+        let (result, took) = streamed(base_url, 5_000).await;
+        let text = result.output.body.as_text().unwrap_or_default().to_string();
+        assert!(result.success, "{text}");
+        assert_eq!(text, "ok");
+        assert!(took >= Duration::from_millis(600), "it took {took:?}");
+        server.join().expect("server thread");
     }
 }

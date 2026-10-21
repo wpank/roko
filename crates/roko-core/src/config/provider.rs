@@ -288,7 +288,10 @@ pub struct ProviderConfig {
     /// Arguments passed to the CLI command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
-    /// Hard request or subprocess timeout in milliseconds.
+    /// Hard request or subprocess timeout in milliseconds. A streamed model
+    /// call of roko's own tool loop waits this long for its response, and for
+    /// each chunk after it (bug-5e597a): a reasoning model that holds its
+    /// response for minutes needs it raised.
     #[serde(
         default = "default_provider_timeout_ms",
         skip_serializing_if = "Option::is_none"

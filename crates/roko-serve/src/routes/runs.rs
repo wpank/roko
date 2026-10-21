@@ -22,9 +22,10 @@ use futures::stream::{self, StreamExt};
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::{
-    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
-    TASK_OUTCOME_CANCELLED, TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass,
-    classify_task_outcome,
+    FAILOVER_REFUSED_SIDE_CALL, TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+    TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED, TASK_OUTCOME_CANCELLED,
+    TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
+    side_call_role,
 };
 use roko_core::obs::LogScrubber;
 use serde::Deserialize;
@@ -2042,6 +2043,14 @@ fn is_gate_event(kind: &str) -> bool {
     kind.starts_with("gate.") || kind.starts_with("gate_") || kind.contains("gate")
 }
 
+/// Whether `kind` is one of the plan-load spec gate's own events
+/// (`spec_gate_started`, `spec_gate_step`, `spec_gate_finished`). Its checks
+/// must fail on the base, so a step that did not pass is the result it wants,
+/// not a failed gate (bug-b9df52). A task it refuses ends the run `refused`.
+fn is_spec_gate_event(kind: &str) -> bool {
+    kind.starts_with("spec_gate")
+}
+
 fn is_task_terminal(kind: &str) -> bool {
     matches!(
         kind,
@@ -2127,6 +2136,13 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     // records count it.
     let mut live_calls = BTreeMap::<(String, String, u64), f64>::new();
     let mut settled = BTreeSet::<(String, String, u64)>::new();
+    // The calls each try's provider refused before it failed over. They are
+    // the try's own calls, so until the try settles, its `call_cost` figure
+    // holds their spend beside their side-call events (bug-11e54b). A side
+    // call's event names its try (gap-1430ea); for one that does not, the
+    // try is the task's running one, as its latest `call_cost` names it.
+    let mut running_try = BTreeMap::<(String, String), u64>::new();
+    let mut refused_in_try = BTreeMap::<(String, String, u64), f64>::new();
 
     for item in events {
         let value = &item.value;
@@ -2160,6 +2176,19 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
         if kind == "efficiency_event" {
             efficiency.add(value);
+            if let Some((metric, amount)) = efficiency_metric(value)
+                && side_call_role(metric) == Some(FAILOVER_REFUSED_SIDE_CALL)
+                && let (Some(plan_id), Some(task_id)) = (event_plan_id(value), event_task_id(value))
+                && let Some(attempt) = event_attempt(value).or_else(|| {
+                    running_try
+                        .get(&(plan_id.to_string(), task_id.to_string()))
+                        .copied()
+                })
+            {
+                *refused_in_try
+                    .entry((plan_id.to_string(), task_id.to_string(), attempt))
+                    .or_default() += amount;
+            }
         }
         if matches!(kind, "call_cost" | "attempt_settled")
             && let (Some(plan_id), Some(task_id), Some(attempt)) = (
@@ -2172,6 +2201,7 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             if kind == "attempt_settled" {
                 settled.insert(key);
             } else if let Some(cost) = decimal(value, "attempt_cost_usd") {
+                running_try.insert((key.0.clone(), key.1.clone()), attempt);
                 live_calls
                     .entry(key)
                     .and_modify(|current| *current = current.max(cost))
@@ -2238,23 +2268,35 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
     }
     // A Graph run records its spend only as efficiency events: use them when no
-    // other source reported any.
-    if efficiency.seen
+    // other source reported any. They count its side calls apart from its
+    // tries (bug-11e54b), as its cost rows do.
+    let graph_spend = efficiency.seen
         && !saw_inference_usage
         && final_cost.is_none()
         && runner_attempt_costs.is_empty()
-        && cost_usd.abs() < f64::EPSILON
-    {
-        cost_usd = efficiency.cost_usd;
-    }
+        && cost_usd.abs() < f64::EPSILON;
+    let side_call_usd = if graph_spend {
+        cost_usd = efficiency.cost_usd + efficiency.side_call_usd.values().sum::<f64>();
+        std::mem::take(&mut efficiency.side_call_usd)
+    } else {
+        BTreeMap::new()
+    };
     // What the tries that have not settled spent so far (gap-5c3347).
-    let live_cost_usd: f64 = live_calls
+    let running = live_calls
         .iter()
         .filter(|(key, _)| !settled.contains(*key))
-        .map(|(_, cost)| cost)
-        .sum();
+        .collect::<Vec<_>>();
+    let live_cost_usd: f64 = running.iter().map(|(_, cost)| *cost).sum();
     if final_cost.is_none() {
-        cost_usd += live_cost_usd;
+        // Less the calls refused before a failover, which count already as
+        // side calls.
+        cost_usd += running
+            .iter()
+            .map(|(key, cost)| {
+                let refused = refused_in_try.get(*key).filter(|_| graph_spend);
+                (*cost - refused.copied().unwrap_or(0.0)).max(0.0)
+            })
+            .sum::<f64>();
     }
     if efficiency.seen && input_tokens == 0 && output_tokens == 0 {
         input_tokens = efficiency.input_tokens;
@@ -2292,6 +2334,7 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             "cache_write_tokens": cache_write_tokens,
             "total_tokens": total_tokens,
             "cost_usd": cost_usd,
+            "side_call_usd": side_call_usd,
             "live_cost_usd": live_cost_usd,
             "duration_ms": duration_ms,
         }
@@ -2304,24 +2347,33 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
 struct Efficiency {
     seen: bool,
     cost_usd: f64,
+    /// What its side calls cost, by role (bug-11e54b): calls its tries made
+    /// beside their own dispatches, which `cost_usd` leaves out.
+    side_call_usd: BTreeMap<String, f64>,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
 }
 
+/// An `efficiency_event` row's `metric` and its `value`, when the value is a
+/// measurement (finite, not negative).
+fn efficiency_metric(value: &Value) -> Option<(&str, f64)> {
+    let data = event_data(value);
+    let metric = data
+        .get("metric")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let amount = data
+        .get("value")
+        .and_then(Value::as_f64)
+        .filter(|amount| amount.is_finite() && *amount >= 0.0)?;
+    Some((metric, amount))
+}
+
 impl Efficiency {
     fn add(&mut self, value: &Value) {
-        let data = event_data(value);
-        let metric = data
-            .get("metric")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let Some(amount) = data
-            .get("value")
-            .and_then(Value::as_f64)
-            .filter(|amount| amount.is_finite() && *amount >= 0.0)
-        else {
+        let Some((metric, amount)) = efficiency_metric(value) else {
             return;
         };
         self.seen = true;
@@ -2338,7 +2390,11 @@ impl Efficiency {
             "cache_write_tokens" => {
                 self.cache_write_tokens = self.cache_write_tokens.saturating_add(tokens);
             }
-            _ => {}
+            _ => {
+                if let Some(role) = side_call_role(metric) {
+                    *self.side_call_usd.entry(role.to_string()).or_default() += amount;
+                }
+            }
         }
     }
 }
@@ -2483,7 +2539,10 @@ fn run_summary(
                     .or_insert_with(|| (place, milestone("first_task_accepted", text, value)));
             }
         }
+        // Only a task's own gate failure counts: the spec gate's steps fail on
+        // the base by design (bug-b9df52).
         if is_gate_event(kind)
+            && !is_spec_gate_event(kind)
             && bool_field(value, "passed").map_or(kind.contains("failed"), |passed| !passed)
         {
             let gate = string_field(value, "gate")
@@ -2599,6 +2658,8 @@ fn run_summary(
         "interrupted": interrupted,
         "refused": refused,
         "cost_usd": summary["metrics"]["cost_usd"],
+        // The part of it side calls spent, by role (bug-11e54b).
+        "side_call_usd": summary["metrics"]["side_call_usd"],
         "tasks": {
             "total": tasks.len(),
             "passed": passed,
@@ -3382,6 +3443,62 @@ mod tests {
         assert!(cost(&ended, "live_cost_usd").abs() < 1e-9, "{ended}");
     }
 
+    /// gap-1430ea: a side call's event names the try that made it, and the
+    /// summary takes the try from it. A refused call counts once whichever
+    /// event names it last, and the summary's cost and `side_call_usd` are
+    /// those of bug-11e54b.
+    #[test]
+    fn a_side_call_event_names_its_try_and_the_summary_keeps_its_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let refused = |attempt: u32| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"metric":"side_call_usd.failover_refused","value":0.0068});
+        let call = |attempt: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"call":1,"model":"glm-4.7","cost_usd":0.01,"attempt_cost_usd":so_far});
+        let summary = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            summarize_events(&page.events)["metrics"].clone()
+        };
+        // T2's first try: refused at $0.0068, then its substitute settled at
+        // $0.01. Its second try has spent $0.02 so far.
+        let settled = [
+            json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":1,"verdict":"failed"}),
+            json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","metric":"cost_usd","value":0.01}),
+        ];
+        let in_order = [
+            vec![call(1, 0.0068), refused(1), call(1, 0.0168)],
+            settled.to_vec(),
+            vec![call(2, 0.02)],
+        ]
+        .concat();
+        // The same refused call, its event read after the second try began:
+        // it names the first try, so the second try's figure keeps it all.
+        let late = [
+            vec![call(1, 0.0068), call(1, 0.0168)],
+            settled.to_vec(),
+            vec![call(2, 0.02), refused(1)],
+        ]
+        .concat();
+        for rows in [in_order, late] {
+            let metrics = summary(&rows);
+            let cost = metrics["cost_usd"].as_f64().expect("cost_usd");
+            assert!((cost - 0.0368).abs() < 1e-9, "{metrics}");
+            let refused_usd = metrics["side_call_usd"]["failover_refused"]
+                .as_f64()
+                .expect("failover_refused");
+            assert!((refused_usd - 0.0068).abs() < 1e-9, "{metrics}");
+        }
+    }
+
     /// gap-cb9044: `?skip=live_text,heartbeats` leaves a run's streamed
     /// reasoning, its live text and its heartbeats out of the event pages,
     /// unparsed, and keeps its tool steps, its tool results (one that quotes
@@ -4018,6 +4135,217 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-b9df52: the spec gate's checks fail on the base by design, so a
+    /// run whose own checks all passed has no `first_gate_failure`, and in a
+    /// run where a task's check failed, the milestone names that task.
+    #[tokio::test]
+    async fn spec_gate_red_on_base_steps_are_not_a_gate_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        // Run c91b63ea's shape: each task's check runs twice on the base and
+        // fails, as it must, before the plan starts.
+        let red_on_base = |run_id: &str| {
+            let step = |task: &str, run: u32| json!({"type":"spec_gate_step","run_id":run_id,"plan_id":"p1","task_id":task,"run":run,"step":1,"passed":false,"cached":false,"ms":80});
+            vec![
+                json!({"type":"spec_gate_started","run_id":run_id,"plan_id":"p1","steps_total":4}),
+                step("T1", 1),
+                step("T1", 2),
+                step("T2", 1),
+                step("T2", 2),
+                json!({"type":"spec_gate_finished","run_id":run_id,"plan_id":"p1","elapsed_ms":400,"tasks_checked":2,"steps_run":4,"cached":0,"blocked":0}),
+                json!({"type":"plan_started","run_id":run_id,"plan_id":"p1"}),
+            ]
+        };
+        let check = |run_id: &str, task: &str, passed: bool| json!({"type":"gate_result","run_id":run_id,"plan_id":"p1","task_id":task,"gate":"verify[0:test]","passed":passed});
+        let passed = |run_id: &str, task: &str| json!({"type":"task_completed","run_id":run_id,"plan_id":"p1","task_id":task,"outcome":"passed"});
+        let ended = |run_id: &str| json!({"type":"run_completed","run_id":run_id,"outcome":"succeeded","duration_ms":10});
+        let milestones = |summary: &Value| {
+            summary["milestones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|milestone| {
+                    (
+                        milestone["kind"].as_str().unwrap().to_string(),
+                        milestone["text"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut rows = red_on_base("g1");
+        rows.extend([
+            check("g1", "T1", true),
+            passed("g1", "T1"),
+            check("g1", "T2", true),
+            passed("g1", "T2"),
+            ended("g1"),
+        ]);
+        write_rows(&index("g1"), &rows);
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g1".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "succeeded", "{summary}");
+        let kinds = milestones(&summary)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            ["started", "first_task_accepted", "completed"],
+            "{summary}"
+        );
+
+        // T2's own check fails once: the milestone names T2, not the task
+        // whose base check failed first.
+        let mut rows = red_on_base("g2");
+        rows.extend([
+            check("g2", "T1", true),
+            passed("g2", "T1"),
+            check("g2", "T2", false),
+            check("g2", "T2", true),
+            passed("g2", "T2"),
+            ended("g2"),
+        ]);
+        write_rows(&index("g2"), &rows);
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g2".into()))
+            .await
+            .unwrap();
+        let failure = milestones(&summary)
+            .into_iter()
+            .find(|(kind, _)| kind == "first_gate_failure");
+        assert_eq!(
+            failure.map(|(_, text)| text).as_deref(),
+            Some("gate verify[0:test] failed on task T2"),
+            "{summary}"
+        );
+    }
+
+    /// bug-11e54b: a run's summary cost counts the calls its tries' provider
+    /// refused before they failed over, which its cost rows bill, and names
+    /// what side calls spent by role. Run 20c780ae's tries cost $0.6915 and
+    /// its four refused glm-4.7 calls $0.027; its summary said $0.6915 where
+    /// the rows billed $0.7185. While a try runs, its `call_cost` figure
+    /// holds its refused calls too, and they count once.
+    #[tokio::test]
+    async fn a_runs_summary_cost_includes_its_failover_refused_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let refused =
+            roko_core::dashboard_snapshot::side_call_usd_metric(FAILOVER_REFUSED_SIDE_CALL);
+        let efficiency = |run_id: &str, task: &str, metric: &str, value: f64| json!({"type":"efficiency_event","run_id":run_id,"plan_id":"p1","task_id":task,"metric":metric,"value":value});
+        let call = |task: &str, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"call":1,"model":"glm-4.7","cost_usd":0.01,"attempt_cost_usd":so_far});
+        let summary = async |run_id: &str, rows: &[Value]| {
+            write_rows(&index(run_id), rows);
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            summary
+        };
+        let usd = |summary: &Value, path: &[&str]| {
+            path.iter()
+                .fold(summary, |value, key| &value[*key])
+                .as_f64()
+                .unwrap_or_else(|| panic!("{path:?} in {summary}"))
+        };
+
+        // T2's try ran on glm-4.7 until a 429 cut it off at $0.0068, then
+        // failed over; its substitute has spent $0.01 so far.
+        let mut rows = vec![
+            call("T2", 0.0068),
+            efficiency("g1", "T2", &refused, 0.0068),
+            call("T2", 0.0168),
+        ];
+        let running = summary("g1", &rows).await;
+        assert!(
+            (usd(&running, &["cost_usd"]) - 0.0168).abs() < 1e-9,
+            "{running}"
+        );
+        assert!(
+            (usd(&running, &["side_call_usd", "failover_refused"]) - 0.0068).abs() < 1e-9,
+            "{running}"
+        );
+        // The try settles: its dispatch's cost and the refused call count.
+        rows.extend([
+            json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":1,"verdict":"passed"}),
+            efficiency("g1", "T2", "cost_usd", 0.01),
+        ]);
+        let settled = summary("g1", &rows).await;
+        assert!(
+            (usd(&settled, &["cost_usd"]) - 0.0168).abs() < 1e-9,
+            "{settled}"
+        );
+
+        // Run 20c780ae's rows: three tries on glm-4.7 ($0.4412), five on
+        // gpt-5.4-mini ($0.2503), four refused glm-4.7 calls ($0.027) and
+        // five helper calls the provider refused with a 402 ($0).
+        let mut rows = Vec::new();
+        for (task, cost) in [
+            ("T1", 0.1471),
+            ("T2", 0.1471),
+            ("T3", 0.147),
+            ("T2", 0.05),
+            ("T2", 0.05),
+            ("T3", 0.05),
+            ("T4", 0.05),
+            ("T4", 0.0503),
+        ] {
+            rows.push(efficiency("g2", task, "cost_usd", cost));
+        }
+        for (task, cost) in [
+            ("T2", 0.0068),
+            ("T2", 0.0067),
+            ("T3", 0.0068),
+            ("T4", 0.0067),
+        ] {
+            rows.push(efficiency("g2", task, &refused, cost));
+        }
+        for task in ["T1", "T2", "T2", "T3", "T4"] {
+            rows.push(efficiency("g2", task, "side_call_usd.helper", 0.0));
+        }
+        rows.push(
+            json!({"type":"run_completed","run_id":"g2","outcome":"succeeded","duration_ms":10}),
+        );
+        let ended = summary("g2", &rows).await;
+        assert!(
+            (usd(&ended, &["cost_usd"]) - 0.7185).abs() < 1e-9,
+            "{ended}"
+        );
+        assert!(
+            (usd(&ended, &["side_call_usd", "failover_refused"]) - 0.027).abs() < 1e-9,
+            "{ended}"
+        );
+        assert_eq!(ended["side_call_usd"]["helper"], 0.0, "{ended}");
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

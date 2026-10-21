@@ -2,15 +2,16 @@
 id = "bug-b9df52"
 kind = "bug"
 title = "The run summary's first_gate_failure milestone fires on the spec gate's expected red-on-base step: a run whose task checks all passed reads \"a gate failed on task T1\""
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-serve/routes"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "173b06d94"
 source = "round-v7-hermes-pilot#E-p2-run-c91b63ea"
 discovered_from = "agent:hermes-pilot (round v7 phase 2, run c91b63ea)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::is_gate_event"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn spec_gate_red_on_base_steps_are_not_a_gate_failure' crates/roko-serve/src && cargo test -p roko-serve --lib -- spec_gate_red_on_base_steps_are_not_a_gate_failure"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T01:08:28Z"
+commit = "173b06d94"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-20T23:57:33Z"
+forced = false
+evidence = "173b06d94. routes/runs.rs: is_spec_gate_event (spec_gate_started, spec_gate_step, spec_gate_finished) is left out of the first_gate_failure milestone, since the spec gate's checks must fail on the base; a task it refuses still ends the run refused (spec.gate.refused), and the /gates listing and the gate counts are unchanged. The literal verify passes: spec_gate_red_on_base_steps_are_not_a_gate_failure (run c91b63ea's shape: four red-on-base steps, then T1 and T2 pass: milestones started, first_task_accepted, completed; the same run with T2's own check failing once: 'gate verify[0:test] failed on task T2', not T1). run_summary_reports_verdict_cost_and_milestones still passes. Full lib suites, with bug-11e54b: roko-cli 3951, roko-core 2046, roko-learn 1391, roko-serve 1076 of 1077 (the failure is bug-904a1c's known JWKS flake, jwks.rs:878, at load about 100); fmt and clippy clean."
 +++
 
 ## Problem

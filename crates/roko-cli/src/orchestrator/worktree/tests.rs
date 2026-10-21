@@ -16,9 +16,9 @@ use super::git_ops::{
 use super::{
     AttemptAcceptance, CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK,
     RUNTIME_SHUTDOWN_WAIT, TestClaimMutationBarrier, TestClaimMutationPoint, TestPhaseBarrier,
-    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, clear_stale_index_lock,
-    format_attempt_branch_name, format_attempt_worktree_id, format_branch_name,
-    validate_workspace_file_kinds_with,
+    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, attempt_review_diff,
+    clear_stale_index_lock, format_attempt_branch_name, format_attempt_worktree_id,
+    format_branch_name, validate_workspace_file_kinds_with,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -2312,6 +2312,7 @@ fn acceptance_in(run_id: &str) -> AttemptAcceptance {
         attempt_key: format!("{run_id}:plan:task:1"),
         verdict: "passed".to_string(),
         title: "Accept the attempt".to_string(),
+        files: Vec::new(),
     }
 }
 
@@ -2723,6 +2724,175 @@ async fn accept_leaves_roko_config_copies_out_of_the_commit() {
     );
     assert!(files.contains("first.txt"), "{files}");
     assert!(!files.contains(".cursor"), "{files}");
+}
+
+/// Write `contents` to `path` under `root`, making its directories.
+fn write_under(root: &Path, path: &str, contents: &[u8]) {
+    let path = root.join(path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+/// A repository whose `main` holds crate `crates/a` and a `.gitignore` that
+/// ignores only the root's `/target`, as the golden path's seed does.
+fn commit_crate_seed(repo: &Path) {
+    // `info/exclude` outranks a global excludes file, which may ignore every
+    // `target/` and so hide the build output these tests leave in a crate.
+    write_under(repo, ".git/info/exclude", b"!target/\n");
+    write_under(repo, ".gitignore", b"/target\n");
+    write_under(
+        repo,
+        "crates/a/src/lib.rs",
+        b"pub fn one() -> u8 {\n    1\n}\n",
+    );
+    git_in(repo, &["add", "--all"]);
+    git_in(repo, &["commit", "--quiet", "-m", "seed"]);
+}
+
+/// What `cd crates/a && CARGO_TARGET_DIR=target cargo test` leaves in a
+/// checkout: build output under `crates/a/target/`, which the seed's
+/// `/target` does not ignore.
+const CRATE_BUILD_OUTPUT: [(&str, &[u8]); 3] = [
+    (
+        "crates/a/target/CACHEDIR.TAG",
+        b"Signature: 8a477f597d28d172789f06886806bc55\n",
+    ),
+    (
+        "crates/a/target/.rustc_info.json",
+        b"{\"rustc_fingerprint\":1}\n",
+    ),
+    (
+        "crates/a/target/debug/deps/a-0123456789abcdef",
+        b"\x7fELF\0test binary",
+    ),
+];
+
+/// bug-ba0c40: the golden path's T7 ran `cd crates/alpha && cargo test`
+/// under a relative `CARGO_TARGET_DIR`, and acceptance committed the 233
+/// files cargo left under `crates/alpha/target/`, none of them in the task's
+/// `files`, which the plan then delivered. Acceptance commits the task's
+/// declared change and its new declared file, and leaves the build output
+/// out, saying so in the commit's message; the review diff shows what is
+/// committed, and the delivered checkout is still removed.
+#[tokio::test]
+async fn an_attempts_undeclared_build_output_is_not_committed() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    commit_crate_seed(&repo);
+    let handle = manager.create_for_attempt("plan", "task", 0).await.unwrap();
+    let checkout = handle.path.clone();
+    let lib = "pub fn one() -> u8 {\n    1\n}\n\npub fn two() -> u8 {\n    2\n}\n";
+    write_under(&checkout, "crates/a/src/lib.rs", lib.as_bytes());
+    write_under(
+        &checkout,
+        "crates/a/tests/accept.rs",
+        b"#[test]\nfn two() {\n    assert_eq!(a::two(), 2);\n}\n",
+    );
+    for (path, contents) in CRATE_BUILD_OUTPUT {
+        write_under(&checkout, path, contents);
+    }
+    // The root's build output, which the repository ignores.
+    write_under(&checkout, "target/debug/a", b"ignored\n");
+    let mut acceptance = acceptance_in("run-1");
+    acceptance.files = vec![
+        "crates/a/src/lib.rs".to_string(),
+        "crates/a/tests/accept.rs".to_string(),
+    ];
+
+    let review = attempt_review_diff(&checkout, &acceptance.files)
+        .await
+        .unwrap();
+    assert!(
+        review.numstat.contains("crates/a/tests/accept.rs"),
+        "{}",
+        review.numstat
+    );
+    assert!(!review.numstat.contains("target"), "{}", review.numstat);
+
+    let accepted = manager
+        .accept_attempt("plan", "task", 0, &acceptance)
+        .await
+        .unwrap();
+    for commit in [&accepted.attempt_commit, &accepted.commit_oid] {
+        let committed = git_in(&repo, &["ls-tree", "-r", "--name-only", commit]);
+        assert_eq!(
+            committed.lines().collect::<Vec<_>>(),
+            [
+                ".gitignore",
+                "crates/a/src/lib.rs",
+                "crates/a/tests/accept.rs"
+            ]
+        );
+    }
+    let plan_lib = format!("{}:crates/a/src/lib.rs", format_branch_name("plan"));
+    assert_eq!(git_in(&repo, &["show", &plan_lib]), lib.trim_end());
+    assert_eq!(accepted.left_out.dirs, ["crates/a/target"]);
+    assert!(accepted.left_out.files.is_empty());
+    assert_eq!(accepted.left_out.count, CRATE_BUILD_OUTPUT.len());
+    let message = git_in(
+        &repo,
+        &["log", "-1", "--format=%B", &accepted.attempt_commit],
+    );
+    assert!(
+        message.contains("Not committed: 3 new file(s) of build output"),
+        "{message}"
+    );
+    assert!(message.contains("\n- crates/a/target/\n"), "{message}");
+    assert!(message.contains("Roko-Run: run-1"), "{message}");
+    // The build output stays in the checkout, untracked.
+    assert_eq!(
+        git_in(
+            &checkout,
+            &["status", "--porcelain", "--untracked-files=all"]
+        ),
+        "?? crates/a/target/.rustc_info.json\n?? crates/a/target/CACHEDIR.TAG\n\
+         ?? crates/a/target/debug/deps/a-0123456789abcdef"
+    );
+
+    // Once the plan is delivered, the checkout goes, its build output too.
+    let released = manager.release_accepted("plan", false).await.unwrap();
+    assert_eq!(released.removed_checkouts, vec![checkout.clone()]);
+    assert!(!checkout.exists());
+}
+
+/// bug-ba0c40: build output that an agent staged itself, with `git add -A`
+/// in its checkout, stays out of the commit as well.
+#[tokio::test]
+async fn build_output_an_attempt_staged_is_left_out_too() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    commit_crate_seed(&repo);
+    let handle = manager.create_for_attempt("plan", "task", 0).await.unwrap();
+    write_under(
+        &handle.path,
+        "crates/a/src/lib.rs",
+        b"pub fn one() -> u8 {\n    2\n}\n",
+    );
+    for (path, contents) in CRATE_BUILD_OUTPUT {
+        write_under(&handle.path, path, contents);
+    }
+    git_in(&handle.path, &["add", "-A"]);
+    let mut acceptance = acceptance_in("run-1");
+    acceptance.files = vec!["crates/a/src/lib.rs".to_string()];
+
+    let accepted = manager
+        .accept_attempt("plan", "task", 0, &acceptance)
+        .await
+        .unwrap();
+
+    let committed = git_in(
+        &repo,
+        &["ls-tree", "-r", "--name-only", &accepted.commit_oid],
+    );
+    assert_eq!(
+        committed.lines().collect::<Vec<_>>(),
+        [".gitignore", "crates/a/src/lib.rs"]
+    );
+    assert_eq!(accepted.left_out.dirs, ["crates/a/target"]);
 }
 
 #[tokio::test]

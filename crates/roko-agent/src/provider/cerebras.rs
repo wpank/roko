@@ -86,7 +86,8 @@ impl ProviderAdapter for CerebrasAdapter {
                 // response, not the attempt's timeout (bug-5e597a).
                 .with_request_timeout_ms(provider.timeout_ms)
                 .with_optional_data_llm(options.data_llm.clone())
-                .with_optional_turn_budget(options.turn_budget.clone());
+                .with_optional_turn_budget(options.turn_budget.clone())
+                .with_optional_hand_off_check(options.hand_off_check.clone());
 
             // Prepend a tool-call instruction for small models that tend to
             // emit tool invocations as text instead of using the API.

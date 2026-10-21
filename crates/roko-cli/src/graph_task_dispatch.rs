@@ -65,6 +65,7 @@ mod failover;
 mod fast;
 mod feedback;
 mod gate_learning;
+mod hand_off;
 mod helper_calls;
 mod inert_settings;
 mod judge_step;
@@ -831,22 +832,40 @@ impl GraphTaskDispatcher {
 
     /// Return a helper agent wired to the model chosen by
     /// [`select_cheap_model_key`] among those the run's side calls may use
-    /// ([`Self::side_call_models`]), or `None` when no such model is
-    /// dispatchable. Used for best-effort error enrichment, quality judgment
-    /// and gate reflection calls, which count toward the attempt being
-    /// verified ([`HelperAgent`]).
+    /// ([`Self::side_call_models`]) that are healthy ([`Self::helper_healthy`]),
+    /// or `None` when no such model is dispatchable: its callers then fall
+    /// back as they do with no model configured. Used for best-effort error
+    /// enrichment, quality judgment and gate reflection calls, which count
+    /// toward the attempt being verified ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
         let models = self.side_call_models();
-        select_cheap_model_key(&self.config, |key| models.allow(key))
-            .map(|model_key| self.helper_agent(model_key))
+        select_cheap_model_key(&self.config, |key| {
+            models.allow(key) && self.helper_healthy(key)
+        })
+        .map(|model_key| self.helper_agent(model_key))
     }
 
     /// The helper model that judges an attempt `executor` (a model slug) ran
     /// ([`routing_context::select_judge_model_key`], 9123), among the models
-    /// the run's side calls may use.
+    /// the run's side calls may use that are healthy.
     fn judge_model_key(&self, executor: &str) -> Option<(String, bool)> {
         let models = self.side_call_models();
-        routing_context::select_judge_model_key(&self.config, executor, |key| models.allow(key))
+        routing_context::select_judge_model_key(&self.config, executor, |key| {
+            models.allow(key) && self.helper_healthy(key)
+        })
+    }
+
+    /// Whether a helper call may use the model `key` (bug-f9ca2f): its
+    /// provider's circuit is closed in the run's health registry, as task
+    /// routing asks, and it did not fail its tool-use probe this run.
+    fn helper_healthy(&self, key: &str) -> bool {
+        let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+            .resolve(key);
+        self.factory
+            .health_registry
+            .is_available(&target.provider_id)
+            && self.factory.failed_probe(key).is_none()
+            && self.factory.failed_probe(&target.model_slug).is_none()
     }
 
     /// Whether this run's tasks hold their outbound tool calls for approval,
@@ -1574,6 +1593,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             audit.scan_prompt(&dispatch_plan.prompt.system_prompt, &prompt);
         }
         self.log_prompts(spec, &task.id, &dispatch_plan.prompt.system_prompt, &prompt);
+        // bug-cbbaa8: an implementer that hands back with its checks failing
+        // goes back to them within the try.
+        let send_back = self.send_back(&task);
         let mut request = AgentDispatchRequest {
             model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,
@@ -1616,6 +1638,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &task.id,
                 attempt.key.attempt,
             ),
+            hand_off: send_back
+                .clone()
+                .map(|check| -> Arc<dyn roko_agent::tool_loop::HandOffCheck> { check }),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);
@@ -1737,6 +1762,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
         drop(left_checks);
+        if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
+            attempt.record_continues(continues);
+        }
         if let Some(supervised) = supervised {
             supervised
                 .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));
@@ -3332,7 +3360,21 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
     /// stream, as an attempt does whenever its progress is tracked
     /// (bug-3a3b0f), else as JSON.
     pub(super) fn openai_mock_wire(response: &serde_json::Value, streamed: bool) -> String {
-        if let Some(retry_after) = response
+        if let Some(status) = response
+            .get(REFUSED_TURN)
+            .and_then(serde_json::Value::as_u64)
+        {
+            let body = response["body"].to_string();
+            let reason = if status == 402 {
+                "Payment Required"
+            } else {
+                "Too Many Requests"
+            };
+            format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else if let Some(retry_after) = response
             .get(RATE_LIMITED_TURN)
             .and_then(serde_json::Value::as_u64)
         {
@@ -3517,6 +3559,17 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
     /// A call the provider refuses with HTTP 429 and a `Retry-After` of
     /// `retry_after_secs`, with z.ai's error body (bug-4b6844).
     /// [`spawn_openai_mock`] answers it so whether the request streams or not.
+    const REFUSED_TURN: &str = "__refused_with_status";
+
+    /// A call the provider refuses with HTTP `status` and the JSON `body`,
+    /// with no `Retry-After` (bug-390e4b). [`spawn_openai_mock`] answers it so
+    /// whether the request streams or not.
+    pub(super) fn refused_turn(status: u16, body: serde_json::Value) -> serde_json::Value {
+        let mut turn = serde_json::json!({ "body": body });
+        turn[REFUSED_TURN] = serde_json::json!(status);
+        turn
+    }
+
     pub(super) fn rate_limited_turn(retry_after_secs: u64) -> serde_json::Value {
         let mut turn = serde_json::json!({
             "error": {

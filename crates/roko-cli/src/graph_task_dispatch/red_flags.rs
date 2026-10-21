@@ -1702,7 +1702,11 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             tool_call_turn("call-write-again", "write_file", write),
             final_turn("Done."),
         ]);
-        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path()).await;
+        // The screen and its feedback across tries: the agent is not sent
+        // back within its try (bug-cbbaa8).
+        let mut config = api_config(base_url);
+        config.gates.hand_off_continues = 0;
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
         let marker = temp.path().join("verify-ran");
         let check = format!("grep -q 'fn two' src/lib.rs && touch {}", marker.display());
         let task = TaskDef {

@@ -2065,6 +2065,7 @@ fn build_agent(
             thinking: None,
             data_llm: None,
             turn_budget: None,
+            hand_off_check: None,
             max_budget_usd: None,
             pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         },

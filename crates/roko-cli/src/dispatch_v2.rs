@@ -1946,6 +1946,7 @@ impl AgentDispatcherV2 {
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
             essential_tools: essential_tools(request),
+            hand_off_check: request.hand_off.clone(),
             ..Default::default()
         }
     }
@@ -2284,6 +2285,12 @@ pub struct AgentDispatchRequest {
     /// Skipped by serde.
     #[serde(skip)]
     pub allowance: Option<Arc<dyn CallAllowance>>,
+    /// What the agent's tool loop asks when its model hands back
+    /// (bug-cbbaa8): a plan attempt's implementer whose task's checks still
+    /// fail, with turns left, is sent back to them within its try. Skipped
+    /// by serde.
+    #[serde(skip)]
+    pub hand_off: Option<Arc<dyn roko_agent::tool_loop::HandOffCheck>>,
 }
 
 /// What an attempt may still spend on its model calls, as its dispatch
@@ -3279,6 +3286,7 @@ mod tests {
                 attempt_key: None,
                 knowledge_ids: Vec::new(),
                 allowance: None,
+                hand_off: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3972,6 +3980,7 @@ mod tests {
             attempt_key: None,
             knowledge_ids: Vec::new(),
             allowance: None,
+            hand_off: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -4045,6 +4054,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             attempt_key: None,
             knowledge_ids: Vec::new(),
             allowance: None,
+            hand_off: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());
@@ -4189,6 +4199,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             attempt_key: None,
             knowledge_ids: Vec::new(),
             allowance: None,
+            hand_off: None,
         }
     }
 

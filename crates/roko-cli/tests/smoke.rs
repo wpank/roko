@@ -337,6 +337,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         thinking: None,
         data_llm: None,
         turn_budget: None,
+        hand_off_check: None,
         max_budget_usd: None,
         pricing: roko_core::pricing_snapshot::PricingConfig::default(),
     };

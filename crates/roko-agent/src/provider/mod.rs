@@ -1211,6 +1211,11 @@ pub struct AgentOptions {
     /// whose loop roko runs asks it before each model call and stops once it
     /// refuses one; a plan run's attempt sets it from the plan budget.
     pub turn_budget: Option<Arc<dyn crate::tool_loop::TurnBudget>>,
+    /// What this agent's tool loop asks when its model hands back, for a
+    /// provider whose loop roko runs (bug-cbbaa8): a plan attempt's
+    /// implementer whose task's checks still fail, with turns left, is sent
+    /// back to them within its try.
+    pub hand_off_check: Option<Arc<dyn crate::tool_loop::HandOffCheck>>,
     /// The most this agent's run may spend, in USD, for an agent that runs
     /// its own loop and keeps a spend limit of its own (the Claude CLI's
     /// `--max-budget-usd`). A plan run's attempt sets it from the plan budget
@@ -1258,6 +1263,7 @@ impl std::fmt::Debug for AgentOptions {
             .field("provenance_sink", &self.provenance_sink.is_some())
             .field("data_llm", &self.data_llm.is_some())
             .field("turn_budget", &self.turn_budget.is_some())
+            .field("hand_off_check", &self.hand_off_check.is_some())
             .field("essential_tools", &self.essential_tools)
             .finish_non_exhaustive()
     }
@@ -1508,8 +1514,10 @@ impl fmt::Display for ProviderError {
                 None => f.write_str("rate limited"),
             },
             Self::AuthFailure => f.write_str(error_classify::AUTH_FAILURE_MARKER),
-            Self::InsufficientCredits => f.write_str(
-                "billing error: insufficient credits or quota exceeded — will not retry",
+            Self::InsufficientCredits => write!(
+                f,
+                "{} or quota exceeded — will not retry",
+                error_classify::BILLING_REFUSAL_MARKER
             ),
             Self::ProviderExhausted { message, .. } => write!(
                 f,

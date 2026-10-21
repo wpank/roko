@@ -452,6 +452,7 @@ impl AttemptBook {
             trust_exclusions: None,
             verify_depth: None,
             bound: None,
+            continues: None,
             effort: None,
             forecast: std::sync::OnceLock::new(),
             setup: AttemptSetup::default(),
@@ -504,6 +505,10 @@ pub(super) struct AttemptContext {
     verify_depth: Option<VerifyDepthRecord>,
     /// The rung's bound the try ended at, for its verdict (gap-3217a0).
     bound: Option<&'static str>,
+    /// How many times the try's agent was sent back to its failing checks
+    /// within the try, for its verdict (bug-cbbaa8); `None` when its loop
+    /// never asked.
+    continues: Option<u32>,
     /// The reasoning effort the attempt's request asked for, which its
     /// verdict records where the model takes one (bug-29014c).
     effort: Option<String>,
@@ -589,6 +594,12 @@ impl AttemptContext {
     /// which the verdict records (gap-3217a0).
     pub(super) fn ended_at_bound(&mut self, kind: &'static str) {
         self.bound = Some(kind);
+    }
+
+    /// The try's agent was sent back to its failing checks `continues` times
+    /// within the try (bug-cbbaa8), which the verdict records.
+    pub(super) fn record_continues(&mut self, continues: u32) {
+        self.continues = Some(continues);
     }
 
     /// The pre-verify screen found `findings`: paths the attempt changed
@@ -847,6 +858,7 @@ impl AttemptContext {
         verdict.trust_exclusions = self.trust_exclusions;
         verdict.verify_depth = self.verify_depth;
         verdict.bound = self.bound.map(str::to_string);
+        verdict.continues = self.continues;
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
         // M1's audit boost of the θ it ran raises its rate (B7, 8127).
@@ -2494,6 +2506,151 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let left = temp.path().join(".roko/state/task-checks");
         let files = std::fs::read_dir(&left).map_or(0, Iterator::count);
         assert_eq!(files, 0, "the try's checks file outlived it");
+    }
+
+    /// A build check that fails, as CMake would, until `src/voice.cpp` returns 1.
+    const VOICE_CHECK: &str = "echo '[ 50%] Building CXX object CMakeFiles/undertow.dir/src/voice.cpp.o'\n\
+         if ! grep -q 'return 1' src/voice.cpp 2>/dev/null; then\n\
+         echo 'src/voice.cpp:1:1: error: voice() needs a body' >&2\n\
+         exit 2\n\
+         fi\n\
+         echo '[100%] Built target undertow'\n";
+
+    /// A try at a task whose one check is [`VOICE_CHECK`], its implementer
+    /// the mock at `base_url`, and the verdicts it writes, once there are
+    /// `verdicts` of them: whether the try passed, and what the model was sent.
+    async fn voice_try(
+        temp: &Path,
+        replies: Vec<serde_json::Value>,
+        verdicts: usize,
+    ) -> (bool, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        std::fs::write(temp.join("check.sh"), VOICE_CHECK).expect("check.sh");
+        let (base_url, requests) = spawn_openai_mock(replies);
+        let runs_dir = temp.join(".roko/runs");
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp)
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("build", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let passed = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .is_ok();
+        drop(dispatcher);
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let rows = jsonl_rows_where(
+            &runs_dir.join(RUN).join("attempts.jsonl"),
+            verdicts,
+            is_verdict,
+        )
+        .await;
+        let sent = requests.lock().clone();
+        (passed, rows, sent)
+    }
+
+    /// The last two messages a model call was sent, when it was sent two.
+    fn last_two(request: &serde_json::Value) -> Option<(serde_json::Value, serde_json::Value)> {
+        let messages = request["messages"].as_array()?;
+        let [.., reply, note] = messages.as_slice() else {
+            return None;
+        };
+        Some((reply.clone(), note.clone()))
+    }
+
+    /// bug-cbbaa8: in Undertow's phase 3 every strong try ran its spec tests,
+    /// saw them fail and handed back with most of its 120 turns left, and
+    /// each hand-off spent a whole try. An implementer that hands back while
+    /// its check fails, with turns left, now goes back with what the check
+    /// says, in the same try: here it then fixes the code and the try passes,
+    /// first time, its verdict saying it went back once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_red_hand_off_with_turns_left_continues_the_same_try() {
+        let temp = tempdir().expect("tempdir");
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let (passed, verdicts, sent) = voice_try(
+            temp.path(),
+            vec![
+                final_turn("done"),
+                tool_call_turn("c1", "write_file", fix),
+                final_turn("fixed"),
+                final_turn("spare"),
+            ],
+            1,
+        )
+        .await;
+
+        assert!(passed, "the try passes: {verdicts:?}");
+        assert_eq!(verdicts.len(), 1, "one try: {verdicts:?}");
+        assert_eq!(verdicts[0]["attempt"], 1);
+        assert_eq!(verdicts[0]["outcome"], "passed");
+        assert_eq!(verdicts[0]["continues"], 1);
+        // The call after the red hand-off: the agent's reply, then what the
+        // check said, as the next try's feedback says it.
+        assert!(sent.len() >= 3, "{sent:?}");
+        let (reply, note) = last_two(&sent[1]).expect("the call after the hand-off");
+        assert_eq!(reply["role"], "assistant");
+        assert_eq!(reply["content"], "done");
+        assert_eq!(note["role"], "user");
+        let note = note["content"].as_str().expect("the note is text");
+        for expected in [
+            "# Your checks still fail",
+            "your task's check verify[0:build] still fails, so this try goes on",
+            "`run_tests` with `\"build\": \"checks\"`",
+            "It can go back once more",
+            "verify[0:build] (`bash check.sh`): exit code: 2",
+            "error: voice() needs a body",
+        ] {
+            assert!(note.contains(expected), "{expected}: {note}");
+        }
+    }
+
+    /// bug-cbbaa8: an implementer whose check stays red goes back
+    /// `[gates] hand_off_continues` times (2), then the try settles on its
+    /// check as before, as `gate_failed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_try_that_stays_red_settles_after_its_returns() {
+        let temp = tempdir().expect("tempdir");
+        let (passed, verdicts, sent) = voice_try(temp.path(), vec![final_turn("done"); 8], 1).await;
+
+        assert!(!passed, "the try fails: {verdicts:?}");
+        assert_eq!(verdicts.len(), 1, "one try: {verdicts:?}");
+        assert_eq!(verdicts[0]["outcome"], "gate_failed");
+        assert_eq!(verdicts[0]["continues"], 2);
+        // Three hand-offs: two sent back, the last one settles. A call after
+        // them (the failure's diagnosis) carries no note.
+        let notes: Vec<String> = sent
+            .iter()
+            .filter_map(last_two)
+            .filter(|(_, note)| {
+                note["content"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("# Your checks still fail"))
+            })
+            .map(|(_, note)| note["content"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(notes.len(), 2, "{sent:?}");
+        assert!(
+            notes[0].contains("It can go back once more"),
+            "{}",
+            notes[0]
+        );
+        assert!(
+            notes[1].contains("This try does not go back again"),
+            "{}",
+            notes[1]
+        );
     }
 
     /// `api-model` on an OpenAI-compatible provider the mock at `base_url`

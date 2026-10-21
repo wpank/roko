@@ -931,8 +931,20 @@ impl GraphTaskDispatcher {
                 // rather than raw compiler noise. Falls back deterministically
                 // when no model is configured or the call fails.
                 let raw_for_feedback = failures.join("\n---\n");
+                // How far the try got in the first step it failed, by that
+                // step's own runner (gap-54089d).
+                let progress = step_outcomes
+                    .iter()
+                    .position(|(_, passed)| !passed)
+                    .and_then(|i| Some((&steps.get(i)?.0, &ran_steps.get(i)?.1)))
+                    .map(|(label, verdict)| {
+                        super::retry_feedback::StepProgress::of(
+                            label,
+                            verdict.detail.as_deref().unwrap_or_default(),
+                        )
+                    });
                 // The task's best try so far, whose files the next try starts
-                // from when this one passed fewer steps (gap-fefdf5).
+                // from when this one got less far (gap-fefdf5, gap-54089d).
                 let kept = self
                     .settle_best_try(
                         spec,
@@ -941,6 +953,7 @@ impl GraphTaskDispatcher {
                         &effective_workdir,
                         &steps,
                         &step_outcomes,
+                        progress,
                     )
                     .await;
                 // The diagnosis feeds the retry prompt, so it stays inline but
@@ -1501,7 +1514,7 @@ fn hidden_output_note(command: &str) -> Option<String> {
 /// A failed step's entry in the retry's feedback: its label and command, its
 /// authored `fail_msg` (else how it ended), the last 30 lines it printed, and
 /// [`hidden_output_note`] when its runner's output was hidden.
-fn step_failure(
+pub(super) fn step_failure(
     step_label: &str,
     shown: &str,
     step: &crate::task_parser::VerifyStep,

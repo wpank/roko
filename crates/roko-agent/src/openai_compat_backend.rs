@@ -56,10 +56,12 @@ pub fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
 ///
 /// Status codes are mapped as follows:
 /// - 429 / 529 -> `LlmError::Provider(ProviderError::RateLimit { .. })`, or
-///   `InsufficientCredits` / `ProviderExhausted` when the body names a billing
-///   or usage-window problem or `Retry-After` spans a usage window
+///   `ProviderExhausted` when the body names a billing or usage-window problem
+///   or `Retry-After` spans a usage window
 /// - 500..=599 -> `LlmError::Provider(ProviderError::ServerError(status))`
 /// - 401       -> `LlmError::Provider(ProviderError::AuthFailure)`
+/// - 402       -> `ProviderExhausted`: the provider can't bill the account
+///   (bug-390e4b)
 /// - Everything else (including transport errors with no status) -> `LlmError::Network`
 fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
     use crate::provider::ProviderError;
@@ -72,6 +74,10 @@ fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
         }
         Some(s @ 500..=599) => LlmError::Provider(ProviderError::ServerError(s)),
         Some(401) => LlmError::Provider(ProviderError::AuthFailure),
+        // The provider can't bill the account (bug-390e4b).
+        Some(402) => {
+            LlmError::Provider(crate::provider::error_classify::billing_refusal(&e.message))
+        }
         _ => LlmError::Network(e.to_string()),
     }
 }
@@ -2698,6 +2704,27 @@ mod tests {
         assert!(
             matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
             "expected Provider(RateLimit), got {err:?}"
+        );
+    }
+
+    /// bug-390e4b: a 402 is the provider's refusal to bill the account, an
+    /// exhaustion with its own words and code, as Cerebras sends it.
+    #[test]
+    fn classify_http_error_402_is_a_billing_refusal() {
+        let body = r#"{"message":"Payment required to access this resource. Visit your billing tab.","type":"payment_required_error","param":"quota","code":"payment_required"}"#;
+        let err = classify_http_error(HttpPostError::http(402, body));
+        let LlmError::Provider(ProviderError::ProviderExhausted {
+            resets_at_ms,
+            message,
+        }) = &err
+        else {
+            panic!("expected a billing refusal for 402, got {err:?}");
+        };
+        assert_eq!(*resets_at_ms, None);
+        assert_eq!(
+            message,
+            "Payment required to access this resource. Visit your billing tab. (code \
+             payment_required)"
         );
     }
 

@@ -187,6 +187,7 @@ semantics and built-in profiles.
 | `clippy_enabled` | bool | true | Enable clippy gate |
 | `skip_tests` | bool | false | Skip test gate |
 | `max_iterations` | u32 | 3 | Global gate retry ceiling |
+| `hand_off_continues` | u32 | 2 | How many times a plan task's implementer that hands back while its task's verify steps still fail, with turns left, is sent back to them within the same try, told what they say, before the try settles on its checks (bug-cbbaa8). Only for a provider whose tool loop roko runs, never in FAST mode; `0` turns it off. The verdict records `continues` |
 | `rungs` | array of tables (`name`, `kind`, `command`, `timeout_secs`, `required`, `parallel_with`, `artefacts`, `schema`, `rubric`, `advisory`) | none | Declared gate rungs, the `code` verifier pack. The `required` `command` ones are `roko run`'s verify steps, and every `roko plan run` task with no domain, or of the `code` domain when `packs` declares no `code` pack, runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
 | `packs` | table of tables (`[gates.packs.<domain>] rungs = [...]`) | none | Verifier packs by task domain label (`code`, `chain`, `research`, `docs` or a custom label). A plan task faces its domain's pack in place of `rungs`; a task of a domain other than `code` with no pack runs only its own verify steps, so it ends unverified rather than run the code ladder |
 

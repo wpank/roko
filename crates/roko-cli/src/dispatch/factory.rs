@@ -100,6 +100,9 @@ pub struct SharedAgentFactory {
     /// What the run's prompt-cache snapshot holds, when the factory's
     /// prompts are built from one (backlog 4214).
     prompt_snapshot: Option<crate::dispatch::prompt_cache::PromptCacheDigest>,
+    /// The models that failed their tool-use probe this run, with why
+    /// (backlog 1121): helper calls pass over them too (bug-f9ca2f).
+    failed_probes: std::collections::BTreeMap<String, String>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -296,7 +299,14 @@ impl SharedAgentFactory {
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
             prompt_snapshot,
+            failed_probes: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Why `model`, a model name dispatch runs (a `[models.*]` key or slug),
+    /// failed its tool-use probe this run, when it did (backlog 1121).
+    pub fn failed_probe(&self, model: &str) -> Option<&str> {
+        self.failed_probes.get(model).map(String::as_str)
     }
 
     /// What the run's prompt-cache snapshot holds, when this factory's
@@ -322,7 +332,7 @@ impl SharedAgentFactory {
 
     /// Skip the ladder rungs whose models `failed` their tool-use probe, by
     /// model with the reason (backlog 1121); with no rung left the router
-    /// picks.
+    /// picks. Helper calls pass over those models too (bug-f9ca2f).
     #[must_use]
     pub fn skip_failed_rungs(
         mut self,
@@ -331,6 +341,11 @@ impl SharedAgentFactory {
         if failed.is_empty() {
             return self;
         }
+        self.failed_probes.extend(
+            failed
+                .iter()
+                .map(|(model, reason)| (model.clone(), reason.clone())),
+        );
         if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
             self.dispatcher
                 .replace_routing_ladder(ladder.without_models(failed));

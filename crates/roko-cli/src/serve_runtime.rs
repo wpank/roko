@@ -2774,6 +2774,7 @@ enabled = false
                     task_id,
                     metric,
                     value,
+                    ..
                 } if metric == "cost_usd" => Some((plan_id, task_id, value)),
                 _ => None,
             })

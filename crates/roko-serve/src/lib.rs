@@ -2023,11 +2023,13 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         ServerEvent::EfficiencyEvent {
             plan_id,
             task_id,
+            attempt,
             metric,
             value,
         } => Some(DashboardEvent::EfficiencyEvent {
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
+            attempt: *attempt,
             metric: metric.clone(),
             value: *value,
         }),
@@ -2115,6 +2117,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         } => Some(DashboardEvent::EfficiencyEvent {
             plan_id: format!("bench-{bench_id}"),
             task_id: format!("{completed}/{total}"),
+            attempt: None,
             metric: "cost_usd".to_string(),
             value: *cost_so_far,
         }),
@@ -2444,11 +2447,13 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         DashboardEvent::EfficiencyEvent {
             plan_id,
             task_id,
+            attempt,
             metric,
             value,
         } => Some(ServerEvent::EfficiencyEvent {
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
+            attempt: *attempt,
             metric: metric.clone(),
             value: *value,
         }),

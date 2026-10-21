@@ -614,6 +614,11 @@ pub enum DashboardEvent {
     EfficiencyEvent {
         plan_id: String,
         task_id: String,
+        /// The try the metric is of, from 1, when it is one try's: a side
+        /// call's cost names the try that made the call (gap-1430ea).
+        /// `None`, and absent from the JSON, for a task's or a plan's metric.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
         metric: String,
         value: f64,
     },
@@ -3087,6 +3092,7 @@ impl DashboardSnapshot {
                 task_id,
                 metric,
                 value,
+                ..
             } => {
                 // Update per-agent token/cost stats when the metric carries them.
                 // The metric field encodes the metric name; we match known names.
@@ -6133,6 +6139,7 @@ mod tests {
         let usage = |plan_id: &str, metric: &str, value: f64| DashboardEvent::EfficiencyEvent {
             plan_id: plan_id.into(),
             task_id: "t1".into(),
+            attempt: None,
             metric: metric.into(),
             value,
         };
@@ -6377,6 +6384,7 @@ mod tests {
         let spend = |task_id: &str, value: f64| DashboardEvent::EfficiencyEvent {
             plan_id: "p1".into(),
             task_id: task_id.into(),
+            attempt: None,
             metric: "cost_usd".into(),
             value,
         };
@@ -6408,6 +6416,7 @@ mod tests {
         let metric = |metric: &str, value: f64| DashboardEvent::EfficiencyEvent {
             plan_id: "p1".into(),
             task_id: "t1".into(),
+            attempt: None,
             metric: metric.into(),
             value,
         };
@@ -6430,6 +6439,36 @@ mod tests {
 
         assert_eq!(snap.plans["p1"].cost_usd, 0.875);
         assert_eq!(snap.stats.cost_usd_total, 0.875);
+    }
+
+    /// gap-1430ea: an efficiency event names its try when it is one try's,
+    /// and one without a try reads and writes as before.
+    #[test]
+    fn an_efficiency_event_names_its_try_when_it_has_one() {
+        let event = |attempt| DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            attempt,
+            metric: side_call_usd_metric(FAILOVER_REFUSED_SIDE_CALL),
+            value: 0.25,
+        };
+        let named = serde_json::to_value(event(Some(2))).expect("serialize");
+        assert_eq!(named["type"], "efficiency_event");
+        assert_eq!(named["attempt"], 2);
+        let unnamed = serde_json::to_value(event(None)).expect("serialize");
+        assert!(unnamed.get("attempt").is_none(), "{unnamed}");
+        let older: DashboardEvent = serde_json::from_value(serde_json::json!({
+            "type": "efficiency_event",
+            "plan_id": "p1",
+            "task_id": "t1",
+            "metric": "cost_usd",
+            "value": 0.5,
+        }))
+        .expect("an event written before the field");
+        assert!(matches!(
+            older,
+            DashboardEvent::EfficiencyEvent { attempt: None, .. }
+        ));
     }
 
     #[test]

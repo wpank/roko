@@ -2136,10 +2136,11 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     // records count it.
     let mut live_calls = BTreeMap::<(String, String, u64), f64>::new();
     let mut settled = BTreeSet::<(String, String, u64)>::new();
-    // Each task's running try, as its latest `call_cost` names it, and the
-    // calls each try's provider refused before it failed over. They are the
-    // try's own calls, so until the try settles, its `call_cost` figure holds
-    // their spend beside their side-call events (bug-11e54b).
+    // The calls each try's provider refused before it failed over. They are
+    // the try's own calls, so until the try settles, its `call_cost` figure
+    // holds their spend beside their side-call events (bug-11e54b). A side
+    // call's event names its try (gap-1430ea); for one that does not, the
+    // try is the task's running one, as its latest `call_cost` names it.
     let mut running_try = BTreeMap::<(String, String), u64>::new();
     let mut refused_in_try = BTreeMap::<(String, String, u64), f64>::new();
 
@@ -2178,7 +2179,11 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             if let Some((metric, amount)) = efficiency_metric(value)
                 && side_call_role(metric) == Some(FAILOVER_REFUSED_SIDE_CALL)
                 && let (Some(plan_id), Some(task_id)) = (event_plan_id(value), event_task_id(value))
-                && let Some(&attempt) = running_try.get(&(plan_id.to_string(), task_id.to_string()))
+                && let Some(attempt) = event_attempt(value).or_else(|| {
+                    running_try
+                        .get(&(plan_id.to_string(), task_id.to_string()))
+                        .copied()
+                })
             {
                 *refused_in_try
                     .entry((plan_id.to_string(), task_id.to_string(), attempt))
@@ -3436,6 +3441,62 @@ mod tests {
         let ended = summary(&rows);
         assert!((cost(&ended, "cost_usd") - 0.05).abs() < 1e-9, "{ended}");
         assert!(cost(&ended, "live_cost_usd").abs() < 1e-9, "{ended}");
+    }
+
+    /// gap-1430ea: a side call's event names the try that made it, and the
+    /// summary takes the try from it. A refused call counts once whichever
+    /// event names it last, and the summary's cost and `side_call_usd` are
+    /// those of bug-11e54b.
+    #[test]
+    fn a_side_call_event_names_its_try_and_the_summary_keeps_its_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let refused = |attempt: u32| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"metric":"side_call_usd.failover_refused","value":0.0068});
+        let call = |attempt: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"call":1,"model":"glm-4.7","cost_usd":0.01,"attempt_cost_usd":so_far});
+        let summary = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            summarize_events(&page.events)["metrics"].clone()
+        };
+        // T2's first try: refused at $0.0068, then its substitute settled at
+        // $0.01. Its second try has spent $0.02 so far.
+        let settled = [
+            json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":1,"verdict":"failed"}),
+            json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","metric":"cost_usd","value":0.01}),
+        ];
+        let in_order = [
+            vec![call(1, 0.0068), refused(1), call(1, 0.0168)],
+            settled.to_vec(),
+            vec![call(2, 0.02)],
+        ]
+        .concat();
+        // The same refused call, its event read after the second try began:
+        // it names the first try, so the second try's figure keeps it all.
+        let late = [
+            vec![call(1, 0.0068), call(1, 0.0168)],
+            settled.to_vec(),
+            vec![call(2, 0.02), refused(1)],
+        ]
+        .concat();
+        for rows in [in_order, late] {
+            let metrics = summary(&rows);
+            let cost = metrics["cost_usd"].as_f64().expect("cost_usd");
+            assert!((cost - 0.0368).abs() < 1e-9, "{metrics}");
+            let refused_usd = metrics["side_call_usd"]["failover_refused"]
+                .as_f64()
+                .expect("failover_refused");
+            assert!((refused_usd - 0.0068).abs() < 1e-9, "{metrics}");
+        }
     }
 
     /// gap-cb9044: `?skip=live_text,heartbeats` leaves a run's streamed

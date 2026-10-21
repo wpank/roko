@@ -47,8 +47,9 @@ const UNGUARDED_CLI_KINDS: [ProviderKind; 4] = [
     ProviderKind::GeminiCli,
 ];
 
-/// `role` of the cost and efficiency rows of a call failover refused.
-const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
+/// `role` of the cost and efficiency rows of a call failover refused, by
+/// roko-core's name for it: roko-serve's run summary picks them out by it.
+const FAILOVER_REFUSED_ROLE: &str = roko_core::dashboard_snapshot::FAILOVER_REFUSED_SIDE_CALL;
 
 /// Failover refusal class of a provider that rejected roko's credentials: a
 /// login does not fix itself within a run, so the refusal is definitive and
@@ -3220,6 +3221,71 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             std::fs::read_to_string(temp.path().join("hello.txt")).expect("hello.txt"),
             "hi on mid"
         );
+    }
+
+    /// bug-33a61f with bug-5e597a: a call held for a slot that then waits long
+    /// for its answer keeps both rules. Its hold is queued, so the stall
+    /// watchdog leaves it out, and the wait in flight is bounded by its
+    /// provider's `timeout_ms`, not by `task_stall_secs`. Held about 4 s, then
+    /// answered 5 s after it goes out, with `task_stall_secs = 2` and
+    /// `timeout_ms = 8000`, the run goes on in one go: past 120 s at full
+    /// scale, the same two rules.
+    #[tokio::test]
+    async fn a_held_call_that_then_waits_long_keeps_its_queue_and_its_providers_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let (base_url, requests) = spawn_hooked_openai_mock(
+            vec![
+                tool_call_turn(
+                    "call-write",
+                    "write_file",
+                    serde_json::json!({ "path": "hello.txt", "content": "hi on mid" }),
+                ),
+                final_turn("wrote hello.txt"),
+            ],
+            |index, base_url| {
+                if index > 0 {
+                    // The held call, once out, waits 5 s for its answer.
+                    std::thread::sleep(Duration::from_secs(5));
+                    return;
+                }
+                let endpoint = roko_agent::openai_compat_backend::chat_endpoint(base_url);
+                let limiter = roko_agent::openai_compat_backend::shared_rate_limiter();
+                let other = limiter.admit(&endpoint).expect("another try's call");
+                limiter.note_rate_limited(&endpoint);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(4));
+                    drop(other);
+                });
+            },
+        );
+        let (dispatcher, _health) = held_rung_dispatcher(&claude, &base_url, &temp, |config| {
+            config.conductor.task_stall_secs = 2;
+            config
+                .providers
+                .get_mut("mid_api")
+                .expect("the mid rung's API provider")
+                .timeout_ms = Some(8_000);
+        })
+        .await;
+        let spec = make_spec(&mid_rung_task());
+        let ctx = CellContext::new().with_run_id("held-then-slow".to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("mid finishes the task in one run");
+        assert!(logged_models(&models).is_empty(), "no substitute ran");
+        let requests = requests.lock();
+        assert_eq!(requests.len(), 2, "write, then done: one run");
+        let continued = requests[1]["messages"].as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["role"] == "tool" && message["tool_call_id"] == "call-write")
+        });
+        assert!(continued, "the held call continues the conversation");
     }
 
     /// bug-62ae1e: a try the mid rung's provider rate-limits, with nothing

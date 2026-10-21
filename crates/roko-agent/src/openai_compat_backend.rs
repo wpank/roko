@@ -662,6 +662,12 @@ impl OpenAiCompatLlmBackend {
                 }
             }
             for (key, value) in &self.extra_body_params {
+                // Chat completions refuses a reasoning effort beside function
+                // tools for the GPT-5.4 family: it reasons with tools only on
+                // the Responses API (bug-29014c).
+                if key == crate::provider::openai_compat::REASONING_EFFORT && tools.is_some() {
+                    continue;
+                }
                 body_obj.insert(key.clone(), value.clone());
             }
         }
@@ -1394,6 +1400,42 @@ mod tests {
         let opted_out = body(&opted_out.with_stream_usage(false), true);
         assert_eq!(opted_out["stream"], true);
         assert!(opted_out.get("stream_options").is_none(), "{opted_out}");
+    }
+
+    /// bug-29014c: chat completions refuses `reasoning_effort` beside function
+    /// tools for the GPT-5.4 family ("Function tools with reasoning_effort
+    /// are not supported"), so a request with tools leaves it out, streamed
+    /// or not, and a request without them carries it.
+    #[test]
+    fn reasoning_effort_goes_only_on_requests_without_function_tools() {
+        let backend =
+            OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini").with_extra_body_params(
+                Map::from_iter([("reasoning_effort".to_string(), Value::from("medium"))]),
+            );
+        let body = |tools: Value, stream: bool| -> Value {
+            let body = backend
+                .build_body(
+                    &[serde_json::json!({"role": "user", "content": "hello"})],
+                    &RenderedTools::JsonArray(tools),
+                    &SessionState::default(),
+                    stream,
+                )
+                .expect("build body");
+            serde_json::from_slice(&body).expect("request body json")
+        };
+        let echo = serde_json::json!([{
+            "type": "function",
+            "function": {"name": "echo", "parameters": {"type": "object"}}
+        }]);
+
+        for stream in [false, true] {
+            let with_tools = body(echo.clone(), stream);
+            assert!(with_tools.get("tools").is_some(), "{with_tools}");
+            assert!(with_tools.get("reasoning_effort").is_none(), "{with_tools}");
+            let without_tools = body(serde_json::json!([]), stream);
+            assert!(without_tools.get("tools").is_none(), "{without_tools}");
+            assert_eq!(without_tools["reasoning_effort"], "medium");
+        }
     }
 
     /// bug-d0b8b8: a text tool format's block joins the system message, or

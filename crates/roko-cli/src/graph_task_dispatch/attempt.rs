@@ -1432,10 +1432,11 @@ fn request_sampling(
         .unwrap_or_default()
 }
 
-/// The `reasoning_effort` the attempt's requests carried (bug-29014c): the
-/// model's own, else `effort`, the request's, for an OpenAI reasoning model.
-/// `None` for any other model, or when the target named no provider config
-/// or profile.
+/// The `reasoning_effort` the attempt's requests carried (bug-29014c): for an
+/// OpenAI reasoning model, the model's own, else `effort`, the request's, or
+/// `none` when the model calls tools, since a request with function tools
+/// carries none. `None` for any other model, or when the target named no
+/// provider config or profile.
 fn request_reasoning_effort(
     target: &crate::dispatch_v2::ProviderDispatchSpec,
     effort: Option<&str>,
@@ -2771,14 +2772,16 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
     }
 
-    /// bug-29014c: an attempt on an OpenAI reasoning model sends `[agent]
-    /// default_effort` as its `reasoning_effort`, or the model's own effort
-    /// when it names one, and its verdict records what was sent.
+    /// bug-29014c: an attempt on an OpenAI reasoning model calls tools, so its
+    /// requests carry function tools and no `reasoning_effort`, whatever
+    /// `[agent] default_effort` or the model's own effort says: chat
+    /// completions refuses the two together for the GPT-5.4 family. Its
+    /// verdict records `none`, the effort that ran.
     #[tokio::test]
     async fn a_verdict_records_the_reasoning_effort_sent() {
         use roko_core::agent::ReasoningEffort;
 
-        for (own, sent) in [(None, "medium"), (Some(ReasoningEffort::High), "high")] {
+        for own in [None, Some(ReasoningEffort::High)] {
             let temp = tempdir().expect("tempdir");
             let roko = temp.path().join(".roko");
             let answer = final_turn("done");
@@ -2813,10 +2816,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 .first()
                 .cloned()
                 .expect("the attempt's call");
-            assert_eq!(request["reasoning_effort"], sent, "{request}");
+            assert!(request.get("tools").is_some(), "{request}");
+            assert!(request.get("reasoning_effort").is_none(), "{request}");
             let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
             let verdict = &attempts[1];
-            assert_eq!(verdict["executed"]["reasoning_effort"], sent, "{verdict}");
+            assert_eq!(verdict["executed"]["reasoning_effort"], "none", "{verdict}");
         }
     }
 

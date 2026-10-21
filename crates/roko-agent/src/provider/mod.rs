@@ -1927,11 +1927,13 @@ mod tests {
         (format!("http://{addr}"), bodies, handle)
     }
 
-    /// bug-29014c: an OpenAI reasoning model's requests carry
-    /// `reasoning_effort`, plain and streamed, through roko's tool loop and
-    /// its tool-less agent: `[agent] default_effort` when the model names no
+    /// bug-29014c: an OpenAI reasoning model's request carries
+    /// `reasoning_effort` when it carries no function tools, as from roko's
+    /// tool-less agent: `[agent] default_effort` when the model names no
     /// effort of its own, its own when it does, and a request's own effort
-    /// over the default. A model outside the GPT-5 family and the o-series
+    /// over the default. A tool-loop request, plain or streamed, carries
+    /// tools and so no effort: chat completions refuses the two together for
+    /// the GPT-5.4 family. A model outside the GPT-5 family and the o-series
     /// gets no such field.
     #[tokio::test]
     async fn an_openai_reasoning_model_request_carries_reasoning_effort() {
@@ -1948,21 +1950,21 @@ mod tests {
                 true,
                 None,
             ),
-            ("gpt-5-4-nano", "gpt-5.4-nano", None, true, Some("low")),
-            ("glm-4-7", "glm-4.7", None, true, None),
-            ("gpt-5-4-text", "gpt-5.4-mini", None, false, None),
+            ("text-mini", "gpt-5.4-mini", None, false, None),
+            ("text", "gpt-5.4", Some(ReasoningEffort::High), false, None),
+            ("text-nano", "gpt-5.4-nano", None, false, Some("low")),
+            ("glm-text", "glm-4.7", None, false, None),
         ];
         // Each run: the model, whether it streams, the effort sent.
         let runs = [
-            ("gpt-5-4-mini", false, Some("medium")),
-            ("gpt-5-4-mini", true, Some("medium")),
-            ("gpt-5-4", false, Some("high")),
-            ("gpt-5-4", true, Some("high")),
-            ("gpt-5-4-nano", false, Some("low")),
-            ("gpt-5-4-nano", true, Some("low")),
-            ("glm-4-7", false, None),
-            ("glm-4-7", true, None),
-            ("gpt-5-4-text", false, Some("medium")),
+            ("gpt-5-4-mini", false, None),
+            ("gpt-5-4-mini", true, None),
+            ("gpt-5-4", false, None),
+            ("gpt-5-4", true, None),
+            ("text-mini", false, Some("medium")),
+            ("text", false, Some("high")),
+            ("text-nano", false, Some("low")),
+            ("glm-text", false, None),
         ];
         let (base_url, bodies, server) = spawn_capturing_chat_server(runs.len());
         let mut config = RokoConfig::default();
@@ -2035,6 +2037,8 @@ mod tests {
                 *streamed,
                 "{key}: {body}"
             );
+            let calls_tools = models.iter().any(|model| model.0 == *key && model.3);
+            assert_eq!(body.get("tools").is_some(), calls_tools, "{key}: {body}");
             assert_eq!(
                 body.get("reasoning_effort")
                     .and_then(serde_json::Value::as_str),

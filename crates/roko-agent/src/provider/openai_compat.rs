@@ -263,6 +263,9 @@ fn is_openai_reasoning_model(slug: &str) -> bool {
         && !WITHOUT_EFFORT.iter().any(|prefix| slug.starts_with(prefix))
 }
 
+/// The request-body key of an OpenAI reasoning model's effort (bug-29014c).
+pub(crate) const REASONING_EFFORT: &str = "reasoning_effort";
+
 /// The `reasoning_effort` `model`'s requests carry: its effort, when it is an
 /// OpenAI reasoning model (bug-29014c). `max` sends `high`, the most every
 /// one of them takes.
@@ -280,17 +283,21 @@ fn reasoning_effort_param(model: &ModelProfile) -> Option<&'static str> {
 
 /// The profile's reasoning effort, for an OpenAI reasoning model
 /// (bug-29014c). Without it the API's default applies, and the GPT-5.4
-/// family then reported no reasoning tokens at all.
+/// family then reported no reasoning tokens at all. A request that carries
+/// function tools leaves it out (`OpenAiCompatLlmBackend::build_body`): chat
+/// completions refuses the two together for that family.
 fn inject_reasoning_effort(body: &mut Map<String, Value>, model: &ModelProfile) {
     if let Some(effort) = reasoning_effort_param(model) {
-        body.insert("reasoning_effort".to_string(), Value::from(effort));
+        body.insert(REASONING_EFFORT.to_string(), Value::from(effort));
     }
 }
 
 /// The `reasoning_effort` roko sends with each request to `model` on
-/// `provider`, for an attempt's record (bug-29014c). `None` when it sends
-/// none: to a model that is no OpenAI reasoning model, or to a provider
-/// other than the OpenAI-compatible and Cerebras ones.
+/// `provider`, for an attempt's record (bug-29014c). `none` for a model that
+/// calls tools: its requests carry function tools, so they carry no effort
+/// and the API's default applies. `None` when no effort applies at all: to a
+/// model that is no OpenAI reasoning model, or to a provider other than the
+/// OpenAI-compatible and Cerebras ones.
 #[must_use]
 pub fn request_reasoning_effort(
     provider: &ProviderConfig,
@@ -299,8 +306,12 @@ pub fn request_reasoning_effort(
     if !matches!(
         provider.kind,
         ProviderKind::OpenAiCompat | ProviderKind::CerebrasApi
-    ) {
+    ) || !is_openai_reasoning_model(&model.slug)
+    {
         return None;
+    }
+    if model.supports_tools {
+        return Some("none");
     }
     reasoning_effort_param(model)
 }
@@ -2473,7 +2484,8 @@ done
 
     /// bug-29014c: the GPT-5 family and the o-series take roko's effort as
     /// `reasoning_effort`, `max` as `high`; their chat variants, the first o1
-    /// previews and other models take none, and a record names what was sent.
+    /// previews and other models take none, and a record names what was sent:
+    /// `none` for a model whose requests carry function tools.
     #[test]
     fn openai_reasoning_models_take_the_profile_effort() {
         let at = |slug: &str, effort| ModelProfile {
@@ -2543,11 +2555,24 @@ done
             kind,
             ..ProviderConfig::default()
         };
+        let compat = provider(ProviderKind::OpenAiCompat);
         let high = at("gpt-5.4", ReasoningEffort::High);
+        assert_eq!(request_reasoning_effort(&compat, &high), Some("high"));
+        // A model that calls tools sends function tools with each request,
+        // and so no effort.
+        let calls_tools = ModelProfile {
+            supports_tools: true,
+            ..high.clone()
+        };
         assert_eq!(
-            request_reasoning_effort(&provider(ProviderKind::OpenAiCompat), &high),
-            Some("high")
+            request_reasoning_effort(&compat, &calls_tools),
+            Some("none")
         );
+        let glm = ModelProfile {
+            slug: "glm-4.7".to_string(),
+            ..calls_tools
+        };
+        assert_eq!(request_reasoning_effort(&compat, &glm), None);
         assert_eq!(
             request_reasoning_effort(&provider(ProviderKind::CodexCli), &high),
             None

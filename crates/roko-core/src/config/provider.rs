@@ -758,10 +758,11 @@ pub struct ModelProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     /// Reasoning effort (`"low"`, `"medium"`, `"high"`, `"max"`) sent as
-    /// `reasoning_effort` with each request to this model when it is an
-    /// OpenAI reasoning model (the GPT-5 family and the o-series) on an
-    /// OpenAI-compatible provider. `None` sends the request's effort, else
-    /// `[agent] default_effort` (bug-29014c).
+    /// `reasoning_effort` with each request to this model that carries no
+    /// function tools, when it is an OpenAI reasoning model (the GPT-5 family
+    /// and the o-series) on an OpenAI-compatible provider: chat completions
+    /// refuses it beside tools for the GPT-5.4 family. `None` sends the
+    /// request's effort, else `[agent] default_effort` (bug-29014c).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
 }

@@ -2,15 +2,16 @@
 id = "bug-f9ca2f"
 kind = "bug"
 title = "Helper calls (retry error enrichment, gate reflections, the judge) pick their model without provider health or the run's failed rung probes: with cerebras answering 402 (circuit open, probe failed), every enrichment in run 82b7e069 still went to gpt-oss-120b and fell back to the deterministic digest"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "26820193b"
 source = "round-v7-hermes-pilot#K-cerebras-402"
 discovered_from = "agent:hermes-pilot (round v7 phase 2 run 82b7e069, roko.log 18:40-18:46Z)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::select_cheap_model_key", "crates/roko-cli/src/graph_task_dispatch.rs::cheap_agent"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn helper_model_passes_over_a_provider_with_an_open_circuit' crates/roko-cli/src && cargo test -p roko-cli --lib -- helper_model_passes_over_a_provider_with_an_open_circuit"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T07:09:06Z"
+commit = "26820193b"
+via = "manual"
+size = "S"
+forced = true
+evidence = "26820193b: cheap_agent (error enrichment, gate reflections) and judge_model_key now choose only among models whose provider the run's health registry holds available (ProviderHealthRegistry::is_available, the check task routing's failover uses) and that did not fail their tool-use probe this run: SharedAgentFactory keeps the failed probes skip_failed_rungs is given (failed_probe, by key or slug). With none healthy, no helper is called and its callers keep their deterministic fallback. Test helper_model_passes_over_a_provider_with_an_open_circuit (run 82b7e069's shape: oss on cerebras $0.35/M, mini on openai $0.50/M whose probe failed, glm on zai $0.60/M): oss while cerebras is healthy; with cerebras's circuit open (3 Billing failures) red at 08:25 still picked oss, green picks glm, and so does the judge; with zai's open too, no helper. Checks: roko-cli lib 3975 passed, 0 failed (share test skipped); the targeted run's one failure, run::tests::prompt_run_on_a_red_base_judges_only_new_failures at load average 160, passed 4 of 4 alone at lower load with the same binary (its baseline check is load-sensitive); clippy -D warnings (roko-cli) clean; nightly rustfmt clean."
 +++
 
 ## Problem

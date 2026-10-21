@@ -26,7 +26,7 @@ at_ts = "2026-10-21T07:09:06Z"
 commit = "26820193b"
 via = "manual"
 size = "S"
-forced = true
+forced = false
 evidence = "26820193b: cheap_agent (error enrichment, gate reflections) and judge_model_key now choose only among models whose provider the run's health registry holds available (ProviderHealthRegistry::is_available, the check task routing's failover uses) and that did not fail their tool-use probe this run: SharedAgentFactory keeps the failed probes skip_failed_rungs is given (failed_probe, by key or slug). With none healthy, no helper is called and its callers keep their deterministic fallback. Test helper_model_passes_over_a_provider_with_an_open_circuit (run 82b7e069's shape: oss on cerebras $0.35/M, mini on openai $0.50/M whose probe failed, glm on zai $0.60/M): oss while cerebras is healthy; with cerebras's circuit open (3 Billing failures) red at 08:25 still picked oss, green picks glm, and so does the judge; with zai's open too, no helper. Checks: roko-cli lib 3975 passed, 0 failed (share test skipped); the targeted run's one failure, run::tests::prompt_run_on_a_red_base_judges_only_new_failures at load average 160, passed 4 of 4 alone at lower load with the same binary (its baseline check is load-sensitive); clippy -D warnings (roko-cli) clean; nightly rustfmt clean."
 +++
 

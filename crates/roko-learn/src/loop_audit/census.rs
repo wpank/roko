@@ -45,14 +45,19 @@
 //! logged those odds adds to L-sec's ε and to none of its ι.
 //!
 //! The section bandit can leave out the section L-know's and L-play's items
-//! render into. Their readers still proposed those items, so an item whose
-//! exposure row says `bandit_excluded` is in its loop's learned proposal and
-//! not in the executed action: the opportunity was not reached, and ε falls
-//! when L-sec removes the content (bug-550909). The writers record such
-//! items in the proposal; the census adds them for rows written before. Both
-//! loops' log rules say `dormant:unlogged` only when some prompt included
-//! one of their items and no episode or efficiency row names it; items that
-//! never reached a prompt are no exposure, which a fact says.
+//! render into, and the token budget can drop that section or cut items off
+//! it. Their readers still proposed those items, so an item whose exposure
+//! row says `bandit_excluded` (bug-550909) or `token_budget` (gap-be6bc5) is
+//! in its loop's learned proposal and not in the executed action: the
+//! opportunity was not reached, and ε falls when L-sec or the budget keeps
+//! the content out. The budget is the composer's, not part of either loop's
+//! policy. Reach compares the sets whole (S03 §4.4's `1[A_t ≡ A^L_t]`), so a
+//! prompt the budget cut only some of a loop's items from is not reached
+//! either. The writers record such items in the proposal; the census adds
+//! them for rows written before. Both loops' log rules say
+//! `dormant:unlogged` only when some prompt included one of their items and
+//! no episode or efficiency row names it; items that never reached a prompt
+//! are no exposure, which a fact says.
 //!
 //! The fold estimates each loop's benefit β too (S03 §4.4-§4.5;
 //! gap-03fcd0). The unit is the chain, whose arm every retry inherits, so β
@@ -116,10 +121,11 @@ pub const CENSUS_STATE_FILE: &str = "loop-census-state.json";
 /// benefit estimators (gap-03fcd0). Version 5 counts the knowledge and
 /// playbook items the section bandit left out as proposed and not reached
 /// (bug-550909). Version 6 measures L-sec's influence on the bandit's
-/// exclusion odds against the floor policy, not on its draws (q-beea61). A
-/// census kept under an earlier version is read afresh, so the next tick
-/// reads every run once more.
-pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/6";
+/// exclusion odds against the floor policy, not on its draws (q-beea61).
+/// Version 7 counts the items the token budget cut as proposed and not
+/// reached too (gap-be6bc5). A census kept under an earlier version is read
+/// afresh, so the next tick reads every run once more.
+pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/7";
 
 /// How long an attempt without a verdict holds back the rows after it, in a
 /// run that has not closed: one open longer than this died with its process.
@@ -962,7 +968,7 @@ fn fold_run(
     level: Level,
 ) {
     let attempts = Attempts::of(run);
-    let left_out = bandit_excluded(&run.exposures);
+    let left_out = kept_out(&run.exposures);
     for line in window(&run.decisions, from, until) {
         let row = &line.record;
         let key = row.attempt_key.as_deref();
@@ -1285,11 +1291,12 @@ fn route_opportunity(
     })
 }
 
-/// The items of each attempt's knowledge and playbook decisions that the
-/// section bandit left out with the section they render into, by attempt
-/// key and decision point, from the run's exposure rows (bug-550909). The
-/// reader proposed them all the same: the bandit, L-sec, removed them.
-fn bandit_excluded(
+/// The items of each attempt's knowledge and playbook decisions that its
+/// prompt left out though their reader proposed them, by attempt key and
+/// decision point, from the run's exposure rows: those in a section the
+/// section bandit left out (bug-550909), and those the token budget cut
+/// (gap-be6bc5). L-sec or the composer's budget removed them, not the loop.
+fn kept_out(
     exposures: &[Stamped<ExposureRecord>],
 ) -> HashMap<(&str, ContentDecisionPoint), BTreeSet<String>> {
     let mut left_out: HashMap<(&str, ContentDecisionPoint), BTreeSet<String>> = HashMap::new();
@@ -1299,7 +1306,11 @@ fn bandit_excluded(
             row.decision_point,
             ContentDecisionPoint::Knowledge | ContentDecisionPoint::Playbooks
         );
-        if reader && row.excluded_reason == Some(ExcludedReason::BanditExcluded) {
+        let removed = matches!(
+            row.excluded_reason,
+            Some(ExcludedReason::BanditExcluded | ExcludedReason::TokenBudget)
+        );
+        if reader && removed {
             let point = (row.identity.attempt_key.as_str(), row.decision_point);
             left_out
                 .entry(point)
@@ -1313,9 +1324,10 @@ fn bandit_excluded(
 /// The opportunity a content row records, if it is one: the store offered
 /// candidates. Its proposals are id sets, and its receipt, the rendered
 /// sections found in the request, says whether the label is honest. The
-/// items the section bandit left out of the row's prompt, `left_out`, are
-/// in the learned proposal, as the writers have recorded them since
-/// bug-550909, and never in the executed action.
+/// items the section bandit left out of the row's prompt or the token budget
+/// cut from it, `left_out`, are in the learned proposal, as the writers have
+/// recorded them since bug-550909 and gap-be6bc5, and never in the executed
+/// action.
 fn content_opportunity(
     row: &ContentDecisionRecord,
     left_out: Option<&BTreeSet<String>>,
@@ -2968,6 +2980,90 @@ mod tests {
         append(&episodes, "{\"extra\":{\"playbook_ids\":[\"pb-2\"]}}\n");
         let named = play_row();
         assert_eq!(named.reason, None, "{:?}", named.facts);
+    }
+
+    /// gap-be6bc5: what the token budget cut is the reader's proposal not
+    /// reached, as what the section bandit left out is (bug-550909). Run
+    /// gr-cut has four learned-arm chains of L-know, whose reader proposed
+    /// kn-1 and kn-2: the budget cut both of the first chain's, in a row
+    /// written before the writers proposed cut items, whose learned proposal
+    /// is empty; both of the second's, in a row written since; one of the
+    /// third's, which the sets' whole comparison counts as not reached too;
+    /// and none of the fourth's. L-play has two: the budget cut the first
+    /// one's playbook, in a row written before, and the second one's reached
+    /// its prompt. The census's reach is 1/4 for L-know and 1/2 for L-play,
+    /// and the tick folds the same rows to the same ε.
+    #[test]
+    fn token_budget_cut_items_count_as_not_reached() {
+        use roko_core::config::learning::LearningAuditConfig;
+
+        use crate::loop_audit::{LoopAuditor, RowOrigin};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(".roko").join(RUNS_DIR);
+        let (know, play) = (
+            ContentDecisionPoint::Knowledge,
+            ContentDecisionPoint::Playbooks,
+        );
+        let (lesson, playbook) = (ExposureItemKind::Knowledge, ExposureItemKind::Playbook);
+        let cut = Some(ExcludedReason::TokenBudget);
+        // Each L-know chain: the budget's cut of kn-1 and of kn-2, and the
+        // learned proposal and the choice its row names.
+        let chains: [([Option<ExcludedReason>; 2], &[&str], &[&str]); 4] = [
+            ([cut, cut], &[], &[]),
+            ([cut, cut], &["kn-1", "kn-2"], &[]),
+            ([None, cut], &["kn-1"], &["kn-1"]),
+            ([None, None], &["kn-1", "kn-2"], &["kn-1", "kn-2"]),
+        ];
+        let attempts: Vec<_> = chains
+            .into_iter()
+            .enumerate()
+            .map(|(index, ([first, second], learned, chosen))| {
+                let key = AttemptKey::new("gr-cut", "plan", format!("t{index}"), 1);
+                let mut shown = vec![
+                    exposure(&key, lesson, "kn-1", first),
+                    exposure(&key, lesson, "kn-2", second),
+                ];
+                let mut decided = vec![reader_row(&key, know, Arm::Learned, learned, chosen)];
+                if index < 2 {
+                    let reached = index == 1;
+                    let reason = (!reached).then_some(ExcludedReason::TokenBudget);
+                    shown.push(exposure(&key, playbook, "pb-1", reason));
+                    let ids: &[&str] = if reached { &["pb-1"] } else { &[] };
+                    decided.push(reader_row(&key, play, Arm::Learned, ids, ids));
+                }
+                (shown, decided)
+            })
+            .collect();
+        write_attempts(&runs_dir, "gr-cut", &attempts);
+
+        let registry = Registry::embedded().expect("the embedded registry");
+        let report = run(dir.path(), &registry, None);
+        let measured = |loop_id: &str| {
+            let row = report.row(loop_id).expect("a registered loop");
+            let facts = &row.facts;
+            row.measured
+                .clone()
+                .unwrap_or_else(|| panic!("{loop_id}: {facts:?}"))
+        };
+        let census_know = measured("L-know");
+        let know_eps = (
+            census_know.n_learned,
+            census_know.eps.read,
+            census_know.eps.reach,
+        );
+        assert_eq!(know_eps, (4, 1.0, 0.25), "{census_know:?}");
+        let census_play = measured("L-play");
+        let play_eps = (census_play.n_learned, census_play.eps.reach);
+        assert_eq!(play_eps, (2, 0.5), "{census_play:?}");
+
+        // The tick folds the same rows to the same ε.
+        let config = LearningAuditConfig::default();
+        let mut auditor = LoopAuditor::from_records(registry.clone(), &config, &[]);
+        let runs = read_runs(&runs_dir);
+        let observations = auditor.observe(&runs, &RowOrigin::default(), audit_time());
+        assert_eq!(health_of(&observations, "L-know").eps, census_know.eps);
+        assert_eq!(health_of(&observations, "L-play").eps, census_play.eps);
     }
 
     /// Append `lines` to the file at `path`.

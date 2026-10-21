@@ -2,15 +2,16 @@
 id = "gap-be6bc5"
 kind = "gap"
 title = "L-know and L-play's learned proposals leave out the items the token budget cut, so a prompt the budget emptied still reads as reached"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "df5c3f553"
 source = "bug-550909 follow-up 2026-10-17"
 discovered_from = "bug-550909"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/decision_log.rs::reader_proposals", "crates/roko-learn/src/loop_audit/census.rs::content_opportunity"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["bug-550909", "gap-ca63ee"], 
 
 [[verify]]
 command = "grep -rqw 'fn token_budget_cut_items_count_as_not_reached' crates/roko-learn/ && cargo test -p roko-learn token_budget_cut_items_count_as_not_reached"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T04:37:16Z"
+commit = "df5c3f553"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-21T01:31:06Z"
+forced = false
+evidence = "df5c3f553. Decision (plan step 1; see ## Decision): a token-budget cut is the reader's proposal not reached, as the section bandit's exclusions are since bug-550909, and reach keeps S03 §4.4's whole-set comparison, so a partial cut is not reached either. decision_log.rs reader_proposals keeps TokenBudget items in the learned proposal; census.rs kept_out (was bandit_excluded) adds an attempt's token_budget knowledge and playbook exposure items to the learned proposal of rows written before, never to the executed action; CENSUS_STATE_SCHEMA 7 refolds kept censuses. Checks: the verify command exits 0 (token_budget_cut_items_count_as_not_reached: L-know reach 0.25 over chains the budget emptied in rows written before and since the writer change, cut in part, and left whole; L-play 0.5; the tick's ε equals the census's); roko-learn loop_audit 59/59; roko-cli lib decision_log + loop_audit + learn_loops 28/28, incl. reader_rows_propose_what_the_section_bandit_left_out and graph_decisions_log_arm_before_plan_and_receipt, which now expect the cut item proposed; cargo test -p roko-cli --test loop_audit_census_run ok; E1 replay cargo test -p roko-cli --features fault-injection --test loop_audit_faults ok (5 healthy epochs flag no loop; every injected fault found with its reason, canaries at P2/P4/P6 as before); clippy -p roko-learn -p roko-cli --no-deps -D warnings clean; nightly fmt. CLI before and after, on a copy of the round-v6 audit demo's 24 runs in which 7 of L-know's 13 learned-arm prompts lost an item to the budget, written in the old writer's form: roko learn loops gave L-know ε 1.00 (reach 1.0) and β 0.976 [-2.301, 4.254] before, and gives ε 0.46 (reach 0.46) and β not judged (eps_below_min) after; the uncut copy is unchanged (ε 1.00, β 0.976). Report-only: no executed policy changes."
 +++
 
 ## Problem
@@ -76,3 +89,16 @@ The `[[verify]]` command passes.
 
 Report-only: no executed policy changes. Re-run the E1 replay (`cargo test -p roko-cli --features fault-injection
 --test loop_audit_faults`): healthy L-know must stay above ε_min wherever the budget cuts some of its items.
+
+## Decision (2026-10-21)
+
+Plan step 1: a budget cut is the reader's proposal not reached. The reader ranked the item in, and the composer's
+token budget, which neither L-know nor L-play decides, kept it out, as the section bandit does (bug-550909). Reach keeps
+S03 §4.4's whole-set comparison (`1[A_t ≡ A^L_t]`), so a prompt the budget cut only some items from is not reached
+either. A share-based reach for sets is not taken: it would change ε for every set-valued loop, not only for budget
+cuts.
+
+What to watch: none of the recorded runs has a knowledge or playbook item cut for the token budget yet (the exposure
+rows under `tmp/`, round v6's learning-research evidence among them: 52 knowledge and 146 playbook decision points, no
+`token_budget` item; the main workspace's `.roko/runs`: none). If partial cuts become common, a healthy loop they hit
+on most prompts reads `dormant:mask`, and the share-based reach is the case to reopen.

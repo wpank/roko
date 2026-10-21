@@ -675,11 +675,16 @@ pub(super) fn content_audit(
 /// L-know's or L-play's proposals at its reader's point, and whether the
 /// point was the loop's opportunity: the learned proposal is the ids the
 /// reader would include, on the withheld arm too, under a θ that turns
-/// the knowledge section off (gap-6bb6d8), and when the section bandit
-/// leaves out the section they render into (bug-550909), so that what L-sec
-/// removed counts as proposed and not reached; π⁰ includes none. The point
-/// is an opportunity when it offered an item or its reader `read` had one,
-/// though it loaded nothing to show (gap-a13544).
+/// the knowledge section off (gap-6bb6d8), when the section bandit leaves
+/// out the section they render into (bug-550909), and when the token budget
+/// drops that section or cuts them off it (gap-be6bc5), so that what L-sec
+/// or the budget removed counts as proposed and not reached; π⁰ includes
+/// none. The budget is the composer's, not part of either loop's policy:
+/// the reader ranked a cut item in. The census compares the proposal with
+/// the choice whole, so a prompt the budget cut only some of the items from
+/// is not reached either. The point is an opportunity when it offered an
+/// item or its reader `read` had one, though it loaded nothing to show
+/// (gap-a13544).
 fn reader_proposals(
     items: &[&PromptItemDiagnostic],
     read: Option<&ReaderRead>,
@@ -694,6 +699,7 @@ fn reader_proposals(
                         ExcludedReason::WithheldArm
                             | ExcludedReason::HarnessPolicy
                             | ExcludedReason::BanditExcluded
+                            | ExcludedReason::TokenBudget
                     )
                 )
         })
@@ -1286,9 +1292,9 @@ mod tests {
     /// knowledge and playbook readers' items never reach the prompt, and
     /// their rows still propose them. What L-sec removed is L-know's or
     /// L-play's learned proposal and not its choice, so the census counts
-    /// the opportunity as not reached. An item the token budget cut stays
-    /// out of the proposal, and the receipt names only what the prompt
-    /// included.
+    /// the opportunity as not reached. Since gap-be6bc5 an item the token
+    /// budget cut is in the proposal too, and the receipt names only what
+    /// the prompt included.
     #[test]
     fn reader_rows_propose_what_the_section_bandit_left_out() {
         use roko_learn::loop_audit::Registry;
@@ -1319,7 +1325,8 @@ mod tests {
         let cut = knowledge_item("kn-2", 2, false);
         let (proposals, fields) = audit(ContentDecisionPoint::Knowledge, &[&lesson, &cut]);
         assert_eq!(fields.loop_id.as_deref(), Some("L-know"));
-        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        let proposed = vec!["kn-1".to_string(), "kn-2".to_string()];
+        assert_eq!(proposals.learned, Some(proposed));
         assert_eq!(proposals.default, Some(Vec::new()));
         let receipt = fields.receipt.expect("the receipt");
         assert!(receipt.exposure_hashes.is_empty(), "{receipt:?}");
@@ -1507,7 +1514,11 @@ mod tests {
         assert_eq!(assignment.draw.layer, "knowledge");
         assert!(assignment.assigned_at < audit.decided_at.expect("decided_at"));
         let proposals = knowledge.proposals.as_ref().expect("the proposals");
-        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        // kn-2, which the token budget cut, is proposed and not chosen
+        // (gap-be6bc5).
+        let proposed = vec!["kn-1".to_string(), "kn-2".to_string()];
+        assert_eq!(proposals.learned, Some(proposed));
+        assert_eq!(knowledge.chosen, ["kn-1"]);
         assert_eq!(proposals.default, Some(Vec::new()));
         let receipt = audit.receipt.as_ref().expect("the receipt");
         assert!(receipt.ok);

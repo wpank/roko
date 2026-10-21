@@ -2,7 +2,7 @@
 id = "bug-7a5aca"
 kind = "bug"
 title = "Plan generation's build-list repair (repair_build_lists, bug-daa54e) reads only the base CMakeLists.txt, so it misses a glob an earlier task of the same plan adds: phase 4's plan gave plugin/CMakeLists.txt to T4-T7 beside T1, which adds the plugin/ui/*.cpp glob (5 owners where the spec allows two, parallel T4 and T6 sharing it)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "adc80baa9"
 source = "round-v7-hermes-pilot#N-p4-plan"
 discovered_from = "agent:hermes-pilot (round v7, plancheck of p4-undertow-phosphor-editor, op fe5ffce6)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::repair_build_lists", "crates/roko-cli/src/plan_generate/runnable.rs::cmake_list_for"]
@@ -18,6 +19,19 @@ links = { depends_on = [], blocks = [], related = ["bug-daa54e", "bug-b59d8e", "
 
 [[verify]]
 command = "grep -rqw 'fn a_glob_an_earlier_task_adds_keeps_the_build_list_out_of_later_tasks' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_glob_an_earlier_task_adds_keeps_the_build_list_out_of_later_tasks"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T07:50:17Z"
+commit = "adc80baa9"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-21T07:01:07Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "adc80baa9: runnable::repair_build_lists takes the plan's source texts (pipeline: size_sources). Before adding a CMake file to a task that creates a compiled source, glob_owner looks for a task the creator waits for, directly or through others, that has the file in its files and whose own text (title, goal, description, acceptance; passages split at blank lines) says glob and names a pattern covering the source (says_glob_covers: a workspace path like plugin/ui/*.cpp, or in a passage naming the file a path from its directory like src/*.cpp or ${CMAKE_CURRENT_SOURCE_DIR}/ui/*.cpp; glob::Pattern, * not crossing / unless GLOB_RECURSE), else such an owner plus a source text saying so; then the file stays out and the repair line names the owner and where roko read it. Planner-written entries untouched; no owner cap (phase 1's explicit list needs more than two). Verify: a_glob_an_earlier_task_adds_keeps_the_build_list_out_of_later_tasks passes on phase 4's real draft and spec (fixture tests/fixtures/p4_build_lists): T1's text or the spec alone leaves T1 the only owner with four repair lines; neither gives T4-T7 the file as before; T6 not waiting for T1 gets it. cargo test -p roko-cli --lib plan_generate: 169 passed (bug-daa54e's a_shared_file_the_spec_says_a_task_edits_joins_its_files and bug-b59d8e's a_shared_source_list_in_every_module_task_still_writes_a_plan included); --test plan_validation 38 passed; --test plan_validate 23 passed, 2 failed (the known bug-2a31bc); clippy -p roko-cli -D warnings clean; nightly fmt clean."
 +++
 
 ## Problem

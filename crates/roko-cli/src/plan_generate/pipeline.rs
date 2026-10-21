@@ -1124,7 +1124,8 @@ fn own_plan_writers(plan: &TasksFile, plan_dir: &Path, workdir: &Path) -> Vec<St
 /// `plan_md` with a "Repairs" section that lists what roko changed in the
 /// planner's draft before it validated it (gap-0fb7d9), when it changed
 /// anything: a person reading the plan sees what the planner wrote and what
-/// roko fixed.
+/// roko fixed. The Hermes plugin's plan sheet finds the section by its
+/// heading, its first line and its `- ` items: keep all three as they are.
 fn with_repairs(mut plan_md: String, repairs: &[String]) -> String {
     if repairs.is_empty() {
         return plan_md;

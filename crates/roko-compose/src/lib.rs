@@ -146,7 +146,9 @@ pub use role_prompts::{
 pub use safety_functor::SafetyFunctor;
 pub use scorer::{ActiveInferenceScorer, GoalDirectedHeuristicScorer, SectionScorer};
 pub use strategy::CompositionStrategy;
-pub use system_prompt_builder::{SystemPromptBuilder, section_heading_for_name};
+pub use system_prompt_builder::{
+    FILE_CONTEXT_HEADING, SystemPromptBuilder, section_heading_for_name,
+};
 pub use templates::{
     ConductorTemplate, ImplementerInput, ImplementerLanguage, ImplementerTemplate, PlanSlice,
     PromptBudget, QuickFixInput, QuickFixTemplate, QuickReviewerInput, QuickReviewerTemplate,

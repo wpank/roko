@@ -963,6 +963,9 @@ pub struct ToolLoop {
     /// The CaMeL data-LLM boundary that untrusted tool output passes
     /// through before the model sees it ([`Self::with_data_llm`]).
     data_llm: Option<Arc<DataLlmBoundary>>,
+    /// How long a streamed model call waits for its response, and for each
+    /// chunk after it ([`Self::with_request_timeout_ms`]).
+    request_timeout_ms: Option<u64>,
 }
 
 impl ToolLoop {
@@ -988,6 +991,7 @@ impl ToolLoop {
             few_shot_messages: Vec::new(),
             mcp_error_accumulator: None,
             data_llm: None,
+            request_timeout_ms: None,
         }
     }
 
@@ -1008,6 +1012,16 @@ impl ToolLoop {
     #[must_use]
     pub const fn with_context_token_limit(mut self, n: usize) -> Self {
         self.context_token_limit = n;
+        self
+    }
+
+    /// Bound each streamed model call's wait for its response, and each
+    /// silence in its stream, at `ms`: its provider's `timeout_ms`
+    /// (bug-5e597a). A reasoning model can hold its response for minutes.
+    /// `None` keeps [`roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS`].
+    #[must_use]
+    pub const fn with_request_timeout_ms(mut self, ms: Option<u64>) -> Self {
+        self.request_timeout_ms = ms;
         self
     }
 
@@ -1153,7 +1167,10 @@ impl ToolLoop {
             max_tokens,
             temperature: None,
             ttft_timeout: Duration::from_millis(DEFAULT_TTFT_TIMEOUT_MS),
-            request_timeout: Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS),
+            request_timeout: Duration::from_millis(
+                self.request_timeout_ms
+                    .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS),
+            ),
             stop_sequences: vec![],
         }
     }
@@ -4897,6 +4914,32 @@ mod tests {
 
         let config = tl.turn_config();
         assert_eq!(config.max_tokens, 8192);
+    }
+
+    /// bug-5e597a: a streamed call's wait for its response is its provider's
+    /// `timeout_ms` when the loop has one, and 120 s otherwise.
+    #[test]
+    fn a_tool_loop_waits_its_providers_timeout_ms_for_a_response() {
+        let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+            Arc::new(VecToolRegistry::from_tools(test_tools()));
+        let resolver: Arc<dyn crate::dispatcher::HandlerResolver> =
+            Arc::new(|_: &str| -> Option<Arc<dyn roko_core::tool::ToolHandler>> { None });
+        let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+        let translator: Arc<dyn Translator> = Arc::new(MockTranslator);
+        let backend: Arc<dyn LlmBackend> = Arc::new(FinalAnswerBackend { text: "x".into() });
+        let tl = ToolLoop::new(translator, dispatcher, backend);
+
+        assert_eq!(
+            tl.turn_config().request_timeout,
+            Duration::from_millis(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS)
+        );
+        let tl = tl.with_request_timeout_ms(Some(300_000));
+        assert_eq!(tl.turn_config().request_timeout, Duration::from_secs(300));
+        assert_eq!(
+            tl.turn_config().ttft_timeout,
+            Duration::from_millis(roko_core::defaults::DEFAULT_TTFT_TIMEOUT_MS),
+            "the first chunk's wait after the response is its own setting"
+        );
     }
 
     // ── Streaming contract tests (#333) ─────────────────────────────

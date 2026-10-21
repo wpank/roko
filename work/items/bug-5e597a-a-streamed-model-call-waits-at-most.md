@@ -13,7 +13,7 @@ updated = 2026-10-21
 last_verified = 2026-10-21
 source = "round-v7-hermes-pilot#M-p3-run-bdc4461e"
 discovered_from = "agent:hermes-pilot (round v7 phase 3 run bdc4461e; $0 proof in tmp/hermes-roko-v7/pilot/timeout-e2e)"
-anchors = ["crates/roko-agent/src/tool_loop/mod.rs::turn_config", "crates/roko-agent/src/openai_compat_backend.rs", "crates/roko-agent/src/tool_loop/backends/mod.rs::create_openai_compat_backend"]
+anchors = ["crates/roko-agent/src/tool_loop/mod.rs::turn_config", "crates/roko-agent/src/provider/openai_compat.rs::create_agent", "crates/roko-agent/src/provider/cerebras.rs::create_agent", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::try_time_stop"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

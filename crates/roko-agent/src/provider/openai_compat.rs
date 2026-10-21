@@ -606,6 +606,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 )
                 // Priced as its provider bills it (find-c3da60).
                 .with_model_profile(model.clone().with_provider_cache_rate(provider))
+                // A streamed call waits its provider's `timeout_ms` for a
+                // response, not the attempt's timeout (bug-5e597a).
+                .with_request_timeout_ms(provider.timeout_ms)
                 .with_optional_data_llm(options.data_llm.clone())
                 .with_optional_turn_budget(options.turn_budget.clone());
 
@@ -2498,5 +2501,130 @@ done
     #[test]
     fn parse_allowed_tools_csv_empty_string_returns_none() {
         assert!(parse_allowed_tools_csv(Some("")).is_none());
+    }
+
+    /// A chat server that reads one request, holds its response headers for
+    /// `hold`, as a reasoning model can (Z.ai's glm-4.7), then streams the
+    /// answer "ok". A client that gave up meanwhile is no error.
+    fn spawn_late_sse_server(hold: Duration) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set read timeout");
+            let mut buf = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                });
+                if length.is_none_or(|length| body.len() >= length) {
+                    break;
+                }
+            }
+            thread::sleep(hold);
+            let events = [
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}"#,
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}"#,
+                "[DONE]",
+            ];
+            let mut wire = String::from(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            for event in events {
+                wire.push_str(&format!("data: {event}\n\n"));
+            }
+            let _ = stream.write_all(wire.as_bytes());
+            let _ = stream.flush();
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// bug-5e597a: a streamed call waits for its response as long as its
+    /// provider's `timeout_ms` says, not 120 s whatever it says, and not
+    /// the attempt's own timeout (`AgentOptions::timeout_ms`). Phase 3's
+    /// glm-4.7 calls held their response past 120 s with `timeout_ms =
+    /// 300000` set, and two tries were lost.
+    #[tokio::test]
+    async fn a_providers_timeout_ms_bounds_a_streamed_calls_wait_for_its_response() {
+        let provider = |base_url: &str, timeout_ms: u64| ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(format!("{base_url}/v1")),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(timeout_ms),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+            stream_usage: None,
+            billing: None,
+        };
+        // Its own provider id: the process-wide rate limiter is shared.
+        let model = ModelProfile {
+            provider: "late-reasoner".to_string(),
+            slug: "glm-4.7".to_string(),
+            context_window: 128_000,
+            max_output: Some(1_024),
+            supports_tools: true,
+            tool_format: "openai_json".to_string(),
+            ..Default::default()
+        };
+        // An attempt's timeout, much longer than the provider's.
+        let options = AgentOptions {
+            timeout_ms: Some(60_000),
+            ..AgentOptions::default()
+        };
+        let streamed = |base_url: String, timeout_ms: u64| {
+            let agent = OpenAiCompatAdapter
+                .create_agent(&provider(&base_url, timeout_ms), &model, &options)
+                .expect("create tool-loop agent");
+            async move {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let started = std::time::Instant::now();
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                (result, started.elapsed())
+            }
+        };
+
+        // The response comes after 1.5 s; the provider waits 0.4 s for it.
+        let (base_url, server) = spawn_late_sse_server(Duration::from_millis(1_500));
+        let (result, took) = streamed(base_url, 400).await;
+        let text = result.output.body.as_text().unwrap_or_default().to_string();
+        assert!(!result.success, "{text}");
+        assert!(text.contains("no response within 400ms"), "{text}");
+        assert!(took < Duration::from_millis(1_400), "it waited {took:?}");
+        server.join().expect("server thread");
+
+        // The provider waits 5 s: the late response is the answer.
+        let (base_url, server) = spawn_late_sse_server(Duration::from_millis(600));
+        let (result, took) = streamed(base_url, 5_000).await;
+        let text = result.output.body.as_text().unwrap_or_default().to_string();
+        assert!(result.success, "{text}");
+        assert_eq!(text, "ok");
+        assert!(took >= Duration::from_millis(600), "it took {took:?}");
+        server.join().expect("server thread");
     }
 }

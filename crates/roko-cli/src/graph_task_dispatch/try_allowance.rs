@@ -37,7 +37,8 @@ pub(super) const RUNG_ALLOWANCE: &str = "rung_allowance";
 
 /// How long a provider call of roko's own tool loop may run past its try's
 /// time bound before the watchdog stops it: the loop makes no model call
-/// after the bound, so this lets the turn in flight end (bug-f0007b).
+/// after the bound, so this lets the turn in flight end (bug-f0007b). A call
+/// whose provider's `timeout_ms` is longer gets that instead (bug-5e597a).
 pub(super) const TRY_TIME_GRACE: Duration = Duration::from_secs(120);
 
 /// What one try may use on the rung the ladder put it on.

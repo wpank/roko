@@ -53,7 +53,10 @@
 //!   grows with each retry (backlog 1126). With it at `0` such a call is left
 //!   to the hard timeout until it first reports something;
 //! - a tool call the agent made (a long `cargo test`, say) is bounded by the
-//!   provider's own tool timeout, so silence while one runs does not count.
+//!   provider's own tool timeout, so silence while one runs does not count;
+//! - a call of roko's own tool loop bounds its own wait for its model at its
+//!   provider's `timeout_ms`, which a reasoning model may need in full, so it
+//!   is not cancelled as stalled before that (bug-5e597a).
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -394,6 +397,21 @@ impl AttemptProgress {
             .is_some_and(|call| crate::dispatch_v2::runs_own_tools(&call.target))
     }
 
+    /// How long the call in flight may wait for its model when it runs
+    /// roko's own tool loop: its provider's `timeout_ms`, which bounds each
+    /// model call's wait for its response and each silence in its stream
+    /// (bug-5e597a). `None` before a call starts, and for an agent that runs
+    /// its own loop.
+    fn call_response_wait(&self) -> Option<Duration> {
+        let state = self.inner.lock();
+        let target = &state.call.as_ref()?.target;
+        if crate::dispatch_v2::runs_own_tools(target) {
+            return None;
+        }
+        let timeout_ms = target.provider_config.as_ref()?.timeout_ms?;
+        Some(Duration::from_millis(timeout_ms))
+    }
+
     /// The provider call in flight, by its number, with the usage it
     /// streamed so far; `None` before one starts or streams any usage
     /// (gap-ca1c92).
@@ -516,11 +534,14 @@ impl StallWatch {
             self.warned = false;
             return StallCheck::Healthy;
         };
-        if self
-            .thresholds
-            .cancel_after
-            .is_some_and(|cancel_after| silent_for >= cancel_after)
-        {
+        // A call of roko's own loop fails by itself once its provider's
+        // `timeout_ms` runs out, and is no stall before (bug-5e597a).
+        let cancel_after = self.thresholds.cancel_after.map(|cancel_after| {
+            self.progress
+                .call_response_wait()
+                .map_or(cancel_after, |wait| cancel_after.max(wait))
+        });
+        if cancel_after.is_some_and(|cancel_after| silent_for >= cancel_after) {
             return StallCheck::Stalled(silent_for);
         }
         if !self
@@ -1066,7 +1087,8 @@ impl GraphTaskDispatcher {
     /// provider's permit. At the bound it is marked reached, so roko's own
     /// tool loop makes no further model call and ends the try itself; an
     /// agent that runs its own loop is stopped at once, and a call of roko's
-    /// loop still running [`TRY_TIME_GRACE`] later is stopped too.
+    /// loop still running [`TRY_TIME_GRACE`] later, or its provider's
+    /// `timeout_ms` later when that is longer (bug-5e597a), is stopped too.
     ///
     /// [`TRY_TIME_GRACE`]: super::try_allowance::TRY_TIME_GRACE
     fn try_time_stop(
@@ -1110,7 +1132,14 @@ impl GraphTaskDispatcher {
                 );
             }
         }
-        if !at_once && ran < limit + super::try_allowance::TRY_TIME_GRACE {
+        // The turn in flight may wait its provider's `timeout_ms` for its
+        // model's response (bug-5e597a).
+        let grace = progress
+            .call_response_wait()
+            .map_or(super::try_allowance::TRY_TIME_GRACE, |wait| {
+                wait.max(super::try_allowance::TRY_TIME_GRACE)
+            });
+        if !at_once && ran < limit + grace {
             return None;
         }
         tracing::info!(
@@ -2534,6 +2563,125 @@ exec sleep 60
                 Some(AttemptInterrupted::TimeBound { secs: 60, .. })
             ),
             "an agent that runs its own loop is stopped at the bound"
+        );
+    }
+
+    /// bug-5e597a: a call of roko's own loop may wait its provider's
+    /// `timeout_ms` for its model's response. Silent past `task_stall_secs`,
+    /// it is not cancelled as stalled before that; at its try's time bound,
+    /// it is stopped only that long past the bound when that is longer than
+    /// [`TRY_TIME_GRACE`]. A provider at the default 120 s keeps both as
+    /// they were.
+    ///
+    /// [`TRY_TIME_GRACE`]: super::super::try_allowance::TRY_TIME_GRACE
+    #[tokio::test]
+    async fn a_call_may_wait_its_providers_timeout_before_the_watchdog_stops_it() {
+        use super::super::try_allowance::{RungAllowance, TRY_TIME_GRACE};
+
+        let temp = tempdir().expect("tempdir");
+        let config = Arc::new(watched_config(Path::new("/bin/true")));
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf());
+        let claude =
+            crate::dispatch_v2::ProviderDispatchResolver::new(config).resolve("graph-model");
+        // roko's own loop on a provider whose calls wait `timeout_ms`.
+        let api = |timeout_ms: u64| {
+            let mut api = claude.clone();
+            api.provider_kind = ProviderKind::OpenAiCompat;
+            api.runtime = crate::dispatch_v2::ProviderRuntime::AgentResultBridge {
+                provider_kind: ProviderKind::OpenAiCompat,
+            };
+            api.provider_config
+                .as_mut()
+                .expect("the provider's config")
+                .timeout_ms = Some(timeout_ms);
+            api
+        };
+
+        let t0 = Instant::now();
+        let watched = |timeout_ms: u64| {
+            let watch = StallWatch::new(thresholds(180, 300));
+            let progress = watch.progress();
+            progress.call_started_at(api(timeout_ms), FailoverChain::default(), t0);
+            progress.observe_at(&text("thinking"), t0);
+            watch
+        };
+        let mut reasoning = watched(600_000);
+        assert_eq!(
+            reasoning.check(t0 + secs(301)),
+            StallCheck::Silent(secs(301))
+        );
+        assert_eq!(
+            reasoning.check(t0 + secs(599)),
+            StallCheck::Healthy,
+            "within its provider's timeout"
+        );
+        assert_eq!(
+            reasoning.check(t0 + secs(600)),
+            StallCheck::Stalled(secs(600))
+        );
+        let mut default = watched(120_000);
+        assert_eq!(
+            default.check(t0 + secs(300)),
+            StallCheck::Stalled(secs(300))
+        );
+
+        let attempt = WatchedAttempt {
+            agent_id: "p1/T01",
+            plan_id: "p1",
+            task_id: "T01",
+            attempt_key: "run:p1:T01:1",
+            attempt: 1,
+            stop: None,
+        };
+        let rung = RungAllowance {
+            rung: "mid".to_string(),
+            turns: None,
+            usd: None,
+            secs: Some(60),
+        };
+        let ago = |seconds: u64| {
+            Instant::now()
+                .checked_sub(secs(seconds))
+                .expect("the clock reaches back")
+        };
+        let bounded = |timeout_ms: u64| {
+            let progress = AttemptProgress::default();
+            progress.call_started(api(timeout_ms), FailoverChain::default());
+            (
+                TryAllowance::new(None, Some(&rung), &[]).expect("a time bound"),
+                progress,
+            )
+        };
+        let (allowance, progress) = bounded(300_000);
+        let check = |ran: u64| dispatcher.try_time_stop(&allowance, &progress, ago(ran), &attempt);
+        assert_eq!(check(61), None, "roko's loop ends the try itself");
+        assert_eq!(
+            check(60 + TRY_TIME_GRACE.as_secs() + 1),
+            None,
+            "its call may wait 300 s for its response"
+        );
+        assert!(
+            matches!(
+                check(60 + 301),
+                Some(AttemptInterrupted::TimeBound { secs: 60, .. })
+            ),
+            "a call still running past its provider's timeout is stopped"
+        );
+        let (allowance, progress) = bounded(120_000);
+        assert!(
+            matches!(
+                dispatcher.try_time_stop(
+                    &allowance,
+                    &progress,
+                    ago(60 + TRY_TIME_GRACE.as_secs() + 1),
+                    &attempt
+                ),
+                Some(AttemptInterrupted::TimeBound { secs: 60, .. })
+            ),
+            "the default provider keeps the grace"
         );
     }
 

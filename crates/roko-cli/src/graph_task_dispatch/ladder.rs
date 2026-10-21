@@ -36,7 +36,7 @@ use roko_learn::telemetry::{AttemptLadder, AttemptVerdictRecord, Blame, LadderRe
 
 use super::attempt::AttemptContext;
 use super::retry_feedback::LadderStanding;
-use super::try_allowance::RungAllowance;
+use super::try_allowance::{RungAllowance, RungBounds};
 use super::*;
 use crate::dispatch::model_routing::SELF_MODEL_LOOP;
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
@@ -567,9 +567,67 @@ impl GraphTaskDispatcher {
             ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
             _ => return None,
         };
+        let decision = attempt.harness_decision();
+        self.allowance_on(task, decision, rung, step, tier_turns, tier_secs)
+    }
+
+    /// What a try of `task` that failover moves up from `route`'s rung may
+    /// use on each runnable rung above it (bug-62ae1e): what a try the
+    /// ladder routed there would get, `route.step` plus the rungs it moved
+    /// above the start rung, with the attempt's turn cap `turn_cap` (its
+    /// tier's `tier_turns`, raised after a turn-cap stop) and time
+    /// `tier_secs`.
+    pub(super) fn bounds_above(
+        &self,
+        task: &TaskDef,
+        attempt: &AttemptContext,
+        route: &super::failover::LadderRoute,
+        turn_cap: u32,
+        tier_turns: u32,
+        tier_secs: u64,
+    ) -> Vec<RungBounds> {
+        let Some(routing) = self.routing_ladder() else {
+            return Vec::new();
+        };
+        routing
+            .rung_models_above(&route.role, route.rung)
+            .into_iter()
+            .map(|rung| {
+                let moved =
+                    u32::try_from(rung.index.saturating_sub(route.rung)).unwrap_or(u32::MAX);
+                let step = route.step.saturating_add(moved);
+                let decision = attempt.harness_decision();
+                let allowance =
+                    self.allowance_on(task, decision, rung.index, step, tier_turns, tier_secs);
+                let max_turns = allowance
+                    .as_ref()
+                    .and_then(|allowance| allowance.turns)
+                    .map_or(turn_cap, |turns| turn_cap.min(turns));
+                RungBounds {
+                    index: rung.index,
+                    allowance,
+                    max_turns,
+                }
+            })
+            .collect()
+    }
+
+    /// What one try of `task` may use on rung `rung`, `step` rungs above its
+    /// start rung, when its tier gives an attempt `tier_turns` and it may run
+    /// `tier_secs`: the rung's turns, time and spend allowance from
+    /// `[routing.ladder]`. `None` on a rung with no bound.
+    fn allowance_on(
+        &self,
+        task: &TaskDef,
+        decision: Option<&HarnessDecision>,
+        rung: usize,
+        step: u32,
+        tier_turns: u32,
+        tier_secs: u64,
+    ) -> Option<RungAllowance> {
         let role = task.role.as_deref().unwrap_or("implementer");
         let name = self.routing_ladder()?.rung_name(role, rung)?;
-        let climbs_left = self.climbs_left(task, attempt.harness_decision(), rung, step);
+        let climbs_left = self.climbs_left(task, decision, rung, step);
         let ladder = &self.config.routing.ladder;
         let allowance = RungAllowance {
             rung: name.to_string(),
@@ -587,8 +645,10 @@ impl GraphTaskDispatcher {
     /// task one runnable rung up, unless it already climbed
     /// [`MAX_ESCALATIONS`] rungs or stands on its top rung. Other failures,
     /// pinned attempts, and attempts a failover substitute ran in place of
-    /// the rung's model (backlog 1118), change nothing. Returns whether the
-    /// attempt exhausted the ladder, which it reports.
+    /// the rung's model (backlog 1118), change nothing, except a substitute's
+    /// failure after the rung's provider turned the try away for a rate limit
+    /// or an open circuit, which counts on the rung (bug-62ae1e). Returns
+    /// whether the attempt exhausted the ladder, which it reports.
     pub(super) fn note_ladder_outcome(
         &self,
         spec: &TaskExecutionSpec,
@@ -616,21 +676,41 @@ impl GraphTaskDispatcher {
             return false;
         }
         self.tries.lock().infra_runs.remove(&task_key);
-        if !verdict.executed.failover_chain.is_empty() {
-            tracing::debug!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                rung = ladder.rung.as_deref().unwrap_or("-"),
-                substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
-                "a substitute ran; the rung's standing is unchanged"
-            );
-            return false;
-        }
         let Some(routing) = self.routing_ladder() else {
             return false;
         };
         let role = task.role.as_deref().unwrap_or("implementer");
-        let index = ladder.index.and_then(|index| usize::try_from(index).ok());
+        // A substitute's failure counts on the rung the ladder routed the try
+        // to only when that rung's provider turned it away for its capacity:
+        // its model could not run the task, so a task its provider keeps
+        // turning away climbs instead of looping on substitutes (bug-62ae1e).
+        let moved = !verdict.executed.failover_chain.is_empty();
+        let index = if moved {
+            let routed = verdict
+                .executed
+                .failover_refusals
+                .first()
+                .filter(|refusal| {
+                    super::failover::COUNTS_ON_ROUTED_RUNG.contains(&refusal.class.as_str())
+                })
+                .and_then(|refusal| routing.rung_of_model(role, &refusal.model));
+            if routed.is_none() {
+                tracing::debug!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    rung = ladder.rung.as_deref().unwrap_or("-"),
+                    substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
+                    "a substitute ran; the rung's standing is unchanged"
+                );
+                return false;
+            }
+            routed
+        } else {
+            ladder.index.and_then(|index| usize::try_from(index).ok())
+        };
+        let rung_name = index
+            .and_then(|index| routing.rung_name(role, index))
+            .unwrap_or("-");
         // The cap of the θ the attempt ran stops the climb as the top rung
         // does (8124); a task already above a cap M1 lowered keeps its rung.
         let bounds = self.tier_bounds(task, settled.harness.as_deref());
@@ -639,10 +719,11 @@ impl GraphTaskDispatcher {
             .ladder_standing(&spec.plan_id, &task.id);
         standing.failures_on_rung = standing.failures_on_rung.saturating_add(1);
         // M3 (6131): when an active self-model started the chain, its re-forecast may climb
-        // after one failure; every other chain keeps the two-failure rule.
+        // after one failure; every other chain, and a substitute's failure,
+        // keeps the two-failure rule.
         let two_failures = standing.failures_on_rung >= FAILURES_PER_RUNG;
         let step = match index {
-            Some(index) if !two_failures => {
+            Some(index) if !two_failures && !moved => {
                 self.self_model_step(spec, task, verdict, index, standing.escalations)
             }
             _ => None,
@@ -668,9 +749,10 @@ impl GraphTaskDispatcher {
             tracing::info!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
-                rung = ladder.rung.as_deref().unwrap_or("-"),
+                rung = rung_name,
                 escalations = standing.escalations,
                 reason,
+                substitute_failed = moved,
                 two_failure_rule = two_failures,
                 self_model_step = ?step,
                 "the task climbs the ladder; its next attempt runs higher"
@@ -1261,6 +1343,43 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         for _ in 0..FAILURES_PER_RUNG {
             dispatcher.note_ladder_outcome(&spec, &task, &own);
         }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+    }
+
+    /// bug-62ae1e: a substitute's failure after the routed rung's provider
+    /// turned the try away for a rate limit or an open circuit counts on that
+    /// rung, so two of them climb the task; after any other refusal it still
+    /// counts nothing.
+    #[tokio::test]
+    async fn a_substitutes_failure_counts_when_its_rung_turned_the_try_away() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let refused = |class: &str| {
+            let mut settled = turn_cap_on_cheap_rung(&spec, &task, Some("cheap-model"));
+            Arc::make_mut(&mut settled.verdict)
+                .executed
+                .failover_refusals = vec![roko_learn::telemetry::FailoverRefusal {
+                model: CHEAP.to_string(),
+                provider: "batch-cli".to_string(),
+                class: class.to_string(),
+                called: true,
+                ..roko_learn::telemetry::FailoverRefusal::default()
+            }];
+            settled
+        };
+
+        dispatcher.note_ladder_outcome(&spec, &task, &refused("provider_exhausted"));
+        let standing = dispatcher
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        assert_eq!(
+            standing.failures_on_rung, 0,
+            "an exhausted provider counts nothing"
+        );
+        dispatcher.note_ladder_outcome(&spec, &task, &refused("rate_limited"));
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 0);
+        dispatcher.note_ladder_outcome(&spec, &task, &refused("circuit_open"));
         assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
     }
 

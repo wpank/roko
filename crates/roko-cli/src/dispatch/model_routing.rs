@@ -1700,6 +1700,20 @@ impl RoutingLadder {
         rungs.iter().any(|rung| rung.name == name)
     }
 
+    /// Index of the cheapest runnable rung on `role`'s ladder whose model
+    /// dispatch runs as `model`, or that names it so: the rung a try routed
+    /// to `model` was on, as the first model failover passed over names it
+    /// (bug-62ae1e).
+    #[must_use]
+    pub fn rung_of_model(&self, role: &str, model: &str) -> Option<usize> {
+        let rungs = self.config.role_rungs(role);
+        rungs.iter().position(|rung| {
+            self.runnable
+                .get(&rung.model)
+                .is_some_and(|runs| runs == model || rung.model == model)
+        })
+    }
+
     /// Index of the rung named `name` on `role`'s ladder, cheapest first,
     /// runnable or not: where M1's tier floor and cap sit (8124).
     #[must_use]

@@ -853,8 +853,9 @@ impl GraphTaskDispatcher {
         budget_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         budget_check.tick().await;
         let mut streamed_spend = StreamedSpend::default();
-        // A try whose rung bounds its time (bug-f0007b).
-        let time_limit = allowance.and_then(TryAllowance::time_limit);
+        // A try whose rung bounds its time (bug-f0007b), read each tick: a
+        // try failover moved to a substitute runs under that rung's
+        // (bug-62ae1e).
         let mut time_check = tokio::time::interval(STALL_CHECK_INTERVAL);
         time_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         time_check.tick().await;
@@ -910,7 +911,7 @@ impl GraphTaskDispatcher {
                         return Err(stalled);
                     }
                 }
-                _ = time_check.tick(), if time_limit.is_some() => {
+                _ = time_check.tick(), if allowance.is_some() => {
                     if let Some(stop) = allowance.and_then(|allowance| {
                         self.try_time_stop(allowance, progress, started_at, attempt)
                     }) {
@@ -1103,7 +1104,7 @@ impl GraphTaskDispatcher {
                     attempt.plan_id,
                     attempt.task_id,
                     attempt.attempt,
-                    rung,
+                    &rung,
                     &progress.call_model().unwrap_or_default(),
                     secs,
                 );
@@ -2492,7 +2493,7 @@ exec sleep 60
             let progress = AttemptProgress::default();
             progress.call_started(target.clone(), FailoverChain::default());
             (
-                TryAllowance::new(None, Some(&rung)).expect("a time bound"),
+                TryAllowance::new(None, Some(&rung), &[]).expect("a time bound"),
                 progress,
             )
         };

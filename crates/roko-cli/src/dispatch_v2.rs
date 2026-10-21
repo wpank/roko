@@ -1568,7 +1568,7 @@ impl AgentDispatcherV2 {
         let snapshot = self.pricing_snapshot_for(&request);
         fill_cost_from_profile(&mut result, &created.target, snapshot.as_deref());
 
-        self.record_provider_outcome(&created.target.provider_id, &result);
+        self.record_provider_outcome(&created.target, &result);
 
         let health_recorded = self.health_registry.is_some();
         record_agent_dispatch_feedback(
@@ -1686,7 +1686,7 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        self.record_provider_outcome(&created.target.provider_id, &result);
+        self.record_provider_outcome(&created.target, &result);
         let health_recorded = self.health_registry.is_some();
         record_agent_dispatch_feedback(
             &request,
@@ -1794,7 +1794,7 @@ impl AgentDispatcherV2 {
         // This must happen before any gate verdict is applied so a provider
         // success followed by a failing code/test gate remains a provider
         // success in the health registry.
-        self.record_provider_outcome(&target.provider_id, &result);
+        self.record_provider_outcome(&target, &result);
 
         let health_recorded = self.health_registry.is_some();
         record_agent_dispatch_feedback(
@@ -1833,13 +1833,25 @@ impl AgentDispatcherV2 {
     /// Record a provider run's outcome for the circuit breaker (E48-T05), as
     /// [`ProviderHealthOutcome::of`] reads it. With a registry attached,
     /// this is the run's only provider-health record: the feedback recorder
-    /// then leaves health alone (backlog 1114).
-    fn record_provider_outcome(&self, provider_id: &str, result: &AgentResult) {
+    /// then leaves health alone (backlog 1114). A rate limit while the run's
+    /// own calls are in flight to `target`'s provider, at the calls at once
+    /// its rate limits showed it takes, is the run's own doing, most often a
+    /// call the limiter held back without calling the provider: not the
+    /// provider's failure (bug-62ae1e).
+    fn record_provider_outcome(&self, target: &ProviderDispatchSpec, result: &AgentResult) {
         let Some(registry) = &self.health_registry else {
             return;
         };
+        let provider_id = target.provider_id.as_str();
         match ProviderHealthOutcome::of(result) {
             ProviderHealthOutcome::Success => registry.record_provider_success(provider_id),
+            ProviderHealthOutcome::Failure("rate_limit") if Self::own_calls_in_flight(target) => {
+                tracing::debug!(
+                    provider = %provider_id,
+                    "a rate limit while the run's own calls fill the provider is not its \
+                     failure; its health is unchanged"
+                );
+            }
             ProviderHealthOutcome::Failure(error_kind) => {
                 registry.record_provider_failure(provider_id, error_kind);
             }
@@ -1852,6 +1864,17 @@ impl AgentDispatcherV2 {
                 "an attempt timeout is a task outcome; the provider's health is unchanged"
             ),
         }
+    }
+
+    /// Whether the run's own calls are in flight to `target`'s provider
+    /// while a rate limit it answered says how many it takes at once
+    /// ([`roko_agent::provider::openai_compat::own_calls`], bug-62ae1e).
+    fn own_calls_in_flight(target: &ProviderDispatchSpec) -> bool {
+        target
+            .provider_config
+            .as_ref()
+            .and_then(roko_agent::provider::openai_compat::own_calls)
+            .is_some()
     }
 
     /// `request`'s allowance as the tool loop of `target`'s model sees it:

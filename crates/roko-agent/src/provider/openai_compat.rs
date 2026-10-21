@@ -205,6 +205,37 @@ pub(crate) fn base_url_for_tool_loop(provider: &ProviderConfig) -> String {
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
 }
 
+/// The endpoint the rate limiter OpenAI-compatible backends share
+/// ([`shared_rate_limiter`]) keys `provider`'s calls by when roko's tool loop
+/// calls it, to learn from its rate limits how many it takes at once
+/// (bug-4b6844, bug-62ae1e): its chat completions URL. `None` for a provider
+/// no such backend calls.
+///
+/// [`shared_rate_limiter`]: crate::openai_compat_backend::shared_rate_limiter
+#[must_use]
+pub fn rate_limit_endpoint(provider: &ProviderConfig) -> Option<String> {
+    matches!(
+        provider.kind,
+        ProviderKind::OpenAiCompat
+            | ProviderKind::PerplexityApi
+            | ProviderKind::Hermes
+            | ProviderKind::OpenClaw
+            | ProviderKind::CerebrasApi
+    )
+    .then(|| crate::openai_compat_backend::chat_endpoint(&base_url_for_tool_loop(provider)))
+}
+
+/// The process's own calls in flight to `provider` from roko's tool loop,
+/// while a rate limit it answered says how many it takes at once
+/// ([`ProviderRateLimiter::own_calls`] on the limiter its backends share);
+/// `None` when none is, or no such limit holds (bug-62ae1e).
+///
+/// [`ProviderRateLimiter::own_calls`]: crate::rate_limit::ProviderRateLimiter::own_calls
+#[must_use]
+pub fn own_calls(provider: &ProviderConfig) -> Option<crate::rate_limit::OwnCalls> {
+    crate::openai_compat_backend::shared_rate_limiter().own_calls(&rate_limit_endpoint(provider)?)
+}
+
 pub(crate) fn build_extra_body_params(
     provider: &ProviderConfig,
     model: &ModelProfile,

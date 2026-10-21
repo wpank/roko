@@ -9,7 +9,7 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-21
 last_verified = 2026-10-16
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16)"
 discovered_from = "roko-caps verify run at load ~120"
@@ -18,6 +18,9 @@ links = { depends_on = [], blocks = [], related = ["bug-7b62ff", "bug-8d8f98"], 
 
 [[verify]]
 command = "cargo test -p roko-cli --lib a_cancel_stops_the_post_merge_regression_check"
+
+[[verify]]
+command = "grep -rqw 'fn the_regression_checkout_comes_free_when_its_holder_lets_go' crates/roko-cli/src && cargo test -p roko-cli --lib -- the_regression_checkout_comes_free_when_its_holder_lets_go"
 +++
 
 ## Problem

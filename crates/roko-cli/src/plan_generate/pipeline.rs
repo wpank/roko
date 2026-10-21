@@ -1932,7 +1932,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 ));
                 // bug-56a806: a step that runs a source check's command runs the
                 // source's commands alone, without a guard of the planner's own.
-                repairs.extend(source_checks::run_exactly(&mut parsed, &checks));
+                repairs.extend(source_checks::run_exactly(&mut parsed, &checks, |task| {
+                    policy.tier_size_limits(task.tier_class()).max_verify_steps
+                }));
                 // bug-8723fc: an implementer with no check builds with the
                 // workspace's own build system, never one it lacks.
                 repairs.extend(runnable::repair_build_checks(

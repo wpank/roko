@@ -929,15 +929,23 @@ fn is_substantive(line: &str) -> bool {
             .any(|marker| line.starts_with(marker))
 }
 
+/// Directories a build, a test run or a package manager writes.
+///
+/// Everything under one is output, not a change to the project's sources.
+/// The scope check passes over it, and acceptance leaves it out of an
+/// attempt's commit unless the task's `files` name it (bug-ba0c40).
+pub const BUILD_OUTPUT_DIRS: &[&str] = &["__pycache__", ".pytest_cache", "node_modules", "target"];
+
+/// Extensions of files a run of the code leaves beside its sources:
+/// compiled Python.
+pub const BUILD_OUTPUT_EXTENSIONS: &[&str] = &["pyc"];
+
 /// Whether `path` is output a build or test run leaves behind.
 fn is_generated(path: &str) -> bool {
-    has_extension(path, "pyc")
-        || path.split('/').any(|dir| {
-            matches!(
-                dir,
-                "__pycache__" | ".pytest_cache" | "node_modules" | "target"
-            )
-        })
+    BUILD_OUTPUT_EXTENSIONS
+        .iter()
+        .any(|extension| has_extension(path, extension))
+        || path.split('/').any(|dir| BUILD_OUTPUT_DIRS.contains(&dir))
 }
 
 /// Whether `word` is a shell `NAME=value` prefix of a command.
@@ -961,9 +969,13 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Whether the `files` entry `declared` covers `path`: the same path, a
-/// directory above it, or a glob (`*`, `**`, `?`) matching it.
-fn covers(declared: &str, path: &str) -> bool {
+/// Whether the `files` entry `declared` covers `path`.
+///
+/// It does when it names the same path, a directory above it, or a glob
+/// (`*`, `**`, `?`) matching it. Both are relative to the working tree,
+/// `/`-separated; `declared` may start with `./` or end with `/`.
+#[must_use]
+pub fn covers(declared: &str, path: &str) -> bool {
     let declared = named_path(declared);
     if declared.is_empty() {
         return false;

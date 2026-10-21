@@ -26,6 +26,8 @@
 
 mod acceptance;
 pub use acceptance::{ReviewDiff, attempt_review_diff};
+mod build_output;
+pub use build_output::LeftOut;
 mod build_trees;
 #[cfg(test)]
 pub(crate) use build_trees::clones_on;
@@ -199,6 +201,10 @@ pub struct AcceptedWorktree {
     /// The plan branch's tip once the attempt was folded in: the base of the
     /// plan's later attempts.
     pub commit_oid: String,
+    /// The build output the attempt left that its commit leaves out
+    /// (bug-ba0c40). It stays in the checkout until
+    /// [`WorktreeManager::release_accepted`] removes the checkout.
+    pub left_out: LeftOut,
 }
 
 /// What [`WorktreeManager::union_merge_attempt`] merged into an attempt's
@@ -247,6 +253,9 @@ pub struct AttemptAcceptance {
     pub verdict: String,
     /// Task title, for the commit subject.
     pub title: String,
+    /// The task's `files`: build output the attempt left that they do not
+    /// name stays out of its commit ([`LeftOut`], bug-ba0c40).
+    pub files: Vec<String>,
 }
 /// Health of a tracked worktree (§15.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1039,6 +1048,11 @@ impl WorktreeManager {
     /// on its attempt branch, fold that commit into the plan branch
     /// ([`format_branch_name`]), and make the plan branch's new tip the base
     /// of the plan's later attempts.
+    ///
+    /// New build output that the task's `files` do not name, such as a
+    /// `target/` cargo wrote in a crate's directory, is not committed; the
+    /// commit's message and [`AcceptedWorktree::left_out`] name it
+    /// ([`LeftOut`], bug-ba0c40).
     ///
     /// Only the attempt's own checkout, the object database and the plan
     /// branch change: every step is plumbing, and no other checkout's

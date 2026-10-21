@@ -285,6 +285,7 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
             attempt_key: request.attempt_key.clone(),
             verdict: request.verdict.clone(),
             title: request.title.clone(),
+            files: request.files.clone(),
         };
         let accepted = self
             .manager

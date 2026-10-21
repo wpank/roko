@@ -918,6 +918,12 @@ impl LlmBackend for AnthropicMessagesBackend {
     fn backend_id(&self) -> &'static str {
         "claude_api"
     }
+
+    /// The API stops thinking at the budget the request sets, so roko's
+    /// tool loop does not stop such a reply for its reasoning (gap-f3f950).
+    fn reasoning_budget(&self) -> Option<u32> {
+        self.thinking_budget
+    }
 }
 
 fn content_as_text(content: &Value) -> String {

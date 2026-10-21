@@ -408,6 +408,45 @@ pub enum DashboardEvent {
         #[serde(default)]
         cached: bool,
     },
+    /// roko's tool loop stopped a reply that had only reasoned, with no text
+    /// and no tool call, at 3/8 of its output limit, and asked again
+    /// (gap-f3f950). One per stopped reply, once its try's dispatch ends.
+    ReasoningCut {
+        /// The plan of the try the reply was in.
+        plan_id: String,
+        /// That try's task.
+        task_id: String,
+        /// That try's ordinal, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The reply's turn in the try's tool loop, from 1.
+        #[serde(default)]
+        turn: u32,
+        /// The model that reasoned.
+        #[serde(default)]
+        model: String,
+        /// The reasoning tokens it streamed before it was stopped, by
+        /// estimate.
+        #[serde(default)]
+        reasoning_tokens: u64,
+        /// The reasoning limit it reached: 3/8 of its output limit.
+        #[serde(default)]
+        limit_tokens: u64,
+        /// How long its call ran, in seconds.
+        #[serde(default)]
+        secs: Option<f64>,
+        /// The seconds the stop saved, by estimate: the rest of the output
+        /// limit at the reply's own pace.
+        #[serde(default)]
+        saved_secs: Option<f64>,
+        /// What the re-ask did: `acted` (a tool call), `answered` (text),
+        /// `cut_again`, or `ended` (the try ended first).
+        #[serde(default)]
+        reask: String,
+        /// The finding in words.
+        #[serde(default)]
+        detail: String,
+    },
     /// A rung of the model ladder runs slow (gap-3217a0), once per run and
     /// rung: one of its tries reached the rung's time bound, or its tries
     /// spent more than `[routing.ladder] slow_call_secs` on each model call.
@@ -3591,6 +3630,20 @@ impl DashboardSnapshot {
             // A host reads the check's progress from the event stream
             // (gap-e02ec4); the log keeps its start and end.
             DashboardEvent::SpecGateStep { .. } => {}
+            DashboardEvent::ReasoningCut {
+                plan_id,
+                task_id,
+                detail,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "reasoning_cut".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    detail.clone(),
+                );
+            }
             DashboardEvent::RungSlow {
                 plan_id,
                 task_id,

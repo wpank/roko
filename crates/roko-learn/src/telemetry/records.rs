@@ -1045,6 +1045,12 @@ pub struct AttemptVerdictRecord {
     /// the work it left (gap-2c9412).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound: Option<String>,
+    /// How many times the try's agent, having handed back while its task's
+    /// checks still failed, was sent back to them within the try
+    /// (bug-cbbaa8); `None` when it never handed back with turns left, or
+    /// ran its own loop (a CLI agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<u32>,
 }
 
 /// [`AttemptVerdictRecord::bound`] of a try that used up its rung's turns.
@@ -1093,6 +1099,7 @@ impl AttemptVerdictRecord {
             verify_depth: None,
             workspace: None,
             bound: None,
+            continues: None,
         }
     }
 

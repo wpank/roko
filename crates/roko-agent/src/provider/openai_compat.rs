@@ -607,7 +607,8 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 // Priced as its provider bills it (find-c3da60).
                 .with_model_profile(model.clone().with_provider_cache_rate(provider))
                 .with_optional_data_llm(options.data_llm.clone())
-                .with_optional_turn_budget(options.turn_budget.clone());
+                .with_optional_turn_budget(options.turn_budget.clone())
+                .with_optional_hand_off_check(options.hand_off_check.clone());
 
             let mut agent = ToolLoopAgent::new(tool_loop)
                 .with_tools(tools)

@@ -12,6 +12,8 @@
 //! - [`prune`] — context-growth guard (§36.55).
 //! - [`result_msg`] — tool-result message construction (§36.56).
 //! - [`checkpoint`] — resumable state (§36.57).
+//! - [`hand_off`] — a model that hands back with its checks failing goes on
+//!   (bug-cbbaa8).
 //! - [`context_factory`] — production [`ToolContext`] builder (T026).
 
 use std::collections::HashSet;
@@ -88,6 +90,7 @@ pub mod backends;
 pub mod checkpoint;
 pub mod compaction;
 pub mod context_factory;
+pub mod hand_off;
 pub mod max_iter;
 pub mod prune;
 pub mod result_msg;
@@ -95,6 +98,7 @@ pub mod result_msg;
 pub use agent_wrapper::{MultimodalInputFormat, ToolLoopAgent};
 pub use backends::OpenAiCompatBackend;
 pub use checkpoint::Checkpoint;
+pub use hand_off::{HAND_OFF_TURNS_LEFT, HandOff, HandOffCheck};
 pub use max_iter::DEFAULT_MAX_ITERATIONS;
 pub use prune::DEFAULT_CONTEXT_TOKEN_LIMIT;
 
@@ -963,6 +967,9 @@ pub struct ToolLoop {
     /// The CaMeL data-LLM boundary that untrusted tool output passes
     /// through before the model sees it ([`Self::with_data_llm`]).
     data_llm: Option<Arc<DataLlmBoundary>>,
+    /// What the loop asks when the model hands back, which may send it back
+    /// to work on ([`Self::with_hand_off_check`]).
+    hand_off_check: Option<Arc<dyn HandOffCheck>>,
 }
 
 impl ToolLoop {
@@ -988,6 +995,7 @@ impl ToolLoop {
             few_shot_messages: Vec::new(),
             mcp_error_accumulator: None,
             data_llm: None,
+            hand_off_check: None,
         }
     }
 
@@ -1064,6 +1072,27 @@ impl ToolLoop {
     pub fn with_optional_turn_budget(self, budget: Option<Arc<dyn TurnBudget>>) -> Self {
         match budget {
             Some(budget) => self.with_turn_budget(budget),
+            None => self,
+        }
+    }
+
+    /// Ask `check` when the model hands back (bug-cbbaa8).
+    ///
+    /// While the run has at least [`HAND_OFF_TURNS_LEFT`] turns left after
+    /// that one and `check` may send the model back, it runs the checks, and
+    /// a run whose checks still fail goes on, the model told what they say.
+    #[must_use]
+    pub fn with_hand_off_check(mut self, check: Arc<dyn HandOffCheck>) -> Self {
+        self.hand_off_check = Some(check);
+        self
+    }
+
+    /// [`Self::with_hand_off_check`] when `check` is set, as an agent's
+    /// options carry it; the loop unchanged otherwise.
+    #[must_use]
+    pub fn with_optional_hand_off_check(self, check: Option<Arc<dyn HandOffCheck>>) -> Self {
+        match check {
+            Some(check) => self.with_hand_off_check(check),
             None => self,
         }
     }
@@ -1619,6 +1648,31 @@ impl ToolLoop {
                     iterations += 1;
                     continue;
                 }
+                // A model that hands back while its task's checks still fail,
+                // with turns left, is told what they say and goes on in the
+                // same run, its turns the try's (bug-cbbaa8). A reply cut at
+                // the output limit did not hand back: it ends the run as
+                // before, and one with no work behind it fails below.
+                let hands_back = !hit_length_limit && (!blank || !all_calls.is_empty());
+                if hands_back
+                    && let Some(note) = self.send_back(ctx, iterations, event_tx.as_ref()).await
+                {
+                    tracing::info!(
+                        iterations,
+                        "tool_loop: the model handed back with its task's checks failing; \
+                         sending it back within the run"
+                    );
+                    turn_traces.push(turn_trace);
+                    if !blank
+                        && let Some(reply) = self.translator.render_assistant_message(&response)
+                    {
+                        messages.push(reply);
+                    }
+                    messages.push(serde_json::json!({ "role": "user", "content": note }));
+                    iterations += 1;
+                    self.save_checkpoint_snapshot(iterations, &all_calls, &messages, &session);
+                    continue;
+                }
                 self.clear_checkpoint_file();
                 turn_traces.push(turn_trace);
                 tracing::info!(
@@ -2076,6 +2130,53 @@ impl ToolLoop {
         if let Err(err) = remove_checkpoint_file(path) {
             tracing::warn!(path = %path.display(), error = %err, "failed to clear tool loop checkpoint");
         }
+    }
+
+    /// What to tell a model that handed back after `iterations` turns, when
+    /// it goes on (bug-cbbaa8); `None` ends the run.
+    ///
+    /// It goes on when the loop's [`HandOffCheck`] ran its task's checks and
+    /// they still fail, with [`HAND_OFF_TURNS_LEFT`] turns left and the check
+    /// willing to send it back. The checks run as a `run_tests` call the
+    /// model made would, so a streaming caller's live output shows the step
+    /// and its stall watch waits for it.
+    async fn send_back(
+        &self,
+        ctx: &ToolContext,
+        iterations: usize,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+    ) -> Option<String> {
+        let check = self.hand_off_check.as_ref()?;
+        let turns_left = self
+            .max_iterations
+            .saturating_sub(iterations.saturating_add(1));
+        if turns_left < HAND_OFF_TURNS_LEFT || !check.may_send_back() {
+            return None;
+        }
+        let id = format!("roko-hand-off-{iterations}");
+        if let Some(tx) = event_tx {
+            let _ = tx
+                .send(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                    id: id.clone(),
+                    name: "run_tests".to_string(),
+                    args: serde_json::json!({ "build": "checks" }),
+                }))
+                .await;
+        }
+        let (output, note) = match check.check(ctx).await {
+            HandOff::Ends(what) => (what, None),
+            HandOff::GoesOn(note) => (note.clone(), Some(note)),
+        };
+        if let Some(tx) = event_tx {
+            let _ = tx
+                .send(StreamEvent::now(StreamEventKind::ToolResult {
+                    id,
+                    output,
+                    is_error: note.is_some(),
+                }))
+                .await;
+        }
+        note
     }
 }
 
@@ -3364,6 +3465,206 @@ mod tests {
         assert_eq!(out.stop_reason, StopReason::Stop);
         assert_eq!(out.final_text, "done");
         assert_eq!(out.tool_calls.len(), 2);
+    }
+
+    /// A [`HandOffCheck`] whose checks fail the first `red` times they run,
+    /// then pass, and that sends the model back at most `bound` times.
+    #[derive(Debug)]
+    struct ScriptedChecks {
+        red: usize,
+        bound: usize,
+        runs: AtomicUsize,
+        sent: AtomicUsize,
+    }
+
+    impl ScriptedChecks {
+        fn new(red: usize, bound: usize) -> Arc<Self> {
+            Arc::new(Self {
+                red,
+                bound,
+                runs: AtomicUsize::new(0),
+                sent: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl HandOffCheck for ScriptedChecks {
+        fn may_send_back(&self) -> bool {
+            self.sent.load(Ordering::SeqCst) < self.bound
+        }
+
+        async fn check(&self, _ctx: &ToolContext) -> HandOff {
+            let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            if run > self.red {
+                return HandOff::Ends("the checks pass".to_string());
+            }
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            HandOff::GoesOn(format!("Your checks still fail (run {run})."))
+        }
+    }
+
+    /// [`run_scripted_sse`] with `check` asked at each hand-off, in a run of
+    /// at most `max_iterations` turns, and the events it streamed.
+    async fn run_scripted_hand_offs(
+        backend: &Arc<ScriptedSseBackend>,
+        check: Arc<ScriptedChecks>,
+        max_iterations: usize,
+    ) -> (ToolLoopOutput, Vec<StreamEventKind>) {
+        let mut tool_loop =
+            make_tool_loop(Arc::clone(backend) as Arc<dyn LlmBackend>, max_iterations)
+                .with_hand_off_check(check);
+        tool_loop.translator = Arc::new(crate::translate::openai::OpenAiTranslator);
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
+        let events = tokio::spawn(async move {
+            let mut kinds = Vec::new();
+            while let Some(event) = rx.recv().await {
+                kinds.push(event.kind);
+            }
+            kinds
+        });
+        let out = tool_loop
+            .run_streaming(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+                tx,
+            )
+            .await;
+        (out, events.await.expect("the events"))
+    }
+
+    /// bug-cbbaa8: a model that hands back while its task's checks still
+    /// fail, with turns left, is told what they say and goes on in the same
+    /// run: its reply and the note join the conversation, the check shows as
+    /// a `run_tests` step, and the run ends once the checks pass.
+    #[tokio::test]
+    async fn a_hand_off_with_failing_checks_goes_on_in_the_run() {
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::answer("Done."),
+            ScriptedSseBackend::tool_call("call-2", "{}"),
+            ScriptedSseBackend::answer("Fixed."),
+        ]);
+        let check = ScriptedChecks::new(1, 2);
+        let (out, events) = run_scripted_hand_offs(&backend, Arc::clone(&check), 25).await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "Fixed.");
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call-1", "call-2"]);
+        assert_eq!(out.turn_traces.len(), 4);
+        // Its two hand-offs ran the checks: red, then green.
+        assert_eq!(check.runs.load(Ordering::SeqCst), 2);
+        assert_eq!(check.sent.load(Ordering::SeqCst), 1);
+
+        // The call after the red hand-off is sent the conversation, the
+        // model's own reply and the note.
+        let sent = backend.sent.lock();
+        assert_eq!(sent.len(), 4);
+        let (handed_back, sent_back) = (&sent[1], &sent[2]);
+        assert_eq!(&sent_back[..handed_back.len()], &handed_back[..]);
+        let added = &sent_back[handed_back.len()..];
+        assert_eq!(added.len(), 2, "{added:?}");
+        assert_eq!(added[0]["role"], "assistant");
+        assert_eq!(added[0]["content"], "Done.");
+        assert_eq!(added[1]["role"], "user");
+        assert_eq!(added[1]["content"], "Your checks still fail (run 1).");
+
+        // Each check shows as a `run_tests` step that ends: an error while
+        // the checks fail.
+        let steps: Vec<(&str, &str)> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEventKind::ToolCallEnd { id, name, .. }
+                    if id.starts_with("roko-hand-off") =>
+                {
+                    Some((id.as_str(), name.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("roko-hand-off-1", "run_tests"),
+                ("roko-hand-off-3", "run_tests")
+            ]
+        );
+        let results: Vec<bool> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEventKind::ToolResult { id, is_error, .. }
+                    if id.starts_with("roko-hand-off") =>
+                {
+                    Some(*is_error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, [true, false]);
+    }
+
+    /// bug-cbbaa8: the check bounds how many times the model goes back, and
+    /// the run goes back only with turns left to use: past the bound, or
+    /// short of [`HAND_OFF_TURNS_LEFT`] turns, a hand-off ends the run as
+    /// before, and the try's checks judge it. A reply cut at the output limit,
+    /// or with no work behind it, is no hand-off.
+    #[tokio::test]
+    async fn a_hand_off_goes_back_within_its_bound_and_turns() {
+        // Always red, two returns: three hand-offs, the third ends the run.
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::answer("Done."),
+        ]);
+        let check = ScriptedChecks::new(usize::MAX, 2);
+        let (out, _) = run_scripted_hand_offs(&backend, Arc::clone(&check), 25).await;
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(backend.calls(), 4, "a tool turn and three hand-offs");
+        assert_eq!(check.runs.load(Ordering::SeqCst), 2);
+        assert_eq!(check.sent.load(Ordering::SeqCst), 2);
+
+        // Two turns left after the hand-off: too few, the checks never run.
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::answer("Done."),
+        ]);
+        let check = ScriptedChecks::new(usize::MAX, 2);
+        let (out, events) = run_scripted_hand_offs(&backend, Arc::clone(&check), 4).await;
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(backend.calls(), 2);
+        assert_eq!(check.runs.load(Ordering::SeqCst), 0);
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                StreamEventKind::ToolCallEnd { id, .. } if id.starts_with("roko-hand-off")
+            )),
+            "{events:?}"
+        );
+
+        // A closing reply cut at the output limit did not hand back: the run
+        // ends as before, unchecked.
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::reasoning_cut(16_384),
+        ]);
+        let check = ScriptedChecks::new(usize::MAX, 2);
+        let (out, _) = run_scripted_hand_offs(&backend, Arc::clone(&check), 25).await;
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(backend.calls(), 3, "a tool turn and two cuts");
+        assert_eq!(check.runs.load(Ordering::SeqCst), 0);
+
+        // A reply with no work behind it fails as before, unchecked.
+        let backend = ScriptedSseBackend::new(vec![ScriptedSseBackend::answer("")]);
+        let check = ScriptedChecks::new(usize::MAX, 2);
+        let (out, _) = run_scripted_hand_offs(&backend, Arc::clone(&check), 25).await;
+        assert!(
+            matches!(&out.stop_reason, StopReason::BackendError(message) if message.starts_with("empty_response")),
+            "{:?}",
+            out.stop_reason
+        );
+        assert_eq!(check.runs.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

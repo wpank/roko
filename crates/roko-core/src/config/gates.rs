@@ -64,6 +64,10 @@ const fn default_sibling_settle_secs() -> u64 {
     600
 }
 
+const fn default_hand_off_continues() -> u32 {
+    2
+}
+
 const fn default_llm_judge_min_score() -> f32 {
     0.8
 }
@@ -352,6 +356,13 @@ pub struct GatesConfig {
     /// it starts editing.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
+    /// How many times a Graph attempt's implementer that hands back while
+    /// its task's verify steps still fail, with turns left, is sent back to
+    /// them within the same try, told what they say, before the try settles
+    /// on its checks (bug-cbbaa8). Only for a provider whose tool loop roko
+    /// runs, and never in FAST mode. `0` turns it off. Default: 2.
+    #[serde(default = "default_hand_off_continues")]
+    pub hand_off_continues: u32,
     /// Whether a Graph verify step that runs cargo tests, and still fails
     /// after sibling settlement, is run again on the plan run's start commit
     /// to tell tests that failed before the run from new failures. A step
@@ -517,6 +528,7 @@ impl Default for GatesConfig {
             cargo_jobs: None,
             nice: default_gate_nice(),
             sibling_settle_secs: default_sibling_settle_secs(),
+            hand_off_continues: default_hand_off_continues(),
             baseline_filter: default_true(),
             llm_judge: false,
             llm_judge_min_score: default_llm_judge_min_score(),

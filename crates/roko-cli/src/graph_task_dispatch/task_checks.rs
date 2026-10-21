@@ -5,6 +5,20 @@ use roko_std::tool::builtin::task_checks::{TaskCheck, task_checks_path};
 
 use super::*;
 
+/// `task`'s verify steps as its agent's `run_tests` runs them, named as their
+/// gate results name them.
+pub(super) fn checks_of(task: &TaskDef) -> Vec<TaskCheck> {
+    task.verify
+        .iter()
+        .enumerate()
+        .map(|(index, step)| TaskCheck {
+            label: verification::verify_step_label(index, &step.phase),
+            command: step.command.clone(),
+            timeout_ms: Some(step.timeout_ms),
+        })
+        .collect()
+}
+
 /// The checks file an attempt left in the workspace; removed when dropped,
 /// as the attempt's dispatch ends.
 pub(super) struct LeftChecks(Option<PathBuf>);
@@ -27,16 +41,7 @@ impl GraphTaskDispatcher {
         if task.verify.is_empty() {
             return LeftChecks(None);
         }
-        let checks: Vec<TaskCheck> = task
-            .verify
-            .iter()
-            .enumerate()
-            .map(|(index, step)| TaskCheck {
-                label: verification::verify_step_label(index, &step.phase),
-                command: step.command.clone(),
-                timeout_ms: Some(step.timeout_ms),
-            })
-            .collect();
+        let checks = checks_of(task);
         let path = task_checks_path(&self.workdir, attempt_key);
         let written = serde_json::to_vec(&checks)
             .map_err(std::io::Error::other)

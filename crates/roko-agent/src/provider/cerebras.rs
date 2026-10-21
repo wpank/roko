@@ -78,7 +78,8 @@ impl ProviderAdapter for CerebrasAdapter {
                 )
                 .with_few_shot_messages(coding_few_shot_examples())
                 .with_optional_data_llm(options.data_llm.clone())
-                .with_optional_turn_budget(options.turn_budget.clone());
+                .with_optional_turn_budget(options.turn_budget.clone())
+                .with_optional_hand_off_check(options.hand_off_check.clone());
 
             // Prepend a tool-call instruction for small models that tend to
             // emit tool invocations as text instead of using the API.

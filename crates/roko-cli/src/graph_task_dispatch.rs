@@ -65,6 +65,7 @@ mod failover;
 mod fast;
 mod feedback;
 mod gate_learning;
+mod hand_off;
 mod helper_calls;
 mod inert_settings;
 mod judge_step;
@@ -1574,6 +1575,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             audit.scan_prompt(&dispatch_plan.prompt.system_prompt, &prompt);
         }
         self.log_prompts(spec, &task.id, &dispatch_plan.prompt.system_prompt, &prompt);
+        // bug-cbbaa8: an implementer that hands back with its checks failing
+        // goes back to them within the try.
+        let send_back = self.send_back(&task);
         let mut request = AgentDispatchRequest {
             model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,
@@ -1616,6 +1620,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &task.id,
                 attempt.key.attempt,
             ),
+            hand_off: send_back
+                .clone()
+                .map(|check| -> Arc<dyn roko_agent::tool_loop::HandOffCheck> { check }),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);
@@ -1736,6 +1743,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
         drop(left_checks);
+        if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
+            attempt.record_continues(continues);
+        }
         if let Some(supervised) = supervised {
             supervised
                 .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));

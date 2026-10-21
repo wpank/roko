@@ -285,6 +285,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 &task.id,
                 attempt.key.attempt,
             ),
+            hand_off: None,
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);

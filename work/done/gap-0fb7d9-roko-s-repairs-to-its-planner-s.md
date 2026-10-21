@@ -2,7 +2,7 @@
 id = "gap-0fb7d9"
 kind = "gap"
 title = "roko's repairs to its planner's draft exist only in stderr and tracing: the plan-writing result and plan.md do not say what roko changed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "de778b612"
 source = "round-v7-plugin-wow#repairs"
 discovered_from = "agent:plugin-wow (round v7)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-serve/src/runtime.rs::PlanGenerationResult"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-33d458"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_repaired_draft_returns_its_repair_lines' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_repaired_draft_returns_its_repair_lines"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T01:31:44Z"
+commit = "9c1e6a31b"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 7c3b523a8 (work/gap-0fb7d9: 9c1e6a31b). extract_and_validate returns the draft with its repair lines, kept by the validated plan (repairs_for, like accept_for and folded_for), so they are the written draft's; dropping missing context files and clamping line ranges are repair lines now. GenerationOutcome.repairs, PlanGenerationResult.repairs (left out when empty), the plan-generation operation's result.repairs, and a '## Repairs' section in plan.md (the planner's or the overview). Post-merge verify at 7c3b523a8: grep OK; cargo test -p roko-cli --lib a_repaired_draft_returns_its_repair_lines: 1 passed. Branch: roko-cli lib 3947 passed, 1 failed (the plan_verify heartbeat timing flake, bug-e362a1/bug-8d8f98); roko-serve lib 1075 (plan_generation_status_reports_its_stage checks result.repairs); plan_authoring 19; roko-learn 1390; roko-execution 191; clippy -D warnings clean on all four; nightly fmt. plugin-wow has the field name (repairs)."
 +++
 
 ## Problem

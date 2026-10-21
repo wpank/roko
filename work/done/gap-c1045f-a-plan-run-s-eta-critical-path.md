@@ -74,3 +74,10 @@ down, is plugin-wow's P-38.
 
 On a plan with a short first task and two long parallel tasks before a last one, the ETA after the first task
 counts the parallel tasks' running time and the last task. Checked by the test in `[[verify]]`.
+
+## Notes
+
+- The self-model's latency forecast is not wired in as the fallback for a rung and tier with no history, as the
+  design note proposed. It forecasts one try rather than the time to a pass, and only once a task is dispatched, so it
+  needs the dispatch context the estimate does not have. Such a task takes the scaled history of other rungs, or a
+  guess. The lead accepted leaving it unwired (2026-10-21).

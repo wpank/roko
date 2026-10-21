@@ -1153,7 +1153,8 @@ pub struct PlanDisplayState {
     #[serde(default)]
     pub finished_at_ms: Option<u64>,
     /// What the plan's latest run has cost so far, in USD: the sum of the
-    /// `cost_usd` efficiency events that name the plan while it runs.
+    /// `cost_usd` and side-call cost ([`SIDE_CALL_USD_METRIC_PREFIX`])
+    /// efficiency events that name the plan while it runs.
     #[serde(default)]
     pub cost_usd: f64,
 }
@@ -1166,6 +1167,36 @@ pub const PLAN_SET_PENDING_PHASE: &str = "pending";
 
 /// Most candidates a [`DashboardEvent::RouteDecided`] carries.
 pub const ROUTE_EVENT_CANDIDATES: usize = 5;
+
+/// The prefix of a [`DashboardEvent::EfficiencyEvent`] metric that reports
+/// one side call's cost in USD (bug-11e54b): a model call an attempt makes
+/// beside its own dispatch, such as a helper's, an audit check's or one its
+/// provider refused before the attempt failed over. Its cost row bills the
+/// plan, and the attempt's own `cost_usd` does not count it. The call's role
+/// follows the prefix, as in `side_call_usd.failover_refused`.
+pub const SIDE_CALL_USD_METRIC_PREFIX: &str = "side_call_usd.";
+
+/// The side-call role of a call that an attempt's provider refused, with a
+/// rate limit or a spent quota, before the attempt failed over to another
+/// model: the role roko-cli's failover (`FAILOVER_REFUSED_ROLE`) gives its
+/// cost rows. It is one of the attempt's own model calls, so the attempt's
+/// `call_cost` figure holds its spend too until the attempt settles.
+pub const FAILOVER_REFUSED_SIDE_CALL: &str = "failover_refused";
+
+/// The [`SIDE_CALL_USD_METRIC_PREFIX`] metric of a side call with `role`.
+#[must_use]
+pub fn side_call_usd_metric(role: &str) -> String {
+    format!("{SIDE_CALL_USD_METRIC_PREFIX}{role}")
+}
+
+/// The role that a side-call cost `metric` names, or `None` for any other
+/// metric.
+#[must_use]
+pub fn side_call_role(metric: &str) -> Option<&str> {
+    metric
+        .strip_prefix(SIDE_CALL_USD_METRIC_PREFIX)
+        .filter(|role| !role.is_empty())
+}
 
 /// What a run's time-left estimate rests on, as
 /// [`DashboardEvent::CriticalPathEtaUpdated`] carries it (gap-c1045f), so a
@@ -3103,7 +3134,9 @@ impl DashboardSnapshot {
                         }
                         self.stats.total_cache_write_tokens += *value as u64;
                     }
-                    "cost_usd" => {
+                    // A side call's cost is its task's and plan's spend too
+                    // (bug-11e54b).
+                    name if name == "cost_usd" || side_call_role(name).is_some() => {
                         if let Some(agent) =
                             agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
                         {
@@ -6365,6 +6398,38 @@ mod tests {
 
         assert_eq!(snap.plans["p1"].cost_usd, 0.25);
         assert_eq!(snap.stats.cost_usd_total, 1.75);
+    }
+
+    /// bug-11e54b: a side call's cost, such as a call refused before a
+    /// failover, counts in its plan's run and the total, as `cost_usd` does;
+    /// other metrics with a `_usd` name do not.
+    #[test]
+    fn side_call_costs_count_in_the_plans_spend() {
+        let metric = |metric: &str, value: f64| DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            metric: metric.into(),
+            value,
+        };
+        let refused = side_call_usd_metric(FAILOVER_REFUSED_SIDE_CALL);
+        assert_eq!(refused, "side_call_usd.failover_refused");
+        assert_eq!(side_call_role(&refused), Some(FAILOVER_REFUSED_SIDE_CALL));
+        assert_eq!(side_call_role("side_call_usd."), None);
+        assert_eq!(side_call_role("cost_usd"), None);
+
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&plan_set_event(&[("p1", 1)]));
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 1,
+        });
+        snap.apply(&metric(&refused, 0.25));
+        snap.apply(&metric("cost_usd", 0.5));
+        snap.apply(&metric(&side_call_usd_metric("helper"), 0.125));
+        snap.apply(&metric("budget_remaining_usd", 4.0));
+
+        assert_eq!(snap.plans["p1"].cost_usd, 0.875);
+        assert_eq!(snap.stats.cost_usd_total, 0.875);
     }
 
     #[test]

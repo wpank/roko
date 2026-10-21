@@ -202,6 +202,10 @@ pub struct DispatchContext {
     /// whatever the execution policy and the task's `context_weight` say
     /// (bug-19ae56).
     pub skip_enrichment: bool,
+    /// The plan's `[meta] sources`, the documents it is written from
+    /// (bug-60ad88): its prompt shows them first among the declared files,
+    /// and cuts them last (bug-a8a787).
+    pub source_documents: Vec<String>,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -677,6 +681,7 @@ mod tests {
             knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
+            source_documents: Vec::new(),
         }
     }
 

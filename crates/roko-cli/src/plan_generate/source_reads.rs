@@ -26,7 +26,10 @@ pub(super) fn workspace_document(path: &Path, workdir: &Path) -> Option<String> 
 /// Make each task of `plan` read each of `documents` (workspace paths of the
 /// files the plan is written from) whole, and record them as the plan's
 /// `[meta] sources`, which `plan validate` holds the tasks to (PLAN_061). A
-/// read of only part of a document widens to the whole of it; the declared
+/// task that reads one whole already, with no range or one that runs the
+/// whole file, keeps it as the draft has it (phase 3's re-plan put the spec
+/// first itself). A read of only part of a document widens to the whole of
+/// it; the declared
 /// context cuts a long file to fit, never fails the task over it. The
 /// documents count toward no generated task's read budget
 /// (`PLAN_BUDGET_READ_FILES`), but a task that already reads `max_reads`
@@ -46,9 +49,22 @@ pub(super) fn repair_source_reads(
     if documents.is_empty() {
         return lines;
     }
+    // A read with no range, or one that runs the whole file, reads it whole.
+    let line_counts: Vec<usize> = documents
+        .iter()
+        .map(|document| {
+            std::fs::read_to_string(workdir.join(document)).map_or(0, |text| text.lines().count())
+        })
+        .collect();
+    let whole = |read: &ReadFile, line_count: usize| {
+        read.lines.as_deref().is_none_or(|range| {
+            crate::plan_policy::parse_line_range(range, line_count)
+                .is_ok_and(|(start, end)| start <= 1 && end.is_none_or(|end| end >= line_count))
+        })
+    };
     for task in &mut plan.tasks {
         let context = task.context.get_or_insert_with(TaskContext::default);
-        for document in &documents {
+        for (document, line_count) in documents.iter().zip(&line_counts) {
             let reads: Vec<usize> = context
                 .read_files
                 .iter()
@@ -58,7 +74,7 @@ pub(super) fn repair_source_reads(
                 .collect();
             if reads
                 .iter()
-                .any(|index| context.read_files[*index].lines.is_none())
+                .any(|index| whole(&context.read_files[*index], *line_count))
             {
                 continue;
             }
@@ -142,7 +158,11 @@ mod tests {
              [[task]]\nid = \"T2\"\ntitle = \"The engine\"\nstatus = \"ready\"\n\
              role = \"implementer\"\ntier = \"integrative\"\nfiles = [\"core/src/engine.cpp\"]\n\n\
              [[task.context.read_files]]\npath = \"docs/specs/phase-3-sequencer.md\"\n\
-             lines = \"40-80\"\nwhy = \"the engine wiring\"\n",
+             lines = \"4-8\"\nwhy = \"the engine wiring\"\n\n\
+             [[task]]\nid = \"T3\"\ntitle = \"The panel\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"integrative\"\nfiles = [\"plugin/Panel.cpp\"]\n\n\
+             [[task.context.read_files]]\npath = \"docs/specs/phase-3-sequencer.md\"\n\
+             lines = \"1-10\"\nwhy = \"the whole spec\"\n",
         )
         .expect("a plan")
     }
@@ -158,7 +178,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let spec = "docs/specs/phase-3-sequencer.md";
         std::fs::create_dir_all(temp.path().join("docs/specs")).expect("docs");
-        std::fs::write(temp.path().join(spec), "# Phase 3\n").expect("the spec");
+        let ten_lines: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(temp.path().join(spec), ten_lines).expect("the spec");
         assert_eq!(
             workspace_document(&temp.path().join(spec), temp.path()).as_deref(),
             Some(spec)
@@ -178,7 +199,7 @@ mod tests {
                 "T1: reads `docs/specs/phase-3-sequencer.md`, the document its plan is written \
                  from",
                 "T2: reads all of `docs/specs/phase-3-sequencer.md`, the document its plan is \
-                 written from, not only lines 40-80",
+                 written from, not only lines 4-8",
                 "`[meta] sources` names `docs/specs/phase-3-sequencer.md`, the documents the plan \
                  is written from",
             ]
@@ -189,7 +210,9 @@ mod tests {
                 .iter()
                 .find(|read| read.path == spec)
                 .expect("the spec is read");
-            assert_eq!(read.lines, None, "{}", task.id);
+            // T3 read it whole already, by its range, and keeps it so.
+            let whole = if task.id == "T3" { Some("1-10") } else { None };
+            assert_eq!(read.lines.as_deref(), whole, "{}", task.id);
             assert_eq!(unread_sources(&plan, index), Vec::<String>::new());
         }
         assert_eq!(

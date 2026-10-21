@@ -328,6 +328,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::SpecGateStarted { .. } => "spec_gate_started",
         DashboardEvent::SpecGateFinished { .. } => "spec_gate_finished",
         DashboardEvent::SpecGateStep { .. } => "spec_gate_step",
+        DashboardEvent::ReasoningCut { .. } => "reasoning_cut",
         DashboardEvent::RungSlow { .. } => "rung_slow",
         DashboardEvent::ProviderExhausted { .. } => "provider_exhausted",
         DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
@@ -360,6 +361,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::AttemptMerged { plan_id, .. }
         | DashboardEvent::CallCost { plan_id, .. }
         | DashboardEvent::SpecGateStep { plan_id, .. }
+        | DashboardEvent::ReasoningCut { plan_id, .. }
         | DashboardEvent::RungSlow { plan_id, .. }
         | DashboardEvent::ProviderExhausted { plan_id, .. }
         | DashboardEvent::KnowledgeWritten { plan_id, .. }
@@ -396,6 +398,7 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::AttemptMerged { task_id, .. }
         | DashboardEvent::CallCost { task_id, .. }
         | DashboardEvent::SpecGateStep { task_id, .. }
+        | DashboardEvent::ReasoningCut { task_id, .. }
         | DashboardEvent::RungSlow { task_id, .. }
         | DashboardEvent::ProviderExhausted { task_id, .. }
         | DashboardEvent::KnowledgeWritten { task_id, .. }

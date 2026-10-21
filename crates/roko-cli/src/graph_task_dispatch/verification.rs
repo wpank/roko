@@ -1501,7 +1501,7 @@ fn hidden_output_note(command: &str) -> Option<String> {
 /// A failed step's entry in the retry's feedback: its label and command, its
 /// authored `fail_msg` (else how it ended), the last 30 lines it printed, and
 /// [`hidden_output_note`] when its runner's output was hidden.
-fn step_failure(
+pub(super) fn step_failure(
     step_label: &str,
     shown: &str,
     step: &crate::task_parser::VerifyStep,

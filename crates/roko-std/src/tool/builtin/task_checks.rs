@@ -55,6 +55,37 @@ pub fn task_checks_path(workspace: &Path, attempt_key: &str) -> PathBuf {
         .join(format!("{name}.json"))
 }
 
+/// What running an attempt's checks came to ([`run_checks`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChecksOutcome {
+    /// Every check passed: each one's label and seconds, in order.
+    Passed(Vec<(String, f64)>),
+    /// A check failed.
+    Failed {
+        /// Its index among the checks.
+        index: usize,
+        /// Its exit code; `None` when a signal ended it.
+        code: Option<i32>,
+        /// How long it ran, in seconds.
+        secs: f64,
+        /// What it printed on stdout.
+        stdout: String,
+        /// What it printed on stderr.
+        stderr: String,
+        /// The checks that passed before it: each one's label and seconds.
+        passed: Vec<(String, f64)>,
+    },
+    /// A check did not finish in time.
+    TimedOut {
+        /// Its index among the checks.
+        index: usize,
+        /// The time it had.
+        limit: Duration,
+    },
+    /// The checks did not run, as `run_tests` says why.
+    NotRun(String),
+}
+
 /// Run the checks of the attempt `ctx` belongs to, within `budget` in all.
 pub(super) async fn run(
     ctx: &ToolContext,
@@ -79,10 +110,69 @@ pub(super) async fn run(
             ));
         }
     };
+    match run_checks(&checks, ctx, budget, parent_env).await {
+        ChecksOutcome::Passed(ran) => ToolResult::structured(
+            serde_json::json!({ "build": "checks", "status": "ok", "checks": checks_json(&ran) })
+                .to_string(),
+        ),
+        ChecksOutcome::Failed {
+            index,
+            code,
+            secs,
+            stdout,
+            stderr,
+            passed,
+        } => {
+            let exit = code.map_or_else(|| "a signal".to_string(), |code| format!("exit {code}"));
+            // bug-1f8db7: a failing check is the tool's answer, not a tool
+            // failure: as an error it would count toward a contract's
+            // consecutive-failure limit while the agent fixes its work.
+            ToolResult::structured(
+                serde_json::json!({
+                    "build": "checks",
+                    "status": "failed",
+                    "summary": format!(
+                        "check {} of {} ({}) failed ({exit}) after {secs} s",
+                        index + 1,
+                        checks.len(),
+                        checks[index].label
+                    ),
+                    "checks": checks_json(&passed),
+                    "output": tail(&format!("{stdout}{stderr}")),
+                })
+                .to_string(),
+            )
+        }
+        ChecksOutcome::TimedOut { index, limit } => ToolResult::Err(ToolError::Other(format!(
+            "run_tests: check {} ({}) did not finish within {} s; pass a larger timeout_ms (at \
+             most {} s) for a long build",
+            index + 1,
+            checks[index].label,
+            limit.as_secs(),
+            ctx.max_timeout.as_secs()
+        ))),
+        ChecksOutcome::NotRun(why) => ToolResult::Err(ToolError::Other(why)),
+    }
+}
+
+/// Run `checks` in `ctx`'s checkout, in order, stopping at the first that
+/// does not pass.
+///
+/// They run as the gate's environment would, within `budget` in all and each
+/// within its own time limit. Its tasks' agents run them with `run_tests`
+/// (gap-770cb5), and roko runs them when a plan attempt's agent hands back
+/// (bug-cbbaa8). `parent_env` stands in for roko's own environment when
+/// given.
+pub async fn run_checks(
+    checks: &[TaskCheck],
+    ctx: &ToolContext,
+    budget: Duration,
+    parent_env: Option<Vec<(String, OsString)>>,
+) -> ChecksOutcome {
     let parent_env = parent_env.unwrap_or_else(child_env::process_env);
     let started = Instant::now();
     let mut ran = Vec::new();
-    for (number, check) in (1_usize..).zip(&checks) {
+    for (index, check) in checks.iter().enumerate() {
         let left = budget.saturating_sub(started.elapsed());
         let limit = check
             .timeout_ms
@@ -93,63 +183,45 @@ pub(super) async fn run(
         if let Err(error) =
             child_env::apply_check_env(cmd.as_std_mut(), parent_env.clone(), &ctx.env_passthrough)
         {
-            return ToolResult::Err(ToolError::Other(format!(
+            return ChecksOutcome::NotRun(format!(
                 "run_tests: the checks did not run: their environment could not be set up: {error}"
-            )));
+            ));
         }
         let check_started = Instant::now();
         let output = match child_group::output_within(cmd, limit).await {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
-                return ToolResult::Err(ToolError::Other(format!(
-                    "run_tests: check {number} ({}) could not start: {error}",
+                return ChecksOutcome::NotRun(format!(
+                    "run_tests: check {} ({}) could not start: {error}",
+                    index + 1,
                     check.label
-                )));
+                ));
             }
-            Err(_) => {
-                return ToolResult::Err(ToolError::Other(format!(
-                    "run_tests: check {number} ({}) did not finish within {} s; pass a larger \
-                     timeout_ms (at most {} s) for a long build",
-                    check.label,
-                    limit.as_secs(),
-                    ctx.max_timeout.as_secs()
-                )));
-            }
+            Err(_) => return ChecksOutcome::TimedOut { index, limit },
         };
         let secs = (check_started.elapsed().as_secs_f64() * 10.0).round() / 10.0;
         if !output.status.success() {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let exit = output
-                .status
-                .code()
-                .map_or_else(|| "a signal".to_string(), |code| format!("exit {code}"));
-            // bug-1f8db7: a failing check is the tool's answer, not a tool
-            // failure: as an error it would count toward a contract's
-            // consecutive-failure limit while the agent fixes its work.
-            return ToolResult::structured(
-                serde_json::json!({
-                    "build": "checks",
-                    "status": "failed",
-                    "summary": format!(
-                        "check {number} of {} ({}) failed ({exit}) after {secs} s",
-                        checks.len(),
-                        check.label
-                    ),
-                    "checks": ran,
-                    "output": tail(&text),
-                })
-                .to_string(),
-            );
+            return ChecksOutcome::Failed {
+                index,
+                code: output.status.code(),
+                secs,
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                passed: ran,
+            };
         }
-        ran.push(serde_json::json!({ "check": check.label, "passed": true, "secs": secs }));
+        ran.push((check.label.clone(), secs));
     }
-    ToolResult::structured(
-        serde_json::json!({ "build": "checks", "status": "ok", "checks": ran }).to_string(),
-    )
+    ChecksOutcome::Passed(ran)
+}
+
+/// Checks that passed, each with its label and seconds, as `run_tests`
+/// lists them.
+fn checks_json(passed: &[(String, f64)]) -> Vec<serde_json::Value> {
+    passed
+        .iter()
+        .map(|(label, secs)| serde_json::json!({ "check": label, "passed": true, "secs": secs }))
+        .collect()
 }
 
 /// The last [`TAIL_LINES`] lines of `text`, at most [`TAIL_BYTES`] of them.

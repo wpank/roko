@@ -617,7 +617,8 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 // response, not the attempt's timeout (bug-5e597a).
                 .with_request_timeout_ms(provider.timeout_ms)
                 .with_optional_data_llm(options.data_llm.clone())
-                .with_optional_turn_budget(options.turn_budget.clone());
+                .with_optional_turn_budget(options.turn_budget.clone())
+                .with_optional_hand_off_check(options.hand_off_check.clone());
 
             let mut agent = ToolLoopAgent::new(tool_loop)
                 .with_tools(tools)

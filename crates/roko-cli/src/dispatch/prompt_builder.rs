@@ -3197,10 +3197,21 @@ pub(crate) fn cached_reader_ids(task: &TaskDef, cache: &PromptCache) -> (Vec<Str
 }
 
 fn render_gate_feedback(feedback: &GateFeedback) -> String {
-    let mut buf = String::from(
+    format!(
         "# Previous attempt feedback\n\n\
-         Your previous attempt FAILED verification. Fix these exact errors before doing anything else.\n\n",
-    );
+         Your previous attempt FAILED verification. Fix these exact errors before doing anything \
+         else.\n\n{}",
+        render_gate_feedback_sections(feedback)
+    )
+}
+
+/// The sections of `feedback` a retry prompt carries under its heading.
+///
+/// They are its diagnosis, what roko kept, its errors and failing tests, and
+/// the raw gate output unless compile errors explain the failure. A try sent
+/// back to its failing checks gets them too (bug-cbbaa8).
+pub(crate) fn render_gate_feedback_sections(feedback: &GateFeedback) -> String {
+    let mut buf = String::new();
     if let Some(diagnosis) = &feedback.diagnosis {
         buf.push_str("## Diagnosis\n");
         buf.push_str(diagnosis);
@@ -3234,7 +3245,7 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
     // says what it expected and got (bug-59ed90), and a step's `fail_msg` can
     // look like a failing test line itself.
     if feedback.compile_errors.is_empty() && !feedback.raw_output.is_empty() {
-        if !buf.ends_with("\n\n") {
+        if !buf.is_empty() && !buf.ends_with("\n\n") {
             buf.push('\n');
         }
         buf.push_str("## Raw gate output\n```\n");

@@ -2,15 +2,16 @@
 id = "gap-1ee8c4"
 kind = "gap"
 title = "loop_health carries β's estimate without its interval or arm counts, and roko learn loops prints no ε, ι or β, so nobody sees a loop's benefit being measured"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "d75efe323"
 source = "round-v6-learning-research#4b.9"
 discovered_from = "agent:learning-research (round v6, 2026-10-16)"
 anchors = ["crates/roko-core/src/dashboard_snapshot.rs::LoopHealth", "crates/roko-cli/src/graph_execution/loop_audit.rs::audit_tick", "crates/roko-cli/src/commands/learn_loops.rs"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["gap-ca63ee", "bug-550909"], 
 
 [[verify]]
 command = "grep -rqw 'fn loop_health_event_carries_beta_interval' crates/roko-cli/ && cargo test -p roko-cli loop_health_event_carries_beta_interval"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T03:53:01Z"
+commit = "d75efe323"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-21T01:31:02Z"
+forced = false
+evidence = "d75efe323. roko-core dashboard_snapshot.rs: DashboardEvent::LoopHealth carries beta_lcb, beta_ucb, beta_reason, n_learned and n_default as its own JSON fields, through a boxed, flattened LoopHealthDetail (as RouteDecided carries its ladder), all optional so an event written before them parses; boxed because as plain fields they grew the event enum to 264 bytes, which clippy's large_enum_variant caught on state_hub_ipc.rs HubIpcMessage. roko-cli graph_execution/loop_audit.rs loop_event fills them from the ledger health row the tick appends. roko-learn census.rs render_text, the roko learn loops table, adds n_L/n_D, ε, ι_net and β [LCB, UCB] columns (β's says not judged (<reason>) until it is), each column as wide as its widest cell; --json already carried the same numbers in rows[].measured. Checks: the verify command exits 0 (loop_health_event_carries_beta_interval ok, 77 test binaries, 0 failures); roko-cli lib learn_loops + loop_audit 8/8 incl. learn_loops_table_prints_beta_interval; roko-core loop_events_serialize_with_kind (JSON names, older event parses); roko-learn census 17/17; clippy -p roko-core -p roko-learn -p roko-cli --no-deps -D warnings clean; nightly fmt. CLI: target/debug/roko learn loops on a copy of the round-v6 audit demo's 24 runs (tmp/hermes-roko-v6/learning-research/evidence/audit-demo/workspace-runs, [learning.audit] n_beta = 12) prints L-know 13/30, ε 1.00, ι_net 1.00, β 0.976 [-2.301, 4.254] and L-play 26/17, β -0.502 [-3.844, 2.839]; --json gives L-know n_L 13, n_D 30, beta est 0.976, lcb -2.301, ucb 4.254. Display only: how β is judged is unchanged. Filed gap-2cc5be (GET /api/learn/loops rows still carry β̂ alone)."
 +++
 
 ## Problem

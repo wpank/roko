@@ -426,20 +426,32 @@ pub fn render_json(report: &CensusReport) -> serde_json::Result<String> {
 }
 
 /// `report` as a table: one line per loop, `id state reason qualifiers
-/// evidence`.
+/// evidence`, then what the runs' decision rows measure of it
+/// (gap-1ee8c4): the opportunities on the learned and the default arm, ε̂,
+/// ι_net, and β̂ with its interval once judged, else why it is not. A loop
+/// no decision row measures prints `-` in those columns. Each column is as
+/// wide as its widest cell.
 #[must_use]
 pub fn render_text(report: &CensusReport) -> String {
-    let mut out = format!(
-        "{:<16} {:<16} {:<24} {:<26} {}\n",
-        "loop", "state", "reason", "qualifiers", "evidence"
-    );
+    let header = [
+        "loop",
+        "state",
+        "reason",
+        "qualifiers",
+        "evidence",
+        "n_L/n_D",
+        "ε",
+        "ι_net",
+        "β [LCB, UCB]",
+    ];
+    let mut lines = vec![header.map(str::to_string)];
     for row in &report.rows {
         let state = match (&row.lifecycle, row.state) {
             (Lifecycle::Retired { by }, _) => format!("retired({by})"),
             (_, Some(state)) => serde_label(&state),
             (_, None) => "-".to_string(),
         };
-        let reason = row.reason.map_or("-", ReasonCode::as_str);
+        let reason = row.reason.map_or("-", ReasonCode::as_str).to_string();
         let qualifiers = if row.qualifiers.is_empty() {
             "-".to_string()
         } else {
@@ -447,12 +459,55 @@ pub fn render_text(report: &CensusReport) -> String {
             labels.join(",")
         };
         let evidence = row.evidence.map_or("-".to_string(), |e| serde_label(&e));
-        out.push_str(&format!(
-            "{:<16} {:<16} {:<24} {:<26} {}\n",
-            row.loop_id, state, reason, qualifiers, evidence
-        ));
+        let [arms, eps, iota, beta] = measured_columns(row.measured.as_ref());
+        let loop_id = row.loop_id.clone();
+        lines.push([
+            loop_id, state, reason, qualifiers, evidence, arms, eps, iota, beta,
+        ]);
+    }
+    let mut widths = [0_usize; 9];
+    for line in &lines {
+        for (width, cell) in widths.iter_mut().zip(line) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let mut out = String::new();
+    for line in &lines {
+        let cells: Vec<String> = line
+            .iter()
+            .zip(widths)
+            .map(|(cell, width)| format!("{cell:<width$}"))
+            .collect();
+        out.push_str(cells.join(" ").trim_end());
+        out.push('\n');
     }
     out
+}
+
+/// A census row's measured columns: `n_L/n_D`, ε̂, ι_net and [`beta_text`];
+/// `-` in each for a loop no decision row measures.
+fn measured_columns(measured: Option<&MeasuredLoop>) -> [String; 4] {
+    let Some(measured) = measured else {
+        return ["-", "-", "-", "-"].map(str::to_string);
+    };
+    [
+        format!("{}/{}", measured.n_learned, measured.n_default),
+        format!("{:.2}", measured.eps.est),
+        format!("{:.2}", measured.iota_net),
+        beta_text(&measured.beta),
+    ]
+}
+
+/// β as the census prints it: `β̂ [LCB, UCB]` once judged, else `not
+/// judged (<why>)`.
+fn beta_text(beta: &BetaFields) -> String {
+    match (beta.est, beta.lcb.zip(beta.ucb)) {
+        (Some(est), Some((low, high))) => format!("{est:.3} [{low:.3}, {high:.3}]"),
+        _ => format!(
+            "not judged ({})",
+            beta.reason.as_deref().unwrap_or("not estimated")
+        ),
+    }
 }
 
 /// The snake_case label serde gives a unit variant.
@@ -564,16 +619,7 @@ fn measured_fact(measured: &MeasuredLoop) -> String {
     let (n, learned) = (measured.n_opp, measured.n_learned);
     let pre = measured.pre_instrumentation;
     let (eps, iota) = (measured.eps, measured.iota_net);
-    let beta = &measured.beta;
-    let benefit = match (beta.est, beta.lcb.zip(beta.ucb)) {
-        (Some(est), Some((low, high))) => {
-            format!("β {est:.3} [{low:.3}, {high:.3}]")
-        }
-        _ => format!(
-            "β not judged ({})",
-            beta.reason.as_deref().unwrap_or("not estimated")
-        ),
-    };
+    let benefit = format!("β {}", beta_text(&measured.beta));
     format!(
         "{n} opportunities measured, {learned} on the learned arm, and {pre} rows from before \
          S03's fields: ε {:.2} (read {:.2}, reach {:.2}, honest {:.2}, receipt {:.2}), \

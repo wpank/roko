@@ -87,6 +87,10 @@ pub struct PlanGenerationResult {
     /// states none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_checks: Option<serde_json::Value>,
+    /// What roko changed in its planner's draft before it validated it, one
+    /// line each (gap-0fb7d9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repairs: Vec<String>,
 }
 
 /// Where a long operation reports what it is doing, as a JSON object, each

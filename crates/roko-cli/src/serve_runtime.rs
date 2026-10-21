@@ -990,6 +990,7 @@ impl RokoCliRuntime {
                 .source_checks
                 .as_ref()
                 .and_then(|checks| serde_json::to_value(checks).ok()),
+            repairs: outcome.repairs,
         })
     }
 

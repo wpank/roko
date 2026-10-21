@@ -2,7 +2,7 @@
 id = "bug-62ae1e"
 kind = "bug"
 title = "When the routed rung's provider rate-limits every try, each try fails over to the rung above under the routed rung's 20-turn bound and its failure never counts toward a climb, so the task loops on substitutes until exhausted (phase 2.2 run 20c780ae: 5 substitute tries on gpt-5.4-mini, all at mid's bound, none counted; T2 passed on its last try)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "060b8bad0"
 source = "round-v7-hermes-pilot#L-p2-2-run-20c780ae"
 discovered_from = "agent:hermes-pilot (round v7 phase 2.2 run 20c780ae; phase 2.1 run d4a4810d)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::note_ladder_outcome", "crates/roko-agent/src/rate_limit.rs::ProviderRateLimiter"]
@@ -24,6 +25,16 @@ command = "grep -rqw 'fn repeated_rate_limit_failovers_count_toward_the_climb' c
 
 [[verify]]
 command = "grep -rqw 'fn a_held_call_waits_for_a_slot_instead_of_a_substitute' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_held_call_waits_for_a_slot_instead_of_a_substitute"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T00:26:39Z"
+commit = "060b8bad0"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-20T22:53:57Z"
+forced = false
+evidence = "060b8bad0: (1) failover.rs run_bridge_with_failover: a rate limit while the process's own calls fill the provider at the calls at once its rate limits showed it takes (ProviderRateLimiter::own_calls on the limiter OpenAI-compatible backends share; roko_agent::provider::openai_compat::own_calls) waits for one of them to end, polling every 2 s and marked Queued so neither the stall watchdog nor the try's time bound counts it, then calls the same model again; at most [routing.ladder] rate_limit_wait_secs (new key, default 600) over the attempt, then failover as before; a refusal with none of the run's calls in flight still fails over at once. (2) dispatch_v2 record_provider_outcome: such a rate limit is not recorded against the provider's circuit. (3) LadderRoute carries the bounds of each runnable rung above the routed one (bounds_above: that rung's own try_turns/try_secs/try_usd at its step); a substitute there gets that rung's max_turns, the try's allowance rebinds to its time and spend (TryAllowance::rebind; the watchdog reads the time bound each tick), and bounded_stop and the turn-cap path use them. (4) note_ladder_outcome: a substitute's agent-blamed failure after the routed model was refused rate_limited or circuit_open counts on the routed rung (RoutingLadder::rung_of_model of the first refusal), so two climb the task; other refusal classes count nothing, and the self-model's early climb is not used for them. Tests: a_held_call_waits_for_a_slot_instead_of_a_substitute (another call holds the mid rung's endpoint at a learned limit of 1 for 6 s: the try waits, mid runs it with 2 provider requests, no substitute, verdict rung mid with no failover chain, mid_api 0 failures; red with rate_limit_wait_secs = 0, the pre-fix path: a substitute ran); a_rate_limit_failover_try_runs_under_its_substitute_rungs_bounds (red: 7 turns, mid's; now 13, strong's); repeated_rate_limit_failovers_count_toward_the_climb (red: ladder step 0; now 1 after two rate-limit failovers, and the third try is routed to strong without calling mid); a_substitutes_failure_counts_when_its_rung_turned_the_try_away (provider_exhausted counts nothing; rate_limited then circuit_open climb); a_rebound_try_runs_under_its_substitutes_rung; the_runs_own_calls_fill_a_provider_at_its_learned_limit. The held test's first red passed because it held the run factory's limiter, which OpenAI-compatible backends do not use; the fix and the test use the shared one. Checks: roko-cli lib 3949 passed, 0 failed (share test skipped); roko-agent lib 2381 passed; roko-core lib 2045 passed; clippy -D warnings (roko-core, roko-agent, roko-cli) clean; nightly rustfmt clean."
 +++
 
 ## Problem

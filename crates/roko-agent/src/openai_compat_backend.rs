@@ -29,7 +29,12 @@ struct StreamResponseMetadata {
     thread_id: Option<String>,
 }
 
-fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
+/// The process-wide rate limiter every OpenAI-compatible backend shares,
+/// unless given its own ([`OpenAiCompatLlmBackend::with_rate_limiter`]): it
+/// learns per endpoint ([`chat_endpoint`]) how many calls at once a provider
+/// takes, so parallel tasks share a provider's rate limit (bug-4b6844).
+#[must_use]
+pub fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
     static SHARED_RATE_LIMITER: OnceLock<Arc<ProviderRateLimiter>> = OnceLock::new();
     Arc::clone(
         SHARED_RATE_LIMITER
@@ -416,7 +421,7 @@ impl OpenAiCompatLlmBackend {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+        chat_endpoint(&self.base_url)
     }
 
     /// Admit a call to the endpoint, or hold it back as a rate limit, without
@@ -995,6 +1000,14 @@ impl std::fmt::Debug for OpenAiCompatLlmBackend {
             .field("max_tokens", &self.max_tokens)
             .finish_non_exhaustive()
     }
+}
+
+/// The chat endpoint of the OpenAI-compatible provider at `base_url`: the key
+/// [`shared_rate_limiter`] learns that provider's calls at once by
+/// (bug-4b6844, bug-62ae1e).
+#[must_use]
+pub fn chat_endpoint(base_url: &str) -> String {
+    format!("{}/chat/completions", base_url.trim_end_matches('/'))
 }
 
 #[cfg(test)]

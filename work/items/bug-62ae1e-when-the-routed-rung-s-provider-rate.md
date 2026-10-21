@@ -14,13 +14,16 @@ last_verified = 2026-10-21
 source = "round-v7-hermes-pilot#L-p2-2-run-20c780ae"
 discovered_from = "agent:hermes-pilot (round v7 phase 2.2 run 20c780ae; phase 2.1 run d4a4810d)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::note_ladder_outcome", "crates/roko-agent/src/rate_limit.rs::ProviderRateLimiter"]
-links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-4b6844", "gap-ff2c38", "gap-460230"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_rate_limit_failover_try_runs_under_its_substitute_rungs_bounds' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_rate_limit_failover_try_runs_under_its_substitute_rungs_bounds"
 
 [[verify]]
 command = "grep -rqw 'fn repeated_rate_limit_failovers_count_toward_the_climb' crates/roko-cli/src && cargo test -p roko-cli --lib -- repeated_rate_limit_failovers_count_toward_the_climb"
+
+[[verify]]
+command = "grep -rqw 'fn a_held_call_waits_for_a_slot_instead_of_a_substitute' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_held_call_waits_for_a_slot_instead_of_a_substitute"
 +++
 
 ## Problem
@@ -71,12 +74,32 @@ all routed to mid = glm-4.7 on Z.ai). Z.ai refused T2's and T3's calls with 429s
 
 ## Plan
 
-1. **Wait instead of switching, bounded.** When a failover is forced by a rate limit, and the shared per-endpoint
-   limiter says the routed rung's model will free up soon (a call in flight on it, or a short `retry_after`), wait for
-   it inside the try, up to a bound, before failing over.
-2. **The substitute's own bounds, and the climb counts.** A failover try runs under the bounds of the rung it actually
-   runs on (here strong: the tier's turns, no time bound), not the routed rung's. Repeated rate-limit failovers of
-   one task count toward its climb, so after the usual two it is routed to the rung above, with that rung's bounds.
+roko-ladder's design, approved by the lead on 2026-10-21. From the workspace's `.roko/roko.log.2026-10-20`:
+- Only T3's first refusal was a real 429.
+- After it the limiter learned zai's limit of 2 calls at once (bug-4b6844). Every later refusal was our own hold
+  ("holding a call back ... in_flight=2 limit=2", 16 times), while T1's and another task's glm-4.7 sessions were in
+  flight.
+- The tool loop's three quick retries ran out in about 2 s, so dispatch failed over at once.
+- The holds also counted as provider failures, which is why zai's circuit opened for T2's try 3.
+
+1. **Wait for a slot instead of switching.** In `run_bridge_with_failover`'s rate-limit branch, a new limiter query,
+   `ProviderRateLimiter::own_calls(endpoint)`, says whether the run's own calls are in flight to the routed model's
+   endpoint while a rate limit from the last minute says how many it takes at once. If they fill it, the model frees
+   up as soon as one of them ends, between their turns. The try waits for a free slot, polling every 2 s and marked
+   queued, so neither the stall watchdog nor the try's time bound counts the wait. Then it calls the same model
+   again (at once, if one of them ended already).
+   - Bound: `[routing.ladder] rate_limit_wait_secs`, default 600 s, over the attempt. Only after it does the try
+     fail over.
+   - A refusal with nothing else of ours in flight (an account limit) keeps today's Retry-After / failover behaviour.
+2. **A held call is not a provider failure.** A rate limit while the run's own calls are in flight to the provider
+   under such a limit is not recorded against its circuit (`record_provider_outcome`), so it can't open the circuit.
+3. **The substitute's own bounds.** When failover hands the try to a model that is a ladder rung, the try's turns,
+   spend and time allowance are recomputed for that rung (as `rung_allowance` does, for the rung the substitute
+   is), and the try's bounded-stop check uses them. A substitute that isn't on the ladder keeps the routed rung's
+   bounds.
+4. **Rate-limit failovers count toward the climb.** In `note_ladder_outcome`, a failed try whose routed model was
+   refused for `rate_limited` or `circuit_open`, and that a substitute ran, counts as a failure on the routed rung. Two
+   of them climb the task. Other refusal classes (exhausted, billing, credentials) keep today's rule.
 
 ## Done when
 

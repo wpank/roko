@@ -102,12 +102,27 @@ impl BoundedStop {
 
 /// What one try's model calls may spend: its plan's hold, asked first, so
 /// the run's cap has the last word, then its rung's time bound and spend
-/// allowance.
+/// allowance. A try failover moved to a substitute on a rung above runs
+/// under that rung's ([`Self::rebind`], bug-62ae1e).
 #[derive(Debug)]
 pub(super) struct TryAllowance {
     plan: Option<Arc<AttemptAllowance>>,
-    rung: Option<RungSpend>,
-    time: Option<RungTime>,
+    rung: parking_lot::RwLock<Option<Arc<RungSpend>>>,
+    time: parking_lot::RwLock<Option<Arc<RungTime>>>,
+}
+
+/// What a try that failover moved up the ladder may use on the rung its
+/// substitute runs on (bug-62ae1e): what a try the ladder routed there would
+/// get.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RungBounds {
+    /// Index of the rung among the role's rungs, cheapest first.
+    pub(super) index: usize,
+    /// What the try may use there; `None` on a rung with no bound of its
+    /// own, such as the highest one the task can reach.
+    pub(super) allowance: Option<RungAllowance>,
+    /// The turns the try may take there.
+    pub(super) max_turns: u32,
 }
 
 /// A rung's time bound for one try (bug-f0007b), which the watchdog marks
@@ -118,6 +133,19 @@ struct RungTime {
     limit: Duration,
     /// Why the try must stop, once it reached the bound.
     reached: parking_lot::Mutex<Option<String>>,
+}
+
+impl RungTime {
+    /// `rung`'s time bound, when it bounds time.
+    fn of(rung: &RungAllowance) -> Option<Arc<Self>> {
+        rung.secs.map(|secs| {
+            Arc::new(Self {
+                rung: rung.rung.clone(),
+                limit: Duration::from_secs(secs),
+                reached: parking_lot::Mutex::default(),
+            })
+        })
+    }
 }
 
 /// A rung's spend allowance for one try, and what the try spent of it.
@@ -143,44 +171,69 @@ struct RungSpent {
 
 impl TryAllowance {
     /// The allowance of a try that holds `plan` of its plan's budget and may
-    /// spend `rung`'s allowance on its rung; `None` when neither bounds it.
+    /// spend `rung`'s allowance on its rung; `None` when neither bounds it,
+    /// nor the time or spend of any rung `above` that failover may move it
+    /// to (bug-62ae1e).
     pub(super) fn new(
         plan: Option<Arc<AttemptAllowance>>,
         rung: Option<&RungAllowance>,
+        above: &[RungBounds],
     ) -> Option<Arc<Self>> {
-        let time = rung.and_then(|rung| {
-            rung.secs.map(|secs| RungTime {
-                rung: rung.rung.clone(),
-                limit: Duration::from_secs(secs),
-                reached: parking_lot::Mutex::default(),
+        let time = rung.and_then(RungTime::of);
+        let spend = rung.and_then(|rung| RungSpend::of(rung, RungSpent::default()));
+        let bounded_above = above
+            .iter()
+            .filter_map(|bounds| bounds.allowance.as_ref())
+            .any(|rung| rung.usd.is_some() || rung.secs.is_some());
+        (plan.is_some() || spend.is_some() || time.is_some() || bounded_above).then(|| {
+            Arc::new(Self {
+                plan,
+                rung: parking_lot::RwLock::new(spend),
+                time: parking_lot::RwLock::new(time),
             })
+        })
+    }
+
+    /// Bound the rest of the try by `rung`'s spend allowance and time in
+    /// place of the rung's it was routed to, once failover moved it to a
+    /// substitute on that rung (bug-62ae1e); `None` leaves it no bound of a
+    /// rung's own. What it spent so far still counts.
+    pub(super) fn rebind(&self, rung: Option<&RungAllowance>) {
+        let spent = self.rung_spend().map_or_else(RungSpent::default, |spend| {
+            let spent = spend.spent.lock();
+            RungSpent {
+                usd: spent.usd,
+                last_call_usd: spent.last_call_usd,
+                ..RungSpent::default()
+            }
         });
-        let rung = rung.and_then(|rung| {
-            rung.usd.map(|limit_usd| RungSpend {
-                rung: rung.rung.clone(),
-                limit_usd,
-                spent: parking_lot::Mutex::default(),
-            })
-        });
-        (plan.is_some() || rung.is_some() || time.is_some())
-            .then(|| Arc::new(Self { plan, rung, time }))
+        *self.rung.write() = rung.and_then(|rung| RungSpend::of(rung, spent));
+        *self.time.write() = rung.and_then(RungTime::of);
+    }
+
+    fn rung_spend(&self) -> Option<Arc<RungSpend>> {
+        self.rung.read().clone()
+    }
+
+    fn rung_time(&self) -> Option<Arc<RungTime>> {
+        self.time.read().clone()
     }
 
     /// How long the try may run on its rung, if its rung bounds its time.
     pub(super) fn time_limit(&self) -> Option<Duration> {
-        self.time.as_ref().map(|time| time.limit)
+        self.rung_time().map(|time| time.limit)
     }
 
     /// The rung whose time bounds the try.
-    pub(super) fn time_rung(&self) -> Option<&str> {
-        self.time.as_ref().map(|time| time.rung.as_str())
+    pub(super) fn time_rung(&self) -> Option<String> {
+        self.rung_time().map(|time| time.rung.clone())
     }
 
     /// The try has run its rung's time (bug-f0007b): it makes no further
     /// model call, and [`Self::stop`] says so. The reason it stops, the same
     /// each time this is asked; `None` when its rung bounds no time.
     pub(super) fn reach_time_bound(&self) -> Option<TryStop> {
-        let time = self.time.as_ref()?;
+        let time = self.rung_time()?;
         let secs = time.limit.as_secs();
         let reason = time
             .reached
@@ -198,7 +251,7 @@ impl TryAllowance {
 
     /// The stop for the try's time, once it ran it.
     pub(super) fn time_stop(&self) -> Option<TryStop> {
-        let time = self.time.as_ref()?;
+        let time = self.rung_time()?;
         let reason = time.reached.lock().clone()?;
         Some(TryStop::Time {
             secs: time.limit.as_secs(),
@@ -213,8 +266,11 @@ impl TryAllowance {
         if let Some(reason) = self.plan.as_deref().and_then(AttemptAllowance::refusal) {
             return Some(TryStop::Plan(reason));
         }
-        let rung = self.rung.as_ref();
-        if let Some(reason) = rung.and_then(|rung| rung.spent.lock().refusal.clone()) {
+        let rung = self.rung_spend();
+        if let Some(reason) = rung
+            .as_ref()
+            .and_then(|rung| rung.spent.lock().refusal.clone())
+        {
             return Some(TryStop::Rung(reason));
         }
         if let Some(stop) = self.time_stop() {
@@ -231,6 +287,18 @@ impl TryAllowance {
 }
 
 impl RungSpend {
+    /// `rung`'s spend allowance, when it has one, of which the try spent
+    /// `spent` so far.
+    fn of(rung: &RungAllowance, spent: RungSpent) -> Option<Arc<Self>> {
+        rung.usd.map(|limit_usd| {
+            Arc::new(Self {
+                rung: rung.rung.clone(),
+                limit_usd,
+                spent: parking_lot::Mutex::new(spent),
+            })
+        })
+    }
+
     /// Why the try must stop: it spent its allowance (`detail` says how the
     /// agent put it, when it stopped itself). What it spent is said when it
     /// is known: an agent that keeps its own limit reports it only at the
@@ -263,7 +331,7 @@ impl CallAllowance for TryAllowance {
         if let Some(TryStop::Time { reason, .. }) = self.time_stop() {
             return Some(reason);
         }
-        let rung = self.rung.as_ref()?;
+        let rung = self.rung_spend()?;
         let spent = rung.spent.lock();
         if spent.usd + spent.last_call_usd <= rung.limit_usd && spent.usd < rung.limit_usd {
             return None;
@@ -280,7 +348,7 @@ impl CallAllowance for TryAllowance {
         }
         // An unpriced call's cost is unknown: the plan refuses the next call
         // (bug-4fabd0), and the rung counts nothing.
-        if let Some(rung) = &self.rung
+        if let Some(rung) = self.rung_spend()
             && priced
             && cost_usd.is_finite()
             && cost_usd > 0.0
@@ -296,7 +364,7 @@ impl CallAllowance for TryAllowance {
             .plan
             .as_deref()
             .and_then(CallAllowance::spend_limit_usd);
-        let Some(rung) = &self.rung else {
+        let Some(rung) = self.rung_spend() else {
             return plan;
         };
         let mut spent = rung.spent.lock();
@@ -436,7 +504,7 @@ mod tests {
             usd: Some(0.25),
             secs: None,
         };
-        let allowance = TryAllowance::new(None, Some(&rung)).expect("an allowance");
+        let allowance = TryAllowance::new(None, Some(&rung), &[]).expect("an allowance");
         assert_eq!(allowance.refuse_call(), None);
         allowance.record_call(0.125, true);
         allowance.record_call(1.0, false);
@@ -448,7 +516,7 @@ mod tests {
         assert!(reason.contains("$0.2500 of $0.2500"), "{reason}");
         assert_eq!(allowance.stop(None), Some(TryStop::Rung(reason)));
 
-        let fresh = TryAllowance::new(None, Some(&rung)).expect("an allowance");
+        let fresh = TryAllowance::new(None, Some(&rung), &[]).expect("an allowance");
         assert_eq!(fresh.spend_limit_usd(), Some(0.25));
         let own = fresh.stop(Some("budget exhausted".to_string()));
         assert!(
@@ -456,9 +524,9 @@ mod tests {
             "{own:?}"
         );
 
-        assert!(TryAllowance::new(None, None).is_none());
+        assert!(TryAllowance::new(None, None, &[]).is_none());
         let turns_only = RungAllowance { usd: None, ..rung };
-        assert!(TryAllowance::new(None, Some(&turns_only)).is_none());
+        assert!(TryAllowance::new(None, Some(&turns_only), &[]).is_none());
     }
 
     /// bug-f0007b: a try whose rung bounds its time makes no model call once
@@ -472,7 +540,7 @@ mod tests {
             usd: None,
             secs: Some(450),
         };
-        let allowance = TryAllowance::new(None, Some(&rung)).expect("a time bound");
+        let allowance = TryAllowance::new(None, Some(&rung), &[]).expect("a time bound");
         assert_eq!(allowance.time_limit(), Some(Duration::from_secs(450)));
         assert_eq!(allowance.refuse_call(), None);
         assert_eq!(allowance.stop(None), None);
@@ -487,7 +555,47 @@ mod tests {
         assert_eq!(allowance.stop(None), Some(reached.clone()));
         assert_eq!(allowance.reach_time_bound(), Some(reached));
 
-        let untimed = TryAllowance::new(None, Some(&RungAllowance { secs: None, ..rung }));
+        let untimed = TryAllowance::new(None, Some(&RungAllowance { secs: None, ..rung }), &[]);
         assert!(untimed.is_none());
+    }
+
+    /// bug-62ae1e: a try failover moved to a substitute on a rung above runs
+    /// under that rung's time and spend, its spend so far still counted; a
+    /// rung with no bound of its own leaves it none. A try its own rung
+    /// leaves unbounded still gets an allowance when a rung above has one.
+    #[test]
+    fn a_rebound_try_runs_under_its_substitutes_rung() {
+        let mid = RungAllowance {
+            rung: "mid".to_string(),
+            turns: Some(7),
+            usd: Some(0.25),
+            secs: Some(450),
+        };
+        let strong = RungAllowance {
+            rung: "strong".to_string(),
+            turns: Some(13),
+            usd: Some(1.0),
+            secs: Some(900),
+        };
+        let allowance = TryAllowance::new(None, Some(&mid), &[]).expect("an allowance");
+        allowance.record_call(0.125, true);
+        allowance.rebind(Some(&strong));
+        assert_eq!(allowance.time_limit(), Some(Duration::from_secs(900)));
+        assert_eq!(allowance.time_rung().as_deref(), Some("strong"));
+        assert_eq!(allowance.spend_limit_usd(), Some(0.875));
+        allowance.rebind(None);
+        assert_eq!(allowance.time_limit(), None);
+        assert_eq!(allowance.spend_limit_usd(), None);
+        assert_eq!(allowance.refuse_call(), None);
+
+        let above = [RungBounds {
+            index: 2,
+            allowance: Some(strong.clone()),
+            max_turns: 13,
+        }];
+        let unbounded = TryAllowance::new(None, None, &above).expect("a rung above bounds it");
+        assert_eq!(unbounded.time_limit(), None);
+        unbounded.rebind(Some(&strong));
+        assert_eq!(unbounded.time_limit(), Some(Duration::from_secs(900)));
     }
 }

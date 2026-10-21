@@ -18,6 +18,7 @@ use roko_learn::provider_failover::{
 };
 
 use super::helper_calls::SideCall;
+use super::try_allowance::{RungBounds, TryAllowance};
 use super::*;
 
 // ─── Provider failover ──────────────────────────────────────────────────────
@@ -101,6 +102,20 @@ fn rate_limit_wait(waits: u32, retry_after: Option<Duration>) -> Duration {
             .min(RATE_LIMIT_WAIT_CAP)
     })
 }
+
+/// How often a try that waits for a slot at a provider the run's own calls
+/// fill looks again (bug-62ae1e).
+const SLOT_POLL: Duration = Duration::from_secs(2);
+
+/// Failover refusal class of a provider whose circuit is open.
+const CIRCUIT_OPEN: &str = "circuit_open";
+
+/// The failover refusal classes of a routed rung's provider that turned a try
+/// away for its capacity, a rate limit or an open circuit, not for anything
+/// about the try: the substitute's failure then counts on the routed rung, so
+/// a task its provider keeps turning away climbs instead of looping on
+/// substitutes (bug-62ae1e).
+pub(super) const COUNTS_ON_ROUTED_RUNG: [&str; 2] = [RATE_LIMITED, CIRCUIT_OPEN];
 
 /// `RokoError::Gateway` category of an attempt denied in a way no retry can
 /// change (backlog 1116). The error is non-retryable like
@@ -236,8 +251,10 @@ pub(super) struct FailoverRung {
 
 /// Where `[routing.ladder]` routed an attempt. Failover moves such an
 /// attempt to the same model on another provider, then up the role's
-/// runnable rungs, never to a cheaper model (decision 1119, backlog 1120).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// runnable rungs, never to a cheaper model (decision 1119, backlog 1120),
+/// and a substitute on a rung above runs under that rung's bounds
+/// (bug-62ae1e).
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct LadderRoute {
     /// The task's role, whose rungs the ladder routes along.
     pub(super) role: String,
@@ -245,6 +262,8 @@ pub(super) struct LadderRoute {
     pub(super) rung: usize,
     /// Rungs the task climbed above its start rung.
     pub(super) step: u32,
+    /// What the try may use on each runnable rung above the routed one.
+    pub(super) above: Vec<RungBounds>,
 }
 
 impl LadderRoute {
@@ -264,7 +283,22 @@ impl LadderRoute {
             role: task.role.as_deref().unwrap_or("implementer").to_string(),
             rung,
             step,
+            above: Vec::new(),
         })
+    }
+
+    /// This route, with what the try may use on each rung above it.
+    pub(super) fn with_above(mut self, above: Vec<RungBounds>) -> Self {
+        self.above = above;
+        self
+    }
+
+    /// What the try may use on the rung `chain`'s substitute runs on, when
+    /// failover moved it up from the routed rung (bug-62ae1e); `None` on the
+    /// routed rung.
+    pub(super) fn substitute_bounds(&self, chain: &FailoverChain) -> Option<&RungBounds> {
+        let index = usize::try_from(chain.rung.as_ref()?.index).ok()?;
+        self.above.iter().find(|bounds| bounds.index == index)
     }
 }
 
@@ -335,7 +369,13 @@ impl GraphTaskDispatcher {
     /// marked queued so the stall watchdog does not take the wait for
     /// silence. It waits while the limit lasts, until the call is served or
     /// fails otherwise, failover finds a model, or the plan run stops it, so a
-    /// 429 never settles a try (bug-4b6844).
+    /// 429 never settles a try (bug-4b6844). While the run's own calls fill
+    /// the provider, at the calls at once its rate limits showed it takes,
+    /// the attempt first waits for one of them to end and calls the same
+    /// model again, for up to `[routing.ladder] rate_limit_wait_secs`
+    /// ([`Self::wait_for_own_slot`], bug-62ae1e). A substitute on a rung
+    /// above the routed one runs under that rung's turns, and `allowance`
+    /// under its time and spend.
     ///
     /// In the operator's shared checkout, a Codex, Cursor or Gemini CLI agent
     /// is passed over the same way, pinned or not, unless `[runner]
@@ -358,11 +398,11 @@ impl GraphTaskDispatcher {
         attempt_key: String,
         mut request: AgentDispatchRequest,
         progress: Option<&super::watchdog::AttemptProgress>,
-        ladder: Option<LadderRoute>,
+        ladder: Option<&LadderRoute>,
+        allowance: Option<&TryAllowance>,
         dashboard: Option<DashboardRow<'_>>,
         theta: Option<&HarnessParams>,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
-        let ladder = ladder.as_ref();
         let pinned = self.cli_model_override.is_some();
         let mut candidate = DispatchCandidate {
             model_key: request.model_key.clone(),
@@ -373,6 +413,11 @@ impl GraphTaskDispatcher {
         // own, and the waits of a rate-limited attempt with nowhere to go.
         let mut refused_calls = 0_usize;
         let mut rate_limit_waits = 0_u32;
+        // What the attempt waited for slots at a provider its run's own
+        // calls fill, and the rung above the routed one whose bounds it runs
+        // under (bug-62ae1e).
+        let mut slot_waited = Duration::ZERO;
+        let mut bound_to: Option<usize> = None;
         // A pinned model never fails over, and never runs unguarded in the
         // shared checkout either.
         if pinned {
@@ -426,6 +471,27 @@ impl GraphTaskDispatcher {
             }
 
             request.model_key = candidate.model_key.clone();
+            // A substitute on a rung above the routed one runs under that
+            // rung's bounds, not the routed rung's (bug-62ae1e).
+            if let Some(bounds) = ladder.and_then(|route| {
+                route.substitute_bounds(&self.failover_chain(&refusals, &candidate, Some(route)))
+            }) && bound_to != Some(bounds.index)
+            {
+                bound_to = Some(bounds.index);
+                request.max_turns = Some(bounds.max_turns);
+                if let Some(allowance) = allowance {
+                    allowance.rebind(bounds.allowance.as_ref());
+                }
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id,
+                    model = %candidate.model_key,
+                    max_turns = bounds.max_turns,
+                    max_usd = ?bounds.allowance.as_ref().and_then(|rung| rung.usd),
+                    max_secs = ?bounds.allowance.as_ref().and_then(|rung| rung.secs),
+                    "failover moved the try up the ladder; it runs under that rung's bounds"
+                );
+            }
             // Once failover passed a model over, the dashboard row the
             // attempt opened with the planned model names the one that runs
             // instead; the hub upserts the row by its agent id (backlog 1128).
@@ -514,6 +580,23 @@ impl GraphTaskDispatcher {
             .await;
             let provider_id = dispatch.target.provider_id.clone();
             let Some(exhaustion) = exhaustion else {
+                // A rate limit while the run's own calls fill the provider
+                // waits for a slot among them, then calls the same model
+                // again: a substitute would run another rung's model on the
+                // try (bug-62ae1e).
+                if self
+                    .wait_for_own_slot(
+                        spec,
+                        task_id,
+                        &attempt_key,
+                        &dispatch.target,
+                        &mut slot_waited,
+                        progress,
+                    )
+                    .await
+                {
+                    continue;
+                }
                 // A rate limit (bug-4b6844): fail over, as for an open
                 // circuit, or wait for the limit and call the same model
                 // again.
@@ -631,6 +714,102 @@ impl GraphTaskDispatcher {
             }
             candidate = self.failover_model(spec, task_id, &refusals, ladder, theta, &request)?;
         }
+    }
+
+    /// Wait, while the run's own calls fill `target`'s provider at the calls
+    /// at once its rate limits showed it takes, for one of them to end
+    /// (bug-62ae1e): the attempt's call the provider refused, or the run's
+    /// limiter held back, then calls the same model again instead of
+    /// failover handing the try to a substitute on another rung. The wait is
+    /// marked queued, so neither the stall watchdog nor the try's time bound
+    /// counts it, and lasts no more than `[routing.ladder]
+    /// rate_limit_wait_secs` over the attempt, `waited` so far. Returns
+    /// whether to call again: `false` when none of the run's calls is in
+    /// flight there, so the limit is the provider's own, once the wait is
+    /// spent, and once the run is stopping.
+    async fn wait_for_own_slot(
+        &self,
+        spec: &TaskExecutionSpec,
+        task_id: &str,
+        attempt_key: &str,
+        target: &crate::dispatch_v2::ProviderDispatchSpec,
+        waited: &mut Duration,
+        progress: Option<&super::watchdog::AttemptProgress>,
+    ) -> bool {
+        use roko_agent::provider::openai_compat::own_calls;
+
+        let Some(provider) = target.provider_config.as_ref() else {
+            return false;
+        };
+        let Some(own) = own_calls(provider) else {
+            return false;
+        };
+        // One of them ended already.
+        if !own.full() {
+            return true;
+        }
+        let bound = Duration::from_secs(self.config.routing.ladder.rate_limit_wait_secs());
+        if *waited >= bound || self.is_stopping() {
+            return false;
+        }
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id,
+            provider = %target.provider_id,
+            model = %target.model_key,
+            in_flight = own.in_flight,
+            limit = own.limit,
+            waited_secs = waited.as_secs(),
+            "the run's own calls fill the provider at the calls at once its rate limits showed \
+             it takes; waiting for one of them to end, then calling the same model again"
+        );
+        // The dashboard says why the attempt is quiet.
+        if let Some(tui) = &self.tui_bridge {
+            tui.diagnosis(roko_core::DiagnosisSummary {
+                id: format!("rate-limit-slot:{attempt_key}:{}", waited.as_millis()),
+                ts: chrono::Utc::now(),
+                severity: roko_core::DiagnosisSeverity::Info,
+                subject: format!("{}/{task_id}", spec.plan_id),
+                detail: format!(
+                    "{} takes {} calls at once and the run has {} in flight there: the attempt \
+                     waits for one to end, then calls {} again",
+                    target.provider_id, own.limit, own.in_flight, target.model_key
+                ),
+                suggested_action: None,
+                intervention_taken: Some(
+                    "waiting for a slot at a rate-limited provider".to_string(),
+                ),
+            });
+        }
+        if let Some(progress) = progress {
+            progress.observe(&LiveAgentEvent::Queued { waiting: true });
+        }
+        let free = loop {
+            let step = SLOT_POLL.min(bound.saturating_sub(*waited));
+            tokio::time::sleep(step).await;
+            *waited += step;
+            if own_calls(provider).is_none_or(|own| !own.full()) {
+                break true;
+            }
+            if *waited >= bound || self.is_stopping() {
+                break false;
+            }
+        };
+        if let Some(progress) = progress {
+            progress.observe(&LiveAgentEvent::Queued { waiting: false });
+        }
+        if !free {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id,
+                provider = %target.provider_id,
+                model = %target.model_key,
+                waited_secs = waited.as_secs(),
+                "the attempt waited its [routing.ladder] rate_limit_wait_secs for a slot at the \
+                 provider; failover may now hand it to a substitute"
+            );
+        }
+        free
     }
 
     /// The chain of `refusals` before `candidate` ran, with the ladder rung
@@ -784,11 +963,7 @@ impl GraphTaskDispatcher {
             Some(ErrorClass::Exhausted) => ("provider_exhausted", "out of usage", true),
             Some(ErrorClass::Billing) => ("billing", "billing failure", true),
             Some(ErrorClass::AuthFailure) => (AUTH_FAILURE, "not logged in or key rejected", true),
-            _ => (
-                "circuit_open",
-                "circuit open after repeated failures",
-                false,
-            ),
+            _ => (CIRCUIT_OPEN, "circuit open after repeated failures", false),
         };
         Some(refusal(
             class,
@@ -2615,6 +2790,242 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             assert_eq!(verdict["attempt"], 1, "{verdict}");
             assert_eq!(verdict["outcome"], "unverified", "{verdict}");
         }
+    }
+
+    // ─── A rung our own calls hold (bug-62ae1e) ────────────────────────────
+
+    /// A fake `claude` that appends the `--max-turns` of each call to `turns`,
+    /// then answers.
+    fn turns_logging_claude(path: &Path, turns: &Path) {
+        write_executable(
+            path,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+previous=
+for arg in "$@"; do
+  if [ "$previous" = "--max-turns" ]; then
+    printf '%s\n' "$arg" >> '{}'
+  fi
+  previous=$arg
+done
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ran"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                turns.display()
+            ),
+        );
+    }
+
+    /// A dispatcher over [`ladder_failover_config`] (cheap, mid on the mock's
+    /// API at `base_url`, strong), `configure`d, working in `temp`, with its
+    /// provider health kept there and its run's records under `.roko/runs`.
+    async fn held_rung_dispatcher(
+        claude: &Path,
+        base_url: &str,
+        temp: &tempfile::TempDir,
+        configure: impl FnOnce(&mut RokoConfig),
+    ) -> (
+        GraphTaskDispatcher,
+        Arc<roko_learn::provider_health::ProviderHealthRegistry>,
+    ) {
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(claude, &rungs);
+        config
+            .providers
+            .get_mut("mid_api")
+            .expect("the mid rung's API provider")
+            .base_url = Some(base_url.to_string());
+        configure(&mut config);
+        crate::graph_task_dispatch::tests::fence_audits(&mut config);
+        let config = Arc::new(config);
+        let health = Arc::new(
+            roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
+                &temp.path().join("provider-health.json"),
+            ),
+        );
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(Arc::clone(&health)),
+        );
+        let dispatcher = GraphTaskDispatcher::new(factory, config, temp.path().to_path_buf())
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(temp.path().join(".roko/runs")),
+                ..GraphFeedbackContext::default()
+            });
+        (dispatcher, health)
+    }
+
+    /// A task routed to the mid rung, by its `rung` hint.
+    fn mid_rung_task() -> TaskDef {
+        let mut task = make_task_def("focused");
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+        task.hints.rung = Some("mid".to_string());
+        task
+    }
+
+    /// bug-62ae1e, phase 2.2's loop: another try's call holds the mid rung's
+    /// endpoint at the one call at once a rate limit showed it takes, so the
+    /// limiter holds the task's call back as a rate limit. The try waits for
+    /// the slot instead of handing itself to the strong rung's model: once
+    /// that call ends, it calls the mid model again and finishes there. The
+    /// held calls never count against the provider's health.
+    #[tokio::test]
+    async fn a_held_call_waits_for_a_slot_instead_of_a_substitute() {
+        const RUN: &str = "held-for-a-slot";
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-write",
+                "write_file",
+                serde_json::json!({ "path": "hello.txt", "content": "hi on mid" }),
+            ),
+            final_turn("wrote hello.txt"),
+        ]);
+        let (dispatcher, health) = held_rung_dispatcher(&claude, &base_url, &temp, |_| {}).await;
+        let spec = make_spec(&mid_rung_task());
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        // Another try's call is in flight on the endpoint, which a 429 taught
+        // takes one call at once; it ends six seconds in, after the tool
+        // loop's own three calls gave up.
+        let limiter = roko_agent::openai_compat_backend::shared_rate_limiter();
+        let endpoint = roko_agent::openai_compat_backend::chat_endpoint(&base_url);
+        let other = limiter.admit(&endpoint).expect("the other try's call");
+        limiter.note_rate_limited(&endpoint);
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            drop(other);
+        });
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the mid model runs the task once the slot is free");
+        release.await.expect("the other call ended");
+        assert!(logged_models(&models).is_empty(), "no substitute ran");
+        assert_eq!(
+            requests.lock().len(),
+            2,
+            "write, done: the held calls never reached the provider"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("hello.txt")).expect("hello.txt"),
+            "hi on mid"
+        );
+        let attempts = temp
+            .path()
+            .join(".roko/runs")
+            .join(RUN)
+            .join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        assert_eq!(verdicts[0]["ladder"]["rung"], "mid", "{}", verdicts[0]);
+        assert_eq!(
+            verdicts[0]["executed"]["failover_chain"],
+            serde_json::json!([]),
+            "{}",
+            verdicts[0]
+        );
+        let failures = health
+            .snapshot()
+            .get("mid_api")
+            .map_or(0, |health| health.total_failures);
+        assert_eq!(failures, 0, "a held call is not the provider's failure");
+    }
+
+    /// bug-62ae1e: a try the mid rung's provider rate-limits, with nothing
+    /// else of ours in flight there, still fails over to the strong rung's
+    /// model, and runs under the strong rung's bounds: its 13 turns, not
+    /// mid's 7.
+    #[tokio::test]
+    async fn a_rate_limit_failover_try_runs_under_its_substitute_rungs_bounds() {
+        let temp = tempdir().expect("tempdir");
+        let turns = temp.path().join("claude-turns.log");
+        let claude = temp.path().join("fake-claude.sh");
+        turns_logging_claude(&claude, &turns);
+        let tries = roko_agent::retry::RetryPolicy::default().max_attempts as usize;
+        let (base_url, _requests) = spawn_openai_mock(
+            std::iter::repeat_with(|| rate_limited_turn(1))
+                .take(tries)
+                .collect(),
+        );
+        let (dispatcher, _health) = held_rung_dispatcher(&claude, &base_url, &temp, |config| {
+            config.routing.ladder.max_turns =
+                [("mid".to_string(), 7), ("strong".to_string(), 13)].into();
+        })
+        .await;
+        let spec = make_spec(&mid_rung_task());
+        let ctx = CellContext::new().with_run_id("substitute-bounds".to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the strong rung's model runs the try");
+        let logged = std::fs::read_to_string(&turns).unwrap_or_default();
+        assert_eq!(logged.trim(), "13", "the substitute's own rung's turns");
+    }
+
+    /// bug-62ae1e: in phase 2.2 a substitute's failure counted nothing, so a
+    /// task its routed rung's provider kept refusing looped on substitutes.
+    /// Two tries the mid rung's provider rate-limited, run by the strong
+    /// rung's model and failed, now count on mid: the task climbs, and its
+    /// third try is routed to the strong rung itself, without calling mid.
+    #[tokio::test]
+    async fn repeated_rate_limit_failovers_count_toward_the_climb() {
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let tries = roko_agent::retry::RetryPolicy::default().max_attempts as usize;
+        let (base_url, requests) = spawn_openai_mock(
+            std::iter::repeat_with(|| rate_limited_turn(1))
+                .take(2 * tries)
+                .collect(),
+        );
+        let (dispatcher, _health) = held_rung_dispatcher(&claude, &base_url, &temp, |_| {}).await;
+        let mut task = mid_rung_task();
+        task.verify = vec![crate::graph_task_dispatch::tests::verify_step(
+            "test", "false",
+        )];
+        let mut spec = make_spec(&task);
+        spec.max_retries = 2;
+        let ctx = CellContext::new().with_run_id("rate-limit-climb".to_string());
+
+        for _ in 0..2 {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("the substitute's try fails its check");
+        }
+        assert_eq!(
+            dispatcher.ladder_step(&spec, &task),
+            1,
+            "two rate-limit failovers climb the task"
+        );
+        let mid_calls = requests.lock().len();
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the strong rung's own try fails its check too");
+        assert_eq!(
+            requests.lock().len(),
+            mid_calls,
+            "the third try is routed to strong: mid is not called"
+        );
+        // Each failed try's error enrichment runs on the cheap helper model.
+        let strong_tries = logged_models(&models)
+            .into_iter()
+            .filter(|model| model == "claude-sonnet-4-6")
+            .count();
+        assert_eq!(strong_tries, 3, "two substitutes, then strong's own try");
     }
 
     /// gap-cf427e: a chat host's run holds its outbound tool calls for

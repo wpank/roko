@@ -293,6 +293,12 @@ pub struct LadderConfig {
     /// gap-3217a0); unset is [`SLOW_CALL_SECS`], `0` turns it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slow_call_secs: Option<u64>,
+    /// Seconds one try waits in all for a slot at a provider the run's own
+    /// calls fill, before failover may hand the try to a substitute
+    /// ([`Self::rate_limit_wait_secs`], bug-62ae1e); unset is
+    /// [`RATE_LIMIT_WAIT_SECS`], `0` never waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_wait_secs: Option<u64>,
 }
 
 /// Fewest turns a try gets by default on a rung it can still climb from
@@ -308,6 +314,12 @@ pub const MIN_TRY_SECS: u64 = 300;
 /// call takes on the API rungs of round v6 and v7, and below the two minutes
 /// glm-4.7's reasoning took per call on Undertow's phase 1.
 pub const SLOW_CALL_SECS: u64 = 60;
+
+/// Seconds one try waits in all by default for a slot at a provider the
+/// run's own calls fill ([`LadderConfig::rate_limit_wait_secs`]): ten
+/// minutes, several of the calls of up to two minutes glm-4.7 made on
+/// Undertow's phase 1.
+pub const RATE_LIMIT_WAIT_SECS: u64 = 600;
 
 /// D11's cascade plus Sonnet, cheapest first.
 fn default_ladder_rungs() -> Vec<LadderRung> {
@@ -337,6 +349,7 @@ impl Default for LadderConfig {
             max_usd: BTreeMap::new(),
             max_secs: BTreeMap::new(),
             slow_call_secs: None,
+            rate_limit_wait_secs: None,
         }
     }
 }
@@ -603,6 +616,16 @@ impl LadderConfig {
             Some(secs) => Some(secs),
             None => Some(SLOW_CALL_SECS),
         }
+    }
+
+    /// How long, in seconds, one try waits in all for a slot at a provider
+    /// the run's own calls fill, at the calls at once its rate limits showed
+    /// it takes, before failover may hand the try to a substitute on another
+    /// rung (bug-62ae1e): `rate_limit_wait_secs`, else
+    /// [`RATE_LIMIT_WAIT_SECS`].
+    #[must_use]
+    pub fn rate_limit_wait_secs(&self) -> u64 {
+        self.rate_limit_wait_secs.unwrap_or(RATE_LIMIT_WAIT_SECS)
     }
 
     /// What one try may spend on rung `rung`, in USD: its `max_usd`, when

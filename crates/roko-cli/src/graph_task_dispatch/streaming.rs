@@ -240,7 +240,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         {
             max_turns = max_turns.min(turns);
         }
-        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref(), &[]);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
         let contract = self.task_contract(role, spec, &task);
         self.log_prompts(

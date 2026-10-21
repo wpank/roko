@@ -1513,6 +1513,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // the rung's turns, however many a turn-cap stop raised the cap to,
         // may spend no more than the rung's allowance (gap-3e770b), and may
         // run for a share of the attempt's time (bug-f0007b).
+        let turn_cap = max_turns;
         let rung_allowance = self.rung_allowance(
             &task,
             &attempt,
@@ -1536,7 +1537,25 @@ impl TaskDispatcher for GraphTaskDispatcher {
                  rung"
             );
         }
-        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
+        // Where the ladder routed the try, and what it may use on each rung
+        // above: a substitute failover moves it to there runs under that
+        // rung's bounds (bug-62ae1e).
+        let route = failover::LadderRoute::of(&task, &dispatch_plan, ladder_step).map(|route| {
+            let above = self.bounds_above(
+                &task,
+                &attempt,
+                &route,
+                turn_cap,
+                tier_turns,
+                timeout_ms / 1_000,
+            );
+            route.with_above(above)
+        });
+        let above = route
+            .as_ref()
+            .map(|route| route.above.as_slice())
+            .unwrap_or_default();
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref(), above);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
         let contract = self.task_contract(role, spec, &task);
@@ -1696,7 +1715,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     attempt.key.attempt_key(),
                     request,
                     Some(&progress),
-                    failover::LadderRoute::of(&task, &dispatch_plan, ladder_step),
+                    route.as_ref(),
+                    allowance.as_deref(),
                     Some(failover::DashboardRow {
                         agent_id: &pre_dispatch_agent_id,
                         role: task.role.as_deref().unwrap_or("implementer"),
@@ -1836,6 +1856,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 self.publish_settlement(spec, &task, &settled).await;
                 return Err(error);
             }
+        };
+        // A substitute failover moved up the ladder ran under its own rung's
+        // bounds (bug-62ae1e).
+        let (rung_allowance, max_turns) = match route
+            .as_ref()
+            .and_then(|route| route.substitute_bounds(&failover))
+        {
+            Some(bounds) => (bounds.allowance.clone(), bounds.max_turns),
+            None => (rung_allowance, max_turns),
         };
         // The attempt's records name the planned model beside the one that
         // ran (bug-35379d).

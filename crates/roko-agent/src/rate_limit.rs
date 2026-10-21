@@ -573,6 +573,29 @@ impl ProviderRateLimiter {
         })
     }
 
+    /// The run's own calls in flight to the provider at `endpoint`, while a
+    /// rate limit it answered within [`LEARNED_LIMIT_HOLDS_FOR`] says how
+    /// many it takes at once ([`Self::note_rate_limited`]); `None` when no
+    /// call is in flight there, or no such limit holds. A call the provider
+    /// refused, or this limiter held back, then waits for a slot among them
+    /// rather than handing its work to another model: the run's own calls
+    /// fill the provider (bug-62ae1e).
+    #[must_use]
+    pub fn own_calls(&self, endpoint: &str) -> Option<OwnCalls> {
+        self.own_calls_at(endpoint, std::time::Instant::now())
+    }
+
+    fn own_calls_at(&self, endpoint: &str, now: std::time::Instant) -> Option<OwnCalls> {
+        let learned = lock_learned(&self.learned);
+        let state = learned.get(endpoint)?;
+        let (limit, at) = state.limit?;
+        (state.in_flight > 0 && now.saturating_duration_since(at) < LEARNED_LIMIT_HOLDS_FOR)
+            .then_some(OwnCalls {
+                in_flight: state.in_flight,
+                limit,
+            })
+    }
+
     /// The provider at `endpoint` refused a call this limiter admitted with a
     /// rate limit (HTTP 429): it takes no more calls at once than the others
     /// in flight now, and at least one, until [`LEARNED_LIMIT_HOLDS_FOR`]
@@ -658,9 +681,66 @@ pub struct HeldCall {
     pub limit: usize,
 }
 
+/// The run's own calls in flight to a provider whose rate limit says how
+/// many it takes at once ([`ProviderRateLimiter::own_calls`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnCalls {
+    /// The run's calls in flight to it.
+    pub in_flight: usize,
+    /// The calls at once it takes.
+    pub limit: usize,
+}
+
+impl OwnCalls {
+    /// Whether they fill it: [`ProviderRateLimiter::admit`] holds the next
+    /// call back until one of them ends.
+    #[must_use]
+    pub const fn full(&self) -> bool {
+        self.in_flight >= self.limit
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-62ae1e: once a rate limit showed a provider takes two calls at
+    /// once, the run's own two calls fill it; one ending leaves a slot, none
+    /// in flight leaves the provider's limits its own, and a minute after
+    /// the last refusal the limit no longer holds.
+    #[test]
+    fn the_runs_own_calls_fill_a_provider_at_its_learned_limit() {
+        let limiter = ProviderRateLimiter::new(60);
+        let endpoint = "https://api.z.ai/api/paas/v4/chat/completions";
+        let t0 = std::time::Instant::now();
+        assert_eq!(limiter.own_calls_at(endpoint, t0), None);
+        let first = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        let second = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        assert_eq!(limiter.own_calls_at(endpoint, t0), None, "no limit learned");
+        let refused = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        limiter.note_rate_limited_at(endpoint, t0);
+        drop(refused);
+
+        let full = limiter.own_calls_at(endpoint, t0).expect("two in flight");
+        assert_eq!(
+            full,
+            OwnCalls {
+                in_flight: 2,
+                limit: 2
+            }
+        );
+        assert!(full.full());
+        drop(first);
+        let slot = limiter.own_calls_at(endpoint, t0).expect("one in flight");
+        assert!(!slot.full());
+        assert_eq!(
+            limiter.own_calls_at(endpoint, t0 + LEARNED_LIMIT_HOLDS_FOR),
+            None,
+            "the limit lapsed"
+        );
+        drop(second);
+        assert_eq!(limiter.own_calls_at(endpoint, t0), None, "none in flight");
+    }
 
     /// bug-4b6844: a provider that refused one of three calls at once takes
     /// two. While two are in flight a third is held back, without calling it;

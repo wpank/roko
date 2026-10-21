@@ -2,7 +2,7 @@
 id = "bug-11e54b"
 kind = "bug"
 title = "The run summary's cost_usd leaves out the failover_refused calls the ledger bills to the plan (phase 2.2 run 20c780ae: summary $0.6915, ledger $0.7185; the $0.027 is 4 glm-4.7 calls cut off by 429s)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "80be517d1"
 source = "round-v7-hermes-pilot#L-p2-2-run-20c780ae"
 discovered_from = "agent:hermes-pilot (round v7 phase 2.2 run 20c780ae)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::get_run_summary", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::write_side_call_rows", "crates/roko-core/src/dashboard_snapshot.rs::side_call_role", "crates/roko-cli/src/graph_task_dispatch/failover.rs::FAILOVER_REFUSED_ROLE"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_runs_summary_cost_includes_its_failover_refused_calls' crates/roko-serve/src && cargo test -p roko-serve --lib -- a_runs_summary_cost_includes_its_failover_refused_calls"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T01:08:43Z"
+commit = "80be517d1"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-21T00:07:49Z"
+forced = false
+evidence = "80be517d1. Each side call (a call its provider refused before the try failed over, a helper call, an inline audit check, an audit worker's call) now reaches the hub from SideCallRows::write (helper_calls.rs) as an efficiency_event with metric side_call_usd.<role>, beside its cost and efficiency rows. roko-core has the prefix, side_call_usd_metric, side_call_role and FAILOVER_REFUSED_SIDE_CALL, the string failover.rs's FAILOVER_REFUSED_ROLE writes (failover.rs is unchanged). The run summary (routes/runs.rs) adds side calls to a Graph run's cost_usd and lists them by role as side_call_usd, in its metrics and in GET /api/runs/{id}/summary; a running try's refused calls, which its call_cost figure holds too, count once. The dashboard snapshot counts side calls in the agent's, the plan's and the total spend. The literal verify passes: a_runs_summary_cost_includes_its_failover_refused_calls (run 20c780ae's rows, tries $0.4412 + $0.2503, four refused glm-4.7 calls $0.027 and five $0 helper calls: cost_usd $0.7185 with side_call_usd {failover_refused 0.027, helper 0}; a running try whose refused call cost $0.0068 and whose substitute has spent $0.01 so far reads $0.0168, not $0.0236, and $0.0168 once it settles). Also a_side_calls_cost_reaches_the_hub (roko-cli: a helper call after a failed gate reaches the hub as side_call_usd.helper, and the hub's spend equals the plan ledger's $0.02014) and side_call_costs_count_in_the_plans_spend (roko-core). Full lib suites: roko-cli 3951, roko-core 2046, roko-learn 1391, roko-serve 1076 of 1077 (bug-904a1c's known JWKS flake); fmt and clippy clean."
 +++
 
 ## Problem

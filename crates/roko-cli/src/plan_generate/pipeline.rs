@@ -1915,8 +1915,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
                 repairs.extend(runnable::repair_dependencies(&mut parsed, workdir_ref));
                 // bug-daa54e: a task that creates a C or C++ source lists the
-                // CMake file that must name it.
-                repairs.extend(runnable::repair_build_lists(&mut parsed, workdir_ref));
+                // CMake file that must name it, unless a task it waits for
+                // globs it in (bug-7a5aca).
+                repairs.extend(runnable::repair_build_lists(
+                    &mut parsed,
+                    workdir_ref,
+                    &size_sources,
+                ));
                 // bug-8fe462: a step that cannot run, over checks roko has the
                 // commands for, runs those commands.
                 let stuck = runnable::problems(&parsed, workdir_ref, &probe);

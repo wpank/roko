@@ -16,9 +16,9 @@
 //! line.
 //!
 //! Each side call's cost also reaches the hub, as a `side_call_usd.<role>`
-//! efficiency event ([`roko_core::dashboard_snapshot::side_call_usd_metric`]),
-//! so the run's summary and dashboard count what its cost rows bill
-//! (bug-11e54b).
+//! efficiency event ([`roko_core::dashboard_snapshot::side_call_usd_metric`])
+//! that names the try that made the call (gap-1430ea), so the run's summary
+//! and dashboard count what its cost rows bill (bug-11e54b).
 
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_learn::efficiency::ExecutedRow;
@@ -573,7 +573,10 @@ impl SideCallRows<'_> {
         }
         if let Some(tui) = tui {
             let metric = roko_core::dashboard_snapshot::side_call_usd_metric(role);
-            tui.efficiency_event(plan_id, task_id, &metric, cost_usd);
+            // The try that made the call (gap-1430ea).
+            let attempt = roko_learn::telemetry::records::AttemptKey::parse(attempt_key)
+                .map(|key| key.attempt);
+            tui.try_efficiency_event(plan_id, task_id, attempt, &metric, cost_usd);
         }
     }
 }
@@ -836,7 +839,8 @@ mod tests {
 
     /// bug-11e54b: a side call's cost reaches the hub as a
     /// `side_call_usd.<role>` efficiency event, here a helper call's after a
-    /// failed gate, so the hub's spend agrees with the plan's ledger.
+    /// failed gate, so the hub's spend agrees with the plan's ledger. The
+    /// event names the try that made the call (gap-1430ea).
     #[tokio::test]
     async fn a_side_calls_cost_reaches_the_hub() {
         use roko_core::DashboardEvent;
@@ -863,21 +867,25 @@ mod tests {
             .expect("the second attempt passes");
         assert_eq!(requests.lock().len(), 1, "the helper model saw one call");
 
-        let side_calls: Vec<(String, f64)> = hub
+        let side_calls: Vec<(String, Option<u32>, f64)> = hub
             .replay_from(0)
             .into_iter()
             .filter_map(|envelope| match envelope.payload {
-                DashboardEvent::EfficiencyEvent { metric, value, .. }
-                    if roko_core::dashboard_snapshot::side_call_role(&metric).is_some() =>
-                {
-                    Some((metric, value))
+                DashboardEvent::EfficiencyEvent {
+                    metric,
+                    attempt,
+                    value,
+                    ..
+                } if roko_core::dashboard_snapshot::side_call_role(&metric).is_some() => {
+                    Some((metric, attempt, value))
                 }
                 _ => None,
             })
             .collect();
         assert_eq!(side_calls.len(), 1, "{side_calls:?}");
         assert_eq!(side_calls[0].0, "side_call_usd.helper");
-        assert!((side_calls[0].1 - 0.000_14).abs() < 1e-7, "{side_calls:?}");
+        assert_eq!(side_calls[0].1, Some(1), "the first try made the call");
+        assert!((side_calls[0].2 - 0.000_14).abs() < 1e-7, "{side_calls:?}");
         // Two agent calls at $0.01 and the helper call, on both.
         let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
         let heard = hub.current_snapshot().stats.cost_usd_total;

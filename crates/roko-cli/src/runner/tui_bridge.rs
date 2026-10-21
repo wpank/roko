@@ -436,9 +436,23 @@ impl TuiBridge {
 
     /// Efficiency metric for a task.
     pub fn efficiency_event(&self, plan_id: &str, task_id: &str, metric: &str, value: f64) {
+        self.try_efficiency_event(plan_id, task_id, None, metric, value);
+    }
+
+    /// Efficiency metric for one try of a task, `attempt` from 1, or for the
+    /// task when `None` (gap-1430ea).
+    pub fn try_efficiency_event(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: Option<u32>,
+        metric: &str,
+        value: f64,
+    ) {
         self.sender.publish(DashboardEvent::EfficiencyEvent {
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
+            attempt,
             metric: metric.to_string(),
             value,
         });

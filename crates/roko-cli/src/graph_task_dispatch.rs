@@ -77,6 +77,7 @@ mod operator_stop;
 mod pack_rungs;
 mod prompt_experiment;
 mod prompt_log;
+mod reasoning_cut;
 mod red_flags;
 mod reflex_credit;
 mod retry_budget;
@@ -1879,6 +1880,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // The attempt's records name the planned model beside the one that
         // ran (bug-35379d).
         attempt.record_failover(failover);
+        // A reply roko stopped while it only reasoned says so (gap-f3f950).
+        self.publish_reasoning_cuts(&spec.plan_id, &task.id, attempt.key.attempt, &dispatch);
         let wall_duration = started_at.elapsed();
         // The model the provider reported serving (bug-31438d). A
         // substitution is priced by the model that served, and fails a

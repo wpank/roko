@@ -2456,6 +2456,8 @@ fn run_summary(
     let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
     // What the spec gate refused before any dispatch, `<task>: <rule>: <detail>`.
     let mut gate_refusals = Vec::<String>::new();
+    // The replies roko stopped while they only reasoned (gap-f3f950).
+    let mut reasoning_cuts = Vec::<Value>::new();
     // The rungs the run said ran slow, as it went (gap-3217a0).
     let mut rung_slow = Vec::<Value>::new();
     // The providers the run went on without because they refused a call for
@@ -2494,6 +2496,21 @@ fn run_summary(
                 "bound_secs": data.get("bound_secs"),
                 "secs_per_call": data.get("secs_per_call"),
                 "model_calls": data.get("model_calls"),
+                "detail": data.get("detail"),
+                "at": event_time(value),
+            }));
+        }
+        if kind == "reasoning_cut" {
+            let data = event_data(value);
+            reasoning_cuts.push(json!({
+                "plan_id": event_plan_id(value),
+                "task_id": event_task_id(value),
+                "attempt": data.get("attempt"),
+                "model": data.get("model"),
+                "reasoning_tokens": data.get("reasoning_tokens"),
+                "secs": data.get("secs"),
+                "saved_secs": data.get("saved_secs"),
+                "reask": data.get("reask"),
                 "detail": data.get("detail"),
                 "at": event_time(value),
             }));
@@ -2693,6 +2710,7 @@ fn run_summary(
         },
         "untrusted_input_boundary": boundaries,
         "milestones": milestones,
+        "reasoning_cuts": reasoning_cuts,
         "rung_slow": rung_slow,
         "provider_exhausted": provider_exhausted.into_values().collect::<Vec<_>>(),
         "started_at": summary["started_at"],
@@ -4417,6 +4435,46 @@ mod tests {
                 .is_some_and(|detail| detail.contains("recharge, or the ladder runs without it")),
             "{summary}"
         );
+    }
+
+    /// gap-f3f950: a run's summary lists the replies roko stopped while they
+    /// only reasoned, with what each re-ask did.
+    #[tokio::test]
+    async fn a_runs_summary_lists_its_reasoning_cuts() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "c1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"c1","timestamp_ms":1,"plan_id":"p1"}),
+                json!({"type":"reasoning_cut","run_id":"c1","plan_id":"p1","task_id":"T1","attempt":1,"turn":8,"model":"glm-4.7","reasoning_tokens":12288,"limit_tokens":12288,"secs":330.0,"saved_secs":550.0,"reask":"acted","detail":"glm-4.7 reasoned 12288 tokens in 330 s with no tool call"}),
+                json!({"type":"run.completed","run_id":"c1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("c1".into()))
+            .await
+            .unwrap();
+        let cuts = summary["reasoning_cuts"]
+            .as_array()
+            .expect("reasoning_cuts");
+        assert_eq!(cuts.len(), 1, "{summary}");
+        assert_eq!(cuts[0]["task_id"], "T1");
+        assert_eq!(cuts[0]["reasoning_tokens"], 12_288);
+        assert_eq!(cuts[0]["saved_secs"], 550.0);
+        assert_eq!(cuts[0]["reask"], "acted");
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

@@ -1541,6 +1541,13 @@ pub fn format_dashboard_event(
             detail,
             ..
         } => (format!("[{plan_id}/{task_id}]"), "!", detail.clone()),
+        // A reply roko stopped while it only reasoned says so (gap-f3f950).
+        DashboardEvent::ReasoningCut {
+            plan_id,
+            task_id,
+            detail,
+            ..
+        } => (format!("[{plan_id}/{task_id}]"), "!", detail.clone()),
         // A step that took a while on the base says so as it ends
         // (gap-e02ec4); a quick or cached one does not.
         DashboardEvent::SpecGateStep {

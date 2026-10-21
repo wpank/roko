@@ -2,7 +2,7 @@
 id = "gap-f3f950"
 kind = "gap"
 title = "A reply that only reasons runs to max_output before roko throws it away and asks again: stop it at 3/8 of max_output with no text and no tool call (glm-4.7, phases 0-3: 7 of 335 calls, 38% of the model time; the re-ask acted in 23-97 s each time)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool_loop"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "6d15615f7"
 source = "round-v7 roko-speed glm-4.7 speed study (findings/roko-speed.md), the lead's decision"
 discovered_from = "agent:roko-speed (round v7)"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::send_turn_streaming", "crates/roko-agent/src/tool_loop/mod.rs::length_cut_note", "crates/roko-agent/src/translate/mod.rs::normalize_finish_reason"]
@@ -24,6 +25,15 @@ command = "grep -rqw 'fn a_reasoning_cut_reaches_the_hub_with_what_the_reask_did
 
 [[verify]]
 command = "grep -rqw 'fn a_reply_stopped_twice_for_its_reasoning_ends_the_try_and_says_so' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_reply_stopped_twice_for_its_reasoning_ends_the_try_and_says_so"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T07:56:18Z"
+commit = "6d15615f7"
+by = "roko-speed"
+executor = "unknown"
+forced = false
+evidence = "6d15615f7. roko-agent tool_loop: guard_reasoning wraps each streamed turn (send_turn_streaming) and ends the stream once it has streamed reasoning_limit(max_tokens) = 3/8 of the turn's max_tokens in reasoning tokens (the larger of deltas and chars/4) with no non-blank text and no tool call, emitting Done with finish reason reasoning_limit (streaming::REASONING_LIMIT_FINISH, which normalize_finish_reason reads as Length). bug-872885's length-cut branch then asks again with length_cut_note(tokens, stopped) (\"...reasoned for about N tokens without a tool call or any text, so it was stopped...\"), and a second cut in a row ends the run as before; bug-cbbaa8's hand-off continue skips a cut as it skips a length cut, and a cut with no tool work fails as \"model hit output token limit (finish_reason=reasoning_limit)\". Not guarded: a backend whose LlmBackend::reasoning_budget() is Some (the Anthropic API tool loop's thinking budget) and a turn whose max_tokens is 0; OpenAI's hidden reasoning never streams. ToolLoopTurnTrace.duration_ms, in the agent.trace JSON. roko-cli: GraphTaskDispatcher::publish_reasoning_cuts, once a try's dispatch returns, publishes DashboardEvent::ReasoningCut {plan_id, task_id, attempt, turn, model, reasoning_tokens, limit_tokens, secs, saved_secs (the rest of max_output at the reply's pace), reask (acted, answered, cut_again, ended), detail} per stopped turn; red_flags' output_limit_note names a stopped closing reply; serve logs reasoning_cut, health lists it and GET /api/runs/{id}/summary lists reasoning_cuts; docs/v3/26-HTTP-API.md. A call the watchdog, the conductor or a stop cancels keeps no turn traces, so its cuts are not published. Tests: a_reply_that_only_reasons_is_stopped_at_its_reasoning_limit (scripted SSE, the 16,384-token default: a reply of 7,000 one-token deltas is stopped at 6,144 with finish reasoning_limit, its tool call never runs, the re-ask's note says it was stopped and the try goes on to pass; a reply that writes text first, or a backend with its own reasoning budget, is not stopped), a_reply_stopped_twice_for_its_reasoning_ends_the_try_and_says_so (roko-cli end to end over the OpenAI-compatible SSE mock with a 1,024-token model: two replies of about 500 reasoning tokens are each stopped at 384, the try is rejected as no_changes saying finish_reason=reasoning_limit, and the hub gets reasoning_cut events cut_again then ended), a_reasoning_cut_reaches_the_hub_with_what_the_reask_did (12,288 tokens in 330 s of a 32,768 limit: saved 550 s, acted; a provider's own length cut is not one), a_runs_summary_lists_its_reasoning_cuts; bug-872885's length-cut tests and bug-cbbaa8's hand-off tests beside them pass. a_call_cut_off_mid_stream_records_what_it_streamed now gives its model a 32,768-token output limit: its 8,000-delta reasoning stream was stopped at the 16,384 default's 6,144 before its network cut. On main 7f20b9578's tree: fmt and clippy -D warnings clean; lib suites roko-agent 2396, roko-cli 3983, roko-core 2047, roko-learn 1393, roko-runtime 213, roko-serve 1081, all passing."
 +++
 
 ## Problem

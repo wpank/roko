@@ -13,7 +13,7 @@ updated = 2026-10-21
 last_verified = 2026-10-21
 source = "round-v7-hermes-pilot#L-p2-2-run-20c780ae"
 discovered_from = "agent:hermes-pilot (round v7 phase 2.2 run 20c780ae)"
-anchors = ["crates/roko-serve/src/routes/runs.rs::get_run_summary", "crates/roko-cli/src/graph_task_dispatch/failover.rs"]
+anchors = ["crates/roko-serve/src/routes/runs.rs::get_run_summary", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::write_side_call_rows", "crates/roko-core/src/dashboard_snapshot.rs::side_call_role", "crates/roko-cli/src/graph_task_dispatch/failover.rs::FAILOVER_REFUSED_ROLE"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

@@ -14,6 +14,11 @@
 //! attempt they audit ([`GraphTaskDispatcher::audit_call_log`],
 //! gap-dd9c2e), and charge no budget: their spend is on the run's audit
 //! line.
+//!
+//! Each side call's cost also reaches the hub, as a `side_call_usd.<role>`
+//! efficiency event ([`roko_core::dashboard_snapshot::side_call_usd_metric`]),
+//! so the run's summary and dashboard count what its cost rows bill
+//! (bug-11e54b).
 
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_learn::efficiency::ExecutedRow;
@@ -421,6 +426,7 @@ impl GraphTaskDispatcher {
             attempt_key,
             attempt_id,
             role,
+            tui: self.tui_bridge.as_ref(),
         };
         rows.write(call).await;
     }
@@ -436,6 +442,7 @@ impl GraphTaskDispatcher {
             plan_budget: self
                 .stages_outbound()
                 .then(|| (Arc::clone(&self.budget_ledger), self.budget_policy)),
+            tui: self.tui_bridge.clone(),
         })
     }
 }
@@ -458,11 +465,14 @@ struct SideCallRows<'a> {
     attempt_id: &'a str,
     /// Both rows' `role`.
     role: &'a str,
+    /// The hub, which hears the call's cost, when the run publishes to one.
+    tui: Option<&'a TuiBridge>,
 }
 
 impl SideCallRows<'_> {
     /// Append `call`'s cost row and efficiency row, best-effort: a row that
-    /// is not written is logged.
+    /// is not written is logged. The hub hears its cost as a
+    /// `side_call_usd.<role>` efficiency event (bug-11e54b).
     async fn write(&self, call: &SideCall) {
         let Self {
             costs_path,
@@ -473,6 +483,7 @@ impl SideCallRows<'_> {
             attempt_key,
             attempt_id,
             role,
+            tui,
         } = *self;
         let timestamp = chrono::Utc::now().to_rfc3339();
         let (input_tokens, output_tokens) = (
@@ -560,6 +571,10 @@ impl SideCallRows<'_> {
                 );
             }
         }
+        if let Some(tui) = tui {
+            let metric = roko_core::dashboard_snapshot::side_call_usd_metric(role);
+            tui.efficiency_event(plan_id, task_id, &metric, cost_usd);
+        }
     }
 }
 
@@ -583,6 +598,8 @@ struct AuditCallRows {
     /// The plans' cost ledger and budget policy of a run whose audits count
     /// against its cap; `None` for one whose audits keep to their own line.
     plan_budget: Option<(Arc<GraphPlanBudgetLedger>, GraphPlanBudgetPolicy)>,
+    /// The run's hub, which hears each call's cost.
+    tui: Option<TuiBridge>,
 }
 
 #[async_trait::async_trait]
@@ -602,6 +619,7 @@ impl CallLog for AuditCallRows {
                 attempt_key: &unit.attempt_key,
                 attempt_id: &attempt_id,
                 role: AUDIT_ROLE,
+                tui: self.tui.as_ref(),
             };
             rows.write(&side).await;
             if let Some((ledger, _)) = &self.plan_budget
@@ -814,6 +832,57 @@ mod tests {
             .find(|episode| episode.success)
             .expect("passed attempt");
         assert!(!passed.extra.contains_key("helper_calls"));
+    }
+
+    /// bug-11e54b: a side call's cost reaches the hub as a
+    /// `side_call_usd.<role>` efficiency event, here a helper call's after a
+    /// failed gate, so the hub's spend agrees with the plan's ledger.
+    #[tokio::test]
+    async fn a_side_calls_cost_reaches_the_hub() {
+        use roko_core::DashboardEvent;
+
+        use crate::state_hub::StateHub;
+
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::default_capacity();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, task, requests) =
+            helper_fixture_with(&temp, recording_feedback(temp.path()), |dispatcher| {
+                dispatcher.with_tui_bridge(bridge)
+            })
+            .await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the first attempt fails its gate");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the second attempt passes");
+        assert_eq!(requests.lock().len(), 1, "the helper model saw one call");
+
+        let side_calls: Vec<(String, f64)> = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                DashboardEvent::EfficiencyEvent { metric, value, .. }
+                    if roko_core::dashboard_snapshot::side_call_role(&metric).is_some() =>
+                {
+                    Some((metric, value))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(side_calls.len(), 1, "{side_calls:?}");
+        assert_eq!(side_calls[0].0, "side_call_usd.helper");
+        assert!((side_calls[0].1 - 0.000_14).abs() < 1e-7, "{side_calls:?}");
+        // Two agent calls at $0.01 and the helper call, on both.
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        let heard = hub.current_snapshot().stats.cost_usd_total;
+        assert!((heard - spent).abs() < 1e-9, "hub {heard}, plan {spent}");
+        assert!((spent - 0.020_14).abs() < 1e-5, "{spent}");
     }
 
     /// Helper calls give the cascade router no credit (bug-b8af02). The

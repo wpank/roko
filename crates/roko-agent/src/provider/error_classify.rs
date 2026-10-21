@@ -210,6 +210,8 @@ fn parse_duration_str(s: &str) -> Option<u64> {
 /// The patterns cover the major providers:
 /// - OpenAI: `"insufficient_quota"`, `"billing_not_active"`
 /// - Anthropic: `"credit balance"`, `"account_deactivated"`
+/// - z.ai: code 1113, `"insufficient balance or no resource package"`
+///   (bug-390e4b)
 /// - Generic: HTTP 402, `"payment required"`, `"quota exceeded"`, etc.
 pub fn is_billing_message(lower: &str) -> bool {
     // Exact well-known error codes / phrases.
@@ -217,6 +219,8 @@ pub fn is_billing_message(lower: &str) -> bool {
         || lower.contains("insufficient quota")
         || lower.contains("insufficient funds")
         || lower.contains("insufficient credits")
+        || lower.contains("insufficient balance")
+        || lower.contains("no resource package")
         || lower.contains("billing_not_active")
         || lower.contains("billing not active")
         || lower.contains("account_deactivated")
@@ -351,13 +355,14 @@ fn is_auth_failure_text(lower: &str) -> bool {
 
 /// Classify a 429/529 response from its error message and `Retry-After`.
 ///
-/// Billing text wins, then usage-window exhaustion (named in the message, or a
-/// `Retry-After` of at least [`EXHAUSTION_RETRY_AFTER_MS`]); anything else is a
-/// transient rate limit that is worth waiting out.
+/// Billing text wins, as the provider's refusal to bill the account
+/// ([`billing_refusal`]); then usage-window exhaustion (named in the message,
+/// or a `Retry-After` of at least [`EXHAUSTION_RETRY_AFTER_MS`]); anything
+/// else is a transient rate limit that is worth waiting out.
 #[must_use]
 pub fn classify_rate_limited(message: &str, retry_after_ms: Option<u64>) -> ProviderError {
     if is_billing_message(&message.to_ascii_lowercase()) {
-        return ProviderError::InsufficientCredits;
+        return billing_refusal(message);
     }
     if let Some(exhaustion) = detect_provider_exhaustion(message) {
         return exhaustion.into_error();
@@ -383,11 +388,48 @@ pub fn classify_rate_limited(message: &str, retry_after_ms: Option<u64>) -> Prov
     }
 }
 
+/// A provider's refusal to bill the account, as an exhaustion with its own
+/// words and code (bug-390e4b): an HTTP 402, or a 429 whose body says the
+/// balance or the plan is used up, as z.ai's code 1113 does ("Insufficient
+/// balance or no resource package. Please recharge."). It is not a rate limit
+/// to wait out: routing skips the provider for its exhaustion cooldown and
+/// moves on. `body` is the response body, JSON or text.
+#[must_use]
+pub fn billing_refusal(body: &str) -> ProviderError {
+    let json = serde_json::from_str::<Value>(body.trim()).ok();
+    let field = |pointers: &[&str]| {
+        json.as_ref().and_then(|json| {
+            pointers
+                .iter()
+                .find_map(|pointer| match json.pointer(pointer) {
+                    Some(Value::String(text)) => Some(text.trim().to_string()),
+                    Some(Value::Number(number)) => Some(number.to_string()),
+                    _ => None,
+                })
+        })
+    };
+    let words = field(&["/error/message", "/message", "/error"])
+        .filter(|words| !words.is_empty())
+        .unwrap_or_else(|| humanize_line(body));
+    let message = match field(&["/error/code", "/code"]) {
+        Some(code) if !code.is_empty() => format!("{words} (code {code})"),
+        _ => words,
+    };
+    ProviderError::ProviderExhausted {
+        resets_at_ms: None,
+        message: bounded_message(&message),
+    }
+}
+
 // ---- Usage-window exhaustion ---------------------------------------------
 
 /// Prefix rendered by [`ProviderError::ProviderExhausted`], so an error that
 /// has already passed through `Display` is still recognised downstream.
 pub const PROVIDER_EXHAUSTED_MARKER: &str = "provider usage exhausted";
+
+/// Prefix rendered by [`ProviderError::InsufficientCredits`], which failover
+/// reads as exhaustion too (bug-390e4b).
+pub const BILLING_REFUSAL_MARKER: &str = "billing error: insufficient credits";
 
 /// A `Retry-After` at or above this is a usage window rather than a transient
 /// rate limit: sleeping it out inside one agent turn would stall the task.
@@ -426,7 +468,9 @@ impl ProviderExhaustion {
 /// (Europe/Berlin)", "Claude AI usage limit reached|<epoch>", "5-hour limit
 /// reached ∙ resets 3pm"), Codex ("You've hit your usage limit … try again in
 /// 2 hours"), and text already rendered from
-/// [`ProviderError::ProviderExhausted`]. Transient rate limits, billing, and
+/// [`ProviderError::ProviderExhausted`] or from
+/// [`ProviderError::InsufficientCredits`]: a provider that can't bill the
+/// account is out of usage too (bug-390e4b). Transient rate limits and
 /// context-window errors are deliberately not matched.
 ///
 /// Wall-clock reset times are read in the machine's local zone, which is the
@@ -452,6 +496,7 @@ fn detect_provider_exhaustion_at(text: &str, now: DateTime<Local>) -> Option<Pro
 
 fn is_exhaustion_text(lower: &str) -> bool {
     lower.contains(PROVIDER_EXHAUSTED_MARKER)
+        || lower.contains(BILLING_REFUSAL_MARKER)
         || (lower.contains("hit your") && lower.contains("limit"))
         || lower.contains("usage limit reached")
         || lower.contains("usage_limit_reached")
@@ -1112,12 +1157,18 @@ mod tests {
     }
 
     #[test]
-    fn http_429_with_billing_message_is_insufficient_credits() {
+    fn http_429_with_billing_message_is_a_billing_refusal() {
         let body = json!({ "error": { "message": "insufficient_quota: you have exceeded your billing quota" } });
         let err = classify_http_status(429, &body, RetryAfterSource::None);
         assert!(
-            matches!(err, ProviderError::InsufficientCredits),
-            "expected InsufficientCredits for 429+billing, got {err:?}"
+            matches!(
+                err,
+                ProviderError::ProviderExhausted {
+                    resets_at_ms: None,
+                    ..
+                }
+            ),
+            "expected a billing refusal for 429+billing, got {err:?}"
         );
     }
 
@@ -1380,12 +1431,63 @@ mod tests {
     }
 
     #[test]
-    fn rate_limited_billing_body_is_insufficient_credits() {
+    fn rate_limited_billing_body_is_a_billing_refusal() {
         let err = classify_rate_limited(
             r#"{"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}"#,
             Some(20_000),
         );
-        assert!(matches!(err, ProviderError::InsufficientCredits), "{err:?}");
+        let ProviderError::ProviderExhausted { message, .. } = &err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(message, "You exceeded your current quota");
+    }
+
+    /// bug-390e4b: a provider's answer that it can't bill the account is a
+    /// refusal for want of usage, with its own words and code, not a rate
+    /// limit to wait out: z.ai's 429 with code 1113. Failover reads it, and
+    /// other providers' rendered billing error, as exhaustion. An ordinary
+    /// 429 stays a rate limit.
+    #[test]
+    fn a_can_t_pay_answer_is_exhaustion_not_a_rate_limit() {
+        let zai = r#"{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}"#;
+        let err = classify_rate_limited(zai, Some(0));
+        let ProviderError::ProviderExhausted {
+            resets_at_ms,
+            message,
+        } = &err
+        else {
+            panic!("{err:?}");
+        };
+        assert_eq!(*resets_at_ms, None);
+        assert_eq!(
+            message,
+            "Insufficient balance or no resource package. Please recharge. (code 1113)"
+        );
+        // As failover reads it, from the attempt's error.
+        let rendered = format!("agent error (zai): provider error: {err}");
+        let exhaustion = detect_provider_exhaustion(&rendered).expect("exhausted");
+        assert!(exhaustion.message.contains("(code 1113)"), "{exhaustion:?}");
+        assert_eq!(exhaustion.resets_at_ms, None);
+        let credits = format!(
+            "agent error (x): provider error: {}",
+            ProviderError::InsufficientCredits
+        );
+        assert!(detect_provider_exhaustion(&credits).is_some(), "{credits}");
+
+        let limited = classify_rate_limited(
+            r#"{"error":{"code":"1302","message":"Rate limit reached for requests"}}"#,
+            Some(1_000),
+        );
+        assert!(
+            matches!(
+                limited,
+                ProviderError::RateLimit {
+                    retry_after_ms: Some(1_000)
+                }
+            ),
+            "{limited:?}"
+        );
+        assert!(detect_provider_exhaustion(&format!("provider error: {limited}")).is_none());
     }
 
     /// bug-e03f92: 401 counts only as an HTTP status, never inside a path,

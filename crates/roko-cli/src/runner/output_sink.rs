@@ -1534,6 +1534,13 @@ pub fn format_dashboard_event(
             detail,
             ..
         } => (format!("[{plan_id}/{task_id}]"), "!", detail.clone()),
+        // A provider out of usage or unable to bill says why (bug-390e4b).
+        DashboardEvent::ProviderExhausted {
+            plan_id,
+            task_id,
+            detail,
+            ..
+        } => (format!("[{plan_id}/{task_id}]"), "!", detail.clone()),
         // A step that took a while on the base says so as it ends
         // (gap-e02ec4); a quick or cached one does not.
         DashboardEvent::SpecGateStep {

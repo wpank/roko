@@ -439,6 +439,37 @@ pub enum DashboardEvent {
         #[serde(default)]
         detail: String,
     },
+    /// A provider refused a try's call because the account is out of usage
+    /// or can't be billed (bug-390e4b): roko skips it until `until_ms`, and
+    /// the try goes on with the next model, with no retry, no wait and no try
+    /// spent on the refusal. One per refusal.
+    ProviderExhausted {
+        /// The plan of the try whose call it refused.
+        plan_id: String,
+        /// That try's task.
+        task_id: String,
+        /// That try's ordinal, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The provider.
+        provider: String,
+        /// The model the call ran.
+        #[serde(default)]
+        model: String,
+        /// The provider can't bill the account (its balance or plan is used
+        /// up), rather than a usage window that resets on its own.
+        #[serde(default)]
+        billing: bool,
+        /// The provider's own words, as roko read them.
+        #[serde(default)]
+        reason: String,
+        /// When roko calls it again, unix ms.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_ms: Option<i64>,
+        /// The finding in words, with what to do about it.
+        #[serde(default)]
+        detail: String,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -3569,6 +3600,20 @@ impl DashboardSnapshot {
                 self.push_event_log(
                     ts,
                     "rung_slow".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::ProviderExhausted {
+                plan_id,
+                task_id,
+                detail,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "provider_exhausted".to_string(),
                     plan_id.clone(),
                     task_id.clone(),
                     detail.clone(),

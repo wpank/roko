@@ -1502,8 +1502,10 @@ impl fmt::Display for ProviderError {
                 None => f.write_str("rate limited"),
             },
             Self::AuthFailure => f.write_str(error_classify::AUTH_FAILURE_MARKER),
-            Self::InsufficientCredits => f.write_str(
-                "billing error: insufficient credits or quota exceeded — will not retry",
+            Self::InsufficientCredits => write!(
+                f,
+                "{} or quota exceeded — will not retry",
+                error_classify::BILLING_REFUSAL_MARKER
             ),
             Self::ProviderExhausted { message, .. } => write!(
                 f,

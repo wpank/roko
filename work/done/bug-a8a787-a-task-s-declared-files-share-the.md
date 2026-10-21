@@ -30,7 +30,7 @@ via = "manual"
 size = "M"
 claimed_at = "2026-10-21T06:08:26Z"
 forced = false
-evidence = "Closed by e70eb3ff6: prompt: a task's declared files get a section of their own under the role's file budget, sources first and cut last, each cut named, so a whole spec never cuts the structured context (bug-a8a787)"
+evidence = "Merged ef4487f14 (work/bug-a8a787: e70eb3ff6). build_runner_context keeps only the structured parts; the declared files go to a new file_context prompt section (roko-compose SystemPromptBuilder::with_file_context), right after the relevant context, Critical, capped at the role's file_context budget (8,000 tokens for an implementer); plan_policy::render_declared_files fits them into it: the plan's [meta] sources (DispatchContext::source_documents) first and cut last, other reads in order, each cut named [path lines a-b not shown: read_file them]. bug-60ad88 follow-up: a whole-file read of the source is left as the draft has it. Post-merge verify at ef4487f14: a_whole_spec_and_its_headers_fit_the_file_context_or_say_what_is_cut and every_task_of_a_spec_sourced_plan_reads_the_spec passed. Branch: roko-cli lib 3973 passed (2 failures: the new test's own check, fixed and rerun 71/71; bug-3203c4's flake, passed alone), roko-compose 527, clippy clean. Phase 4's spec (264 lines, 17,950 B) and two headers arrive whole within 32,000 B; less room cuts the headers first, 8,000 B the spec too, every cut named."
 +++
 
 ## Problem

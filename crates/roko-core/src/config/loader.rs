@@ -1864,6 +1864,11 @@ fn build_schema_tree() -> toml::Value {
     ladder.max_turns.insert("_schema_sentinel".to_string(), 0);
     ladder.max_usd.insert("_schema_sentinel".to_string(), 0.0);
     ladder.max_secs.insert("_schema_sentinel".to_string(), 0);
+    // A rung's `alternates` skips serializing when empty; the first rung is
+    // the template every rung entry is validated against (gap-51d2ca).
+    if let Some(rung) = ladder.rungs.first_mut() {
+        rung.alternates = vec![String::new()];
+    }
     ladder.slow_call_secs = Some(0);
     ladder.rate_limit_wait_secs = Some(0);
     config.gates.env_passthrough = vec![String::new()];

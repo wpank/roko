@@ -471,7 +471,12 @@ fn print_ladder_skips(target: &Path) {
     ) else {
         return;
     };
-    let report = roko_cli::dispatch::model_routing::ladder_report(loaded.config());
+    // A rung's alternates are not rungs: a rung goes without one that cannot
+    // run (gap-51d2ca).
+    let report: Vec<_> = roko_cli::dispatch::model_routing::ladder_report(loaded.config())
+        .into_iter()
+        .filter(|rung| !rung.alternate)
+        .collect();
     let skipped: Vec<_> = report
         .iter()
         .filter_map(|rung| rung.dispatch.as_ref().err().map(|reason| (rung, reason)))

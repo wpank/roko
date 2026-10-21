@@ -626,10 +626,7 @@ mod tests {
     async fn an_unhinted_task_runs_on_its_ladder_start_rung() {
         use roko_core::config::routing::LadderRung;
 
-        let rung = |name: &str, model: &str| LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        };
+        let rung = |name: &str, model: &str| LadderRung::new(name, model);
         for (tier, slug) in [
             ("mechanical", "claude-haiku-4-5"),
             ("architectural", "claude-sonnet-4-6"),

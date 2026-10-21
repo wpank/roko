@@ -2,16 +2,16 @@
 id = "gap-51d2ca"
 kind = "gap"
 title = "The cascade router learns nothing on ladder-routed plan runs: every route has propensity 1.0 and decision 4111 (A) credits only its own picks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "M"
 subsystem = ["roko-cli/dispatch", "roko-cli/runtime_feedback", "roko-core/config"]
 created = 2026-10-15
-updated = 2026-10-16
-last_verified = 2026-10-16
-last_verified_rev = "47b3cdd20"
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "08c873c71"
 source = "status-quo-2026-10-15#finding-17"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs::compose_propensities", "crates/roko-cli/src/dispatch/model_routing.rs::decide", "crates/roko-cli/src/runtime_feedback/routing.rs::credits_router", "crates/roko-core/src/config/routing.rs::RoutingConfig", "crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/graph_execution/learning_commit.rs::commit_run_learning"]
 lane = "rust-hot"
@@ -20,6 +20,18 @@ links = { depends_on = ["gap-b38ed2"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn ladder_rung_exploration_logs_propensity_below_one' crates/roko-cli/ && cargo test -p roko-cli ladder_rung_exploration_logs_propensity_below_one"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T04:45:31Z"
+commit = "08c873c71"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-21T01:31:00Z"
+forced = false
+evidence = "08c873c71, decision 4111 option B1. roko-core: `LadderRung::alternates` (issues for an empty or repeated alternate; the loader's schema sentinel, so `roko config validate` and loads keep it: ladder_survives_a_config_load). roko-cli: on a rung with two or more runnable models `ModelRouter::explore_within_rung` draws among them ε-greedy around the rung's own model (`RoutingLadder::rung_choices`) and returns `ModelChoiceSource::Ladder { rung, draw: Some(RungDraw { propensity, weight }) }`; the route row keeps source `ladder` (no L-route opportunity) and logs chosen_propensity below 1 with every rung model's p, summing to 1, and proposals.ladder = the rung's own model. The routing sink credits `RouterCredit::Weighted(weight)`, weight = (ε/k)/p: a full confidence trial and category count, and a LinUCB update at that share, journaled through `ModelCallJournal::observe_weighted_task_outcome` (plain path `CascadeRouter::record_weighted_outcome`); `credits_router` is true for a draw, so hindsight can retract it. No draw (p = 1, no credit) on a one-model rung, a keyless route, ε 0 or maximize mode, a frozen run (factory `with_rung_exploration(!learning.frozen)`; a frozen run also registers no routing sink and commits nothing), a chain held out on the route layer, or an active self-model's route (`decide_self_model` runs the rung's own model); shadow mode routes by the ladder as before, and a try a draw ran on an alternate is learned by M3 but left out of its calibration window (gap-b0fd8f). Run end: `commit_run_learning` proposes no router version when `CascadeRouter::learned_since_save()` is false and saves unchecked instead, so the file is still written and commits.jsonl gains no row (a_run_that_taught_the_router_nothing_proposes_no_version: three empty runs, 0 versions; one learning run, 1). roko.toml: mid = glm-4-7 with alternates = [kimi-k2-5]; `roko doctor` names alternates apart from rungs. Verify: `cargo test -p roko-cli ladder_rung_exploration_logs_propensity_below_one` passes on 08c873c71 (400 attempts on a two-model rung at ε = 0.1: every row p 0.95 or 0.05, draws on both models, 400 credited confidence trials, the own model's LinUCB arm grows by (ε/2)/0.95 of the alternate's per pick, matched to 1e-9; a one-model rung logs 1.0 and credits nothing; keyless, ε 0, rung draws off and held-out routes draw nothing). Also pass: a_rung_draw_credits_the_router_at_its_weight (both sink paths, and the WAL replay keeps the weight), a_two_model_rung_draws_and_credits_the_router (Graph dispatch with a fake CLI provider; frozen and maximize make no draw and credit nothing), learned_since_save_follows_observations_and_saves. Full lib suites: roko-cli 3965 passed (share_run_scrubs_output_text_and_prompt skipped), roko-core 2046, roko-learn 1392. Integration: tier_ladder_canary, learning_wiring_census, loop_audit_census_run, homeostat_on_mode, learn_paths, learn_paths_fixture, engine_convergence_contract, gate_parity, runner_facades_e2e, dispatch_feedback_projection_e2e pass; the 5 failures (doctor_human_output_succeeds_for_bootstrapped_workspace, phase0_wiring x2, plan_validate x2) are bug-c63cca and bug-2a31bc in a HOME with no claude CLI or keys. cargo +nightly fmt --all --check and clippy -p roko-core -p roko-learn -p roko-cli --no-deps -D warnings clean on 08c873c71. Follow-ups filed: gap-03d8bc, gap-b0fd8f."
 +++
 
 ## Problem

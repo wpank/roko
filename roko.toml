@@ -335,11 +335,15 @@ latency = 0.2
 # no usable provider (API key or CLI on PATH) are skipped, so a workspace with only the Claude CLI
 # runs every task on claude-sonnet, as before. [[routing.ladder.roles]] entries (role = "...")
 # override rungs or start for one role. Planning uses [authoring] planner_model, not a rung.
+# A rung's `alternates` are models it draws among (gap-51d2ca, decision 4111 option B1): with
+# [routing] explore_epsilon at its default 0.05, a try on `mid` runs kimi-k2-5 with P = 0.025 and
+# glm-4-7 otherwise, both logged with their propensity, so the cascade router learns from plan runs.
+# An alternate without a key is left out, and climbs and failover go by rung as before.
 [routing.ladder]
 enabled = true
 rungs = [
   { name = "cheap", model = "cerebras-gptoss" },
-  { name = "mid", model = "glm-4-7" },
+  { name = "mid", model = "glm-4-7", alternates = ["kimi-k2-5"] },
   { name = "strong", model = "gpt-5-4-mini" },
   { name = "top", model = "claude-sonnet" },
 ]

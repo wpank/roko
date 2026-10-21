@@ -1026,8 +1026,14 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
         ));
     }
     let report = ladder_report(&config);
-    let (runs, skipped): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) =
-        report.iter().partition(|rung| rung.dispatch.is_ok());
+    // A rung's alternates are not rungs (gap-51d2ca): the rung draws among
+    // the ones that can run, and goes without the others.
+    let (rungs, alternates): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) =
+        report.iter().partition(|rung| !rung.alternate);
+    let (runs, skipped): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) = rungs
+        .iter()
+        .copied()
+        .partition(|rung| rung.dispatch.is_ok());
     let names = |rungs: &[&LadderRungReport]| {
         rungs
             .iter()
@@ -1035,7 +1041,36 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
             .collect::<Vec<_>>()
             .join(", ")
     };
-    if report.is_empty() {
+    let reasons_of = |rungs: &[&LadderRungReport]| {
+        rungs
+            .iter()
+            .map(|rung| {
+                let reason = rung.dispatch.as_ref().err().map_or("", String::as_str);
+                format!("{} ({}): {reason}", rung.rung, rung.model)
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let (drawn, idle): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) = alternates
+        .iter()
+        .copied()
+        .partition(|rung| rung.dispatch.is_ok());
+    let mut notes = Vec::new();
+    if !drawn.is_empty() {
+        notes.push(format!(
+            "rungs that also draw an alternate at [routing] explore_epsilon, so the router learns \
+             from plan runs: {}",
+            names(&drawn)
+        ));
+    }
+    if !idle.is_empty() {
+        notes.push(format!(
+            "alternates that cannot run here, so their rung goes without them: {}",
+            reasons_of(&idle)
+        ));
+    }
+    let alternates_note = (!notes.is_empty()).then(|| notes.join("; "));
+    if rungs.is_empty() {
         return Some(check(
             DoctorStatus::Warn,
             "routing.ladder has no rung: the router picks each task's model".to_string(),
@@ -1050,18 +1085,11 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
         return Some(check(
             DoctorStatus::Ok,
             format!("routing.ladder: every rung can run here: {}", names(&runs)),
-            None,
+            alternates_note,
             None,
         ));
     }
-    let reasons = skipped
-        .iter()
-        .map(|rung| {
-            let reason = rung.dispatch.as_ref().err().map_or("", String::as_str);
-            format!("{} ({}): {reason}", rung.rung, rung.model)
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
+    let reasons = reasons_of(&skipped);
     let message = if runs.is_empty() {
         format!(
             "routing.ladder: no rung can run here, so the router picks each task's model; \
@@ -1072,7 +1100,7 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
             "routing.ladder: {} of {} rungs cannot run here, so a task that would start on one \
              starts on the next rung up that can; {reasons}",
             skipped.len(),
-            report.len()
+            rungs.len()
         )
     };
     let runnable = if runs.is_empty() {
@@ -1080,10 +1108,14 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
     } else {
         names(&runs)
     };
+    let detail = match alternates_note {
+        Some(note) => format!("rungs that run here: {runnable}; {note}"),
+        None => format!("rungs that run here: {runnable}"),
+    };
     Some(check(
         DoctorStatus::Warn,
         message,
-        Some(format!("rungs that run here: {runnable}")),
+        Some(detail),
         Some(
             "give each skipped rung's model a [models.*] entry and its [providers.*] table, and \
              set the provider's key; or remove the rung from [routing.ladder]",

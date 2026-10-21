@@ -1952,6 +1952,28 @@ impl CascadeRouter {
         duration_ms: u64,
         dampening: Option<f64>,
     ) -> bool {
+        let weight = dampening.unwrap_or(OVERRIDE_LEARNING_RATE);
+        self.record_weighted_outcome(model_slug, ctx, success, cost_usd, duration_ms, weight)
+    }
+
+    /// Record a settled task outcome on `model_slug` that carries `weight`
+    /// (0.0 to 1.0) of a full observation: a confidence trial, a success
+    /// only when `success`, and a `LinUCB` update scaled by `weight` that
+    /// earns the multi-objective reward of a success at its cost and
+    /// latency, or 0 for a failure (bug-8da8ba). An operator's override is
+    /// credited so at its dampened weight ([`Self::record_override_outcome`]),
+    /// and a ladder rung's draw among its models at the draw's
+    /// inverse-propensity weight (gap-51d2ca). Returns `false`, recording
+    /// nothing, for a slug the router does not track.
+    pub fn record_weighted_outcome(
+        &self,
+        model_slug: &str,
+        ctx: &RoutingContext,
+        success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
+        weight: f64,
+    ) -> bool {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return false;
         };
@@ -1959,7 +1981,6 @@ impl CascadeRouter {
         let success_reward =
             compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default());
         let reward = outcome_reward(success, success_reward);
-        let weight = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
         self.observe_internal(
             &ctx.to_features(),
             model_idx,
@@ -1967,7 +1988,7 @@ impl CascadeRouter {
             success,
             None,
             None,
-            weight,
+            weight.clamp(0.0, 1.0),
         );
         true
     }
@@ -2798,6 +2819,21 @@ impl CascadeRouter {
                 .insert(*category, stats.clone());
         }
         by_model
+    }
+
+    /// Whether this router learned anything since it was loaded or last
+    /// saved, which its next save would merge into the file: an observation,
+    /// a retracted success, a role-table change, or counters a version
+    /// upgrade moved to a new slug. A Graph run whose router learned nothing
+    /// proposes no router version at its end (gap-51d2ca).
+    #[must_use]
+    pub fn learned_since_save(&self) -> bool {
+        let baseline = self.baseline.lock();
+        let current = self.persisted_snapshot();
+        current.total_observations != baseline.total_observations
+            || current.confidence_stats != baseline.confidence_stats
+            || current.category_stats != baseline.category_stats
+            || current.role_table != baseline.role_table
     }
 
     /// Save what this router has learned into the snapshot at `path`.
@@ -4876,6 +4912,34 @@ mod cascade_router_tests {
         let learned = first.snapshot_digest();
         assert_ne!(learned.digest, digest.digest);
         assert_eq!(learned.n_obs, 3);
+    }
+
+    /// gap-51d2ca: a router has learned since its load or last save once an
+    /// observation, a weighted one included, or a retraction reaches it, and
+    /// not before; routing reads leave it alone, and a save or a load starts
+    /// it afresh.
+    #[test]
+    fn learned_since_save_follows_observations_and_saves() {
+        let slugs = vec!["model-alpha".to_string(), "model-beta".to_string()];
+        let ctx = RoutingContext::default();
+        let fresh = CascadeRouter::new(slugs.clone());
+        assert!(!fresh.learned_since_save(), "a fresh router");
+        let _ = fresh.route(&ctx);
+        let _ = fresh.explain_route(&ctx, None);
+        assert!(!fresh.learned_since_save(), "a routing read");
+
+        assert!(fresh.record_weighted_outcome("model-alpha", &ctx, true, 0.01, 1_000, 0.1));
+        assert!(fresh.learned_since_save(), "a weighted observation");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cascade-router.json");
+        fresh.save(&path).expect("save the router");
+        assert!(!fresh.learned_since_save(), "the save holds it");
+
+        let loaded = CascadeRouter::load_or_new(&path, slugs);
+        assert!(!loaded.learned_since_save(), "a load");
+        loaded.retract_success("model-alpha", ctx.task_category);
+        assert!(loaded.learned_since_save(), "a retraction");
+        assert!(!loaded.record_weighted_outcome("model-gamma", &ctx, true, 0.0, 0, 1.0));
     }
 }
 

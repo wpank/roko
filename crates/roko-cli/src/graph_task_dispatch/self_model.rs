@@ -1389,10 +1389,7 @@ mod tests {
                     .models
                     .insert(key.to_string(), model("stream-cli", slug, None));
             }
-            let rung = |name: &str, model: &str| LadderRung {
-                name: name.to_string(),
-                model: model.to_string(),
-            };
+            let rung = |name: &str, model: &str| LadderRung::new(name, model);
             config.routing.ladder.rungs =
                 vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
             config.self_model.mode = mode;
@@ -1664,10 +1661,7 @@ mod tests {
             }
             config.routing.ladder.rungs = rungs
                 .iter()
-                .map(|&(name, key, _)| LadderRung {
-                    name: name.to_string(),
-                    model: key.to_string(),
-                })
+                .map(|&(name, key, _)| LadderRung::new(name, key))
                 .collect();
         };
         let feedback = GraphFeedbackContext {
@@ -2130,10 +2124,7 @@ mod tests {
         }
         config.routing.ladder.rungs = rungs
             .iter()
-            .map(|&(name, key, _, _)| LadderRung {
-                name: name.to_string(),
-                model: key.to_string(),
-            })
+            .map(|&(name, key, _, _)| LadderRung::new(name, key))
             .collect();
         let ladder = RoutingLadder::from_config_with(&config, |_| true).expect("both rungs run");
         let start = ladder.start("implementer", TaskTier::Focused, None);

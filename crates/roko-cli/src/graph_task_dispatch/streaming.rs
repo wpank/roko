@@ -1477,10 +1477,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
                     .models
                     .insert(key.to_string(), model("stream-cli", slug, None));
             }
-            let rung = |name: &str, model: &str| LadderRung {
-                name: name.to_string(),
-                model: model.to_string(),
-            };
+            let rung = |name: &str, model: &str| LadderRung::new(name, model);
             config.routing.ladder.rungs =
                 vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
         };
@@ -1562,10 +1559,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
                     .models
                     .insert(key.to_string(), model("stream-cli", slug, None));
             }
-            let rung = |name: &str, model: &str| LadderRung {
-                name: name.to_string(),
-                model: model.to_string(),
-            };
+            let rung = |name: &str, model: &str| LadderRung::new(name, model);
             config.routing.ladder.rungs =
                 vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
         };

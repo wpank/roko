@@ -262,7 +262,12 @@ impl SharedAgentFactory {
         } else {
             config.routing.effective_explore_epsilon()
         };
-        let dispatcher = dispatcher.with_explore_epsilon(epsilon);
+        // A rung that names alternates draws among its models that can run at
+        // the same ε, so the router learns from plan runs (gap-51d2ca); a run
+        // with learning frozen learns nothing from a draw and makes none.
+        let dispatcher = dispatcher
+            .with_explore_epsilon(epsilon)
+            .with_rung_exploration(!config.learning.frozen);
         // `[agent] default_model`, a `[models.*]` key or a slug resolved as
         // failover resolves it, is what the router falls back to when nothing
         // else decides a route (backlog 3107); `MODEL_FOCUSED` without one.

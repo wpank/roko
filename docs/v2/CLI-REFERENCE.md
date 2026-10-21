@@ -368,7 +368,9 @@ for `.roko/`, `roko.toml`, agent command availability, secrets, and optionally t
 control plane. Its `routing_ladder` line names the `[routing.ladder]` rungs that cannot run on
 this machine and why (a run only logs them), since a task whose start rung cannot run starts on
 the next rung up that can, or, when no rung above it can, one runnable rung below the highest, so it
-can still climb once.
+can still climb once. Its detail also names each rung's `alternates` apart from the rungs: those
+that run here, which the rung draws among at `[routing] explore_epsilon` so the cascade router
+learns from plan runs, and those it goes without (gap-51d2ca).
 
 ```
 roko doctor [--workdir <path>] [--serve-url <url>]

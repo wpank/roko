@@ -138,7 +138,9 @@ pub struct RouteProposals {
     pub learned: Option<String>,
     /// The configured default model.
     pub default: Option<String>,
-    /// The `[routing.ladder]` rung's model, when the ladder routed the task.
+    /// The `[routing.ladder]` rung's own model, when the ladder routed the
+    /// task. A rung that draws among its models (gap-51d2ca) may run
+    /// another, and its row's `chosen_propensity` is below 1.
     pub ladder: Option<String>,
     /// A second, independent draw of a stochastic learned policy (S03's A/A
     /// floor); `None` for a deterministic one.

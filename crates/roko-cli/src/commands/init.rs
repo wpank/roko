@@ -465,10 +465,7 @@ impl InitModels {
             plan.notes.push(format!(
                 "{key} is defined in ~/.roko/config.toml, so this workspace depends on that file"
             ));
-            plan.rungs.push(LadderRung {
-                name: "top".to_string(),
-                model: key,
-            });
+            plan.rungs.push(LadderRung::new("top", key));
         } else {
             let known: BTreeSet<&str> = MODELS.iter().map(|model| model.key).collect();
             bail!(
@@ -490,10 +487,7 @@ impl InitModels {
             self.providers.push(provider);
         }
         self.models.push(model);
-        self.rungs.push(LadderRung {
-            name: rung.to_string(),
-            model: model.key.to_string(),
-        });
+        self.rungs.push(LadderRung::new(rung, model.key));
     }
 
     /// The start rung of each tier: D11's, else the nearest rung above it,

@@ -55,7 +55,7 @@ use tokio::sync::mpsc;
 pub use factory::SharedAgentFactory;
 pub use model_routing::{
     FallbackReason, LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs,
-    RoutingLadder,
+    RoutingLadder, RungDraw,
 };
 pub use outcome::{AgentOutcome, RunnerDispatchError};
 pub use prompt_builder::{
@@ -295,6 +295,14 @@ impl Dispatcher {
     #[must_use]
     pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
         self.router = self.router.with_explore_epsilon(epsilon);
+        self
+    }
+
+    /// Let a ladder rung with two or more models that can run draw among
+    /// them at that ε ([`ModelRouter::with_rung_exploration`], gap-51d2ca).
+    #[must_use]
+    pub fn with_rung_exploration(mut self, on: bool) -> Self {
+        self.router = self.router.with_rung_exploration(on);
         self
     }
 

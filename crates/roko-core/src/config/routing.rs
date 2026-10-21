@@ -144,6 +144,34 @@ pub struct LadderRung {
     pub name: String,
     /// `[models.*]` key or model slug the rung runs.
     pub model: String,
+    /// More `[models.*]` keys or slugs the rung may run in place of `model`
+    /// (gap-51d2ca, decision 4111 option B1). With `[routing]
+    /// explore_epsilon` ε above 0, a try the ladder routes to the rung draws
+    /// among the k of the rung's models that can run here: `model` with
+    /// probability 1 − ε + ε/k, each other one with ε/k. The route row logs
+    /// that propensity, and the cascade router learns from the outcome at
+    /// its inverse-propensity weight. A rung whose `model` cannot run is
+    /// skipped whatever its alternates, a rung with one model that can run
+    /// never draws, and climbs and failover go by rung as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternates: Vec<String>,
+}
+
+impl LadderRung {
+    /// A rung named `name` that runs `model` alone.
+    #[must_use]
+    pub fn new(name: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            model: model.into(),
+            alternates: Vec::new(),
+        }
+    }
+
+    /// The rung's models: `model`, then its alternates.
+    pub fn models(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.model.as_str()).chain(self.alternates.iter().map(String::as_str))
+    }
 }
 
 /// Start rung, by name, for each task tier.
@@ -238,6 +266,19 @@ pub struct LadderRoleConfig {
 /// start = { mechanical = "top", focused = "top" }
 /// ```
 ///
+/// A rung may name `alternates`, models it draws among at `[routing]
+/// explore_epsilon` so that the cascade router learns from plan runs
+/// ([`LadderRung::alternates`], gap-51d2ca):
+///
+/// ```toml
+/// [routing.ladder]
+/// rungs = [
+///   { name = "cheap", model = "cerebras-gptoss" },
+///   { name = "mid", model = "glm-4-7", alternates = ["kimi-k2-5"] },
+///   { name = "top", model = "claude-sonnet" },
+/// ]
+/// ```
+///
 /// Each try on a rung is bounded (gap-3e770b): a try that uses up its rung's
 /// turns, spend or time is judged by the task's checks on the work it left,
 /// and fails on that rung when they fail, so two such tries climb.
@@ -330,10 +371,7 @@ fn default_ladder_rungs() -> Vec<LadderRung> {
         ("top", crate::defaults::MODEL_FOCUSED),
     ]
     .into_iter()
-    .map(|(name, model)| LadderRung {
-        name: name.to_string(),
-        model: model.to_string(),
-    })
+    .map(|(name, model)| LadderRung::new(name, model))
     .collect()
 }
 
@@ -484,6 +522,20 @@ impl LadderConfig {
                         issues.push(format!("{scope}: every rung needs a name and a model"));
                     } else if !names.insert(rung.name.as_str()) {
                         issues.push(format!("{scope}: rung `{}` is defined twice", rung.name));
+                    }
+                    let mut models = std::collections::HashSet::from([rung.model.trim()]);
+                    for alternate in rung.alternates.iter().map(|model| model.trim()) {
+                        if alternate.is_empty() {
+                            issues.push(format!(
+                                "{scope}: rung `{}` has an alternate that names no model",
+                                rung.name
+                            ));
+                        } else if !models.insert(alternate) {
+                            issues.push(format!(
+                                "{scope}: rung `{}` names `{alternate}` twice",
+                                rung.name
+                            ));
+                        }
                     }
                 }
             }
@@ -729,10 +781,11 @@ pub struct RoutingConfig {
     /// ε of the exploration draw (S02.P1-3, decision 2203): with probability
     /// ε a route the cascade router decides runs an eligible model drawn
     /// uniformly instead of its argmax, so every eligible model's logged
-    /// propensity is at least ε/k. A pin (`--model`, a model hint) or a
-    /// ladder rung is never explored. Read through
-    /// [`Self::effective_explore_epsilon`], which caps it at
-    /// [`MAX_EXPLORE_EPSILON`]; 0 turns exploration off.
+    /// propensity is at least ε/k. A pin (`--model`, a model hint) is never
+    /// explored, and a ladder rung only among its own models, when it names
+    /// [`LadderRung::alternates`] (gap-51d2ca); a run with learning frozen
+    /// draws on no rung. Read through [`Self::effective_explore_epsilon`],
+    /// which caps it at [`MAX_EXPLORE_EPSILON`]; 0 turns exploration off.
     #[serde(default = "default_explore_epsilon")]
     pub explore_epsilon: f64,
 }
@@ -1033,14 +1086,8 @@ mod tests {
         with_scribe.roles.push(LadderRoleConfig {
             role: "scribe".to_string(),
             rungs: Some(vec![
-                LadderRung {
-                    name: "docs".to_string(),
-                    model: "gpt-4o-mini".to_string(),
-                },
-                LadderRung {
-                    name: "careful".to_string(),
-                    model: "claude-sonnet-4-6".to_string(),
-                },
+                LadderRung::new("docs", "gpt-4o-mini"),
+                LadderRung::new("careful", "claude-sonnet-4-6"),
             ]),
             ..LadderRoleConfig::default()
         });
@@ -1148,17 +1195,13 @@ mod tests {
 
     #[test]
     fn ladder_issues_name_duplicate_rungs_and_roleless_entries() {
-        let rung = |name: &str, model: &str| LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        };
+        let rung = |name: &str, model: &str| LadderRung::new(name, model);
+        // gap-51d2ca: an alternate that names no model, or a model the rung
+        // names already, is an issue too.
+        let mut top = rung("top", "c");
+        top.alternates = ["d", " ", "c", "d"].map(String::from).to_vec();
         let ladder = LadderConfig {
-            rungs: vec![
-                rung("cheap", "a"),
-                rung("cheap", "b"),
-                rung("mid", ""),
-                rung("top", "c"),
-            ],
+            rungs: vec![rung("cheap", "a"), rung("cheap", "b"), rung("mid", ""), top],
             roles: vec![LadderRoleConfig::default()],
             ..LadderConfig::default()
         };
@@ -1167,26 +1210,28 @@ mod tests {
             [
                 "routing.ladder: rung `cheap` is defined twice",
                 "routing.ladder: every rung needs a name and a model",
+                "routing.ladder: rung `top` has an alternate that names no model",
+                "routing.ladder: rung `top` names `c` twice",
+                "routing.ladder: rung `top` names `d` twice",
                 "routing.ladder.roles ``: the entry names no role",
             ]
         );
     }
 
     /// The config loader drops every key its schema tree lacks, so the
-    /// ladder, role entries included, must survive a real load.
+    /// ladder, role entries included, must survive a real load. Validation
+    /// knows a rung's `alternates` (gap-51d2ca).
     #[test]
     fn ladder_survives_a_config_load() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("roko.toml");
-        std::fs::write(
-            &path,
-            r#"
+        let text = r#"
 schema_version = 2
 config_version = 2
 
 [routing.ladder]
 enabled = false
-rungs = [{ name = "only", model = "claude-sonnet" }]
+rungs = [{ name = "only", model = "claude-sonnet", alternates = ["kimi-k2-5"] }]
 start = { architectural = "only" }
 max_turns = { only = 9 }
 max_usd = { only = 0.25 }
@@ -1195,9 +1240,11 @@ max_secs = { only = 600 }
 [[routing.ladder.roles]]
 role = "reviewer"
 start = { mechanical = "only" }
-"#,
-        )
-        .expect("write roko.toml");
+"#;
+        std::fs::write(&path, text).expect("write roko.toml");
+        let value: toml::Value = toml::from_str(text).expect("parse roko.toml");
+        let unknown = crate::config::loader::validate_known_config_paths(&value);
+        assert!(unknown.is_empty(), "{unknown:?}");
 
         let config = crate::config::loader::load_config_file(
             &path,
@@ -1213,6 +1260,9 @@ start = { mechanical = "only" }
         let ladder = &config.routing.ladder;
         assert!(!ladder.enabled);
         assert_eq!(ladder.rungs.len(), 1);
+        assert_eq!(ladder.rungs[0].alternates, ["kimi-k2-5"]);
+        let models: Vec<&str> = ladder.rungs[0].models().collect();
+        assert_eq!(models, ["claude-sonnet", "kimi-k2-5"]);
         assert_eq!(ladder.start.get(TaskTier::Architectural), Some("only"));
         assert_eq!(ladder.start.get(TaskTier::Mechanical), None);
         assert_eq!(ladder.roles.len(), 1);

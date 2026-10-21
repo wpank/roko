@@ -6,7 +6,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -59,9 +59,19 @@ pub fn tool_def() -> ToolDef {
             },
             "filter": {
                 "type": "string",
-                "description": "Test name filter / pattern to run a subset of tests. For \
-                    node, a test file's path or part of it, else a test name pattern; for \
-                    unittest, a test module, class or method name."
+                "description": "Run a subset of the tests, which each runner selects its own \
+                    way. cargo: a test name, which cargo's selection flags may join (-p \
+                    <package> for one package's tests, --test <name>, --lib, --features \
+                    <list>), and the test harness's after -- (--exact, --nocapture, \
+                    --ignored). go: a test name pattern (-run), or a package path starting \
+                    with ./ (./strings). pytest: a test file, directory or node id \
+                    (py/test_x.py::test_y; a test file's name alone is found below the \
+                    root), else a keyword expression (-k). unittest: a test module, class or \
+                    method name. node: a test file's path or part of it, else a test name \
+                    pattern. forge: a test name pattern (--match-test), or a .sol file \
+                    (--match-path). npm: passed on to the test script (npm test -- \
+                    <filter>). make: TEST=<filter> when the Makefile reads $(TEST); it \
+                    takes none otherwise."
             },
             "timeout_ms": {
                 "type": "integer",
@@ -95,6 +105,12 @@ pub fn tool_def() -> ToolDef {
 /// that cannot start, a run past its time, and a call naming no runner the
 /// checkout fits are errors, which say what is missing and which runners
 /// the checkout's tests do fit.
+///
+/// A `filter` reaches each runner as that runner's own way of picking tests
+/// (`go test ./... -run=…`, `forge test --match-test=…`, `pytest -k …`, …;
+/// bug-83d420), never as one more word it would read as a package, target
+/// or path. A filter a runner cannot take, such as cargo flags that would
+/// change what cargo runs or where, is an error that says what it takes.
 ///
 /// The tests run with the environment verify steps get
 /// ([`child_env::apply_gate_env`]): agent-written tests see no provider key,
@@ -250,20 +266,15 @@ async fn run(
     if let Some(why) = checkout.missing(runner) {
         return checkout.cannot_run(&why, Some(runner));
     }
+    let root = checkout.root;
     let runs = match runner.build {
-        "node" => vec![node_args(filter, &checkout.project().node_tests)],
-        "unittest" => {
-            let root = checkout.root;
-            checkout.project().unittest_runs(filter, root)
-        }
-        _ => vec![
-            runner
-                .args
-                .iter()
-                .map(|arg| (*arg).to_string())
-                .chain(filter.map(String::from))
-                .collect(),
-        ],
+        "unittest" => checkout.project().unittest_runs(filter, root),
+        _ => match runner_args(runner, filter, checkout.project(), root) {
+            Ok(args) => vec![args],
+            // A Makefile that takes no filter: the other runners that fit may.
+            Err(why) if runner.build == "make" => return checkout.cannot_run(&why, Some(runner)),
+            Err(why) => return ToolResult::Err(ToolError::Other(format!("run_tests: {why}"))),
+        },
     };
     let (output, failure) = match run_all(runner, &runs, &call, ctx, &env).await {
         Ok(ran) => ran,
@@ -456,6 +467,9 @@ struct Project {
     manifests: Vec<&'static Runner>,
     /// `None` without a package.json, else whether it has a test script.
     npm_test_script: Option<bool>,
+    /// Whether its Makefile reads a `TEST` variable, through which `make
+    /// test` takes a filter.
+    make_test_var: bool,
     /// Whether it configures pytest.
     pytest_config: bool,
     /// Node test files (`*.test.ts`, `*.test.js`, …) below it.
@@ -490,10 +504,14 @@ impl Project {
     fn scan(root: &Path) -> Self {
         let read = |name: &str| read_manifest(&root.join(name));
         let npm_test_script = read("package.json").map(|text| has_npm_test_script(&text));
-        let make_test = ["GNUmakefile", "makefile", "Makefile"]
+        let makefiles: Vec<String> = ["GNUmakefile", "makefile", "Makefile"]
             .into_iter()
             .filter_map(read)
-            .any(|text| has_make_test_target(&text));
+            .collect();
+        let make_test = makefiles.iter().any(|text| has_make_test_target(text));
+        let make_test_var = makefiles
+            .iter()
+            .any(|text| text.contains("$(TEST)") || text.contains("${TEST}"));
         let manifests = [
             ("cargo", root.join("Cargo.toml").is_file()),
             ("npm", npm_test_script == Some(true)),
@@ -514,6 +532,7 @@ impl Project {
         Self {
             manifests,
             npm_test_script,
+            make_test_var,
             pytest_config,
             node_tests,
             python_tests,
@@ -594,6 +613,248 @@ fn node_args(filter: Option<&str>, tests: &[String]) -> Vec<String> {
     }
     args.extend(files.into_iter().cloned());
     args
+}
+
+/// The arguments of `runner`'s one run for `filter`, which each runner takes
+/// its own way (bug-83d420), or why it cannot take this filter. `unittest`
+/// has [`Project::unittest_runs`].
+fn runner_args(
+    runner: &Runner,
+    filter: Option<&str>,
+    project: &Project,
+    root: &Path,
+) -> Result<Vec<String>, String> {
+    if runner.build == "node" {
+        return Ok(node_args(filter, &project.node_tests));
+    }
+    let mut args: Vec<String> = runner.args.iter().map(|arg| (*arg).to_string()).collect();
+    let Some(filter) = filter else {
+        return Ok(args);
+    };
+    match runner.build {
+        "cargo" => return cargo_args(filter),
+        "go" if is_go_package(filter) => args = vec!["test".to_string(), filter.to_string()],
+        "go" => args.push(format!("-run={filter}")),
+        "forge" if extension(filter) == "sol" => args.push(format!("--match-path={filter}")),
+        "forge" => args.push(format!("--match-test={filter}")),
+        "pytest" => args.extend(pytest_args(filter, &project.python_tests, root)?),
+        "npm" if filter.starts_with('-') => {
+            return Err(format!(
+                "for npm, filter goes to the test script (`npm test -- <filter>`) as a test \
+                 file or name, and `{filter}` begins with `-`: run_tests does not pass on the \
+                 test runner's own options."
+            ));
+        }
+        "npm" => args.extend(["--".to_string(), filter.to_string()]),
+        "make" => args.push(make_arg(filter, project.make_test_var)?),
+        build => return Err(format!("build \"{build}\" takes no filter.")),
+    }
+    Ok(args)
+}
+
+/// Cargo's flags a `cargo` filter may carry, each with whether it takes a
+/// value: which packages and targets to test, with which features and
+/// profile. Any other (`--config`, `--manifest-path`, `--target-dir`, `-Z`,
+/// …) could change what cargo runs or where, so a filter that gives one is
+/// refused.
+const CARGO_FLAGS: [(&str, bool); 23] = [
+    ("-p", true),
+    ("--package", true),
+    ("--workspace", false),
+    ("--all", false),
+    ("--exclude", true),
+    ("--lib", false),
+    ("--bins", false),
+    ("--bin", true),
+    ("--tests", false),
+    ("--test", true),
+    ("--examples", false),
+    ("--example", true),
+    ("--benches", false),
+    ("--bench", true),
+    ("--all-targets", false),
+    ("--doc", false),
+    ("-F", true),
+    ("--features", true),
+    ("--all-features", false),
+    ("--no-default-features", false),
+    ("--release", false),
+    ("--profile", true),
+    ("--no-fail-fast", false),
+];
+
+/// The test harness's flags a `cargo` filter may carry after `--`, each
+/// with whether it takes a value.
+const HARNESS_FLAGS: [(&str, bool); 10] = [
+    ("--exact", false),
+    ("--nocapture", false),
+    ("--no-capture", false),
+    ("--show-output", false),
+    ("--ignored", false),
+    ("--include-ignored", false),
+    ("--skip", true),
+    ("--test-threads", true),
+    ("--quiet", false),
+    ("--list", false),
+];
+
+/// `cargo test`'s arguments for `filter` (bug-83d420): a test name, or a
+/// filter's words when it carries cargo's selection flags (`-p alpha --test
+/// accept_word_count`), each flag one of [`CARGO_FLAGS`], or after `--` one
+/// of [`HARNESS_FLAGS`]. The whole workspace is tested unless the filter
+/// picks packages: with `--workspace`, cargo would ignore its `-p`.
+fn cargo_args(filter: &str) -> Result<Vec<String>, String> {
+    let words: Vec<&str> = filter.split_whitespace().collect();
+    let mut harness = false;
+    let mut whole_workspace = true;
+    for word in &words {
+        // A test name or a flag's value: what cargo reads as a flag starts
+        // with `-`.
+        if !word.starts_with('-') {
+            continue;
+        }
+        if *word == "--" && !harness {
+            harness = true;
+            continue;
+        }
+        let flags: &[(&str, bool)] = if harness {
+            &HARNESS_FLAGS
+        } else {
+            &CARGO_FLAGS
+        };
+        let (flag, attached) = split_flag(word);
+        // A flag taking no value with more attached (`-qZ`) is more flags.
+        if !flags
+            .iter()
+            .any(|(name, takes_value)| *name == flag && (*takes_value || attached.is_none()))
+        {
+            return Err(format!(
+                "filter `{filter}` gives cargo `{word}`, which run_tests does not pass on. For \
+                 cargo, filter is a test name (`cargo test <filter>`), which cargo's selection \
+                 flags may join: `-p <package>` runs one package's tests, `--test <name>` one \
+                 integration test target, `--lib` the library's unit tests, `--features <list>` \
+                 turns features on; the test harness's flags (`--exact`, `--nocapture`, \
+                 `--ignored`, `--skip <name>`) go after `--`."
+            ));
+        }
+        if !harness && matches!(flag, "-p" | "--package" | "--workspace" | "--all") {
+            whole_workspace = false;
+        }
+    }
+    let mut args = vec!["test".to_string()];
+    if whole_workspace {
+        args.push("--workspace".to_string());
+    }
+    args.extend(words.into_iter().map(String::from));
+    Ok(args)
+}
+
+/// A flag word's flag and the value attached to it, if any: `--features=a`
+/// and `-palpha` hold one.
+fn split_flag(word: &str) -> (&str, Option<&str>) {
+    if word.starts_with("--") {
+        return word
+            .split_once('=')
+            .map_or((word, None), |(flag, value)| (flag, Some(value)));
+    }
+    let end = word.char_indices().nth(2).map_or(word.len(), |(at, _)| at);
+    let (flag, value) = word.split_at(end);
+    (flag, (!value.is_empty()).then_some(value))
+}
+
+/// Whether a `go` filter is a package path inside the checkout (`./strings`,
+/// `./...`), which runs in place of `./...`.
+fn is_go_package(filter: &str) -> bool {
+    (filter == "." || filter.starts_with("./"))
+        && !filter.contains(char::is_whitespace)
+        && !Path::new(filter)
+            .components()
+            .any(|part| part == Component::ParentDir)
+}
+
+/// `python3 -m pytest`'s arguments for `filter` (bug-83d420): a test file,
+/// directory or node id (`py/test_x.py::test_y`) inside the checkout as
+/// given, or with a test file named by its name or its path's end where the
+/// scan found it below the root (`test_x.py` for `py/test_x.py`); else a
+/// keyword expression (`-k`). A filter that begins with `-` is refused, as
+/// pytest would read it as one of its own options.
+fn pytest_args(filter: &str, tests: &[String], root: &Path) -> Result<Vec<String>, String> {
+    if filter.starts_with('-') {
+        return Err(format!(
+            "for pytest, filter is a test file, directory or node id (`py/test_x.py::test_y`) \
+             or a keyword expression (`-k`), and `{filter}` begins with `-`: run_tests does not \
+             pass on pytest's own options."
+        ));
+    }
+    let (path, node) = match filter.split_once("::") {
+        Some((path, node)) => (path, Some(node)),
+        None => (filter, None),
+    };
+    let path = Path::new(path);
+    let mut path = path.strip_prefix(root).unwrap_or(path);
+    if path.as_os_str().is_empty() {
+        path = Path::new(".");
+    }
+    let is_path = node.is_some()
+        || path.extension().is_some_and(|extension| extension == "py")
+        || path.components().count() > 1
+        || root.join(path).exists();
+    if !is_path {
+        return Ok(vec!["-k".to_string(), filter.to_string()]);
+    }
+    if !path
+        .components()
+        .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(format!(
+            "for pytest, filter `{filter}` names a path outside the checkout; name a test \
+             file, directory or node id inside it."
+        ));
+    }
+    let with_node =
+        |file: &str| node.map_or_else(|| file.to_string(), |node| format!("{file}::{node}"));
+    let given = path.to_string_lossy();
+    if !root.join(path).exists() {
+        let suffix = format!("/{given}");
+        let found: Vec<String> = tests
+            .iter()
+            .filter(|test| test.ends_with(&suffix))
+            .map(|test| with_node(test))
+            .collect();
+        if !found.is_empty() {
+            return Ok(found);
+        }
+    }
+    // pytest says so when nothing is there.
+    Ok(vec![with_node(&given)])
+}
+
+/// `make test`'s argument for `filter` (bug-83d420): `TEST=<filter>` when
+/// the Makefile reads a `TEST` variable (`reads_test`) and the filter is a
+/// plain test name, as the Makefile's commands read it as shell words; else
+/// why `make test` takes no filter. A word after `make test` would be one
+/// more target to build.
+fn make_arg(filter: &str, reads_test: bool) -> Result<String, String> {
+    if !reads_test {
+        return Err(
+            "build \"make\" runs `make test`, which takes no filter here: the Makefile reads no \
+             TEST variable to pass one in. Run it without filter, or name the runner its tests \
+             use."
+                .to_string(),
+        );
+    }
+    let plain = !filter.starts_with('-')
+        && filter
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '/' | '-'));
+    if !plain {
+        return Err(format!(
+            "build \"make\" passes a filter as `make test TEST=<filter>`, which the Makefile's \
+             commands read as shell words, so the filter must be a plain test name (letters, \
+             digits and _ . : / -), and `{filter}` is not."
+        ));
+    }
+    Ok(format!("TEST={filter}"))
 }
 
 /// The structured answer of a run that ran: `failure` holds the exit code of
@@ -1170,6 +1431,158 @@ mod tests {
         assert_eq!(
             args,
             "--experimental-strip-types\n--test\nts/camel_case.accept.test.ts\n"
+        );
+    }
+
+    /// What a `run_tests` call for `build` and `filter` ran in `checkout`:
+    /// the stand-in runner's arguments, one per line; or the error that
+    /// refused the call, when nothing ran.
+    #[cfg(unix)]
+    async fn ran_with(
+        checkout: &Path,
+        env: &[(String, OsString)],
+        build: &str,
+        filter: &str,
+    ) -> Result<String, String> {
+        let recorded = checkout.join("args.txt");
+        let _ = std::fs::remove_file(&recorded);
+        let ctx = ToolContext::testing(checkout);
+        let result = run(
+            call(serde_json::json!({ "build": build, "filter": filter })),
+            &ctx,
+            Some(env.to_vec()),
+        )
+        .await;
+        match result {
+            ToolResult::Err(ToolError::Other(why)) => {
+                assert!(!recorded.exists(), "{build} ran although refused: {why}");
+                Err(why)
+            }
+            ToolResult::Ok { .. } => Ok(std::fs::read_to_string(&recorded).expect("args")),
+            other => panic!("{build} {filter}: {other:?}"),
+        }
+    }
+
+    /// bug-83d420: `run_tests` added its filter to every runner's command as
+    /// one more word, so go read it as a package, make as a target, pytest as
+    /// a path, and cargo flags in it reached cargo as one word (`invalid
+    /// character ' ' in package name` in the 2026-10-19 golden-path run 3).
+    /// Each runner now gets it as its own option, and a filter a runner
+    /// cannot take is refused before anything runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_filter_reaches_each_runner_as_its_own_option() {
+        let checkout = polyglot_checkout();
+        let root = checkout.path();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"test":"node --test"}}"#,
+        )
+        .expect("package.json");
+        std::fs::write(root.join("Makefile"), "test:\n\tcargo test $(TEST)\n").expect("make");
+        let bin = tempfile::tempdir().expect("bin");
+        let programs = ["cargo", "go", "forge", "python3", "npm", "make", "node"];
+        let scripts: Vec<(&str, &str, i32)> = programs.iter().map(|p| (*p, "", 0)).collect();
+        let env = runners(bin.path(), &scripts);
+        let absolute = format!("{}/py/test_textutil.py::test_shout", root.display());
+
+        for (build, filter, expected) in [
+            ("cargo", "shout", "test\n--workspace\nshout\n"),
+            (
+                "cargo",
+                "-p alpha --test accept_word_count",
+                "test\n-p\nalpha\n--test\naccept_word_count\n",
+            ),
+            (
+                "cargo",
+                "--lib -- --exact tests::shout",
+                "test\n--workspace\n--lib\n--\n--exact\ntests::shout\n",
+            ),
+            ("go", "TestShout", "test\n./...\n-run=TestShout\n"),
+            ("go", "./strings", "test\n./strings\n"),
+            (
+                "forge",
+                "test_Increment",
+                "test\n--match-test=test_Increment\n",
+            ),
+            (
+                "forge",
+                "test/Counter.t.sol",
+                "test\n--match-path=test/Counter.t.sol\n",
+            ),
+            (
+                "pytest",
+                "shout and not slow",
+                "-m\npytest\n-k\nshout and not slow\n",
+            ),
+            (
+                "pytest",
+                "test_textutil.py::test_shout",
+                "-m\npytest\npy/test_textutil.py::test_shout\n",
+            ),
+            (
+                "pytest",
+                "py/test_textutil.py",
+                "-m\npytest\npy/test_textutil.py\n",
+            ),
+            (
+                "pytest",
+                absolute.as_str(),
+                "-m\npytest\npy/test_textutil.py::test_shout\n",
+            ),
+            (
+                "unittest",
+                "test_textutil",
+                "-m\nunittest\ndiscover\n-s\npy\n-k\ntest_textutil\n",
+            ),
+            (
+                "node",
+                "shout",
+                "--experimental-strip-types\n--test\n--test-name-pattern=shout\n",
+            ),
+            ("npm", "strings", "test\n--\nstrings\n"),
+            ("make", "shout", "test\nTEST=shout\n"),
+        ] {
+            assert_eq!(
+                ran_with(root, &env, build, filter).await.as_deref(),
+                Ok(expected),
+                "{build} with filter `{filter}`"
+            );
+        }
+
+        for (build, filter, why) in [
+            (
+                "cargo",
+                "--config build.rustc-wrapper=/bin/sh",
+                "gives cargo `--config`",
+            ),
+            (
+                "cargo",
+                "-p alpha --manifest-path ../other/Cargo.toml",
+                "gives cargo `--manifest-path`",
+            ),
+            ("cargo", "shout --exact", "go after `--`"),
+            ("pytest", "-p some_plugin", "begins with `-`"),
+            ("pytest", "../other/test_x.py", "outside the checkout"),
+            ("npm", "--require=./x.js", "begins with `-`"),
+            ("make", "shout; touch pwned", "must be a plain test name"),
+        ] {
+            let refused = ran_with(root, &env, build, filter)
+                .await
+                .expect_err("the filter is refused");
+            assert!(refused.contains(why), "{build} `{filter}`: {refused}");
+        }
+
+        // A Makefile that reads no TEST takes no filter; the runners that
+        // fit are named.
+        std::fs::write(root.join("Makefile"), "test:\n\tcargo test\n").expect("make");
+        let refused = ran_with(root, &env, "make", "shout")
+            .await
+            .expect_err("make takes no filter");
+        assert!(refused.contains("reads no TEST variable"), "{refused}");
+        assert!(
+            refused.contains("build \"cargo\" (`cargo test`)"),
+            "{refused}"
         );
     }
 

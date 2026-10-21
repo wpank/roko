@@ -147,6 +147,7 @@ pub mod cli_signals;
 pub mod commands {
     pub mod diagnose;
     pub mod learn_loops;
+    pub mod safety;
 }
 pub mod config;
 pub mod config_cmd;

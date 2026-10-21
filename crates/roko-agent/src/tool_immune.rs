@@ -21,7 +21,9 @@ use roko_graph::cells::ImmunePipelineGraph;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::immune_evidence::{persist_evidence_signals, validate_boundary_label};
+use crate::immune_evidence::{
+    append_release_audit, persist_evidence_signals, validate_boundary_label,
+};
 
 /// Signal kind for exact quarantined tool-result payloads.
 pub const TOOL_RESULT_EVIDENCE_KIND: &str = "roko.security.immune.tool_result_evidence";
@@ -33,6 +35,8 @@ pub const TOOL_CONTROL_KIND: &str = "roko.security.immune.tool_control";
 pub const QUARANTINE_VAULT_RELATIVE_PATH: &str = ".roko/immune/quarantine-vault.json";
 /// Relative file holding the bounded enforcement authority for tool controls.
 pub const TOOL_CONTROLS_RELATIVE_PATH: &str = ".roko/immune/tool-controls.json";
+/// Relative append-only audit file of released tool controls.
+pub const TOOL_CONTROL_RELEASES_RELATIVE_PATH: &str = ".roko/immune/tool-control-releases.jsonl";
 
 const TOOL_RATE_LIMIT_SECONDS: i64 = 60;
 const TOOL_CONTROL_MAX_FUTURE_SKEW_MS: i64 = 60_000;
@@ -57,6 +61,13 @@ pub fn quarantine_vault_path(workspace_root: &Path) -> PathBuf {
 #[must_use]
 pub fn tool_controls_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(TOOL_CONTROLS_RELATIVE_PATH)
+}
+
+/// The append-only audit file of released tool controls beneath a workspace
+/// root.
+#[must_use]
+pub fn tool_control_releases_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(TOOL_CONTROL_RELEASES_RELATIVE_PATH)
 }
 
 /// Effect successfully completed before a tool boundary receipt was written.
@@ -112,8 +123,33 @@ pub enum ToolControlState {
         /// Inclusive Unix timestamp in milliseconds.
         until_ms: i64,
     },
-    /// Calls remain blocked pending an explicit review workflow.
+    /// Calls remain blocked until a person reviews the control and releases
+    /// it ([`release_tool_control`], `roko safety release --tool`).
     Isolated,
+}
+
+/// The audit record of one released tool control: one line of
+/// `.roko/immune/tool-control-releases.jsonl` (gap-a2787f).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasedToolControl {
+    /// When the control was released, in Unix milliseconds.
+    pub released_at_ms: i64,
+    /// Tool the control refused.
+    pub tool_name: String,
+    /// Origin scope of the tool the control refused.
+    pub source_scope: String,
+    /// The control's state when released: `isolated`, or `rate_limited` for a
+    /// cooldown that was still running.
+    pub state: String,
+    /// When the control was issued, in Unix milliseconds.
+    pub issued_at_ms: i64,
+    /// The quarantined result that triggered the control.
+    pub triggering_output: ContentHash,
+    /// Who released it.
+    pub by: String,
+    /// Why it was released.
+    pub reason: String,
 }
 
 /// Durable control for one exact tool/source scope.
@@ -261,12 +297,9 @@ pub async fn check_tool_control(
             MAX_TOOL_CONTROL_LEDGER_BYTES,
             |ledger| {
                 validate_control_ledger(ledger, now_ms)?;
-                ledger.controls.retain(|_, control| {
-                    !matches!(
-                        control.control,
-                        ToolControlState::RateLimited { until_ms } if until_ms < now_ms
-                    )
-                });
+                ledger
+                    .controls
+                    .retain(|_, control| control_in_force(control, now_ms));
                 validate_control_ledger(ledger, now_ms)?;
                 let control = ledger.controls.get(&key).cloned();
                 if control.is_none() && ledger.controls.len() >= MAX_TOOL_CONTROLS {
@@ -282,9 +315,14 @@ pub async fn check_tool_control(
             unavailable_control_error()
         })?;
     match control.map(|control| control.control) {
-        Some(ToolControlState::Isolated) => Err(ToolError::PermissionDenied(
-            "tool source is isolated by the immune boundary".to_string(),
-        )),
+        // gap-a2787f: the isolation stays until a person releases it, so the
+        // refusal says how they find and release it.
+        Some(ToolControlState::Isolated) => Err(ToolError::PermissionDenied(format!(
+            "tool source is isolated by the immune boundary until a person reviews and \
+             releases it: `roko safety controls` lists it, and `roko safety release --tool {} \
+             --scope {scope} --reason <why>` releases it",
+            call.name
+        ))),
         Some(ToolControlState::RateLimited { until_ms }) if now_ms <= until_ms => {
             Err(ToolError::PermissionDenied(
                 "tool source is temporarily rate limited by the immune boundary".to_string(),
@@ -753,12 +791,9 @@ fn persist_tool_control(path: &Path, control: ToolControl) -> io::Result<()> {
         MAX_TOOL_CONTROL_LEDGER_BYTES,
         |ledger| {
             validate_control_ledger(ledger, now_ms)?;
-            ledger.controls.retain(|_, existing| {
-                !matches!(
-                    existing.control,
-                    ToolControlState::RateLimited { until_ms } if until_ms < now_ms
-                )
-            });
+            ledger
+                .controls
+                .retain(|_, existing| control_in_force(existing, now_ms));
             if !ledger.controls.contains_key(&key) && ledger.controls.len() >= MAX_TOOL_CONTROLS {
                 return Err(io::Error::other(format!(
                     "tool control ledger reached its {MAX_TOOL_CONTROLS}-entry capacity"
@@ -796,6 +831,107 @@ fn merge_tool_control(existing: &mut ToolControl, incoming: ToolControl) -> io::
         (ToolControlState::RateLimited { .. }, ToolControlState::RateLimited { .. }) => {}
     }
     Ok(())
+}
+
+/// Whether `control` still refuses its tool at `now_ms`: an isolation until
+/// it is released, a rate limit until its cooldown ends.
+fn control_in_force(control: &ToolControl, now_ms: i64) -> bool {
+    !matches!(
+        control.control,
+        ToolControlState::RateLimited { until_ms } if until_ms < now_ms
+    )
+}
+
+/// List the tool controls in force in the workspace at `workspace_root`, by
+/// tool and source scope (gap-a2787f): isolations, which stay until a person
+/// releases them, and rate limits whose cooldown is still running.
+///
+/// # Errors
+///
+/// Fails closed on an invalid or unreadable ledger, as the boundary does.
+pub fn list_tool_controls(workspace_root: &Path) -> io::Result<Vec<ToolControl>> {
+    let now_ms = Utc::now().timestamp_millis();
+    let mut controls =
+        roko_fs::with_locked_json_transaction_bounded::<ToolControlLedger, _, io::Error, _>(
+            &tool_controls_path(workspace_root),
+            MAX_TOOL_CONTROL_LEDGER_BYTES,
+            |ledger| {
+                validate_control_ledger(ledger, now_ms)?;
+                Ok(ledger
+                    .controls
+                    .values()
+                    .filter(|control| control_in_force(control, now_ms))
+                    .cloned()
+                    .collect::<Vec<_>>())
+            },
+        )?;
+    controls.sort_by(|left, right| {
+        (&left.tool_name, &left.source_scope).cmp(&(&right.tool_name, &right.source_scope))
+    });
+    Ok(controls)
+}
+
+/// Release the control that refuses `tool_name` from `source_scope` in the
+/// workspace at `workspace_root`, after a person reviewed it (gap-a2787f):
+/// remove it from the ledger and append one audit line (when, the tool and
+/// scope, the control's state, issue time and triggering result, `by` and
+/// `reason`) to [`tool_control_releases_path`], both under the ledger's
+/// lock. The audit line is written first, so no release goes unrecorded.
+/// Releasing a tool with no control in force (none, or a cooldown that ran
+/// out) returns `Ok(None)` and writes no audit line.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for a malformed tool name, source scope,
+/// `by` or `reason` (each must be 1..=256 bytes without control characters);
+/// [`io::ErrorKind::InvalidData`] for an invalid ledger; or a filesystem
+/// error.
+pub fn release_tool_control(
+    workspace_root: &Path,
+    tool_name: &str,
+    source_scope: &str,
+    by: &str,
+    reason: &str,
+) -> io::Result<Option<ReleasedToolControl>> {
+    let invalid_input =
+        |error: io::Error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string());
+    validate_boundary_label(tool_name, "tool name").map_err(invalid_input)?;
+    validate_boundary_label(source_scope, "tool source scope").map_err(invalid_input)?;
+    validate_boundary_label(by, "release principal").map_err(invalid_input)?;
+    validate_boundary_label(reason, "release reason").map_err(invalid_input)?;
+    let key = tool_control_key(tool_name, source_scope);
+    let audit_path = tool_control_releases_path(workspace_root);
+    let now_ms = Utc::now().timestamp_millis();
+    roko_fs::with_locked_json_transaction_bounded::<ToolControlLedger, _, io::Error, _>(
+        &tool_controls_path(workspace_root),
+        MAX_TOOL_CONTROL_LEDGER_BYTES,
+        |ledger| {
+            validate_control_ledger(ledger, now_ms)?;
+            ledger
+                .controls
+                .retain(|_, control| control_in_force(control, now_ms));
+            let Some(control) = ledger.controls.get(&key) else {
+                return Ok(None);
+            };
+            let state = match control.control {
+                ToolControlState::Isolated => "isolated",
+                ToolControlState::RateLimited { .. } => "rate_limited",
+            };
+            let released = ReleasedToolControl {
+                released_at_ms: now_ms,
+                tool_name: control.tool_name.clone(),
+                source_scope: control.source_scope.clone(),
+                state: state.to_string(),
+                issued_at_ms: control.issued_at_ms,
+                triggering_output: control.triggering_output,
+                by: by.to_string(),
+                reason: reason.to_string(),
+            };
+            append_release_audit(&audit_path, &released)?;
+            ledger.controls.remove(&key);
+            Ok(Some(released))
+        },
+    )
 }
 
 fn validate_control_ledger(ledger: &ToolControlLedger, now_ms: i64) -> io::Result<()> {
@@ -1196,6 +1332,101 @@ mod tests {
         validate_control_ledger(&reopened, Utc::now().timestamp_millis()).unwrap();
         assert!(!reopened.controls.contains_key(&expired_key));
         assert!(reopened.controls.contains_key(&active_key));
+    }
+
+    /// gap-a2787f: an isolated tool's refusal says how a person lifts it;
+    /// the control is listed (a cooldown that ran out is not), a release
+    /// removes it with an audit line naming the result that triggered it,
+    /// and the tool's next call passes. A second release finds nothing and
+    /// writes no line.
+    #[tokio::test]
+    async fn a_released_tool_control_is_audited_and_the_next_call_runs() {
+        let workspace = tempdir().expect("temp workspace");
+        let isolated = control(
+            "external_lookup",
+            "mcp:test-server",
+            ToolControlState::Isolated,
+        );
+        let cooled = control(
+            "other-tool",
+            "mcp:test-server",
+            ToolControlState::RateLimited {
+                until_ms: Utc::now().timestamp_millis() - 60_000,
+            },
+        );
+        let ledger = ToolControlLedger {
+            schema_version: TOOL_CONTROL_LEDGER_SCHEMA_VERSION,
+            controls: [isolated.clone(), cooled]
+                .into_iter()
+                .map(|entry| {
+                    (
+                        tool_control_key(&entry.tool_name, &entry.source_scope),
+                        entry,
+                    )
+                })
+                .collect(),
+        };
+        roko_fs::atomic_write_json(&tool_controls_path(workspace.path()), &ledger).unwrap();
+        let call = ToolCall::new("call", "external_lookup", serde_json::json!({}));
+        let context = ToolContext::testing(workspace.path());
+
+        let refused = check_tool_control(&call, &external_definition(), &context)
+            .await
+            .expect_err("the isolated tool is refused");
+        assert!(
+            refused.to_string().contains(
+                "`roko safety release --tool external_lookup --scope mcp:test-server --reason \
+                 <why>`"
+            ),
+            "{refused}"
+        );
+        assert_eq!(
+            list_tool_controls(workspace.path()).unwrap(),
+            vec![isolated.clone()]
+        );
+
+        let released = release_tool_control(
+            workspace.path(),
+            "external_lookup",
+            "mcp:test-server",
+            "reviewer",
+            "a false positive",
+        )
+        .unwrap()
+        .expect("the control is released");
+
+        assert_eq!(released.state, "isolated");
+        assert_eq!(released.triggering_output, isolated.triggering_output);
+        assert_eq!(released.issued_at_ms, isolated.issued_at_ms);
+        assert_eq!(
+            (released.by.as_str(), released.reason.as_str()),
+            ("reviewer", "a false positive")
+        );
+        let audit_path = tool_control_releases_path(workspace.path());
+        let audit = std::fs::read_to_string(&audit_path).unwrap();
+        let lines: Vec<ReleasedToolControl> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines, vec![released]);
+        assert!(list_tool_controls(workspace.path()).unwrap().is_empty());
+        check_tool_control(&call, &external_definition(), &context)
+            .await
+            .expect("the released tool's next call runs");
+
+        let again = release_tool_control(
+            workspace.path(),
+            "external_lookup",
+            "mcp:test-server",
+            "reviewer",
+            "again",
+        )
+        .unwrap();
+        assert_eq!(again, None);
+        assert_eq!(std::fs::read_to_string(&audit_path).unwrap(), audit);
+        let error = release_tool_control(workspace.path(), "", "mcp:test-server", "r", "why")
+            .expect_err("an empty tool name is refused");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

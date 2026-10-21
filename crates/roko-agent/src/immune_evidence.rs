@@ -497,7 +497,10 @@ pub fn release_agent_control(
     )
 }
 
-fn append_release_audit(path: &Path, released: &ReleasedControl) -> io::Result<()> {
+/// Append `released`, one release's audit record, as a line of the audit
+/// file at `path`, synced before it returns. Tool control releases
+/// (gap-a2787f) keep their own file the same way.
+pub(crate) fn append_release_audit<T: Serialize>(path: &Path, released: &T) -> io::Result<()> {
     let mut line = serde_json::to_vec(released)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     line.push(b'\n');

@@ -757,12 +757,13 @@ Examples:
         #[command(subcommand)]
         cmd: RunIndexCmd,
     },
-    /// List immune isolation controls and release one, with an audit record.
+    /// List immune controls on agents and tools, and release one, with an audit record.
     #[command(after_help = "\
 Examples:
   roko safety controls
   roko safety controls --json
-  roko safety release live-a/cli --reason \"blank answer, not tamper\"")]
+  roko safety release live-a/cli --reason \"blank answer, not tamper\"
+  roko safety release --tool run_tests --scope builtin:local --reason \"a false positive\"")]
     Safety {
         #[command(subcommand)]
         cmd: SafetyCmd,
@@ -2058,7 +2059,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url, fix).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
-        Command::Safety { cmd } => commands::safety::cmd_safety(cli, cmd).await,
+        Command::Safety { cmd } => {
+            commands::safety::cmd_safety(cmd, cli.json, || resolve_workdir(cli))
+        }
         Command::Effects { cmd } => commands::effects::cmd_effects(cli, cmd).await,
         Command::Showcase { cmd } => commands::showcase::cmd_showcase(cmd),
         Command::Audit { cmd } => commands::audit::cmd_audit(cli, cmd),

@@ -57,6 +57,13 @@ doctest's `test cases: … passed` and `assertions: … passed`, ctest's `N% tes
 passed`. Restore the better tree when the new try regresses there, and keep that progress beside the best try so a
 resume can restore it.
 
+The lead's decisions (2026-10-21), on roko-ladder's proposal:
+- Order: steps passed first, then assertions, then test cases, in the same first failing step, from each runner's
+  own summary lines (cargo, pytest and ctest count only tests, so tests decide there). Ties go to the latest.
+- On resume: start from the best try that got anywhere (a step passed, or a case or assertion counted). Otherwise
+  continue in place from the last try's tree, as a retry in one process does. gap-586507's clean-to-base start is
+  dropped: it is what would have thrown phase 3's near-done sequencer away.
+
 ## Done when
 
 Two tries that pass the same verify steps are ranked by the first failing step's passed test cases or assertions,

@@ -70,6 +70,23 @@ pub(crate) struct BestTry {
     pub(crate) workdir: PathBuf,
     /// The labels of the verify steps it passed.
     pub(crate) passed: Vec<String>,
+    /// How far it got in the first verify step it failed (gap-54089d), which
+    /// ranks it against a try that passed the same steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) progress: Option<StepProgress>,
+}
+
+/// How far a try got in the first verify step it failed, by that step's
+/// runner's own summary lines (gap-54089d): the step, and the test cases and
+/// assertions that passed in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StepProgress {
+    /// The step's label.
+    pub(crate) step: String,
+    /// Test cases that passed in it.
+    pub(crate) cases: u64,
+    /// Assertions that passed in it; 0 where its runner counts none.
+    pub(crate) assertions: u64,
 }
 
 /// `retry-feedback.json`: one plan's pending feedback and ladder standings,

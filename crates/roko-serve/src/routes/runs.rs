@@ -2042,6 +2042,14 @@ fn is_gate_event(kind: &str) -> bool {
     kind.starts_with("gate.") || kind.starts_with("gate_") || kind.contains("gate")
 }
 
+/// Whether `kind` is one of the plan-load spec gate's own events
+/// (`spec_gate_started`, `spec_gate_step`, `spec_gate_finished`). Its checks
+/// must fail on the base, so a step that did not pass is the result it wants,
+/// not a failed gate (bug-b9df52). A task it refuses ends the run `refused`.
+fn is_spec_gate_event(kind: &str) -> bool {
+    kind.starts_with("spec_gate")
+}
+
 fn is_task_terminal(kind: &str) -> bool {
     matches!(
         kind,
@@ -2483,7 +2491,10 @@ fn run_summary(
                     .or_insert_with(|| (place, milestone("first_task_accepted", text, value)));
             }
         }
+        // Only a task's own gate failure counts: the spec gate's steps fail on
+        // the base by design (bug-b9df52).
         if is_gate_event(kind)
+            && !is_spec_gate_event(kind)
             && bool_field(value, "passed").map_or(kind.contains("failed"), |passed| !passed)
         {
             let gate = string_field(value, "gate")
@@ -4018,6 +4029,106 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-b9df52: the spec gate's checks fail on the base by design, so a
+    /// run whose own checks all passed has no `first_gate_failure`, and in a
+    /// run where a task's check failed, the milestone names that task.
+    #[tokio::test]
+    async fn spec_gate_red_on_base_steps_are_not_a_gate_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        // Run c91b63ea's shape: each task's check runs twice on the base and
+        // fails, as it must, before the plan starts.
+        let red_on_base = |run_id: &str| {
+            let step = |task: &str, run: u32| json!({"type":"spec_gate_step","run_id":run_id,"plan_id":"p1","task_id":task,"run":run,"step":1,"passed":false,"cached":false,"ms":80});
+            vec![
+                json!({"type":"spec_gate_started","run_id":run_id,"plan_id":"p1","steps_total":4}),
+                step("T1", 1),
+                step("T1", 2),
+                step("T2", 1),
+                step("T2", 2),
+                json!({"type":"spec_gate_finished","run_id":run_id,"plan_id":"p1","elapsed_ms":400,"tasks_checked":2,"steps_run":4,"cached":0,"blocked":0}),
+                json!({"type":"plan_started","run_id":run_id,"plan_id":"p1"}),
+            ]
+        };
+        let check = |run_id: &str, task: &str, passed: bool| json!({"type":"gate_result","run_id":run_id,"plan_id":"p1","task_id":task,"gate":"verify[0:test]","passed":passed});
+        let passed = |run_id: &str, task: &str| json!({"type":"task_completed","run_id":run_id,"plan_id":"p1","task_id":task,"outcome":"passed"});
+        let ended = |run_id: &str| json!({"type":"run_completed","run_id":run_id,"outcome":"succeeded","duration_ms":10});
+        let milestones = |summary: &Value| {
+            summary["milestones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|milestone| {
+                    (
+                        milestone["kind"].as_str().unwrap().to_string(),
+                        milestone["text"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut rows = red_on_base("g1");
+        rows.extend([
+            check("g1", "T1", true),
+            passed("g1", "T1"),
+            check("g1", "T2", true),
+            passed("g1", "T2"),
+            ended("g1"),
+        ]);
+        write_rows(&index("g1"), &rows);
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g1".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "succeeded", "{summary}");
+        let kinds = milestones(&summary)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            ["started", "first_task_accepted", "completed"],
+            "{summary}"
+        );
+
+        // T2's own check fails once: the milestone names T2, not the task
+        // whose base check failed first.
+        let mut rows = red_on_base("g2");
+        rows.extend([
+            check("g2", "T1", true),
+            passed("g2", "T1"),
+            check("g2", "T2", false),
+            check("g2", "T2", true),
+            passed("g2", "T2"),
+            ended("g2"),
+        ]);
+        write_rows(&index("g2"), &rows);
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g2".into()))
+            .await
+            .unwrap();
+        let failure = milestones(&summary)
+            .into_iter()
+            .find(|(kind, _)| kind == "first_gate_failure");
+        assert_eq!(
+            failure.map(|(_, text)| text).as_deref(),
+            Some("gate verify[0:test] failed on task T2"),
+            "{summary}"
+        );
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

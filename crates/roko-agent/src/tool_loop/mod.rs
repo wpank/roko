@@ -4605,6 +4605,38 @@ mod tests {
         assert_eq!(backend.attempts(), 1);
     }
 
+    /// bug-35b190: a request the provider refused, an HTTP 4xx that names no
+    /// rate limit, bad key or unknown model, is not sent again: the same
+    /// request gets the same answer. The run ends on it in the provider's
+    /// words. An untyped provider error is still tried again.
+    #[tokio::test]
+    async fn a_refused_request_is_not_sent_again() {
+        let refused = ProviderError::RequestRefused {
+            provider: "openai".to_string(),
+            status: 400,
+            message: "Function tools with reasoning_effort are not supported for gpt-5.4-mini \
+                      in /v1/chat/completions. (param reasoning_effort)"
+                .to_string(),
+        };
+        let backend = Arc::new(RetryingBackend::new(usize::MAX, refused.clone()));
+        let tl = make_tool_loop(backend.clone(), 25).with_retry_policy(test_retry_policy());
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        match &out.stop_reason {
+            StopReason::BackendError(msg) => assert!(
+                msg.contains("openai refused the request (HTTP 400): Function tools"),
+                "msg={msg}"
+            ),
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+        assert_eq!(backend.attempts(), 1);
+        assert_eq!(ErrorClass::from(&refused).to_string(), "request_refused");
+        let other = ProviderError::Other("HTTP 499".to_string());
+        assert!(test_retry_policy().should_retry(&other, 0));
+    }
+
     /// bug-7debad (TD-006): `dispatch_batch` returns parallel results as they
     /// complete, but a turn's trace keeps each result's preview beside its call.
     #[tokio::test]

@@ -341,6 +341,96 @@ impl WorktreeManager {
         command.output().await.map_err(WorktreeError::IoError)
     }
 
+    /// Like [`Self::git_probe_output_at`], but with the operator's own git
+    /// configuration rather than the managed environment: it does not call
+    /// [`sanitize_git_environment`], so git reads `~/.gitconfig` (or
+    /// `$XDG_CONFIG_HOME/git/config`) normally. Used only to read config the
+    /// operator set globally, such as `core.excludesFile`
+    /// ([`Self::resolved_operator_excludes_file`], bug-346498); nothing here
+    /// stages, commits, or otherwise mutates anything.
+    async fn git_probe_output_with_operator_config_at(
+        &self,
+        current_dir: &Path,
+        args: &[&str],
+    ) -> Result<Output, WorktreeError> {
+        let executable = self.git_executable()?;
+        validate_trusted_executable(&executable, &self.config)?;
+        let mut command = Command::new(executable);
+        command
+            .current_dir(current_dir)
+            .arg("--no-pager")
+            .args(args)
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(test)]
+        for (key, value) in self.git_probe_environment.lock().iter() {
+            command.env(key, value);
+        }
+        roko_agent::process::configure_no_descendant_process(&mut command).map_err(|error| {
+            WorktreeError::UnsafeGitExecution {
+                reason: error.to_string(),
+            }
+        })?;
+        command.output().await.map_err(WorktreeError::IoError)
+    }
+
+    /// The operator's `core.excludesFile`, resolved once from their own
+    /// configuration, never the sanitized managed environment, which never
+    /// reads it: `GIT_CONFIG_GLOBAL=/dev/null` hides `~/.gitconfig` from
+    /// [`sanitize_git_environment`]'s commands, so a custom excludes file
+    /// named there is invisible to them (bug-346498). `None` when the
+    /// operator set no `core.excludesFile`: the managed commands' own
+    /// default excludes file (`$XDG_CONFIG_HOME/git/ignore`, read
+    /// independently of `GIT_CONFIG_GLOBAL`) already matches what the
+    /// operator's own git would use, so nothing need be passed for that
+    /// case.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::GitFailed`] when git fails for a reason
+    /// other than the setting being unset.
+    pub(super) async fn resolved_operator_excludes_file(
+        &self,
+    ) -> Result<Option<PathBuf>, WorktreeError> {
+        if let Some(resolved) = self.resolved_excludes_file.lock().clone() {
+            return Ok(resolved);
+        }
+        let output = self
+            .git_probe_output_with_operator_config_at(
+                &self.config.repo_root,
+                &["config", "--path", "--get", "core.excludesFile"],
+            )
+            .await?;
+        let resolved = if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (!value.is_empty()).then(|| PathBuf::from(value))
+        } else if output.status.code() == Some(1) {
+            None
+        } else {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        };
+        *self.resolved_excludes_file.lock() = Some(resolved.clone());
+        Ok(resolved)
+    }
+
+    /// `-c core.excludesFile=<path>` for the managed commands that stage
+    /// files from the working tree, naming the operator's own excludes file
+    /// explicitly so they agree with [`ignored_dirs`] and
+    /// [`super::acceptance::attempt_review_diff`], which already read it
+    /// with the operator's config (bug-346498). Empty when the operator set
+    /// none, which leaves the managed commands' own default in effect.
+    pub(super) async fn operator_excludes_file_args(&self) -> Result<Vec<String>, WorktreeError> {
+        Ok(match self.resolved_operator_excludes_file().await? {
+            Some(path) => vec![
+                "-c".to_string(),
+                format!("core.excludesFile={}", path.display()),
+            ],
+            None => Vec::new(),
+        })
+    }
+
     pub(super) async fn git_probe_stdout_at(
         &self,
         current_dir: &Path,

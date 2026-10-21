@@ -2895,6 +2895,57 @@ async fn build_output_an_attempt_staged_is_left_out_too() {
     assert_eq!(accepted.left_out.dirs, ["crates/a/target"]);
 }
 
+/// bug-346498: roko's managed git runs with `GIT_CONFIG_GLOBAL=/dev/null`
+/// (found while fixing bug-ba0c40), so it never reads a custom
+/// `core.excludesFile` the operator names in their own `~/.gitconfig` on its
+/// own. Acceptance must still keep what that file ignores out of the
+/// attempt's commit, by naming the resolved file explicitly. The scratch
+/// `HOME` below is this test's own, never the operator's real one.
+#[tokio::test]
+async fn acceptance_honours_the_operators_excludes_file() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+
+    let home = TempDir::new().unwrap();
+    std::fs::write(
+        home.path().join(".gitconfig"),
+        "[core]\n\texcludesFile = ~/.gitignore_global\n",
+    )
+    .unwrap();
+    std::fs::write(home.path().join(".gitignore_global"), "scratch.log\n").unwrap();
+    manager.set_test_git_probe_environment(vec![(
+        std::ffi::OsString::from("HOME"),
+        home.path().as_os_str().to_os_string(),
+    )]);
+
+    let handle = manager.create_for_attempt("plan", "task", 0).await.unwrap();
+    std::fs::write(handle.path.join("declared.txt"), b"declared\n").unwrap();
+    std::fs::write(handle.path.join("scratch.log"), b"not for commit\n").unwrap();
+    let mut acceptance = acceptance_in("run-1");
+    acceptance.files = vec!["declared.txt".to_string()];
+
+    let accepted = manager
+        .accept_attempt("plan", "task", 0, &acceptance)
+        .await
+        .unwrap();
+
+    for commit in [&accepted.attempt_commit, &accepted.commit_oid] {
+        let committed = git_in(&repo, &["ls-tree", "-r", "--name-only", commit]);
+        assert_eq!(
+            committed.lines().collect::<Vec<_>>(),
+            ["declared.txt"],
+            "the operator's globally ignored scratch.log must not be committed"
+        );
+    }
+    assert!(accepted.left_out.is_empty());
+    assert!(
+        handle.path.join("scratch.log").exists(),
+        "the ignored file stays on disk, just uncommitted"
+    );
+}
+
 #[tokio::test]
 async fn removal_preserves_dirty_attempt_for_attribution_and_recovery() {
     let Some((_tmp, manager)) = make_manager() else {

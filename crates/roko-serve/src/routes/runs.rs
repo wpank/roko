@@ -2458,9 +2458,31 @@ fn run_summary(
     let mut gate_refusals = Vec::<String>::new();
     // The rungs the run said ran slow, as it went (gap-3217a0).
     let mut rung_slow = Vec::<Value>::new();
+    // The providers the run went on without because they refused a call for
+    // want of usage, an account they can't bill included, the latest refusal
+    // of each (bug-390e4b).
+    let mut provider_exhausted = BTreeMap::<String, Value>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if kind == "provider_exhausted" {
+            let data = event_data(value);
+            let provider = string_field(value, "provider")
+                .unwrap_or_default()
+                .to_string();
+            provider_exhausted.insert(
+                provider.clone(),
+                json!({
+                    "provider": provider,
+                    "model": data.get("model"),
+                    "billing": data.get("billing"),
+                    "reason": data.get("reason"),
+                    "until_ms": data.get("until_ms"),
+                    "detail": data.get("detail"),
+                    "at": event_time(value),
+                }),
+            );
+        }
         if kind == "rung_slow" {
             let data = event_data(value);
             rung_slow.push(json!({
@@ -2672,6 +2694,7 @@ fn run_summary(
         "untrusted_input_boundary": boundaries,
         "milestones": milestones,
         "rung_slow": rung_slow,
+        "provider_exhausted": provider_exhausted.into_values().collect::<Vec<_>>(),
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
         "links": run_links(run_id),
@@ -4346,6 +4369,54 @@ mod tests {
             "{ended}"
         );
         assert_eq!(ended["side_call_usd"]["helper"], 0.0, "{ended}");
+    }
+
+    /// bug-390e4b: a run's summary names the providers it went on without
+    /// because they refused a call for want of usage, an account they can't
+    /// bill included, with the latest refusal of each in plain words.
+    #[tokio::test]
+    async fn a_runs_summary_names_the_providers_it_went_without() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "x1").unwrap();
+        let refused = |task: &str, until: i64| json!({"type":"provider_exhausted","run_id":"x1","plan_id":"p1","task_id":task,"attempt":1,"provider":"zai","model":"glm-4.7","billing":true,"reason":"Insufficient balance or no resource package. Please recharge. (code 1113)","until_ms":until,"detail":"zai: Insufficient balance or no resource package. Please recharge. (code 1113): recharge, or the ladder runs without it until 07:12"});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"x1","timestamp_ms":1,"plan_id":"p1"}),
+                refused("T1", 1_000),
+                refused("T2", 2_000),
+                json!({"type":"run.completed","run_id":"x1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("x1".into()))
+            .await
+            .unwrap();
+        let without = summary["provider_exhausted"]
+            .as_array()
+            .expect("provider_exhausted");
+        assert_eq!(without.len(), 1, "{summary}");
+        assert_eq!(without[0]["provider"], "zai");
+        assert_eq!(without[0]["billing"], true);
+        assert_eq!(without[0]["until_ms"], 2_000, "the latest refusal");
+        assert!(
+            without[0]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("recharge, or the ladder runs without it")),
+            "{summary}"
+        );
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

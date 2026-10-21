@@ -3331,7 +3331,21 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
     /// stream, as an attempt does whenever its progress is tracked
     /// (bug-3a3b0f), else as JSON.
     pub(super) fn openai_mock_wire(response: &serde_json::Value, streamed: bool) -> String {
-        if let Some(retry_after) = response
+        if let Some(status) = response
+            .get(REFUSED_TURN)
+            .and_then(serde_json::Value::as_u64)
+        {
+            let body = response["body"].to_string();
+            let reason = if status == 402 {
+                "Payment Required"
+            } else {
+                "Too Many Requests"
+            };
+            format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else if let Some(retry_after) = response
             .get(RATE_LIMITED_TURN)
             .and_then(serde_json::Value::as_u64)
         {
@@ -3516,6 +3530,17 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
     /// A call the provider refuses with HTTP 429 and a `Retry-After` of
     /// `retry_after_secs`, with z.ai's error body (bug-4b6844).
     /// [`spawn_openai_mock`] answers it so whether the request streams or not.
+    const REFUSED_TURN: &str = "__refused_with_status";
+
+    /// A call the provider refuses with HTTP `status` and the JSON `body`,
+    /// with no `Retry-After` (bug-390e4b). [`spawn_openai_mock`] answers it so
+    /// whether the request streams or not.
+    pub(super) fn refused_turn(status: u16, body: serde_json::Value) -> serde_json::Value {
+        let mut turn = serde_json::json!({ "body": body });
+        turn[REFUSED_TURN] = serde_json::json!(status);
+        turn
+    }
+
     pub(super) fn rate_limited_turn(retry_after_secs: u64) -> serde_json::Value {
         let mut turn = serde_json::json!({
             "error": {

@@ -158,6 +158,62 @@ struct ProviderRefusal {
     at_ms: i64,
 }
 
+/// The provider's own words in an exhaustion's `message`: what follows
+/// roko's marker, else the whole message (a CLI's own usage-limit line).
+fn exhaustion_words(message: &str) -> &str {
+    use roko_agent::provider::error_classify::{BILLING_REFUSAL_MARKER, PROVIDER_EXHAUSTED_MARKER};
+    let lower = message.to_ascii_lowercase();
+    if let Some(at) = lower.find(PROVIDER_EXHAUSTED_MARKER) {
+        return message[at + PROVIDER_EXHAUSTED_MARKER.len()..]
+            .trim_start_matches(':')
+            .trim();
+    }
+    if let Some(at) = lower.find(BILLING_REFUSAL_MARKER) {
+        return message[at..].trim();
+    }
+    message.trim()
+}
+
+/// The hub's word that `refusal`'s provider refused a call of attempt
+/// `attempt_key` for want of usage, an account it can't bill included, and is
+/// skipped until it may be called again (bug-390e4b). `ladder` is whether
+/// the model ladder routed the attempt.
+fn provider_exhausted_event(
+    spec: &TaskExecutionSpec,
+    task_id: &str,
+    attempt_key: &str,
+    refusal: &ProviderRefusal,
+    ladder: bool,
+) -> roko_core::DashboardEvent {
+    let reason = exhaustion_words(&refusal.reason).to_string();
+    let billing =
+        roko_agent::provider::error_classify::is_billing_message(&reason.to_ascii_lowercase());
+    let provider = &refusal.provider_id;
+    let until = refusal.until_ms.map(format_local_ms).unwrap_or_default();
+    let detail = if billing {
+        let without = if ladder {
+            "the ladder runs without it"
+        } else {
+            "the run goes on without it"
+        };
+        format!("{provider}: {reason}: recharge, or {without} until {until}")
+    } else {
+        format!("{provider}: {reason}: skipped until {until}")
+    };
+    roko_core::DashboardEvent::ProviderExhausted {
+        plan_id: spec.plan_id.clone(),
+        task_id: task_id.to_string(),
+        attempt: roko_learn::telemetry::records::AttemptKey::parse(attempt_key)
+            .map_or(0, |key| key.attempt),
+        provider: provider.clone(),
+        model: refusal.model_slug.clone(),
+        billing,
+        reason,
+        until_ms: refusal.until_ms,
+        detail,
+    }
+}
+
 /// The [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
 /// of an attempt failover moved to `target` after `refusals` (gap-2a3298):
 /// the models passed over are its ineligible candidates, the last refusal
@@ -709,6 +765,17 @@ impl GraphTaskDispatcher {
                 called: true,
                 at_ms: chrono::Utc::now().timestamp_millis(),
             });
+            // The hub hears why, an account the provider can't bill included
+            // (bug-390e4b).
+            if let (Some(tui), Some(refusal)) = (&self.tui_bridge, refusals.last()) {
+                tui.publish_event(provider_exhausted_event(
+                    spec,
+                    task_id,
+                    &attempt_key,
+                    refusal,
+                    ladder.is_some(),
+                ));
+            }
             if pinned {
                 return Err(self.no_usable_provider(&refusals, &[], true, None));
             }
@@ -1488,7 +1555,7 @@ mod tests {
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, cli_provider, final_turn,
         fixture_config, jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def, model,
-        rate_limited_turn, recording_feedback, spawn_openai_mock, tool_call_turn,
+        rate_limited_turn, recording_feedback, refused_turn, spawn_openai_mock, tool_call_turn,
     };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
@@ -2607,6 +2674,110 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             serde_json::json!(["mid-1"]),
             "{verdict}"
         );
+    }
+
+    /// bug-390e4b: a provider that answers that it can't bill the account,
+    /// z.ai's 429 with code 1113 or a 402 as Cerebras sends it, is out of
+    /// usage at its first answer. The try fails over to the rung above with
+    /// no retry and no wait, the hub says why in plain words, and the next try
+    /// routes past the provider without calling it.
+    #[tokio::test]
+    async fn a_provider_that_cannot_bill_is_skipped_at_its_first_answer() {
+        let refusals = [
+            (
+                refused_turn(
+                    429,
+                    serde_json::json!({ "error": {
+                        "code": "1113",
+                        "message": "Insufficient balance or no resource package. Please recharge."
+                    } }),
+                ),
+                "Insufficient balance or no resource package. Please recharge. (code 1113)",
+            ),
+            (
+                refused_turn(
+                    402,
+                    serde_json::json!({
+                        "message": "Payment required to access this resource. Visit your billing tab.",
+                        "type": "payment_required_error",
+                        "code": "payment_required"
+                    }),
+                ),
+                "Payment required to access this resource. Visit your billing tab. (code \
+                 payment_required)",
+            ),
+        ];
+        for (index, (refusal, words)) in refusals.into_iter().enumerate() {
+            let temp = tempdir().expect("tempdir");
+            let models = temp.path().join("claude-models.log");
+            let claude = temp.path().join("fake-claude.sh");
+            model_logging_claude(&claude, &models);
+            // A second answer, so a call from the next try would show.
+            let (base_url, requests) = spawn_openai_mock(vec![refusal.clone(), refusal]);
+            let mut task = make_task_def("mechanical");
+            task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+            task.hints.rung = Some("mid".to_string());
+            let spec = make_spec(&task);
+            let ctx = CellContext::new().with_run_id(format!("cannot-bill-{index}"));
+            let rungs = [
+                ("cheap", "cheap-model"),
+                ("mid", "mid-model"),
+                ("strong", "strong-model"),
+            ];
+            let mut config = ladder_failover_config(&claude, &rungs);
+            let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+            mid_api.base_url = Some(base_url);
+            let hub = crate::state_hub::StateHub::default_capacity();
+            let dispatcher = make_bare_dispatcher(config, temp.path())
+                .await
+                .with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(hub.sender()));
+
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the strong rung's model runs the task in the same try");
+            assert_eq!(requests.lock().len(), 1, "one answer, no retry");
+            assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+            let said: Vec<(String, bool, String, String)> = hub
+                .replay_from(0)
+                .into_iter()
+                .filter_map(|envelope| match envelope.payload {
+                    roko_core::DashboardEvent::ProviderExhausted {
+                        provider,
+                        billing,
+                        reason,
+                        detail,
+                        ..
+                    } => Some((provider, billing, reason, detail)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(said.len(), 1, "{said:?}");
+            let (provider, billing, reason, detail) = &said[0];
+            assert_eq!(provider, "mid_api");
+            assert!(*billing, "{said:?}");
+            assert_eq!(reason, words);
+            assert!(
+                detail.starts_with(&format!(
+                    "mid_api: {words}: recharge, or the ladder runs without it until "
+                )),
+                "{detail}"
+            );
+
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the next try runs");
+            assert_eq!(
+                requests.lock().len(),
+                1,
+                "the next try did not call the provider out of usage"
+            );
+            assert_eq!(
+                logged_models(&models),
+                ["claude-sonnet-4-6", "claude-sonnet-4-6"]
+            );
+        }
     }
 
     /// bug-4b6844: with nowhere to fail over, a try whose provider is still

@@ -440,6 +440,7 @@ pub(crate) async fn start_plan_generation(
                             summary.task_count,
                             gen_result.cost_usd,
                             gen_result.source_checks,
+                            gen_result.repairs,
                         )),
                         Ok(None) => Err(no_plan()),
                         Err(err) => Err(format!(
@@ -451,7 +452,7 @@ pub(crate) async fn start_plan_generation(
             };
 
             match generated {
-                Ok((task_count, cost_usd, source_checks)) => {
+                Ok((task_count, cost_usd, source_checks, repairs)) => {
                     // bug-a0432b: the result says what writing the plan cost,
                     // and gap-dc5d7c what became of the request's checks.
                     let mut result = json!({
@@ -461,6 +462,10 @@ pub(crate) async fn start_plan_generation(
                     });
                     if let Some(source_checks) = source_checks {
                         result["source_checks"] = source_checks;
+                    }
+                    // gap-0fb7d9: and what roko changed in its planner's draft.
+                    if !repairs.is_empty() {
+                        result["repairs"] = json!(repairs);
                     }
                     let result_json = serde_json::to_string(&result).unwrap_or_default();
 

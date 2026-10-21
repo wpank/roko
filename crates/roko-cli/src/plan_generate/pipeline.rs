@@ -1114,6 +1114,25 @@ fn own_plan_writers(plan: &TasksFile, plan_dir: &Path, workdir: &Path) -> Vec<St
         .collect()
 }
 
+/// `plan_md` with a "Repairs" section that lists what roko changed in the
+/// planner's draft before it validated it (gap-0fb7d9), when it changed
+/// anything: a person reading the plan sees what the planner wrote and what
+/// roko fixed.
+fn with_repairs(mut plan_md: String, repairs: &[String]) -> String {
+    if repairs.is_empty() {
+        return plan_md;
+    }
+    if !plan_md.ends_with('\n') {
+        plan_md.push('\n');
+    }
+    plan_md
+        .push_str("\n## Repairs\n\nroko changed the planner's draft before it validated it:\n\n");
+    for repair in repairs {
+        plan_md.push_str(&format!("- {}\n", repair.replace('\n', " ")));
+    }
+    plan_md
+}
+
 /// The plan report's note on the build-registration files several tasks
 /// list (bug-daa54e): which, and how their tasks run: together with a
 /// worktree per task, their edits meeting at merge, and in turn in one shared
@@ -1799,243 +1818,259 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let no_new_files = size_sources
             .iter()
             .any(|text| file_paths::says_no_new_files(text));
-        let extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
-            let toml_content = extract_fenced_block(raw, "toml")
-                .or_else(|| extract_fenced_block(raw, "tasks.toml"))
-                .or_else(|| extract_toml_content_fallback(raw));
-            tracing::info!(
-                has_toml_block = toml_content.is_some(),
-                toml_block_len = toml_content.map(|s| s.len()).unwrap_or(0),
-                "plan generate: fenced block extraction"
-            );
-            let toml_content =
-                toml_content.ok_or_else(|| "no TOML block found in agent output".to_string())?;
+        // gap-0fb7d9: with the draft it validates, what roko changed in it.
+        let extract_and_validate =
+            |raw: &str| -> std::result::Result<(String, Vec<String>), String> {
+                let toml_content = extract_fenced_block(raw, "toml")
+                    .or_else(|| extract_fenced_block(raw, "tasks.toml"))
+                    .or_else(|| extract_toml_content_fallback(raw));
+                tracing::info!(
+                    has_toml_block = toml_content.is_some(),
+                    toml_block_len = toml_content.map(|s| s.len()).unwrap_or(0),
+                    "plan generate: fenced block extraction"
+                );
+                let toml_content = toml_content
+                    .ok_or_else(|| "no TOML block found in agent output".to_string())?;
 
-            // Fast structural pre-check: verify required sections are present
-            // before attempting a full TOML parse.
-            if !toml_content.contains("[meta]") {
-                return Err("TOML block is missing the required [meta] section".to_string());
-            }
-            if !toml_content.contains("[[task]]") {
-                return Err("TOML block is missing required [[task]] entries".to_string());
-            }
-
-            let validated = validate_and_fix_generated_plan(
-                toml_content,
-                slug,
-                &resolved.config.models,
-                resolved.config.agent.model.as_deref(),
-                &ladder,
-            )
-            .map_err(|e| format!("{e:#}"))?;
-            let mut parsed = TasksFile::parse_str(&validated).map_err(|error| {
-                format!("generated plan failed runtime parsing after repair: {error:#}")
-            })?;
-            let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
-                template_kind.max_task_count(),
-            );
-            // gap-b95913: what the planner need not be asked to fix; and
-            // gap-dc5d7c: a step that covers a source check by its id names
-            // a criterion of its task that states the check.
-            let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
-            // bug-7c6f1b: a `files` path the workspace lacks names the file
-            // of that name its task reads.
-            repairs.extend(file_paths::repair_file_paths(
-                &mut parsed,
-                workdir_ref,
-                no_new_files,
-            ));
-            // gap-9e212c: a task whose size its source states gets the
-            // smallest tier that covers it.
-            repairs.extend(sizes::repair_tiers(&mut parsed, &size_sources, policy));
-            repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
-            // bug-96115c: a check the source names as the plan's final check
-            // runs in `[[meta.verify]]`, its command unchanged.
-            repairs.extend(source_checks::add_plan_checks(&mut parsed, &checks));
-            // gap-ecafde: a pytest step without pytest runs as unittest, and a
-            // test file a task's check needs joins its files.
-            repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
-            // bug-d758f6: an implementer keeps its role's own tools, a shell
-            // and edit_file among them, whatever list the planner copied.
-            repairs.extend(runnable::repair_shell_tools(&mut parsed));
-            // bug-df9aff: a task that creates a file may write it, and a task
-            // waits for the tasks that write the modules its tests import.
-            repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
-            repairs.extend(runnable::repair_dependencies(&mut parsed, workdir_ref));
-            // bug-daa54e: a task that creates a C or C++ source lists the
-            // CMake file that must name it.
-            repairs.extend(runnable::repair_build_lists(&mut parsed, workdir_ref));
-            // bug-8fe462: a step that cannot run, over checks roko has the
-            // commands for, runs those commands.
-            let stuck = runnable::problems(&parsed, workdir_ref, &probe);
-            repairs.extend(source_checks::apply_runs(&mut parsed, &checks, &stuck));
-            // bug-72dc0d: each source check whose command roko knows runs in
-            // the task that owns it, whatever command the planner wrote.
-            let stuck = runnable::problems(&parsed, workdir_ref, &probe);
-            repairs.extend(source_checks::assign_runs(
-                &mut parsed,
-                &checks,
-                &stuck,
-                |task| policy.tier_size_limits(task.tier_class()).max_verify_steps,
-            ));
-            // bug-56a806: a step that runs a source check's command runs the
-            // source's commands alone, without a guard of the planner's own.
-            repairs.extend(source_checks::run_exactly(&mut parsed, &checks));
-            // bug-8723fc: an implementer with no check builds with the
-            // workspace's own build system, never one it lacks.
-            repairs.extend(runnable::repair_build_checks(
-                &mut parsed,
-                workdir_ref,
-                &probe,
-            ));
-            let validated = if repairs.is_empty() {
-                validated
-            } else {
-                for repair in &repairs {
-                    eprintln!("  Repaired the draft: {repair}");
+                // Fast structural pre-check: verify required sections are present
+                // before attempting a full TOML parse.
+                if !toml_content.contains("[meta]") {
+                    return Err("TOML block is missing the required [meta] section".to_string());
                 }
-                tracing::info!(?repairs, "plan generate: repaired the draft");
-                toml::to_string_pretty(&parsed)
-                    .map_err(|error| format!("re-serialize the repaired draft: {error}"))?
-            };
-            // bug-16b798: every gate's findings go back at once, so that one
-            // fix-up can answer them all (phase 2's budget findings hid its
-            // tier-size ones until the next draft).
-            let mut refusals = Vec::new();
-            let listed = |lines: Vec<String>| {
-                lines
-                    .iter()
-                    .map(|line| format!("  - {line}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
-            if !policy_issues.is_empty() {
-                refusals.push(format!(
-                    "generated plan violates the `{}` structural budget:\n{}",
-                    template_kind.label(),
-                    listed(policy_issues.iter().map(ToString::to_string).collect())
+                if !toml_content.contains("[[task]]") {
+                    return Err("TOML block is missing required [[task]] entries".to_string());
+                }
+
+                let validated = validate_and_fix_generated_plan(
+                    toml_content,
+                    slug,
+                    &resolved.config.models,
+                    resolved.config.agent.model.as_deref(),
+                    &ladder,
+                )
+                .map_err(|e| format!("{e:#}"))?;
+                let mut parsed = TasksFile::parse_str(&validated).map_err(|error| {
+                    format!("generated plan failed runtime parsing after repair: {error:#}")
+                })?;
+                let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
+                    template_kind.max_task_count(),
+                );
+                // gap-b95913: what the planner need not be asked to fix; and
+                // gap-dc5d7c: a step that covers a source check by its id names
+                // a criterion of its task that states the check.
+                let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+                // bug-7c6f1b: a `files` path the workspace lacks names the file
+                // of that name its task reads.
+                repairs.extend(file_paths::repair_file_paths(
+                    &mut parsed,
+                    workdir_ref,
+                    no_new_files,
                 ));
-            }
-            // 3225 (decision 3203): a task over its tier's size limits is
-            // a spec defect the planner fixes before a cheap model meets
-            // it. Its tier is never raised here, since that would move
-            // the work to a pricier rung without the planner choosing to.
-            let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
-            if !size_issues.is_empty() {
-                refusals.push(format!(
-                    "generated plan has tasks over their tier's size limits; split each \
-                     on independent outputs with disjoint files, or raise its tier:\n{}",
-                    listed(size_issues.iter().map(ToString::to_string).collect())
+                // gap-9e212c: a task whose size its source states gets the
+                // smallest tier that covers it.
+                repairs.extend(sizes::repair_tiers(&mut parsed, &size_sources, policy));
+                repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
+                // bug-96115c: a check the source names as the plan's final check
+                // runs in `[[meta.verify]]`, its command unchanged.
+                repairs.extend(source_checks::add_plan_checks(&mut parsed, &checks));
+                // gap-ecafde: a pytest step without pytest runs as unittest, and a
+                // test file a task's check needs joins its files.
+                repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
+                // bug-d758f6: an implementer keeps its role's own tools, a shell
+                // and edit_file among them, whatever list the planner copied.
+                repairs.extend(runnable::repair_shell_tools(&mut parsed));
+                // bug-df9aff: a task that creates a file may write it, and a task
+                // waits for the tasks that write the modules its tests import.
+                repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
+                repairs.extend(runnable::repair_dependencies(&mut parsed, workdir_ref));
+                // bug-daa54e: a task that creates a C or C++ source lists the
+                // CMake file that must name it.
+                repairs.extend(runnable::repair_build_lists(&mut parsed, workdir_ref));
+                // bug-8fe462: a step that cannot run, over checks roko has the
+                // commands for, runs those commands.
+                let stuck = runnable::problems(&parsed, workdir_ref, &probe);
+                repairs.extend(source_checks::apply_runs(&mut parsed, &checks, &stuck));
+                // bug-72dc0d: each source check whose command roko knows runs in
+                // the task that owns it, whatever command the planner wrote.
+                let stuck = runnable::problems(&parsed, workdir_ref, &probe);
+                repairs.extend(source_checks::assign_runs(
+                    &mut parsed,
+                    &checks,
+                    &stuck,
+                    |task| policy.tier_size_limits(task.tier_class()).max_verify_steps,
                 ));
-            }
-            if no_new_files {
-                let added = file_paths::new_files(&parsed, workdir_ref);
-                if !added.is_empty() {
+                // bug-56a806: a step that runs a source check's command runs the
+                // source's commands alone, without a guard of the planner's own.
+                repairs.extend(source_checks::run_exactly(&mut parsed, &checks));
+                // bug-8723fc: an implementer with no check builds with the
+                // workspace's own build system, never one it lacks.
+                repairs.extend(runnable::repair_build_checks(
+                    &mut parsed,
+                    workdir_ref,
+                    &probe,
+                ));
+                let validated = if repairs.is_empty() {
+                    validated
+                } else {
+                    for repair in &repairs {
+                        eprintln!("  Repaired the draft: {repair}");
+                    }
+                    tracing::info!(?repairs, "plan generate: repaired the draft");
+                    toml::to_string_pretty(&parsed)
+                        .map_err(|error| format!("re-serialize the repaired draft: {error}"))?
+                };
+                // bug-16b798: every gate's findings go back at once, so that one
+                // fix-up can answer them all (phase 2's budget findings hid its
+                // tier-size ones until the next draft).
+                let mut refusals = Vec::new();
+                let listed = |lines: Vec<String>| {
+                    lines
+                        .iter()
+                        .map(|line| format!("  - {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
+                if !policy_issues.is_empty() {
                     refusals.push(format!(
-                        "generated plan lists files that do not exist, but the source says no \
-                         new files: each task changes files the workspace has:\n{}",
-                        listed(added)
+                        "generated plan violates the `{}` structural budget:\n{}",
+                        template_kind.label(),
+                        listed(policy_issues.iter().map(ToString::to_string).collect())
                     ));
                 }
-            }
-            // bug-27f00b: the plan roko writes is the plan. A task that writes
-            // into its directory writes a plan, not what the request asks for.
-            let own_writers = own_plan_writers(&parsed, &plan_dir, workdir_ref);
-            if !own_writers.is_empty() {
-                refusals.push(format!(
+                // 3225 (decision 3203): a task over its tier's size limits is
+                // a spec defect the planner fixes before a cheap model meets
+                // it. Its tier is never raised here, since that would move
+                // the work to a pricier rung without the planner choosing to.
+                let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
+                if !size_issues.is_empty() {
+                    refusals.push(format!(
+                        "generated plan has tasks over their tier's size limits; split each \
+                     on independent outputs with disjoint files, or raise its tier:\n{}",
+                        listed(size_issues.iter().map(ToString::to_string).collect())
+                    ));
+                }
+                if no_new_files {
+                    let added = file_paths::new_files(&parsed, workdir_ref);
+                    if !added.is_empty() {
+                        refusals.push(format!(
+                            "generated plan lists files that do not exist, but the source says no \
+                         new files: each task changes files the workspace has:\n{}",
+                            listed(added)
+                        ));
+                    }
+                }
+                // bug-27f00b: the plan roko writes is the plan. A task that writes
+                // into its directory writes a plan, not what the request asks for.
+                let own_writers = own_plan_writers(&parsed, &plan_dir, workdir_ref);
+                if !own_writers.is_empty() {
+                    refusals.push(format!(
                     "generated plan has tasks that write the plan's own files, but the plan roko \
                      writes is the plan: its tasks build what the request asks for and write the \
                      project's files (a spec goes in `docs/spec.md`, in one task):\n{}",
                     listed(own_writers)
                 ));
-            }
-            if !refusals.is_empty() {
-                return Err(refusals.join("\n"));
-            }
-
-            // Run the same context check that plan_loader.rs enforces at
-            // load time so the written tasks.toml is guaranteed to pass.
-            // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
-            // not been written yet.
-            let mut ctx_violations = crate::plan_policy::validate_plan_context(
-                &parsed,
-                workdir_ref,
-                &plan_dir,
-                crate::plan_policy::PlanExecutionPolicy::for_environment(),
-            );
-            ctx_violations.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
-
-            if ctx_violations.is_empty() {
-                return Ok(validated);
-            }
-
-            // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
-            // so the written tasks.toml always passes the loader's check.
-            let missing_paths: HashSet<String> = ctx_violations
-                .iter()
-                .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
-                .filter_map(|v| {
-                    v.message
-                        .strip_prefix("declared context file `")
-                        .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
-                })
-                .collect();
-
-            // bug-1c75cc: a range that starts inside its file but ends past
-            // its end (a planner counting the empty line after the final
-            // newline) is clamped to the file instead of costing the plan.
-            let mut fixed = parsed.clone();
-            let clamped = clamp_context_ranges_past_eof(&mut fixed, workdir_ref);
-
-            if missing_paths.is_empty() && clamped == 0 {
-                // Nothing here can be repaired.
-                return Err(format!(
-                    "generated plan violates execution context policy:\n{}",
-                    ctx_violations
-                        .iter()
-                        .map(|v| format!("  - {v}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ));
-            }
-
-            // Drop the unreachable entries and re-serialize.
-            for task in &mut fixed.tasks {
-                if let Some(ctx) = task.context.as_mut() {
-                    ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
                 }
-            }
-            let re_serialized = toml::to_string_pretty(&fixed)
-                .map_err(|e| format!("re-serialize after dropping missing read_files: {e}"))?;
-            let re_parsed = TasksFile::parse_str(&re_serialized)
-                .map_err(|e| format!("re-parse after dropping missing read_files: {e}"))?;
+                if !refusals.is_empty() {
+                    return Err(refusals.join("\n"));
+                }
 
-            // Second context check — must be clean now.
-            let mut remaining = crate::plan_policy::validate_plan_context(
-                &re_parsed,
-                workdir_ref,
-                &plan_dir,
-                crate::plan_policy::PlanExecutionPolicy::for_environment(),
-            );
-            remaining.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
+                // Run the same context check that plan_loader.rs enforces at
+                // load time so the written tasks.toml is guaranteed to pass.
+                // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
+                // not been written yet.
+                let mut ctx_violations = crate::plan_policy::validate_plan_context(
+                    &parsed,
+                    workdir_ref,
+                    &plan_dir,
+                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
+                );
+                ctx_violations.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
 
-            if remaining.is_empty() {
-                Ok(re_serialized)
-            } else {
-                Err(format!(
-                    "generated plan still violates execution context policy \
+                if ctx_violations.is_empty() {
+                    return Ok((validated, repairs));
+                }
+
+                // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
+                // so the written tasks.toml always passes the loader's check.
+                let missing_paths: HashSet<String> = ctx_violations
+                    .iter()
+                    .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+                    .filter_map(|v| {
+                        v.message
+                            .strip_prefix("declared context file `")
+                            .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
+                    })
+                    .collect();
+
+                // bug-1c75cc: a range that starts inside its file but ends past
+                // its end (a planner counting the empty line after the final
+                // newline) is clamped to the file instead of costing the plan.
+                let mut fixed = parsed.clone();
+                let clamped = clamp_context_ranges_past_eof(&mut fixed, workdir_ref);
+
+                if missing_paths.is_empty() && clamped == 0 {
+                    // Nothing here can be repaired.
+                    return Err(format!(
+                        "generated plan violates execution context policy:\n{}",
+                        ctx_violations
+                            .iter()
+                            .map(|v| format!("  - {v}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ));
+                }
+
+                // Drop the unreachable entries and re-serialize.
+                for task in &mut fixed.tasks {
+                    if let Some(ctx) = task.context.as_mut() {
+                        ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
+                    }
+                }
+                let re_serialized = toml::to_string_pretty(&fixed)
+                    .map_err(|e| format!("re-serialize after dropping missing read_files: {e}"))?;
+                let re_parsed = TasksFile::parse_str(&re_serialized)
+                    .map_err(|e| format!("re-parse after dropping missing read_files: {e}"))?;
+
+                // Second context check — must be clean now.
+                let mut remaining = crate::plan_policy::validate_plan_context(
+                    &re_parsed,
+                    workdir_ref,
+                    &plan_dir,
+                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
+                );
+                remaining.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
+
+                if remaining.is_empty() {
+                    if !missing_paths.is_empty() {
+                        let mut missing: Vec<&str> =
+                            missing_paths.iter().map(String::as_str).collect();
+                        missing.sort_unstable();
+                        repairs.push(format!(
+                            "dropped context files that do not exist: `{}`",
+                            missing.join("`, `")
+                        ));
+                    }
+                    if clamped > 0 {
+                        repairs.push(format!(
+                            "clamped {clamped} context line range(s) to the end of their file"
+                        ));
+                    }
+                    Ok((re_serialized, repairs))
+                } else {
+                    Err(format!(
+                        "generated plan still violates execution context policy \
                      after dropping {} missing read_files and clamping {clamped} line \
                      ranges:\n{}",
-                    missing_paths.len(),
-                    remaining
-                        .iter()
-                        .map(|v| format!("  - {v}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ))
-            }
-        };
+                        missing_paths.len(),
+                        remaining
+                            .iter()
+                            .map(|v| format!("  - {v}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ))
+                }
+            };
 
         // 3218: a spec hard fail (a verify step that can never fail, a missing
         // context file, ...) is a validation failure, so the retries below
@@ -2054,8 +2089,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // itself, moved into their tasks, by the plan they were moved in.
         let folded_for: std::sync::Mutex<HashMap<String, Vec<String>>> =
             std::sync::Mutex::default();
+        // gap-0fb7d9: what roko changed in each plan's draft, by the plan.
+        let repairs_for: std::sync::Mutex<HashMap<String, Vec<String>>> =
+            std::sync::Mutex::default();
         let try_extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
-            let validated = extract_and_validate(raw)?;
+            let (validated, repairs) = extract_and_validate(raw)?;
             let validated = if unattended {
                 let (plan, folded) =
                     fold_answered_questions(&validated).map_err(|error| format!("{error:#}"))?;
@@ -2087,6 +2125,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(validated.clone(), accept);
+                    repairs_for
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(validated.clone(), repairs);
                     Ok(validated)
                 }
             }
@@ -2499,6 +2541,17 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         }
 
+        // gap-0fb7d9: what roko changed in the draft it writes.
+        let repairs = validated_toml.as_ref().map_or_else(
+            |_| Vec::new(),
+            |validated| {
+                repairs_for
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(validated)
+                    .unwrap_or_default()
+            },
+        );
         if let Ok(validated_toml) = validated_toml {
             report(
                 "writing",
@@ -2540,6 +2593,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     .or_else(|| extract_fenced_block(&output, "markdown"))
                     .or_else(|| extract_fenced_block(&output, "md"));
                 if let Some(plan_md) = plan_md_content {
+                    let plan_md = with_repairs(plan_md.to_string(), &repairs);
                     atomic_write_str(&plan_dir.join("plan.md"), &plan_md)
                         .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
                     println!(
@@ -2559,6 +2613,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         },
                         |tasks| overview::overview_plan_md(slug, &source.content, &tasks),
                     );
+                    let plan_md = with_repairs(plan_md, &repairs);
                     atomic_write_str(&plan_dir.join("plan.md"), &plan_md)
                         .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
                 }
@@ -2779,6 +2834,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 ..coverage.record(checks_regenerated)
             }),
             cost_usd: spend.spent_usd(),
+            repairs,
         };
 
         report("recording", (1, 1), None, planner_model.as_str());
@@ -3475,6 +3531,7 @@ mod tests {
             spec_quality: None,
             source_checks: None,
             cost_usd: 0.0,
+            repairs: Vec::new(),
         };
         let partial = GenerationOutcome {
             process_success: true,
@@ -3483,6 +3540,7 @@ mod tests {
             spec_quality: None,
             source_checks: None,
             cost_usd: 0.0,
+            repairs: Vec::new(),
         };
         let failure = GenerationOutcome {
             process_success: false,
@@ -3491,6 +3549,7 @@ mod tests {
             spec_quality: None,
             source_checks: None,
             cost_usd: 0.0,
+            repairs: Vec::new(),
         };
 
         assert!(success.fully_successful());
@@ -4256,6 +4315,65 @@ mod tests {
         }
         let note = shared_registration_note(&written).expect("a shared list");
         assert!(note.contains("`core/CMakeLists.txt` (T1, T2)"), "{note}");
+    }
+
+    /// gap-0fb7d9: what roko changed in its planner's draft reaches the
+    /// generation's outcome, which serve returns as the plan-writing result,
+    /// and the plan's `plan.md`, not only stderr: here the CMake list two
+    /// parallel module tasks add to.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repaired_draft_returns_its_repair_lines() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("core/src")).expect("core");
+        std::fs::write(
+            workdir.join("core/CMakeLists.txt"),
+            "add_library(core STATIC src/params.cpp)\n",
+        )
+        .expect("the core list");
+        std::fs::write(workdir.join("core/src/params.cpp"), "// params\n").expect("params");
+        let task = |id: &str, module: &str| {
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"{module}\"\n\
+                 description = \"Add core/src/{module}.cpp.\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/src/{module}.cpp\"]\n\
+                 depends_on = []\n\n[task.context]\nread_files = []\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 1 {module}\"\n\n"
+            )
+        };
+        let plan = format!(
+            "[meta]\nplan = \"p1\"\ntotal = 2\ndone = 0\nstatus = \"ready\"\n\n{}{}",
+            task("T1", "oscillator"),
+            task("T2", "filter")
+        );
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "p1", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("generate the plan");
+        assert_eq!(outcome.repairs.len(), 2, "{:?}", outcome.repairs);
+        assert!(
+            outcome
+                .repairs
+                .iter()
+                .all(|line| line.contains("core/CMakeLists.txt")),
+            "{:?}",
+            outcome.repairs
+        );
+        let plan_md =
+            std::fs::read_to_string(workdir.join("plans/p1/plan.md")).expect("the plan's plan.md");
+        assert!(plan_md.contains("\n## Repairs\n"), "{plan_md}");
+        for line in &outcome.repairs {
+            assert!(plan_md.contains(&format!("- {line}\n")), "{plan_md}");
+        }
     }
 
     /// bug-b59d8e: Undertow phase 2's shape. Three module tasks, two of them

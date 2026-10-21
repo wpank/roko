@@ -332,6 +332,7 @@ impl CliRuntime for RecordingRuntime {
             artifacts: vec![],
             cost_usd: 0.0125,
             source_checks: None,
+            repairs: Vec::new(),
         })
     }
 
@@ -1057,6 +1058,7 @@ impl CliRuntime for CapRuntime {
             artifacts: Vec::new(),
             cost_usd: 0.0,
             source_checks: None,
+            repairs: Vec::new(),
         })
     }
 
@@ -1171,6 +1173,7 @@ impl CliRuntime for NoPlanRuntime {
             artifacts: Vec::new(),
             cost_usd: 0.0,
             source_checks: None,
+            repairs: Vec::new(),
         })
     }
 }
@@ -3301,6 +3304,7 @@ impl CliRuntime for StagedRuntime {
             artifacts: Vec::new(),
             cost_usd: 0.0125,
             source_checks: None,
+            repairs: vec!["T1: added `core/CMakeLists.txt` to its files".to_string()],
         })
     }
 
@@ -3412,6 +3416,12 @@ async fn plan_generation_status_reports_its_stage() {
     let done = wait_for(|status| status["status"] != "running").await;
     assert_eq!(done["status"], "completed", "{done}");
     assert_eq!(done["result"]["cost_usd"], 0.0125, "{done}");
+    // gap-0fb7d9: and what roko changed in its planner's draft.
+    assert_eq!(
+        done["result"]["repairs"],
+        json!(["T1: added `core/CMakeLists.txt` to its files"]),
+        "{done}"
+    );
     assert_eq!(done["progress"]["stage"], "recording", "{done}");
     assert!(done.get("elapsed_secs").is_none(), "{done}");
 }

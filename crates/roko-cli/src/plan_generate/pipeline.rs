@@ -6429,10 +6429,10 @@ rung = "docs"
             .roles
             .push(roko_core::config::routing::LadderRoleConfig {
                 role: "scribe".to_string(),
-                rungs: Some(vec![roko_core::config::routing::LadderRung {
-                    name: "docs".to_string(),
-                    model: "gpt-4o-mini".to_string(),
-                }]),
+                rungs: Some(vec![roko_core::config::routing::LadderRung::new(
+                    "docs",
+                    "gpt-4o-mini",
+                )]),
                 ..Default::default()
             });
         let result =

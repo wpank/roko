@@ -275,7 +275,7 @@ impl GraphTaskDispatcher {
         };
         let role = task.role.as_deref().unwrap_or("implementer");
         let (record, last_chance) = match plan.source {
-            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => {
+            ModelChoiceSource::Ladder { rung, .. } | ModelChoiceSource::SelfModel { rung } => {
                 // A `rung` hint that names one of the task's rungs replaced
                 // its start rung (gap-dbf2a6).
                 let hinted = task
@@ -564,7 +564,7 @@ impl GraphTaskDispatcher {
         tier_secs: u64,
     ) -> Option<RungAllowance> {
         let rung = match plan.source {
-            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
+            ModelChoiceSource::Ladder { rung, .. } | ModelChoiceSource::SelfModel { rung } => rung,
             _ => return None,
         };
         let decision = attempt.harness_decision();
@@ -1052,10 +1052,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
 "#;
 
     fn rung(name: &str, model: &str) -> LadderRung {
-        LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        }
+        LadderRung::new(name, model)
     }
 
     /// Batch fixture with a two-rung ladder that starts mechanical tasks on

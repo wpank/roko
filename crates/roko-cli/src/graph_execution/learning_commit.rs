@@ -6,10 +6,13 @@
 //! to its guard ([`ModelCallJournal::save_guarded`], 8136) and the run's
 //! knowledge batch to the knowledge store's ([`propose_batch`], 8137),
 //! whatever the run's outcome: a failed or cancelled run's learning is the
-//! one that most needs the check. Each proposal writes a `commits.jsonl`
-//! row, and a rollback, or in `observe` a would-be rollback, a notice on the
-//! run's StateHub. `off` saves the router unchecked, as before, and the run
-//! tags no knowledge batch. A frozen run saves and proposes nothing.
+//! one that most needs the check. A run that taught the router nothing
+//! proposes no router version and saves it unchecked (gap-51d2ca), which
+//! merges nothing into its file. Each proposal writes a
+//! `commits.jsonl` row, and a rollback, or in `observe` a would-be rollback,
+//! a notice on the run's StateHub. `off` saves the router unchecked, as
+//! before, and the run tags no knowledge batch. A frozen run saves and
+//! proposes nothing.
 //!
 //! At a run's start, [`recover_orphaned_knowledge`] proposes the knowledge
 //! batches earlier runs left unproposed, as a run that crashed before its end
@@ -84,7 +87,7 @@ pub fn commit_run_learning(run: &RunLearning<'_>) -> RunCommits {
 }
 
 /// Save the router through its journal: under guard in `mode`, or unchecked
-/// without one.
+/// without one or when the run taught it nothing (gap-51d2ca).
 fn save_router(
     run: &RunLearning<'_>,
     router: &CascadeRouter,
@@ -98,7 +101,19 @@ fn save_router(
             "failed to persist cascade router state (non-fatal)"
         );
     };
-    let Some(mode) = mode else {
+    // `off` saves unchecked. So does a run that taught the router nothing, as
+    // a run whose rungs each run one model with certainty does: it proposes
+    // no version, so the commit log records only real changes (gap-51d2ca).
+    // Its save merges nothing into the file, and still writes the file when
+    // it is missing. What other processes merged into the file waits for the
+    // next run that proposes a version.
+    let learned = router.learned_since_save();
+    let Some(mode) = mode.filter(|_| learned) else {
+        if mode.is_some() {
+            tracing::info!(
+                "the run taught the cascade router nothing; no router version is proposed"
+            );
+        }
         if let Err(error) = journal.save(router) {
             warn(&error);
         }
@@ -403,5 +418,57 @@ mod tests {
         }
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].starts_with("knowledge: "), "{notices:?}");
+    }
+
+    /// gap-51d2ca: a run that taught the router nothing, as every
+    /// ladder-routed run did while each rung ran one model, proposes no
+    /// router version, so the commit log records only real changes. A run
+    /// that taught it something proposes one; the next run, and one that
+    /// loads the saved router, propose none until the router learns again.
+    #[test]
+    fn a_run_that_taught_the_router_nothing_proposes_no_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let layout = RokoLayout::for_project(workdir);
+        let config = RokoConfig::default();
+        assert_eq!(
+            guard_mode(&config),
+            Some(GuardMode::Observe),
+            "decision 8103's default"
+        );
+        let models = || vec!["model-a".to_string(), "model-b".to_string()];
+        let journal = ModelCallJournal::for_snapshot(&layout.cascade_router_path());
+        let commit = |router: &CascadeRouter| {
+            let run = RunLearning {
+                workdir,
+                config: &config,
+                batch: None,
+                router: Some((router, &journal)),
+                run_ids: &[],
+                notices: None,
+            };
+            commit_run_learning(&run).router
+        };
+        let versions = || {
+            let guarded = GuardedStore::open(&layout.learn_dir(), ROUTER_STORE, GuardMode::Observe)
+                .expect("the router's guard");
+            guarded.rows().expect("its rows").len()
+        };
+
+        let router = CascadeRouter::new(models());
+        for _ in 0..3 {
+            assert_eq!(commit(&router), None, "nothing learned");
+        }
+        assert_eq!(versions(), 0);
+        // The run still writes the router's file, as every run did.
+        assert!(journal.snapshot_path().is_file(), "the router's snapshot");
+
+        router.record_observation(&RoutingContext::default(), "model-a", 1.0, true);
+        assert_eq!(commit(&router), Some(CommitDecision::Committed));
+        assert_eq!(versions(), 1);
+        assert_eq!(commit(&router), None, "nothing learned since");
+        let loaded = CascadeRouter::load_or_new(journal.snapshot_path(), models());
+        assert_eq!(commit(&loaded), None, "a loaded router learned nothing yet");
+        assert_eq!(versions(), 1);
     }
 }

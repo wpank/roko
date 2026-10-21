@@ -2,7 +2,7 @@
 id = "gap-54089d"
 kind = "gap"
 title = "The best-try ratchet ranks tries only by verify steps passed, so when no try passes the first (multi-check) step every try ties and the latest wins: phase 3's 131-of-132 tree was overwritten by 77/149 and 0/2"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "7d785e01f"
 source = "round-v7-hermes-pilot#M-p3-resume-dfba45e8"
 discovered_from = "agent:hermes-pilot (round v7 phase 3 runs bdc4461e and dfba45e8)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/best_try.rs"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-62ae1e"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn tries_that_pass_the_same_steps_rank_by_the_failing_steps_passed_cases' crates/roko-cli/src && cargo test -p roko-cli --lib -- tries_that_pass_the_same_steps_rank_by_the_failing_steps_passed_cases"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T05:47:19Z"
+commit = "7d785e01f"
+via = "manual"
+size = "S"
+forced = false
+evidence = "7d785e01f: each failed try keeps, beside the steps it passed, how far it got in the first verify step it failed, by that step's own runner (retry_feedback::StepProgress: the step's label, its passed assertions and test cases): doctest and Catch2 summary lines (test cases: N | P passed, assertions: N | P passed) and ctest's (X% tests passed, F tests failed out of N) are read in best_try.rs, cargo/pytest/Jest/go test through roko_gate::parse_test_counts, summed over a step's runs. BestTry::behind ranks: fewer steps, or as many and fewer assertions, then fewer cases, in the same first failing step; ties go to the latest; a try behind the best one gets the best try's files back before the next try, whose feedback says how far each got (\"in `step`, try 1 passed 1 test case and 131 assertions, and this try 0 test cases and 77 assertions\"). The progress is persisted with the best try (serde default, old retry-feedback.json files load); a resumed task starts from its best try when it got anywhere (BestTry::scored: a step passed, or a case or assertion counted) and otherwise continues in place from the last try's tree; gap-586507's clean-to-base start is gone (the lead's decision). Tests, red at 07:09 then green: tries_that_pass_the_same_steps_rank_by_the_failing_steps_passed_cases (one doctest step no try passes: try 1 131/132, try 2 77/149; red: try 3 started from 'bad'; green: from 'good', c.txt gone, prompt told), a_resumed_task_starts_from_its_furthest_try_in_a_failing_step (red: started clean and failed), a_resumed_task_that_got_nowhere_continues_in_place (renamed from ..._starts_clean; red 'missing', green 'X'), a_failing_steps_runner_says_how_far_it_got (doctest, Catch2, cargo over two binaries, pytest, ctest, none), a_try_is_behind_one_that_got_further; the gap-fefdf5/586507 tests and retry_feedback:: pass (15 of 15). Checks: roko-cli lib 3966 passed, 1 failed: the known load flake plan_check_publishes_start_heartbeat_and_finish (bug-e362a1) at load average 160; main's own binary at 3c25a5532 fails it the same way under this load (and passes it at lower load), and the change does not touch plan_verify; clippy -D warnings (roko-cli) clean; nightly rustfmt clean."
 +++
 
 ## Problem

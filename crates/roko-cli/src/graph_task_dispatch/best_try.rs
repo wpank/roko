@@ -4,26 +4,33 @@
 //! broke a verify step an earlier try had passed, the next try would start
 //! from the broken tree, and each try is a new agent session, so the passing
 //! code would be lost. So each failed try's tree is kept with the steps it
-//! passed. When a try passes fewer steps than the task's best try, the best
-//! try's files are put back before the next try, whose feedback says so and
-//! shows what the failed try had changed. A try that passes as many steps or
-//! more continues in place, as before (ties go to the latest), and so does a
-//! try that passed nothing with no better try before it.
+//! passed, and with how far it got in the first step it failed, by that
+//! step's own runner: the assertions, then the test cases, its summary lines
+//! count as passed (gap-54089d). When a try got less far than the task's best
+//! try, fewer steps or as many and less far in the same failing step, the
+//! best try's files are put back before the next try, whose feedback says so
+//! and shows what the failed try had changed. Any other try continues in
+//! place, as before (ties go to the latest), and so does a try that got
+//! nowhere with no better try before it.
 //!
 //! The best try is kept beside the plan's Graph checkpoint as well
 //! ([`retry_feedback::BestTry`]). A resumed run re-attaches the checkout an
 //! earlier process kept, which holds the last try's tree, so a task's first
-//! try in the new process starts from its best try's tree when that try passed
-//! a step, and clean from the checkout's base otherwise (gap-586507).
+//! try in the new process starts from its best try's tree when that try got
+//! anywhere (gap-586507), and otherwise continues in place, as a retry in one
+//! process does (gap-54089d).
 //!
 //! Only a task's own checkout, a per-task worktree, is ever restored: in a
 //! shared working tree, sibling tasks' edits would be undone with it.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
+use roko_gate::BuildSystem;
+
 use super::diff_snapshot::{git_bytes, git_line, is_roko_state, parse_raw_diff, snapshot_tree};
-use super::retry_feedback::BestTry;
+use super::retry_feedback::{BestTry, StepProgress};
 use super::*;
 
 /// Most characters of the failed try's patch its feedback shows.
@@ -41,10 +48,10 @@ pub(super) struct BestTries {
 
 #[derive(Debug, Default)]
 struct TaskTries {
-    /// The try that passed the most verify steps, the latest of a tie.
+    /// The try that got furthest ([`BestTry::behind`]), the latest of a tie.
     best: Option<BestTry>,
-    /// The best try, whose files the next try starts from, once a try passed
-    /// fewer steps than it.
+    /// The best try, whose files the next try starts from, once a try got
+    /// less far than it.
     restore: Option<BestTry>,
 }
 
@@ -57,10 +64,12 @@ impl BestTries {
 
 impl GraphTaskDispatcher {
     /// Keep the failed try `attempt` of `task`, which ran `steps` in its own
-    /// checkout `workdir` with `step_outcomes`. When it passed fewer steps
-    /// than the task's best try in that checkout, the next try starts from
+    /// checkout `workdir` with `step_outcomes`, and got as far as `progress`
+    /// in the first step it failed. When it got less far than the task's best
+    /// try in that checkout ([`BestTry::behind`]), the next try starts from
     /// the best try's files ([`Self::restore_best_try`]), and this returns
     /// the note its feedback carries, with this try's patch against them.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn settle_best_try(
         &self,
         spec: &TaskExecutionSpec,
@@ -69,6 +78,7 @@ impl GraphTaskDispatcher {
         workdir: &Path,
         steps: &[(String, crate::task_parser::VerifyStep)],
         step_outcomes: &[(String, bool)],
+        progress: Option<StepProgress>,
     ) -> Option<String> {
         // Only a task's own checkout is kept, and ever restored.
         self.workspace_provider.as_ref()?;
@@ -84,6 +94,7 @@ impl GraphTaskDispatcher {
             tree,
             workdir: workdir.to_path_buf(),
             passed,
+            progress,
         };
         let better = {
             let mut tasks = self.best_tries.tasks.lock();
@@ -94,9 +105,7 @@ impl GraphTaskDispatcher {
             let better = tries
                 .best
                 .as_ref()
-                .filter(|best| {
-                    best.workdir == this.workdir && this.passed.len() < best.passed.len()
-                })
+                .filter(|best| best.workdir == this.workdir && this.behind(best))
                 .cloned();
             if better.is_none() {
                 tries.best = Some(this.clone());
@@ -118,17 +127,19 @@ impl GraphTaskDispatcher {
             best = best.attempt,
             passed = this.passed.len(),
             best_passed = best.passed.len(),
-            "the try passed fewer verify steps than the task's best: the next try starts from \
-             the best try's files"
+            progress = ?this.progress,
+            best_progress = ?best.progress,
+            "the try got less far than the task's best: the next try starts from the best \
+             try's files"
         );
         Some(progress_note(&best, &this, steps.len(), patch.as_deref()))
     }
 
     /// Before a try of `task` in `workdir`, put back the task's best try's
-    /// files when its last try passed fewer steps ([`Self::settle_best_try`]).
-    /// On the task's first try in a resumed run's process, whose kept
-    /// checkout holds the last try's tree, start from the best try's files,
-    /// or clean ([`Self::resumed_start`], gap-586507).
+    /// files when its last try got less far ([`Self::settle_best_try`]). On
+    /// the task's first try in a resumed run's process, whose kept checkout
+    /// holds the last try's tree, start from the best try's files when it got
+    /// anywhere ([`Self::resumed_start`], gap-586507).
     pub(super) async fn restore_best_try(
         &self,
         spec: &TaskExecutionSpec,
@@ -182,9 +193,10 @@ impl GraphTaskDispatcher {
     /// Where the first try in this process of `task` starts, when earlier
     /// processes of the run left it failed tries (gap-586507). Its kept
     /// checkout `workdir` holds the last try's tree, so it starts from its
-    /// best try's tree when that try passed a step in this checkout, and
-    /// clean, from the checkout's base, otherwise: never from the last try's
-    /// tree. The tree and what it is; `None` for a task no earlier process
+    /// best try's tree when that try got anywhere in this checkout
+    /// ([`BestTry::scored`]). The tree and what it is; `None` to continue in
+    /// place, from the last try's tree, as a retry in one process does, when
+    /// no try got anywhere (gap-54089d), and for a task no earlier process
     /// tried.
     async fn resumed_start(
         &self,
@@ -196,47 +208,165 @@ impl GraphTaskDispatcher {
         if book.earlier_attempts(&spec.plan_id, &task.id) == 0 {
             return None;
         }
-        let kept = book
+        let best = book
             .best_try(&spec.plan_id, &task.id)
-            .filter(|best| !best.passed.is_empty() && best.workdir == workdir);
-        if let Some(best) = kept {
-            let object = format!("{}^{{tree}}", best.tree);
-            let args = ["rev-parse", "--verify", "--quiet", object.as_str()];
-            if git_line(workdir, &args, None).await.is_some() {
-                let start = (best.tree.clone(), format!("try {}'s files", best.attempt));
-                // This process knows it as the task's best try from here on.
-                let key = format!("{}/{}", spec.plan_id, task.id);
-                if let Some(tries) = self.best_tries.tasks.lock().get_mut(&key) {
-                    tries.best = Some(best);
-                }
-                return Some(start);
-            }
+            .filter(|best| best.scored() && best.workdir == workdir)?;
+        let object = format!("{}^{{tree}}", best.tree);
+        let args = ["rev-parse", "--verify", "--quiet", object.as_str()];
+        git_line(workdir, &args, None).await?;
+        let start = (best.tree.clone(), format!("try {}'s files", best.attempt));
+        // This process knows it as the task's best try from here on.
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        if let Some(tries) = self.best_tries.tasks.lock().get_mut(&key) {
+            tries.best = Some(best);
         }
-        let args = ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"];
-        let base = git_line(workdir, &args, None).await?;
-        Some((base, "the checkout's base".to_string()))
+        Some(start)
     }
 }
 
-/// The feedback note of a try that passed fewer of the `total` verify steps
-/// than `best`: what passed, that its files come back, and `patch`, what
-/// the failed try changed from them.
+impl BestTry {
+    /// Whether this try got less far than `best` (gap-54089d): it passed
+    /// fewer verify steps, or as many and, in the same first failing step,
+    /// fewer assertions, or as many and fewer test cases. Any other two tries
+    /// tie, and a tie goes to the latest.
+    fn behind(&self, best: &Self) -> bool {
+        match self.passed.len().cmp(&best.passed.len()) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => match (&self.progress, &best.progress) {
+                (Some(this), Some(best)) if this.step == best.step => {
+                    (this.assertions, this.cases) < (best.assertions, best.cases)
+                }
+                _ => false,
+            },
+        }
+    }
+
+    /// Whether this try got anywhere: it passed a verify step, or the runner
+    /// of the step it failed counted a test case or assertion as passed.
+    fn scored(&self) -> bool {
+        !self.passed.is_empty()
+            || self
+                .progress
+                .as_ref()
+                .is_some_and(|progress| progress.cases > 0 || progress.assertions > 0)
+    }
+}
+
+impl StepProgress {
+    /// How far a try got in `step`, the first verify step it failed, whose
+    /// runner printed `output`: the test cases and assertions its summary
+    /// lines count as passed (gap-54089d). It reads doctest's and Catch2's
+    /// `test cases: N | P passed | …` and `assertions: N | P passed | …`,
+    /// ctest's `X% tests passed, F tests failed out of N`, and the cargo,
+    /// pytest, Jest and go test summaries roko's test gate reads
+    /// ([`roko_gate::parse_test_counts`]), each summed over the runs the step
+    /// makes. What no line counts is 0.
+    pub(super) fn of(step: &str, output: &str) -> Self {
+        let mut cases = 0;
+        let mut assertions = 0;
+        let mut counted = false;
+        for line in output.lines() {
+            if let Some(passed) = bar_count(line, "test cases:") {
+                cases += passed;
+            } else if let Some(passed) = bar_count(line, "assertions:") {
+                assertions += passed;
+            } else if let Some(passed) = ctest_passed(line) {
+                cases += passed;
+            } else {
+                continue;
+            }
+            counted = true;
+        }
+        if !counted {
+            cases = [BuildSystem::Python, BuildSystem::Npm, BuildSystem::Go]
+                .into_iter()
+                .find_map(|build| roko_gate::parse_test_counts(output, build))
+                .map_or(0, |count| u64::from(count.passed));
+        }
+        Self {
+            step: step.to_string(),
+            cases,
+            assertions,
+        }
+    }
+}
+
+/// `P` of a doctest or Catch2 summary line `<label> N | P passed | …`.
+fn bar_count(line: &str, label: &str) -> Option<u64> {
+    let (_, counts) = line.split_once(label)?;
+    let mut fields = counts.split('|').map(str::trim);
+    fields.next()?.parse::<u64>().ok()?;
+    fields.next()?.strip_suffix("passed")?.trim().parse().ok()
+}
+
+/// The tests passed of ctest's summary line `80% tests passed, 2 tests
+/// failed out of 10`.
+fn ctest_passed(line: &str) -> Option<u64> {
+    let (_, counts) = line.split_once("% tests passed, ")?;
+    let (failed, total) = counts.split_once(" failed out of ")?;
+    let failed: u64 = failed.split_whitespace().next()?.parse().ok()?;
+    let total: u64 = total.split_whitespace().next()?.parse().ok()?;
+    Some(total.saturating_sub(failed))
+}
+
+/// What `progress` counted as passed, in words: `1 test case and 131
+/// assertions`, or `12 test cases`.
+fn reached(progress: &StepProgress) -> String {
+    let count = |n: u64, noun: &str| {
+        if n == 1 {
+            format!("1 {noun}")
+        } else {
+            format!("{n} {noun}s")
+        }
+    };
+    if progress.assertions > 0 {
+        format!(
+            "{} and {}",
+            count(progress.cases, "test case"),
+            count(progress.assertions, "assertion")
+        )
+    } else {
+        count(progress.cases, "test case")
+    }
+}
+
+/// The feedback note of a try that got less far than `best`, of the
+/// `total` verify steps: how far each got, that `best`'s files come back,
+/// and `patch`, what the failed try changed from them.
 fn progress_note(best: &BestTry, this: &BestTry, total: usize, patch: Option<&str>) -> String {
-    let passed = best
-        .passed
-        .iter()
-        .map(|label| format!("`{label}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut note = format!(
-        "Kept by roko: try {} passed {} of {total} verify steps ({passed}), and this try passed {}. \
-         Before your next try, roko puts try {}'s files back: start from its code, keep those \
-         steps passing, and fix what still fails.",
-        best.attempt,
-        best.passed.len(),
-        this.passed.len(),
-        best.attempt,
-    );
+    let within_step = best
+        .progress
+        .as_ref()
+        .zip(this.progress.as_ref())
+        .filter(|_| this.passed.len() == best.passed.len());
+    let mut note = if let Some((got, this_got)) = within_step {
+        format!(
+            "Kept by roko: in `{}`, try {} passed {}, and this try {}. Before your next try, \
+             roko puts try {}'s files back: start from its code, and fix what still fails.",
+            got.step,
+            best.attempt,
+            reached(got),
+            reached(this_got),
+            best.attempt,
+        )
+    } else {
+        let passed = best
+            .passed
+            .iter()
+            .map(|label| format!("`{label}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Kept by roko: try {} passed {} of {total} verify steps ({passed}), and this try \
+             passed {}. Before your next try, roko puts try {}'s files back: start from its \
+             code, keep those steps passing, and fix what still fails.",
+            best.attempt,
+            best.passed.len(),
+            this.passed.len(),
+            best.attempt,
+        )
+    };
     if let Some(patch) = patch.filter(|patch| !patch.trim().is_empty()) {
         let shown: String = patch.chars().take(PATCH_CHARS).collect();
         let cut = if shown.len() < patch.len() {
@@ -386,6 +516,47 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"edited"}}'
 printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
 
+    /// A fake Claude CLI for a task with one verify step that no try passes
+    /// ([`DOCTEST_STEP`]): try 1 gets 131 of its 132 assertions passing, try 2
+    /// regresses to 77 of 149 and leaves c.txt behind, and try 3 notes what
+    /// its checkout holds and whether its prompt says roko put try 1's files
+    /// back, then makes the step pass.
+    const SCORE_SCRIPT: &str = r#"#!/bin/sh
+set -eu
+prompt=$(cat)
+case "$prompt $*" in
+  *BEST-TRY-TASK*) ;;
+  *)
+    printf '%s\n' '{"type":"content_block_delta","delta":{"text":"a helper answer"}}'
+    printf '%s\n' '{"type":"result","session_id":"sess-h","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":10}}'
+    exit 0 ;;
+esac
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/tries" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/tries"
+case "$n" in
+  1) printf 'good\n' > a.txt ;;
+  2) printf 'bad\n' > a.txt; printf 'half\n' > c.txt ;;
+  *)
+    cat a.txt > "$dir/seen-a"
+    if [ -f c.txt ]; then echo present > "$dir/seen-c"; else echo absent > "$dir/seen-c"; fi
+    case "$prompt $*" in *"Kept by roko"*"try 1"*) echo told > "$dir/told" ;; esac
+    printf 'done\n' > a.txt ;;
+esac
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"edited"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// One verify step, two doctest cases in it, that passes once a.txt holds
+    /// `done`: with `good` doctest counts 1 of 2 cases and 131 of 132
+    /// assertions passing, with `bad` 0 of 2 and 77 of 149.
+    const DOCTEST_STEP: &str = "case \"$(cat a.txt 2>/dev/null)\" in \
+        good) printf '[doctest] test cases: 2 | 1 passed | 1 failed | 0 skipped\\n[doctest] \
+        assertions: 132 | 131 passed | 1 failed |\\n'; exit 1 ;; \
+        bad) printf '[doctest] test cases: 2 | 0 passed | 2 failed | 0 skipped\\n[doctest] \
+        assertions: 149 | 77 passed | 72 failed |\\n'; exit 1 ;; \
+        done) exit 0 ;; *) exit 1 ;; esac";
+
     /// A repository whose `main` has one commit, and the root of its attempt
     /// worktrees, outside it.
     fn repo_with_worktrees() -> (tempfile::TempDir, tempfile::TempDir) {
@@ -420,6 +591,22 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         script: &str,
         resumable: bool,
     ) -> (Arc<GraphTaskDispatcher>, TaskExecutionSpec) {
+        let verify = vec![
+            verify_step("test", "grep -qx A a.txt"),
+            verify_step("test", "grep -qx B b.txt"),
+            verify_step("test", "grep -qx C c.txt"),
+        ];
+        dispatcher_with(repo, worktrees, script, resumable, verify).await
+    }
+
+    /// [`dispatcher_in`], with `verify` as the task's verify steps.
+    async fn dispatcher_with(
+        repo: &tempfile::TempDir,
+        worktrees: &Path,
+        script: &str,
+        resumable: bool,
+        verify: Vec<crate::task_parser::VerifyStep>,
+    ) -> (Arc<GraphTaskDispatcher>, TaskExecutionSpec) {
         let provider = Arc::new(WorktreeExecutionWorkspaceProvider::new(
             WorktreeManager::new(WorktreeConfig {
                 repo_root: repo.path().to_path_buf(),
@@ -444,11 +631,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         task.description = Some(format!(
             "{MARKER}: make a.txt, b.txt and c.txt hold A, B and C."
         ));
-        task.verify = vec![
-            verify_step("test", "grep -qx A a.txt"),
-            verify_step("test", "grep -qx B b.txt"),
-            verify_step("test", "grep -qx C c.txt"),
-        ];
+        task.verify = verify;
         let mut spec = make_spec(&task);
         spec.max_retries = 2;
         if resumable {
@@ -491,6 +674,63 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             .unwrap_or_default()
             .trim()
             .to_string()
+    }
+
+    /// gap-54089d: a failing step's runner says how far it got, in each
+    /// runner's own words, summed over the runs the step makes.
+    #[test]
+    fn a_failing_steps_runner_says_how_far_it_got() {
+        let counts = |output: &str| {
+            let progress = StepProgress::of("verify[0:test]", output);
+            (progress.cases, progress.assertions)
+        };
+        let doctest = "[doctest] test cases:   2 |   1 passed |   1 failed |   0 skipped\n\
+                       [doctest] assertions: 132 | 131 passed |   1 failed |\n\
+                       [doctest] Status: FAILURE!";
+        assert_eq!(counts(doctest), (1, 131));
+        let catch2 = "test cases:  3 |  2 passed | 1 failed\nassertions: 40 | 38 passed | 2 failed";
+        assert_eq!(counts(catch2), (2, 38));
+        let cargo = "test result: ok. 5 passed; 0 failed; 0 ignored\n\
+                     test result: FAILED. 7 passed; 1 failed; 0 ignored";
+        assert_eq!(counts(cargo), (12, 0));
+        assert_eq!(counts("===== 1 failed, 12 passed in 0.52s ====="), (12, 0));
+        assert_eq!(counts("80% tests passed, 2 tests failed out of 10"), (8, 0));
+        assert_eq!(counts("error: could not compile `undertow`"), (0, 0));
+    }
+
+    /// gap-54089d: tries rank by steps passed, then, in the same first
+    /// failing step, by assertions and then test cases passed; anything else
+    /// ties, and a tie goes to the latest.
+    #[test]
+    fn a_try_is_behind_one_that_got_further() {
+        let try_at = |passed: &[&str], step: &str, cases: u64, assertions: u64| BestTry {
+            attempt: 1,
+            tree: "tree".to_string(),
+            workdir: std::path::PathBuf::from("/checkout"),
+            passed: passed.iter().map(ToString::to_string).collect(),
+            progress: Some(StepProgress {
+                step: step.to_string(),
+                cases,
+                assertions,
+            }),
+        };
+        let near = try_at(&[], "verify[0:test]", 1, 131);
+        let regressed = try_at(&[], "verify[0:test]", 0, 77);
+        assert!(regressed.behind(&near));
+        assert!(!near.behind(&regressed));
+        assert!(!near.behind(&near.clone()), "a tie goes to the latest");
+        let one_step = try_at(&["verify[0:test]"], "verify[1:test]", 0, 0);
+        assert!(near.behind(&one_step), "steps come first");
+        let more_cases = try_at(&[], "verify[0:test]", 2, 40);
+        assert!(more_cases.behind(&near), "assertions come before cases");
+        assert!(
+            try_at(&[], "verify[0:test]", 0, 131).behind(&near),
+            "then cases"
+        );
+        let elsewhere = try_at(&[], "verify[1:test]", 0, 0);
+        assert!(!elsewhere.behind(&near), "another failing step ties");
+        assert!(near.scored() && one_step.scored());
+        assert!(!try_at(&[], "verify[0:test]", 0, 0).scored());
     }
 
     /// gap-fefdf5, the shape of Undertow phase 2's T3: try 1 passes 2 of 3
@@ -595,11 +835,12 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         assert_eq!(note(&repo, "seen-c"), "absent", "try 2's c.txt is gone");
     }
 
-    /// gap-586507: when no try of a resumed task passed a step, its first try
-    /// in the new process starts clean, from its checkout's base, never from
-    /// the last try's tree.
+    /// gap-54089d: when no try of a resumed task got anywhere, no step passed
+    /// and no runner counted a pass, its first try in the new process
+    /// continues in place, from the last try's tree, as a retry in one process
+    /// does. Starting clean threw away phase 3's near-done sequencer.
     #[tokio::test]
-    async fn a_resumed_task_that_passed_nothing_starts_clean() {
+    async fn a_resumed_task_that_got_nowhere_continues_in_place() {
         let (repo, worktrees) = repo_with_worktrees();
         let ctx = CellContext::new().with_run_id(RUN.to_string());
         {
@@ -617,8 +858,82 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             .expect("the resumed try passes");
         assert_eq!(
             note(&repo, "seen-a"),
-            "missing",
-            "the resumed try starts clean"
+            "X",
+            "the resumed try continues from try 1's work"
         );
+    }
+
+    /// gap-54089d, the shape of Undertow phase 3's T1: no try passes the
+    /// task's one verify step, so every try ties at 0 steps. Try 1 gets 131
+    /// of the step's 132 assertions passing, and try 2 regresses to 77 of
+    /// 149. Ranked by the failing step's own counts, try 1 is the best: roko
+    /// puts its files back before try 3, whose prompt says so, and try 3
+    /// finishes from them.
+    #[tokio::test]
+    async fn tries_that_pass_the_same_steps_rank_by_the_failing_steps_passed_cases() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let verify = vec![verify_step("test", DOCTEST_STEP)];
+        let (dispatcher, spec) =
+            dispatcher_with(&repo, worktrees.path(), SCORE_SCRIPT, false, verify).await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("try 1 gets 131 of 132 assertions");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("try 2 regresses to 77 of 149");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("try 3 passes from try 1's files");
+
+        assert_eq!(
+            note(&repo, "seen-a"),
+            "good",
+            "try 3 starts from try 1's a.txt"
+        );
+        assert_eq!(note(&repo, "seen-c"), "absent", "try 2's c.txt is gone");
+        assert_eq!(
+            note(&repo, "told"),
+            "told",
+            "try 3's prompt says roko restored try 1"
+        );
+    }
+
+    /// gap-54089d: a resumed task whose tries all failed its one step starts
+    /// from the try that got furthest in it, by the step's own counts, not
+    /// from the last try's tree its kept checkout holds.
+    #[tokio::test]
+    async fn a_resumed_task_starts_from_its_furthest_try_in_a_failing_step() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let verify = || vec![verify_step("test", DOCTEST_STEP)];
+        {
+            let (dispatcher, spec) =
+                dispatcher_with(&repo, worktrees.path(), SCORE_SCRIPT, true, verify()).await;
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("try 1 gets 131 of 132 assertions");
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("try 2 regresses to 77 of 149");
+        }
+        let (dispatcher, spec) =
+            dispatcher_with(&repo, worktrees.path(), SCORE_SCRIPT, true, verify()).await;
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the resumed try passes from try 1's files");
+        assert_eq!(
+            note(&repo, "seen-a"),
+            "good",
+            "the resumed try starts from try 1's a.txt"
+        );
+        assert_eq!(note(&repo, "seen-c"), "absent", "try 2's c.txt is gone");
     }
 }

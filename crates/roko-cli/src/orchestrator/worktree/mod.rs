@@ -545,6 +545,11 @@ pub struct WorktreeManager {
     pub(super) operations: Arc<AsyncMutex<OperationState>>,
     /// Canonical executable selected once and shared by probes and mutations.
     pub(super) resolved_git_executable: Arc<Mutex<Option<PathBuf>>>,
+    /// The operator's `core.excludesFile`, resolved once with their own
+    /// config and shared by the managed commands that stage files
+    /// (bug-346498). Outer `None`: not yet resolved. `Some(None)`: resolved,
+    /// and the operator set none.
+    pub(super) resolved_excludes_file: Arc<Mutex<Option<Option<PathBuf>>>>,
     #[cfg(test)]
     pub(super) git_binary: Arc<Mutex<PathBuf>>,
     #[cfg(test)]
@@ -573,6 +578,7 @@ impl WorktreeManager {
             attempt_checkouts: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
+            resolved_excludes_file: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             git_binary: Arc::new(Mutex::new(PathBuf::from("git"))),
             #[cfg(test)]
@@ -619,6 +625,7 @@ impl WorktreeManager {
             attempt_checkouts: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
+            resolved_excludes_file: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             git_binary: Arc::new(Mutex::new(PathBuf::from("git"))),
             #[cfg(test)]
@@ -1768,6 +1775,7 @@ impl WorktreeManager {
     #[cfg(test)]
     pub(super) fn set_test_git_probe_environment(&self, environment: Vec<(OsString, OsString)>) {
         *self.git_probe_environment.lock() = environment;
+        *self.resolved_excludes_file.lock() = None;
     }
 
     #[cfg(test)]

@@ -368,7 +368,13 @@ impl WorktreeManager {
                 excludes.push(format!(":(exclude){dir}"));
             }
         }
-        let mut add = vec!["add", "--all", "--", "."];
+        // Name the operator's own `core.excludesFile` explicitly: the
+        // managed environment's `GIT_CONFIG_GLOBAL=/dev/null` hides it from
+        // `git add` otherwise, so a file the operator ignores globally would
+        // be staged and committed (bug-346498).
+        let excludes_file_args = self.operator_excludes_file_args().await?;
+        let mut add: Vec<&str> = excludes_file_args.iter().map(String::as_str).collect();
+        add.extend(["add", "--all", "--", "."]);
         add.extend(excludes.iter().map(String::as_str));
         ensure_git_success(self.mutation_at(checkout, &add, lifecycle).await?)?;
         let left_out = self

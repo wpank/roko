@@ -190,6 +190,9 @@ pub struct PromptContext {
     /// Whether the θ the attempt runs keeps the knowledge section
     /// ([`DispatchContext::knowledge_section`], M1's B4).
     pub knowledge_section: bool,
+    /// The plan's `[meta] sources` ([`DispatchContext::source_documents`]):
+    /// the declared files show them first and cut them last (bug-a8a787).
+    pub source_documents: Vec<String>,
 }
 
 impl PromptContext {
@@ -308,6 +311,7 @@ impl PromptContext {
             plan_brief,
             arm_set: ctx.arm_set.clone(),
             knowledge_section: ctx.knowledge_section,
+            source_documents: ctx.source_documents.clone(),
         }
     }
 
@@ -1660,22 +1664,11 @@ fn parse_role_label(role: &str) -> AgentRole {
 /// feedback, dependency outputs, workspace map, tasks toml, workspace
 /// context, and C-factor context into a single markdown block. This
 /// block is passed to [`TaskContext::with_context`] so the canonical 9-layer
-/// builder includes it in the "Relevant Context" section.
-fn build_runner_context(
-    task: &TaskDef,
-    ctx: &PromptContext,
-) -> Result<String, RunnerDispatchError> {
+/// builder includes it in the "Relevant Context" section. The declared
+/// files' contents are not in it: they have a section of their own
+/// ([`declared_files`], bug-a8a787), so a long read never cuts these parts.
+fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
     let mut parts: Vec<String> = Vec::new();
-
-    let declared_context = crate::plan_policy::render_declared_context(
-        task,
-        &ctx.workdir,
-        crate::plan_policy::PlanExecutionPolicy::for_environment(),
-    )
-    .map_err(|reason| RunnerDispatchError::PreValidationFailed { reason })?;
-    if !declared_context.is_empty() {
-        parts.push(declared_context);
-    }
 
     if !ctx.files_in_scope.is_empty() {
         let list = ctx
@@ -1782,7 +1775,31 @@ fn build_runner_context(
         parts.push(ctx.error_patterns.text.clone());
     }
 
-    Ok(parts.join("\n\n"))
+    parts.join("\n\n")
+}
+
+/// The bytes the declared files' section keeps back for its heading and the
+/// prompt's normalization (bug-a8a787).
+const DECLARED_FILES_SLACK: usize = 64;
+
+/// The contents of the files `task` declares, for the prompt (bug-a8a787):
+/// checked as the plan policy checks them, and fitted into `budget` bytes,
+/// the plan's sources first and cut last, each cut named
+/// ([`crate::plan_policy::render_declared_files`]). A declared file that
+/// fails the policy fails the dispatch.
+fn declared_files(
+    task: &TaskDef,
+    ctx: &PromptContext,
+    budget: usize,
+) -> Result<String, RunnerDispatchError> {
+    crate::plan_policy::render_declared_files(
+        task,
+        &ctx.workdir,
+        crate::plan_policy::PlanExecutionPolicy::for_environment(),
+        budget.saturating_sub(DECLARED_FILES_SLACK),
+        &ctx.source_documents,
+    )
+    .map_err(|reason| RunnerDispatchError::PreValidationFailed { reason })
 }
 
 /// The `# Verify` block: the task's verify commands, and the pinned-step note
@@ -2077,14 +2094,35 @@ impl PromptAssembler {
         // Rich runner context (files, acceptance, verify, allowed tools,
         // gate feedback, dep outputs, workspace map, etc.) injected
         // into the canonical "Relevant Context" section. A role with no
-        // cross-plan context gets only its verify commands and gate feedback;
-        // the full block is still built, so its declared context is checked.
-        let full_context = build_runner_context(task, ctx)?;
-        let runner_context = if roko_compose::budget_for(role).context == 0 {
+        // cross-plan context gets only its verify commands and gate feedback.
+        let budget = roko_compose::budget_for(role);
+        let mut runner_context = if budget.context == 0 {
             minimal_runner_context(ctx)
         } else {
-            full_context
+            build_runner_context(task, ctx)
         };
+        // bug-a8a787: the declared files' contents get the role's budget for
+        // files, in a section after the relevant context, so a long read (a
+        // whole spec) never cuts the parts above; a role without that budget
+        // keeps them at the end of its relevant context, in the room left.
+        // Every role's declared files are checked, whether shown or not.
+        let file_room = if budget.file_context > 0 {
+            budget.file_context.saturating_mul(4)
+        } else {
+            budget
+                .runner_context
+                .saturating_mul(4)
+                .saturating_sub(runner_context.len())
+        };
+        let declared = declared_files(task, ctx, file_room)?;
+        let mut file_context = String::new();
+        if budget.context > 0 && !declared.is_empty() {
+            if budget.file_context > 0 {
+                file_context = declared;
+            } else {
+                runner_context = format!("{runner_context}\n\n{declared}");
+            }
+        }
 
         // Build TaskContext with runner-specific context block.
         let task_context = {
@@ -2093,6 +2131,9 @@ impl PromptAssembler {
                 .with_workspace(ctx.workdir.to_string_lossy().into_owned());
             if !runner_context.is_empty() {
                 tc = tc.with_context(runner_context.clone());
+            }
+            if !file_context.is_empty() {
+                tc = tc.with_file_context(file_context);
             }
             if !code_context.is_empty() {
                 tc = tc.with_domain_notes(code_context.join("\n\n"));
@@ -3327,6 +3368,7 @@ mod tests {
             knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
+            source_documents: Vec::new(),
         }
     }
 
@@ -4744,7 +4786,7 @@ covers = ["AC1"]
         dispatch_ctx.workdir = workdir.path().to_path_buf();
 
         let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
-        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        let context = build_runner_context(&task(), &pctx);
 
         assert_eq!(pctx.plan_brief, "# Plan brief: `p`\n");
         assert!(
@@ -4761,7 +4803,7 @@ covers = ["AC1"]
         let areas = vec!["crates/roko-serve".to_string(), "web/src".to_string()];
         dispatch_ctx.concurrent_plans = vec![("portal-api".to_string(), areas)];
         let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
-        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        let context = build_runner_context(&task(), &pctx);
         assert!(
             context.contains("# Plans Running Beside This One"),
             "{context}"
@@ -4772,7 +4814,7 @@ covers = ["AC1"]
         );
 
         let alone = PromptContext::from_task(&task(), &ctx());
-        let context = build_runner_context(&task(), &alone).expect("runner context");
+        let context = build_runner_context(&task(), &alone);
         assert!(!context.contains("# Plans Running Beside This One"));
     }
 
@@ -4785,7 +4827,7 @@ covers = ["AC1"]
         let trees = vec!["build/core".to_string(), "build/plugin".to_string()];
         dispatch_ctx.warm_build_trees = trees;
         let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
-        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        let context = build_runner_context(&task(), &pctx);
         assert!(
             context.contains(
                 "# Prebuilt build trees\n`build/core` and `build/plugin` are already built in \
@@ -4801,7 +4843,7 @@ covers = ["AC1"]
 
         dispatch_ctx.warm_build_trees = vec!["build/plugin".to_string()];
         let one = PromptContext::from_task(&task(), &dispatch_ctx);
-        let context = build_runner_context(&task(), &one).expect("runner context");
+        let context = build_runner_context(&task(), &one);
         assert!(
             context.contains(
                 "`build/plugin` is already built in this checkout: build in it incrementally, \
@@ -4811,7 +4853,7 @@ covers = ["AC1"]
         );
 
         let none = PromptContext::from_task(&task(), &ctx());
-        let context = build_runner_context(&task(), &none).expect("runner context");
+        let context = build_runner_context(&task(), &none);
         assert!(!context.contains("# Prebuilt build trees"), "{context}");
         assert!(!context.contains("already built"), "{context}");
         let minimal = minimal_runner_context(&none);
@@ -5108,6 +5150,159 @@ covers = ["AC1"]
         assert_eq!(parse_role_label("quick-reviewer"), AgentRole::QuickReviewer);
     }
 
+    /// A prompt context for `task` in `workdir`, with phase 4's spec as the
+    /// plan's source (bug-a8a787).
+    fn phase_4_context(workdir: &Path) -> PromptContext {
+        PromptContext {
+            plan_id: "p4-undertow-phosphor-editor".into(),
+            role: "implementer".into(),
+            workdir: workdir.to_path_buf(),
+            files_in_scope: vec![
+                "plugin/ui/UnitArray.h".into(),
+                "plugin/ui/UnitArray.cpp".into(),
+            ],
+            acceptance_criteria: vec!["AC1: `tools/spec.sh 4 steps` passes".into()],
+            verify_commands: vec!["tools/spec.sh 4 steps".into()],
+            impact_context: String::new(),
+            gate_feedback: None,
+            attempt: 0,
+            prompt_experiment: None,
+            workspace_map: String::new(),
+            tasks_toml: String::new(),
+            dependency_outputs: Vec::new(),
+            workspace_context: String::new(),
+            error_patterns: Default::default(),
+            concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
+            plan_brief: String::new(),
+            arm_set: None,
+            knowledge_section: true,
+            source_documents: vec!["docs/specs/phase-4-ui.md".into()],
+        }
+    }
+
+    /// bug-a8a787: hermes-pilot's proof (phase 4's T4). A whole read of
+    /// `docs/specs/phase-4-ui.md` (264 lines, 17,950 bytes) filled the
+    /// implementer's 4,000-token relevant context and was cut at line 212,
+    /// and the task's other read, Files in scope, the acceptance and the
+    /// verify commands went with it. The declared files now have the role's
+    /// own budget for files, 8,000 tokens: the spec, the plan's source, and
+    /// two editor headers arrive whole, the spec first, in fewer bytes than
+    /// the section's cap, and the relevant context keeps its structured parts
+    /// and no file. With less room the headers are cut before the spec, and
+    /// each cut names the lines it leaves out.
+    #[test]
+    fn a_whole_spec_and_its_headers_fit_the_file_context_or_say_what_is_cut() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let spec = include_str!("../../tests/fixtures/p4_spec/phase-4-ui.md");
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("a directory");
+            std::fs::write(path, text).expect("a file");
+        };
+        let header = |name: &str, count: usize| -> String {
+            (1..=count)
+                .map(|n| format!("    int {name}Member{n} = {n}; // part {n}\n"))
+                .collect()
+        };
+        write("docs/specs/phase-4-ui.md", spec);
+        write("plugin/ui/Theme.h", &header("theme", 60));
+        write("plugin/PluginEditor.h", &header("editor", 80));
+        let read = |path: &str, lines: Option<&str>| crate::task_parser::ReadFile {
+            path: path.into(),
+            lines: lines.map(str::to_string),
+            why: "what the task builds on".into(),
+        };
+        let mut task = task();
+        task.files = vec![
+            "plugin/ui/UnitArray.h".into(),
+            "plugin/ui/UnitArray.cpp".into(),
+        ];
+        // The planner's order: a header first, the spec in the middle.
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![
+                read("plugin/ui/Theme.h", Some("1-60")),
+                read("docs/specs/phase-4-ui.md", None),
+                read("plugin/PluginEditor.h", None),
+            ],
+            ..Default::default()
+        });
+        let pctx = phase_4_context(root);
+        let budget = roko_compose::budget_for(roko_core::AgentRole::Implementer);
+        let room = budget.file_context * 4;
+
+        let files = declared_files(&task, &pctx, room).expect("the declared files");
+        let spec_lines = spec.lines().count();
+        assert_eq!(spec_lines, 264);
+        for (number, line) in spec.lines().enumerate() {
+            let numbered = format!("{:>6} | {line}\n", number + 1);
+            assert!(
+                files.contains(&numbered),
+                "spec line {} is missing",
+                number + 1
+            );
+        }
+        assert!(
+            files.contains("    80 |     int editorMember80 = 80;"),
+            "{files}"
+        );
+        assert!(
+            files.contains("    60 |     int themeMember60 = 60;"),
+            "{files}"
+        );
+        assert!(!files.contains("not shown: read_file them]"), "{files}");
+        let spec_at = files
+            .find("path=\"docs/specs/phase-4-ui.md\"")
+            .expect("the spec");
+        let theme_at = files.find("path=\"plugin/ui/Theme.h\"").expect("Theme.h");
+        assert!(spec_at < theme_at, "the source comes first");
+        assert!(
+            files.len() + roko_compose::FILE_CONTEXT_HEADING.len() <= room,
+            "{} bytes for {room}",
+            files.len()
+        );
+
+        // The relevant context keeps its structured parts, and no file.
+        let runner = build_runner_context(&task, &pctx);
+        for part in ["# Files in scope", "# Acceptance criteria", "# Verify"] {
+            assert!(runner.contains(part), "{part}: {runner}");
+        }
+        assert!(!runner.contains("declared-file"), "{runner}");
+        assert!(
+            runner.len() <= budget.runner_context * 4,
+            "{} bytes",
+            runner.len()
+        );
+
+        // With room for the spec and a little more, the headers are cut, and
+        // named; the spec stays whole.
+        let spec_block = files[spec_at..].find("</declared-file>").expect("its end") + spec_at;
+        let tight = declared_files(&task, &pctx, spec_block + 3_000).expect("the declared files");
+        assert!(tight.contains(&format!(
+            "   264 | {}",
+            spec.lines().last().expect("a line")
+        )));
+        assert!(
+            tight.contains("[plugin/PluginEditor.h lines ")
+                && tight.contains(" not shown: read_file them]"),
+            "{tight}"
+        );
+        // With less room than the spec, it is cut last, and named too.
+        let short = declared_files(&task, &pctx, 8_000).expect("the declared files");
+        assert!(short.contains("    1 | "), "{short}");
+        assert!(short.contains("-264 not shown: read_file them]"), "{short}");
+        assert!(
+            short.contains("[plugin/ui/Theme.h lines 1-60 not shown: read_file them]"),
+            "{short}"
+        );
+        assert!(
+            short.contains("[plugin/PluginEditor.h lines 1-80 not shown: read_file them]"),
+            "{short}"
+        );
+        assert!(short.len() <= 8_000, "{} bytes", short.len());
+    }
+
     #[test]
     fn build_runner_context_includes_all_sections() {
         let t = task();
@@ -5132,8 +5327,9 @@ covers = ["AC1"]
             plan_brief: String::new(),
             arm_set: None,
             knowledge_section: true,
+            source_documents: Vec::new(),
         };
-        let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
+        let ctx_str = build_runner_context(&t, &pctx);
         assert!(ctx_str.contains("# Files in scope"));
         assert!(ctx_str.contains("# Acceptance criteria"));
         assert!(ctx_str.contains("# Verify"));

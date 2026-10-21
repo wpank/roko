@@ -184,6 +184,7 @@ fn dispatch_context(workdir: &Path, key: &AttemptKey, arms: Arc<ArmSet>) -> Disp
         knowledge_section: true,
         self_model_rung: None,
         skip_enrichment: true,
+        source_documents: Vec::new(),
     }
 }
 

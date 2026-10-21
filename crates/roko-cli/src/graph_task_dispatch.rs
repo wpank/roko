@@ -952,6 +952,15 @@ impl GraphTaskDispatcher {
             .is_some_and(|meta| meta.skip_enrichment)
     }
 
+    /// `spec`'s plan's `[meta] sources`, the documents it is written from
+    /// (bug-60ad88), which its prompts show first and cut last (bug-a8a787,
+    /// [`DispatchContext::source_documents`]).
+    fn plan_sources(&self, spec: &TaskExecutionSpec) -> Vec<String> {
+        self.read_plan_meta(spec)
+            .map(|meta| meta.sources)
+            .unwrap_or_default()
+    }
+
     /// The build trees the attempt checkout at `checkout` holds, by the
     /// `[gates] warm_build_dirs` that gave them (gap-6754ab), for its prompt
     /// to name (gap-9d7381, [`DispatchContext::warm_build_trees`]). Empty
@@ -1480,6 +1489,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
+            source_documents: self.plan_sources(spec),
         };
         // M3: the self-model forecasts the attempt before it is routed (6128),
         // and in active mode proposes its start rung (6130).

@@ -372,6 +372,24 @@ fn validate_plans_dir_impl(
                         });
                     }
                 }
+                // bug-60ad88: a task that does not read a document its plan
+                // is written from may never see what it states (PLAN_061).
+                for (index, task) in tasks_file.tasks.iter().enumerate() {
+                    for source in roko_cli::plan_generate::unread_sources(&tasks_file, index) {
+                        plan.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            rule_id: "PLAN_061".to_string(),
+                            plan_id: Some(plan.plan_id.clone()),
+                            task_id: Some(task.id.clone()),
+                            message: format!(
+                                "task '{}' does not read `{source}`, which its plan is written \
+                                 from ([meta] sources): its agent may never see what it states; \
+                                 add it to the task's read_files",
+                                task.id
+                            ),
+                        });
+                    }
+                }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
                 let diagnostics =

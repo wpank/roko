@@ -93,6 +93,12 @@ pub struct TaskMeta {
     /// here why not.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped_checks: Vec<String>,
+    /// The workspace documents the plan is written from, such as the spec a
+    /// chat host named with `spec_path` (bug-60ad88). Plan generation has
+    /// every task read them, and `plan validate` warns about a task that does
+    /// not (PLAN_061).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1116,6 +1122,7 @@ pub const META_KEYS: &[&str] = &[
     "allow_unverified",
     "outbound",
     "dropped_checks",
+    "sources",
     // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
@@ -3046,6 +3053,7 @@ depends_on = []
                 allow_unverified: false,
                 outbound: None,
                 dropped_checks: Vec::new(),
+                sources: Vec::new(),
             },
             tasks: Vec::new(),
         };
@@ -4126,6 +4134,7 @@ files = ["README.md"]
             allow_unverified: true,
             outbound: Some(roko_core::tool::OutboundPolicy::Stage),
             dropped_checks: Vec::new(),
+            sources: vec!["docs/spec.md".into()],
         };
 
         let task = TaskDef::from(raw.clone());

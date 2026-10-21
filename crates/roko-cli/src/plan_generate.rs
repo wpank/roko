@@ -21,12 +21,15 @@ mod pipeline;
 mod runnable;
 mod sizes;
 mod source_checks;
+mod source_reads;
 
 pub use runnable::{
     LaterFile, Probe, SettledStep, Unrunnable, creates_without_write, implementers_without_a_shell,
     later_files, missing_dependencies, only_reads, read_only_files, roko_state_read, settled_reads,
     settled_steps, unrunnable_steps,
 };
+
+pub use source_reads::unread_sources;
 
 pub use pipeline::{
     ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanProgress,

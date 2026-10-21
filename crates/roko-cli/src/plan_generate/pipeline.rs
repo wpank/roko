@@ -12,7 +12,9 @@
 //! This code lived in `prd.rs` until the PRD pipeline was removed on
 //! 2026-10-02 (tmp/workflow-audit).
 
-use super::{accept_blocks, dry_run_fs, file_paths, overview, runnable, sizes, source_checks};
+use super::{
+    accept_blocks, dry_run_fs, file_paths, overview, runnable, sizes, source_checks, source_reads,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -293,6 +295,10 @@ pub struct PlanRequest<'a> {
     /// What the planner calls may cost together, in USD (gap-18bfa2); 0
     /// sets no cap. `None` is `[authoring] max_generation_usd`.
     pub max_usd: Option<f64>,
+    /// The workspace file the source's text is, when it is one: a spec read
+    /// through `spec_path` or `--from-file` (bug-60ad88). Every task reads
+    /// it.
+    pub source_path: Option<&'a Path>,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -314,6 +320,7 @@ impl<'a> PlanRequest<'a> {
             for_chat_host: false,
             progress: None,
             max_usd: None,
+            source_path: None,
         }
     }
 }
@@ -1309,6 +1316,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         for_chat_host,
         progress,
         max_usd,
+        source_path,
     } = request;
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
@@ -1813,6 +1821,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let size_sources: Vec<&str> = std::iter::once(source.content.as_str())
             .chain(documents.iter().map(|document| document.text.as_str()))
             .collect();
+        // bug-60ad88: the workspace documents the plan is written from, the
+        // file the source is and the documents it names, which every task
+        // reads.
+        let mut source_documents: Vec<String> = source_path
+            .and_then(|path| source_reads::workspace_document(path, &workdir))
+            .into_iter()
+            .collect();
+        for document in &documents {
+            if !source_documents.contains(&document.path) {
+                source_documents.push(document.path.clone());
+            }
+        }
         // bug-7c6f1b: a source that adds no file (phase 2.1's "No new
         // files") gets no plan that lists one.
         let no_new_files = size_sources
@@ -1865,6 +1885,17 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     &mut parsed,
                     workdir_ref,
                     no_new_files,
+                ));
+                // bug-60ad88: every task reads the documents the plan is
+                // written from.
+                // The documents are no part of a generated task's budget;
+                // the lane that runs the plan still caps its reads.
+                repairs.extend(source_reads::repair_source_reads(
+                    &mut parsed,
+                    workdir_ref,
+                    &source_documents,
+                    crate::plan_policy::PlanExecutionPolicy::for_environment()
+                        .max_read_files_per_task,
                 ));
                 // gap-9e212c: a task whose size its source states gets the
                 // smallest tier that covers it.

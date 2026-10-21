@@ -1744,6 +1744,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
                 max_usd,
+                // bug-60ad88: every task reads the file the plan comes from.
+                source_path: from_file.as_deref(),
                 ..roko_cli::plan_generate::PlanRequest::new(
                     roko_cli::plan_generate::PlanSource::Text {
                         text: &source_text,

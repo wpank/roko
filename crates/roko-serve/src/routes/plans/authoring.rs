@@ -304,8 +304,15 @@ pub(super) async fn generate_plan(
         body.spec_path.as_deref(),
     )?;
     let cap = GenerationCap::resolve(&state, body.max_usd);
-    let (op_id, slug) =
-        start_plan_generation(&state, prompt_text, &RunOrigin::Http, None, cap).await;
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        prompt_text,
+        &RunOrigin::Http,
+        None,
+        cap,
+        body.spec_path.as_deref(),
+    )
+    .await;
     let mut answer = json!({ "id": op_id, "plan_id": slug });
     cap.answer(&mut answer);
 
@@ -356,14 +363,24 @@ impl GenerationCap {
 ///
 /// With a `title` (gap-c2efe7), the slug comes from the title, and the written
 /// plan's `[meta] title` is it. The planner calls may cost `cap` together
-/// (gap-33d458).
+/// (gap-33d458). With a `spec_path` (the workspace file `prompt_text` was read
+/// from), every task of the plan reads that file (bug-60ad88).
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
     origin: &RunOrigin,
     title: Option<String>,
     cap: GenerationCap,
+    spec_path: Option<&str>,
 ) -> (String, String) {
+    let options = crate::runtime::PlanGenerationOptions {
+        // The cap serve resolved, so the answer says what applies; 0 is none.
+        max_usd: Some(cap.max_usd.unwrap_or(0.0)),
+        spec_path: spec_path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| state.workdir.join(path)),
+    };
     let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
     let prompt_text = origin.request_text(&prompt_text).into_owned();
     // bug-7a08a8: a chat host's plan runs with nobody to answer its questions.
@@ -425,9 +442,7 @@ pub(crate) async fn start_plan_generation(
                     &slug_for_task,
                     &prompt_text,
                     for_chat_host,
-                    // The cap serve resolved, so the answer says what
-                    // applies; 0 is none.
-                    Some(cap.max_usd.unwrap_or(0.0)),
+                    options,
                     report,
                 )
                 .await;

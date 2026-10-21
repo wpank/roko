@@ -408,14 +408,20 @@ pub fn validate_plan_budgets(
             task.files.len(),
             policy.max_files_per_task,
         );
+        // bug-60ad88: the documents the plan is written from, which every
+        // task reads, are no part of a task's own budget.
         check_count(
             &mut issues,
             task,
             "PLAN_BUDGET_READ_FILES",
             "context.read_files",
-            task.context
-                .as_ref()
-                .map_or(0, |context| context.read_files.len()),
+            task.context.as_ref().map_or(0, |context| {
+                context
+                    .read_files
+                    .iter()
+                    .filter(|read| !tasks.meta.sources.contains(&read.path))
+                    .count()
+            }),
             policy.max_read_files_per_task,
         );
         check_count(
@@ -1429,6 +1435,7 @@ mod tests {
                 allow_unverified: false,
                 outbound: None,
                 dropped_checks: Vec::new(),
+                sources: Vec::new(),
             },
             tasks: vec![task],
         }

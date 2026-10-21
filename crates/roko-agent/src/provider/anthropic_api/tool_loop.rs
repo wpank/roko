@@ -596,6 +596,9 @@ impl AnthropicMessagesBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::RequestRefused { status, .. }) => {
+                crate::provider::error_classify::refusal_class(*status)
+            }
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -917,6 +920,12 @@ impl LlmBackend for AnthropicMessagesBackend {
 
     fn backend_id(&self) -> &'static str {
         "claude_api"
+    }
+
+    /// The API stops thinking at the budget the request sets, so roko's
+    /// tool loop does not stop such a reply for its reasoning (gap-f3f950).
+    fn reasoning_budget(&self) -> Option<u32> {
+        self.thinking_budget
     }
 }
 

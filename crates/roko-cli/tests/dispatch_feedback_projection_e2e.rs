@@ -97,6 +97,7 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         knowledge_section: true,
         self_model_rung: None,
         skip_enrichment: false,
+        source_documents: Vec::new(),
     }
 }
 

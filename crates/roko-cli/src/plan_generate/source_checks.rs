@@ -1469,65 +1469,182 @@ pub(super) fn assign_runs(
 /// (bug-56a806). Planners put guards of their own before them (`grep -q
 /// 'AllocationCounter' core/src/engine.cpp && tools/spec.sh 2 engine
 /// 'P2.18*,P2.19*'`), which fail on correct work; those go, and so does any
-/// other command around them. A task's steps run its checks' commands, and
+/// other command around them, but a test of the planner's own becomes a
+/// step of its own while the task has fewer than `max_steps(task)` steps
+/// (gap-d99366). A task's steps run its checks' commands, and
 /// `[[meta.verify]]` the plan's own; a step that runs none is left alone. A
 /// step that comes out the same as an earlier one of its task joins it, with
 /// its `covers`: a generated plan may not repeat a check
 /// (`PLAN_VERIFY_DUPLICATE`). Returns one line per step changed.
-pub(super) fn run_exactly(plan: &mut TasksFile, checks: &[SourceCheck]) -> Vec<String> {
+pub(super) fn run_exactly(
+    plan: &mut TasksFile,
+    checks: &[SourceCheck],
+    max_steps: impl Fn(&TaskDef) -> usize,
+) -> Vec<String> {
     let (task_runs, plan_runs) = (source_runs(checks, false), source_runs(checks, true));
     let mut changed = Vec::new();
     for task in &mut plan.tasks {
-        changed.extend(exact_steps(&mut task.verify, &task_runs, &task.id));
+        let limit = max_steps(task);
+        changed.extend(exact_steps(
+            &mut task.verify,
+            &task_runs,
+            &task.id,
+            Some(limit),
+        ));
     }
     changed.extend(exact_steps(
         &mut plan.meta.verify,
         &plan_runs,
         "`[[meta.verify]]`",
+        None,
     ));
     changed
 }
 
 /// [`run_exactly`] for one list of verify `steps`, a task's or the plan's,
 /// which the lines it returns call `owner`'s.
-fn exact_steps(steps: &mut Vec<VerifyStep>, runs: &[&str], owner: &str) -> Vec<String> {
+///
+/// A task's step that ran a test of the planner's own beside the source's
+/// commands keeps it as a step of its own, right after them, while the list
+/// has fewer than `limit` steps (gap-d99366); the plan's own list has none.
+fn exact_steps(
+    steps: &mut Vec<VerifyStep>,
+    runs: &[&str],
+    owner: &str,
+    limit: Option<usize>,
+) -> Vec<String> {
     let mut changed = Vec::new();
-    // The number in the planner's list of each step kept so far.
-    let mut numbers: Vec<usize> = Vec::new();
-    let mut index = 0;
-    for number in 1..=steps.len() {
-        let Some(exact) = exact_command(&steps[index].command, runs) else {
-            numbers.push(number);
-            index += 1;
+    let planned = std::mem::take(steps);
+    let total = planned.len();
+    // Each step kept, with its number in the planner's list.
+    let mut kept: Vec<(usize, VerifyStep)> = Vec::new();
+    for (number, mut step) in (1..).zip(planned) {
+        let Some(exact) = exact_command(&step.command, runs) else {
+            kept.push((number, step));
             continue;
         };
-        let was = one_line(&steps[index].command);
-        if let Some(earlier) = steps[..index].iter().position(|step| step.command == exact) {
-            let step = steps.remove(index);
-            let into = &mut steps[earlier];
-            for cover in step.covers {
-                if !into.covers.contains(&cover) {
-                    into.covers.push(cover);
+        let was = one_line(&step.command);
+        let joined = kept.iter().position(|(_, kept)| kept.command == exact);
+        let extras = extra_tests(&step.command, runs).join(" && ");
+        // The steps the list ends with: those kept, this one unless it joins
+        // one of them, its test, and the planner's still to come.
+        let room = limit.is_some_and(|limit| {
+            kept.len() + usize::from(joined.is_none()) + 1 + (total - number) <= limit
+        });
+        let extra = (!extras.is_empty() && room).then(|| VerifyStep {
+            phase: step.phase.clone(),
+            command: extras.clone(),
+            fail_msg: None,
+            timeout_ms: step.timeout_ms,
+            scope: step.scope.clone(),
+            covers: step.covers.clone(),
+            expect: step.expect.clone(),
+        });
+        let after = if extras.is_empty() {
+            String::new()
+        } else if extra.is_none() {
+            format!("; `{extras}` is dropped: {owner} has no room for another step")
+        } else if kept.iter().any(|(_, kept)| kept.command == extras) {
+            format!(", and `{extras}` joined the step that runs it")
+        } else {
+            format!(", and `{extras}` became a step of its own")
+        };
+        if let Some(earlier) = joined {
+            let (into_number, into) = &mut kept[earlier];
+            for cover in &step.covers {
+                if !into.covers.contains(cover) {
+                    into.covers.push(cover.clone());
                 }
             }
             into.timeout_ms = into.timeout_ms.max(step.timeout_ms);
             changed.push(format!(
                 "{owner} step {number}: `{was}` became `{exact}`, the source's own commands \
-                 alone, which step {} runs already, so it joined that step",
-                numbers[earlier]
+                 alone, which step {into_number} runs already, so it joined that step{after}"
             ));
-            continue;
+        } else {
+            if exact != step.command {
+                changed.push(format!(
+                    "{owner} step {number}: `{was}` became `{exact}`, the source's own commands \
+                     alone{after}"
+                ));
+            }
+            step.command = exact;
+            kept.push((number, step));
         }
-        if exact != steps[index].command {
-            changed.push(format!(
-                "{owner} step {number}: `{was}` became `{exact}`, the source's own commands alone"
-            ));
-            steps[index].command = exact;
+        if let Some(extra) = extra {
+            match kept
+                .iter_mut()
+                .find(|(_, kept)| kept.command == extra.command)
+            {
+                Some((_, same)) => {
+                    for cover in extra.covers {
+                        if !same.covers.contains(&cover) {
+                            same.covers.push(cover);
+                        }
+                    }
+                }
+                None => kept.push((number, extra)),
+            }
         }
-        numbers.push(number);
-        index += 1;
     }
+    *steps = kept.into_iter().map(|(_, step)| step).collect();
     changed
+}
+
+/// The tests of the planner's own that `command`, a verify step's, runs
+/// beside the source's commands of `runs` (gap-d99366): its commands, when
+/// `&&` alone joins them, that are no source command and run more than a
+/// grep, a file test or a build ([`is_shallow`]), in order. Empty when
+/// anything else joins them, since splitting a pipe or a `||` changes what
+/// runs.
+fn extra_tests(command: &str, runs: &[&str]) -> Vec<String> {
+    let Some(parts) = and_parts(command) else {
+        return Vec::new();
+    };
+    let source: Vec<Vec<String>> = runs.iter().flat_map(|run| commands_of(run)).collect();
+    parts
+        .into_iter()
+        .filter(|part| {
+            !commands_of(part).iter().all(|words| source.contains(words)) && !is_shallow(part)
+        })
+        .collect()
+}
+
+/// The commands of `command` when `&&` alone joins them, outside quotes and
+/// redirections (`2>&1`, `&>out`); `None` for `||`, `|`, `;`, a lone `&` or a
+/// line break.
+fn and_parts(command: &str) -> Option<Vec<String>> {
+    let mut parts = vec![String::new()];
+    let mut quote: Option<char> = None;
+    let mut previous: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '&') if chars.peek() == Some(&'&') => {
+                chars.next();
+                parts.push(String::new());
+                previous = None;
+                continue;
+            }
+            (None, '&') if matches!(previous, Some('>' | '<')) || chars.peek() == Some(&'>') => {}
+            (None, '&' | '|' | ';' | '\n') => return None,
+            _ => {}
+        }
+        if let Some(part) = parts.last_mut() {
+            part.push(c);
+        }
+        previous = Some(c);
+    }
+    Some(
+        parts
+            .into_iter()
+            .map(|part| part.trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect(),
+    )
 }
 
 /// The one task of `plan` that owns `check`, whose command is `run`, by the
@@ -1982,7 +2099,7 @@ mod tests {
         let guarded = SourceCoverage::of(&checks, &plan, &[]);
         assert!(guarded.kept.is_empty(), "{:?}", guarded.detail_lines());
         assert_eq!(guarded.elsewhere.len(), 12);
-        assert_eq!(run_exactly(&mut plan, &checks).len(), 12);
+        assert_eq!(run_exactly(&mut plan, &checks, |_| 6).len(), 12);
         let coverage = SourceCoverage::of(&checks, &plan, &[]);
         let missing: Vec<&str> = coverage
             .missing()
@@ -2308,7 +2425,7 @@ mod tests {
         // Generation's repairs, in order; none of the steps is stuck.
         let mut repairs = apply_runs(&mut plan, &checks, &[]);
         repairs.extend(assign_runs(&mut plan, &checks, &[], |_| 6));
-        repairs.extend(run_exactly(&mut plan, &checks));
+        repairs.extend(run_exactly(&mut plan, &checks, |_| 6));
         assert_eq!(repairs.len(), 15, "{repairs:#?}");
         assert_eq!(
             repairs[14],
@@ -2331,7 +2448,10 @@ mod tests {
             exact.summary_line(),
             "Source checks: 24 of 24 kept as verify steps"
         );
-        assert!(run_exactly(&mut plan, &checks).is_empty(), "exact once");
+        assert!(
+            run_exactly(&mut plan, &checks, |_| 6).is_empty(),
+            "exact once"
+        );
     }
 
     /// bug-56a806: a step runs a source command exactly when it is that
@@ -2396,7 +2516,7 @@ mod tests {
             step("tools/spec.sh 3 sequencer 'P3.03*' 2>&1 | tail -20", "AC3"),
         ))
         .expect("a plan");
-        let changed = run_exactly(&mut plan, &checks);
+        let changed = run_exactly(&mut plan, &checks, |_| 6);
         assert_eq!(
             changed,
             [
@@ -2573,5 +2693,100 @@ mod tests {
 
         let prose = source_checks("## Verification\n\n- the widget spins\n");
         assert!(!planner_block(&prose, "The prompt states").contains(SELF_CONTAINED));
+    }
+
+    /// gap-d99366: a step that ran a test of the planner's own after the
+    /// spec's command lost it when roko cut the step down to the spec's
+    /// command (bug-56a806). The test now becomes a step of its own, right
+    /// after it, while the task's tier allows one more step; at the limit it
+    /// is dropped, and the repair line says so. Its guard still goes, a test
+    /// two steps ran becomes one step, and a pipe keeps the old cut, since
+    /// splitting it would change what runs.
+    #[test]
+    fn a_planners_extra_test_gets_its_own_step() {
+        let source = "# Phase 2\n\n## Acceptance checks\n\n| Id | Command | Check |\n|---|---|---|\n\
+                      | P2.01 | `tools/spec.sh 2 lfo 'P2.01*'` | the rates are right |\n";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(source);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let spec = "tools/spec.sh 2 lfo 'P2.01*'";
+        let extra = "ctest --preset core -R lfo_extra";
+        let plan_with = |commands: &[String]| {
+            let steps: String = commands
+                .iter()
+                .map(|command| {
+                    format!(
+                        "\n[[task.verify]]\nphase = \"test\"\ncommand = {command:?}\ncovers = \
+                         [\"AC1\"]\n"
+                    )
+                })
+                .collect();
+            TasksFile::parse_str(&format!(
+                "[meta]\nplan = \"p2\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"The LFO\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/src/lfo.cpp\"]\n\
+                 acceptance = [\"AC1: the rates are right\"]\n{steps}"
+            ))
+            .expect("a plan")
+        };
+        let commands = |plan: &TasksFile| -> Vec<String> {
+            plan.tasks[0]
+                .verify
+                .iter()
+                .map(|step| step.command.clone())
+                .collect()
+        };
+        let guarded = format!("grep -q 'class Lfo' core/src/lfo.cpp && {spec} && {extra}");
+
+        let mut plan = plan_with(std::slice::from_ref(&guarded));
+        let changed = run_exactly(&mut plan, &checks, |_| 4);
+        assert_eq!(
+            changed,
+            [format!(
+                "T1 step 1: `{guarded}` became `{spec}`, the source's own commands alone, and \
+                 `{extra}` became a step of its own"
+            )]
+        );
+        assert_eq!(commands(&plan), [spec, extra]);
+        assert_eq!(plan.tasks[0].verify[1].covers, ["AC1"]);
+        assert!(run_exactly(&mut plan, &checks, |_| 4).is_empty(), "once");
+
+        // At the tier's step limit there is no room: the test is dropped.
+        let mut plan = plan_with(std::slice::from_ref(&guarded));
+        let changed = run_exactly(&mut plan, &checks, |_| 1);
+        assert_eq!(
+            changed,
+            [format!(
+                "T1 step 1: `{guarded}` became `{spec}`, the source's own commands alone; \
+                 `{extra}` is dropped: T1 has no room for another step"
+            )]
+        );
+        assert_eq!(commands(&plan), [spec]);
+
+        // Two steps that ran the same test: one step of the spec's command,
+        // one of the test.
+        let mut plan = plan_with(&[format!("{spec} && {extra}"), guarded.clone()]);
+        let changed = run_exactly(&mut plan, &checks, |_| 4);
+        assert_eq!(commands(&plan), [spec, extra], "{changed:#?}");
+        assert!(
+            changed[1].ends_with(&format!(
+                "which step 1 runs already, so it joined that step, and `{extra}` joined the \
+                 step that runs it"
+            )),
+            "{changed:#?}"
+        );
+
+        // A pipe keeps the old cut: what is piped is no step of its own.
+        let mut plan = plan_with(&[format!("{spec} 2>&1 | tail -20 && {extra}")]);
+        run_exactly(&mut plan, &checks, |_| 4);
+        assert_eq!(commands(&plan), [spec]);
+        assert_eq!(
+            and_parts("cmake --build build 2>&1 && ctest &>log"),
+            Some(vec![
+                "cmake --build build 2>&1".to_string(),
+                "ctest &>log".to_string()
+            ])
+        );
+        assert_eq!(and_parts("make || true"), None);
     }
 }

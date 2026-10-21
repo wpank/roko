@@ -52,7 +52,8 @@ pub fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
     )
 }
 
-/// Classify an [`HttpPostError`] into the appropriate [`LlmError`] variant.
+/// Classify an [`HttpPostError`] from `provider` into the appropriate
+/// [`LlmError`] variant.
 ///
 /// Status codes are mapped as follows:
 /// - 429 / 529 -> `LlmError::Provider(ProviderError::RateLimit { .. })`, or
@@ -60,10 +61,13 @@ pub fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
 ///   or `Retry-After` spans a usage window
 /// - 500..=599 -> `LlmError::Provider(ProviderError::ServerError(status))`
 /// - 401       -> `LlmError::Provider(ProviderError::AuthFailure)`
-/// - 402       -> `ProviderExhausted`: the provider can't bill the account
-///   (bug-390e4b)
-/// - Everything else (including transport errors with no status) -> `LlmError::Network`
-fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
+/// - any other 4xx -> the provider refused the request, in its own words
+///   ([`classify_http_refusal`](crate::provider::error_classify::classify_http_refusal)):
+///   `ProviderExhausted` for a 402 or a can't-pay answer (bug-390e4b),
+///   `ContextOverflow`, `Timeout` for a 408, else `RequestRefused`
+///   (bug-35b190)
+/// - Everything else (transport errors with no status) -> `LlmError::Network`
+fn classify_http_error(e: crate::http::HttpPostError, provider: &str) -> LlmError {
     use crate::provider::ProviderError;
     match e.status {
         Some(429 | 529) => {
@@ -74,22 +78,22 @@ fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
         }
         Some(s @ 500..=599) => LlmError::Provider(ProviderError::ServerError(s)),
         Some(401) => LlmError::Provider(ProviderError::AuthFailure),
-        // The provider can't bill the account (bug-390e4b).
-        Some(402) => {
-            LlmError::Provider(crate::provider::error_classify::billing_refusal(&e.message))
-        }
+        Some(status @ 400..=499) => LlmError::Provider(
+            crate::provider::error_classify::classify_http_refusal(provider, status, &e.message),
+        ),
         _ => LlmError::Network(e.to_string()),
     }
 }
 
-/// The turn error a provider `error` object in the stream becomes: classified
-/// like an HTTP error when its code is a status (rate limit, auth, server),
-/// otherwise a backend error that names it (backlog 1111).
-fn sse_error_to_llm_error(error: &SseError) -> LlmError {
+/// The turn error a provider `error` object in `provider`'s stream becomes:
+/// classified like an HTTP error when its code is a status (rate limit, auth,
+/// server, refusal), otherwise a backend error that names it (backlog 1111).
+fn sse_error_to_llm_error(error: &SseError, provider: &str) -> LlmError {
     match error.status() {
-        Some(status) => {
-            classify_http_error(crate::http::HttpPostError::http(status, error.to_string()))
-        }
+        Some(status) => classify_http_error(
+            crate::http::HttpPostError::http(status, error.to_string()),
+            provider,
+        ),
         None => LlmError::Backend(error.to_string()),
     }
 }
@@ -128,7 +132,7 @@ impl SseTurn {
             // `[DONE]` after a real finish reason adds nothing.
             SseLine::Done if self.finish_seen => Vec::new(),
             SseLine::Done => vec![Ok(self.unknown_finish(provider, model, "[DONE]"))],
-            SseLine::Error(error) => vec![Err(sse_error_to_llm_error(&error))],
+            SseLine::Error(error) => vec![Err(sse_error_to_llm_error(&error, provider))],
         }
     }
 
@@ -441,6 +445,9 @@ impl OpenAiCompatLlmBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::RequestRefused { status, .. }) => {
+                crate::provider::error_classify::refusal_class(*status)
+            }
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -795,7 +802,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         {
             Ok(raw) => raw,
             Err(err) => {
-                let mapped = classify_http_error(err);
+                let mapped = classify_http_error(err, &self.provider_id);
                 self.note_refusal(&mapped);
                 self.record_failure(&mapped);
                 return Err(mapped);
@@ -876,7 +883,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
-            let error = classify_http_error(raw_err);
+            let error = classify_http_error(raw_err, &self.provider_id);
             self.note_refusal(&error);
             return Err(error);
         }
@@ -2376,11 +2383,14 @@ mod tests {
         assert!(finish_reasons(&items).is_empty(), "{items:?}");
 
         // An error code that is an HTTP status is classified like one.
-        let rate_limited = sse_error_to_llm_error(&SseError {
-            code: Some("429".to_string()),
-            error_type: Some("rate_limit_error".to_string()),
-            message: "Rate limit reached".to_string(),
-        });
+        let rate_limited = sse_error_to_llm_error(
+            &SseError {
+                code: Some("429".to_string()),
+                error_type: Some("rate_limit_error".to_string()),
+                message: "Rate limit reached".to_string(),
+            },
+            "zai",
+        );
         assert!(
             matches!(
                 rate_limited,
@@ -2700,7 +2710,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_429_maps_to_rate_limit() {
-        let err = classify_http_error(HttpPostError::http(429, "rate limited"));
+        let err = classify_http_error(HttpPostError::http(429, "rate limited"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
             "expected Provider(RateLimit), got {err:?}"
@@ -2712,7 +2722,7 @@ mod tests {
     #[test]
     fn classify_http_error_402_is_a_billing_refusal() {
         let body = r#"{"message":"Payment required to access this resource. Visit your billing tab.","type":"payment_required_error","param":"quota","code":"payment_required"}"#;
-        let err = classify_http_error(HttpPostError::http(402, body));
+        let err = classify_http_error(HttpPostError::http(402, body), "test");
         let LlmError::Provider(ProviderError::ProviderExhausted {
             resets_at_ms,
             message,
@@ -2730,11 +2740,10 @@ mod tests {
 
     #[test]
     fn classify_http_error_429_with_retry_after() {
-        let err = classify_http_error(HttpPostError::http_with_retry_after(
-            429,
-            "rate limited",
-            Some(30),
-        ));
+        let err = classify_http_error(
+            HttpPostError::http_with_retry_after(429, "rate limited", Some(30)),
+            "test",
+        );
         assert!(
             matches!(
                 err,
@@ -2748,7 +2757,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_529_maps_to_rate_limit() {
-        let err = classify_http_error(HttpPostError::http(529, "overloaded"));
+        let err = classify_http_error(HttpPostError::http(529, "overloaded"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
             "expected Provider(RateLimit), got {err:?}"
@@ -2757,7 +2766,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_500_maps_to_server_error() {
-        let err = classify_http_error(HttpPostError::http(500, "internal server error"));
+        let err = classify_http_error(HttpPostError::http(500, "internal server error"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::ServerError(500))),
             "expected Provider(ServerError(500)), got {err:?}"
@@ -2766,7 +2775,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_503_maps_to_server_error() {
-        let err = classify_http_error(HttpPostError::http(503, "service unavailable"));
+        let err = classify_http_error(HttpPostError::http(503, "service unavailable"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::ServerError(503))),
             "expected Provider(ServerError(503)), got {err:?}"
@@ -2775,25 +2784,99 @@ mod tests {
 
     #[test]
     fn classify_http_error_401_maps_to_auth_failure() {
-        let err = classify_http_error(HttpPostError::http(401, "unauthorized"));
+        let err = classify_http_error(HttpPostError::http(401, "unauthorized"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::AuthFailure)),
             "expected Provider(AuthFailure), got {err:?}"
         );
     }
 
+    /// bug-35b190: a provider's HTTP 4xx refusal reads as a refusal, in the
+    /// provider's own words, and not as a network error. OpenAI's 400 on
+    /// reasoning_effort in phase 4's run 16fc88ae came out as "network error:
+    /// http 400: {…}", class `provider_error:unknown`. A 401 stays an auth
+    /// failure, a 403 is the key's, a 404 an unknown model, a 400 about the
+    /// context a context overflow, and a transport error or a timeout stays
+    /// what it was.
     #[test]
-    fn classify_http_error_404_maps_to_network() {
-        let err = classify_http_error(HttpPostError::http(404, "not found"));
+    fn a_providers_4xx_refusal_reads_as_a_refusal_not_a_network_error() {
+        use crate::provider::error_classify::classify_failure_text;
+        // The class of the error as an attempt's failure text carries it.
+        let class = |err: &LlmError| {
+            classify_failure_text(&format!("agent error (openai): {err}").to_ascii_lowercase())
+        };
+
+        let body = r#"{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions.","type":"invalid_request_error","param":"reasoning_effort","code":null}}"#;
+        let err = classify_http_error(HttpPostError::http(400, body), "openai");
+        let LlmError::Provider(ProviderError::RequestRefused {
+            provider,
+            status,
+            message,
+        }) = &err
+        else {
+            panic!("expected a refused request, got {err:?}");
+        };
+        assert_eq!((provider.as_str(), *status), ("openai", 400));
+        assert_eq!(
+            message,
+            "Function tools with reasoning_effort are not supported for gpt-5.4-mini in \
+             /v1/chat/completions. (param reasoning_effort)"
+        );
+        assert_eq!(
+            err.to_string(),
+            "provider error: openai refused the request (HTTP 400): Function tools with \
+             reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions. \
+             (param reasoning_effort)"
+        );
+        assert_eq!(class(&err), "request_refused");
+
+        let bad_key =
+            r#"{"error":{"message":"Incorrect API key provided.","code":"invalid_api_key"}}"#;
+        let err = classify_http_error(HttpPostError::http(401, bad_key), "openai");
         assert!(
-            matches!(err, LlmError::Network(_)),
-            "expected Network, got {err:?}"
+            matches!(err, LlmError::Provider(ProviderError::AuthFailure)),
+            "{err:?}"
+        );
+        assert_eq!(class(&err), "auth_failure");
+
+        let no_access = r#"{"error":{"message":"Project `proj_1` does not have access to model `gpt-5.4`","code":"model_not_found"}}"#;
+        let err = classify_http_error(HttpPostError::http(403, no_access), "openai");
+        assert_eq!(class(&err), "auth_failure", "{err}");
+        assert!(
+            err.to_string()
+                .contains("does not have access to model `gpt-5.4`"),
+            "{err}"
+        );
+
+        let no_model = r#"{"error":{"message":"The model `gpt-5.4-minii` does not exist or you do not have access to it.","code":"model_not_found"}}"#;
+        let err = classify_http_error(HttpPostError::http(404, no_model), "openai");
+        assert_eq!(class(&err), "model_not_found", "{err}");
+
+        let too_long = r#"{"error":{"message":"This model's maximum context length is 128000 tokens.","code":"context_length_exceeded"}}"#;
+        let err = classify_http_error(HttpPostError::http(400, too_long), "openai");
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::ContextOverflow)),
+            "{err:?}"
+        );
+
+        let err = classify_http_error(
+            HttpPostError::transport("tcp connect error: Connection refused"),
+            "openai",
+        );
+        assert!(matches!(err, LlmError::Network(_)), "{err:?}");
+        let err = classify_http_error(HttpPostError::transport("operation timed out"), "openai");
+        assert!(matches!(err, LlmError::Network(_)), "{err:?}");
+        assert_eq!(class(&err), "timeout");
+        let err = classify_http_error(HttpPostError::http(408, "Request Timeout"), "openai");
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::Timeout)),
+            "{err:?}"
         );
     }
 
     #[test]
     fn classify_http_error_transport_maps_to_network() {
-        let err = classify_http_error(HttpPostError::transport("dns failed"));
+        let err = classify_http_error(HttpPostError::transport("dns failed"), "test");
         assert!(
             matches!(err, LlmError::Network(_)),
             "expected Network, got {err:?}"

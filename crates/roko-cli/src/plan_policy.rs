@@ -1056,6 +1056,184 @@ pub fn render_declared_context(
     Ok(output)
 }
 
+/// [`render_declared_context`] for the prompt's own section of declared
+/// files (bug-a8a787): the same files, checked the same way, fitted into
+/// `budget` bytes rather than cut by the prompt's cap. The plan's `sources`
+/// (its `[meta] sources`, the documents it is written from) come first and
+/// are cut last; the other reads keep their order. A read cut short, or left
+/// out, is followed by a line naming the lines not shown, for the agent to
+/// read itself: `[docs/specs/phase-4-ui.md lines 212-264 not shown: read_file
+/// them]`. A file declared without a range shows up to the policy's line
+/// limit.
+pub fn render_declared_files(
+    task: &TaskDef,
+    workspace_root: &Path,
+    policy: PlanExecutionPolicy,
+    budget: usize,
+    sources: &[String],
+) -> Result<String, String> {
+    // The checks, and the errors that fail the task, stay the plan policy's.
+    let checked = render_declared_context(task, workspace_root, policy)?;
+    let Some(context) = task.context.as_ref().filter(|_| !checked.is_empty()) else {
+        return Ok(String::new());
+    };
+    let anchors: Vec<String> = context
+        .symbols
+        .iter()
+        .filter_map(|symbol| explicit_symbol_anchor(symbol))
+        .collect();
+    let mut reads = Vec::with_capacity(context.read_files.len());
+    for (order, read_file) in context.read_files.iter().enumerate() {
+        let content = std::fs::read_to_string(workspace_root.join(&read_file.path))
+            .map_err(|error| format!("read context file `{}`: {error}", read_file.path))?;
+        let lines: Vec<&str> = content.lines().collect();
+        let total = lines.len();
+        let mut ranges = Vec::new();
+        if let Some(range) = read_file.lines.as_deref() {
+            let (start, end) = parse_line_range(range, total)?;
+            ranges.push((start, end.unwrap_or(total)));
+        }
+        for anchor in &anchors {
+            if let Some(line) = find_anchor_line(&content, anchor) {
+                let start = line.saturating_sub(ANCHOR_CONTEXT_RADIUS).max(1);
+                ranges.push((start, line.saturating_add(ANCHOR_CONTEXT_RADIUS).min(total)));
+            }
+        }
+        // A file without a range shows whole, to the policy's line limit.
+        let mut hidden = Vec::new();
+        if ranges.is_empty() && total > 0 {
+            ranges.push((1, total.min(policy.max_range_lines)));
+            if total > policy.max_range_lines {
+                hidden.push((policy.max_range_lines + 1, total));
+            }
+        }
+        let blocks = merge_ranges(ranges)
+            .into_iter()
+            .filter(|(start, end)| start <= end)
+            .map(|(start, end)| {
+                let shown = (start..=end)
+                    .filter_map(|number| {
+                        lines.get(number - 1).map(|line| {
+                            // The prompt shows a tab as four spaces; measure it so.
+                            numbered_line(number, &line.replace('\t', "    "))
+                        })
+                    })
+                    .collect();
+                (start, end, shown)
+            })
+            .collect();
+        reads.push(DeclaredRead {
+            read_file,
+            total,
+            blocks,
+            hidden,
+            source: sources.iter().any(|source| *source == read_file.path),
+            order,
+        });
+    }
+    Ok(fit_declared_reads(reads, budget))
+}
+
+/// A declared file as the prompt shows it: its blocks, each `(start, end,
+/// numbered lines)`, and the ranges it leaves out.
+struct DeclaredRead<'a> {
+    read_file: &'a ReadFile,
+    total: usize,
+    blocks: Vec<(usize, usize, Vec<String>)>,
+    hidden: Vec<(usize, usize)>,
+    source: bool,
+    order: usize,
+}
+
+/// The heading of the declared files the prompt shows (bug-a8a787).
+const DECLARED_FILES_INTRO: &str = "# Declared source context (authoritative and bounded)\n\
+     Use these supplied snippets directly. Do not search home directories, session history, \
+     other worktrees, Git unreachable objects, or the web. A file cut short names the lines \
+     not shown: read those with read_file.\n";
+
+/// The line that names what of `read` is not shown: `ranges`, each `(start,
+/// end)`.
+fn not_shown_line(read: &DeclaredRead<'_>, ranges: &[(usize, usize)]) -> String {
+    let ranges = ranges
+        .iter()
+        .map(|(start, end)| {
+            if start == end {
+                start.to_string()
+            } else {
+                format!("{start}-{end}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let lines = if ranges.contains(['-', ',']) {
+        "lines"
+    } else {
+        "line"
+    };
+    format!(
+        "[{} {lines} {ranges} not shown: read_file them]\n",
+        read.read_file.path
+    )
+}
+
+/// `reads` fitted into `budget` bytes, sources first: each block whole while
+/// it fits, else as many of its lines as do, and a line naming what is not
+/// shown. Room for every such line is kept back first, so a cut can always
+/// say what it left out.
+fn fit_declared_reads(mut reads: Vec<DeclaredRead<'_>>, budget: usize) -> String {
+    reads.sort_by_key(|read| (!read.source, read.order));
+    let reserve: usize = reads
+        .iter()
+        .map(|read| {
+            // The longest line it can need: every range at the file's end.
+            let worst = vec![(read.total, read.total); read.blocks.len() + read.hidden.len()];
+            not_shown_line(read, &worst).len()
+        })
+        .sum();
+    let mut room = budget.saturating_sub(DECLARED_FILES_INTRO.len() + reserve);
+    let mut output = String::from(DECLARED_FILES_INTRO);
+    for read in &reads {
+        let mut hidden = read.hidden.clone();
+        for (start, end, lines) in &read.blocks {
+            let frame = declared_file_tag(read.read_file, *start, *end, read.total).len()
+                + DECLARED_FILE_END.len();
+            let body: usize = lines.iter().map(String::len).sum();
+            if frame + body <= room {
+                output.push_str(&declared_file_tag(read.read_file, *start, *end, read.total));
+                output.extend(lines.iter().map(String::as_str));
+                output.push_str(DECLARED_FILE_END);
+                room -= frame + body;
+                continue;
+            }
+            let mut used = frame;
+            let shown = lines
+                .iter()
+                .take_while(|line| {
+                    let fits = used + line.len() <= room;
+                    if fits {
+                        used += line.len();
+                    }
+                    fits
+                })
+                .count();
+            if shown > 0 {
+                let last = start + shown - 1;
+                output.push_str(&declared_file_tag(read.read_file, *start, last, read.total));
+                output.extend(lines[..shown].iter().map(String::as_str));
+                output.push_str(DECLARED_FILE_END);
+                room = room.saturating_sub(used);
+            }
+            if start + shown <= *end {
+                hidden.push((start + shown, *end));
+            }
+        }
+        if !hidden.is_empty() {
+            output.push_str(&not_shown_line(read, &merge_ranges(hidden)));
+        }
+    }
+    output
+}
+
 /// The closing tag of a declared file block.
 const DECLARED_FILE_END: &str = "</declared-file>\n";
 

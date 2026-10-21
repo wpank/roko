@@ -81,8 +81,11 @@ pub struct ToolLoopTurnTrace {
     /// ([`BackendResponse::usage_source`]).
     pub usage_source: crate::usage::UsageSource,
     /// Why the provider said the turn ended, when it said (`length` for a
-    /// reply cut at the output limit); `None` for a call that broke off.
+    /// reply cut at the output limit, `reasoning_limit` for one roko stopped
+    /// while it only reasoned); `None` for a call that broke off.
     pub finish_reason: Option<String>,
+    /// How long the turn's model call ran, in ms (gap-f3f950).
+    pub duration_ms: Option<u64>,
 }
 
 pub mod agent_wrapper;
@@ -170,6 +173,14 @@ pub trait LlmBackend: Send + Sync {
     /// Stable backend identifier for audit and episode logging.
     fn backend_id(&self) -> &'static str {
         "unknown"
+    }
+
+    /// The reasoning tokens the provider allows one reply, when the request
+    /// sets a budget it enforces itself (the Anthropic API's thinking
+    /// budget). roko's tool loop does not stop such a reply for its
+    /// reasoning (gap-f3f950).
+    fn reasoning_budget(&self) -> Option<u32> {
+        None
     }
 }
 
@@ -723,8 +734,17 @@ const LENGTH_CUT_RETRIES: usize = 1;
 
 /// What the model is told after a reply that reached its output limit with
 /// no tool call and no text: most often a reasoning model that spent the
-/// whole limit reasoning. `output_tokens` is the reply's output, when known.
-fn length_cut_note(output_tokens: u32) -> String {
+/// whole limit reasoning. `output_tokens` is the reply's output, when known;
+/// `stopped` is whether roko stopped it at its reasoning limit (gap-f3f950).
+fn length_cut_note(output_tokens: u32, stopped: bool) -> String {
+    let act = "Keep your reasoning short and make your next tool call now. Work in small \
+               steps, and write a large file in several smaller edits.";
+    if stopped {
+        return format!(
+            "Your last reply reasoned for about {output_tokens} tokens without a tool call or \
+             any text, so it was stopped: it did nothing. {act}"
+        );
+    }
     let limit = if output_tokens > 0 {
         format!("the output limit ({output_tokens} tokens)")
     } else {
@@ -732,9 +752,87 @@ fn length_cut_note(output_tokens: u32) -> String {
     };
     format!(
         "Your last reply reached {limit} while still reasoning: it made no tool call and \
-         wrote no text, so it did nothing. Keep your reasoning short and make your next tool \
-         call now. Work in small steps, and write a large file in several smaller edits."
+         wrote no text, so it did nothing. {act}"
     )
+}
+
+/// The reasoning tokens one streamed reply may stream with no text and no
+/// tool call before roko stops it: 3/8 of its output limit, `max_tokens`
+/// (gap-f3f950). Such a reply is thrown away and asked again, so reasoning on
+/// only delays the ask: glm-4.7 reasoned to its 32,768-token limit, 15
+/// minutes, in 7 of 335 calls, 38% of its model time, and the re-ask acted
+/// within 23 to 97 s each time.
+fn reasoning_limit(max_tokens: u32) -> u64 {
+    u64::from(max_tokens) * 3 / 8
+}
+
+/// The reasoning tokens `deltas` streamed deltas of `chars` characters
+/// amount to: a delta is at least one token, and about four characters make
+/// one.
+fn reasoning_tokens(deltas: u64, chars: u64) -> u64 {
+    deltas.max(chars / 4)
+}
+
+/// `stream`, ended by roko once it has streamed `limit` reasoning tokens
+/// with no text and no tool call (gap-f3f950): the event that reached the
+/// limit, then a `Done` with
+/// [`REASONING_LIMIT_FINISH`](crate::streaming::REASONING_LIMIT_FINISH).
+/// Dropping the rest of the stream ends the call.
+fn guard_reasoning(
+    stream: futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>,
+    limit: u64,
+) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
+    use futures::StreamExt;
+
+    struct Guard {
+        inner: futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>,
+        deltas: u64,
+        chars: u64,
+        acted: bool,
+        /// The limit was reached: the next item is the `Done`.
+        stopping: bool,
+        stopped: bool,
+    }
+
+    let guard = Guard {
+        inner: stream,
+        deltas: 0,
+        chars: 0,
+        acted: false,
+        stopping: false,
+        stopped: false,
+    };
+    futures::stream::unfold(guard, move |mut guard| async move {
+        if guard.stopped {
+            return None;
+        }
+        if guard.stopping {
+            guard.stopped = true;
+            let done = StreamEvent::now(StreamEventKind::Done {
+                finish_reason: crate::streaming::REASONING_LIMIT_FINISH.to_string(),
+            });
+            return Some((Ok(done), guard));
+        }
+        let next = guard.inner.next().await?;
+        if let Ok(event) = &next {
+            match &event.kind {
+                StreamEventKind::ReasoningDelta(text) => {
+                    guard.deltas += 1;
+                    guard.chars += text.len() as u64;
+                }
+                StreamEventKind::TextDelta(text) if !text.trim().is_empty() => guard.acted = true,
+                StreamEventKind::ToolCallStart { .. }
+                | StreamEventKind::ToolCallDelta { .. }
+                | StreamEventKind::ToolCallEnd { .. } => guard.acted = true,
+                _ => {}
+            }
+            if !guard.acted && reasoning_tokens(guard.deltas, guard.chars) >= limit {
+                guard.stopping = true;
+            }
+        }
+        Some((next, guard))
+    })
+    .boxed()
 }
 
 /// What one model call streamed, so a call cut off mid-stream, or one whose
@@ -1468,6 +1566,8 @@ impl ToolLoop {
             // assembled.
             let mut ended_on_stream = HashSet::new();
             let mut streamed = None;
+            let call_started = std::time::Instant::now();
+            let call_ms = || u64::try_from(call_started.elapsed().as_millis()).ok();
             let response = if let Some(ref tx) = event_tx {
                 match self
                     .send_turn_streaming(&messages, &rendered_tools, &session, tx)
@@ -1498,6 +1598,7 @@ impl ToolLoop {
                                 model: tally.model,
                                 usage_source,
                                 finish_reason: None,
+                                duration_ms: call_ms(),
                             });
                         }
                         let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
@@ -1536,6 +1637,7 @@ impl ToolLoop {
                     }
                 }
             };
+            let turn_duration_ms = call_ms();
             merge_session_state(&mut session, self.backend.extract_session(&response));
             let turn_reasoning = response.extract_reasoning();
             let turn_model = response.extract_model();
@@ -1641,6 +1743,7 @@ impl ToolLoop {
                     model: turn_model,
                     usage_source: turn_usage_source,
                     finish_reason: finish_reason_raw.clone(),
+                    duration_ms: turn_duration_ms,
                 };
                 // A reply that reached the output limit with no tool call
                 // and no text did nothing: most often a reasoning model spent
@@ -1650,17 +1753,21 @@ impl ToolLoop {
                 // reply in a row ends the run below.
                 if blank && hit_length_limit && length_cuts_in_a_row < LENGTH_CUT_RETRIES {
                     length_cuts_in_a_row += 1;
+                    // roko stopped it at its reasoning limit (gap-f3f950).
+                    let stopped = finish_reason_raw.as_deref()
+                        == Some(crate::streaming::REASONING_LIMIT_FINISH);
                     tracing::warn!(
                         iterations,
                         output_tokens = turn_usage.output_tokens,
                         reasoning_chars = turn_trace.reasoning.as_ref().map_or(0, String::len),
-                        "tool_loop: the reply reached the output limit (finish_reason=length) \
-                         with no tool call and no text; asking again within the run"
+                        finish_reason = ?finish_reason_raw,
+                        "tool_loop: the reply reached its output or reasoning limit with no tool \
+                         call and no text; asking again within the run"
                     );
                     turn_traces.push(turn_trace);
                     messages.push(serde_json::json!({
                         "role": "user",
-                        "content": length_cut_note(turn_usage.output_tokens),
+                        "content": length_cut_note(turn_usage.output_tokens, stopped),
                     }));
                     iterations += 1;
                     continue;
@@ -1705,9 +1812,10 @@ impl ToolLoop {
                     tracing::error!(
                         iterations,
                         output_tokens = turn_usage.output_tokens,
-                        "tool_loop: model hit output token limit (finish_reason=length) \
-                         and produced no final text, again after being asked to act — \
-                         check max_output for this model"
+                        finish_reason = ?finish_reason_raw,
+                        "tool_loop: model hit its output or reasoning limit and produced no \
+                         final text, again after being asked to act — check max_output for \
+                         this model"
                     );
                 } else if blank && all_calls.is_empty() {
                     tracing::warn!(
@@ -1749,8 +1857,16 @@ impl ToolLoop {
                         finish_reason_raw.as_deref().unwrap_or("none")
                     ))
                 } else if hit_length_limit && all_calls.is_empty() {
+                    // Or roko's reasoning limit, when it stopped the reply
+                    // (gap-f3f950).
+                    let finish = match finish_reason_raw.as_deref() {
+                        Some(crate::streaming::REASONING_LIMIT_FINISH) => {
+                            crate::streaming::REASONING_LIMIT_FINISH
+                        }
+                        _ => "length",
+                    };
                     StopReason::BackendError(format!(
-                        "{} (finish_reason=length)",
+                        "{} (finish_reason={finish})",
                         crate::provider::error_classify::OUTPUT_LIMIT_MARKER
                     ))
                 } else {
@@ -1832,6 +1948,7 @@ impl ToolLoop {
                 model: turn_model,
                 usage_source: turn_usage_source,
                 finish_reason: response.extract_finish_reason_raw(),
+                duration_ms: turn_duration_ms,
             });
 
             // Fire on_turn callback with a snapshot of this iteration.
@@ -2072,6 +2189,15 @@ impl ToolLoop {
             .open_stream(messages, tools, session, &config)
             .await
             .map_err(|error| (error, StreamTally::default()))?;
+        // A reply that has only reasoned for 3/8 of its output limit is
+        // stopped there, unless its provider bounds reasoning itself or the
+        // turn has no output limit to take 3/8 of (gap-f3f950).
+        let limit = reasoning_limit(config.max_tokens);
+        let stream = if self.backend.reasoning_budget().is_some() || limit == 0 {
+            stream
+        } else {
+            guard_reasoning(stream, limit)
+        };
 
         // Tee: forward every event to the caller channel while also
         // collecting into a vec for `collect_stream_to_response`. The ids
@@ -3271,6 +3397,8 @@ mod tests {
     struct ScriptedSseBackend {
         bodies: Vec<Vec<String>>,
         sent: parking_lot::Mutex<Vec<Vec<Value>>>,
+        /// The reasoning budget it says the provider enforces.
+        reasoning_budget: Option<u32>,
     }
 
     impl ScriptedSseBackend {
@@ -3278,7 +3406,26 @@ mod tests {
             Arc::new(Self {
                 bodies,
                 sent: parking_lot::Mutex::new(Vec::new()),
+                reasoning_budget: None,
             })
+        }
+
+        /// [`Self::new`] for a provider that enforces a reasoning budget.
+        fn with_reasoning_budget(bodies: Vec<Vec<String>>, budget: u32) -> Arc<Self> {
+            Arc::new(Self {
+                bodies,
+                sent: parking_lot::Mutex::new(Vec::new()),
+                reasoning_budget: Some(budget),
+            })
+        }
+
+        /// A turn that streams `deltas` one-token reasoning deltas of four
+        /// characters, then `then`.
+        fn reasoning_then(deltas: usize, then: Vec<String>) -> Vec<String> {
+            let delta = r#"data: {"choices":[{"delta":{"reasoning_content":"tok "}}]}"#;
+            std::iter::repeat_n(delta.to_string(), deltas)
+                .chain(then)
+                .collect()
         }
 
         /// A turn that calls `echo` with `args`.
@@ -3333,6 +3480,10 @@ mod tests {
             _session: &SessionState,
         ) -> Result<BackendResponse, LlmError> {
             Err(LlmError::Backend("this backend only streams".to_string()))
+        }
+
+        fn reasoning_budget(&self) -> Option<u32> {
+            self.reasoning_budget
         }
 
         async fn stream_turn(
@@ -3437,6 +3588,74 @@ mod tests {
         assert!(note.contains("output limit"), "{note}");
         assert!(note.contains("16384 tokens"), "{note}");
         assert!(note.contains("tool call"), "{note}");
+    }
+
+    /// gap-f3f950: a streamed reply that has reasoned for 3/8 of its output
+    /// limit (6,144 of 16,384 tokens here) with no text and no tool call is
+    /// stopped there, as `reasoning_limit`, and asked again with a note that
+    /// says so; the try goes on. A reply that wrote text first, or one whose
+    /// provider bounds reasoning itself, is not stopped.
+    #[tokio::test]
+    async fn a_reply_that_only_reasons_is_stopped_at_its_reasoning_limit() {
+        let late = ScriptedSseBackend::tool_call("call-late", r#"{"path":"never"}"#);
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", r#"{"path":"CMakeLists.txt"}"#),
+            ScriptedSseBackend::reasoning_then(7_000, late.clone()),
+            ScriptedSseBackend::tool_call("call-2", r#"{"path":"plugin/CMakeLists.txt"}"#),
+            ScriptedSseBackend::answer("Wrote the plugin skeleton."),
+        ]);
+        let out = run_scripted_sse(&backend).await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "Wrote the plugin skeleton.");
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["call-1", "call-2"],
+            "the stopped reply's call never came"
+        );
+        let cut = &out.turn_traces[1];
+        assert_eq!(
+            cut.finish_reason.as_deref(),
+            Some(crate::streaming::REASONING_LIMIT_FINISH)
+        );
+        assert!(cut.tool_calls.is_empty());
+        let reasoned = cut.reasoning.as_deref().unwrap_or_default();
+        assert_eq!(reasoned.len(), 6_144 * 4, "stopped at the limit");
+        assert!(cut.usage.output_tokens > 0, "{:?}", cut.usage);
+        assert!(
+            out.turn_traces
+                .iter()
+                .all(|trace| trace.duration_ms.is_some())
+        );
+        let sent = backend.sent.lock();
+        let note = sent[2].last().expect("the note");
+        assert_eq!(note["role"], "user");
+        let note = note["content"].as_str().expect("the note is text");
+        assert!(note.contains("reasoned for about"), "{note}");
+        assert!(note.contains("was stopped"), "{note}");
+        drop(sent);
+
+        // Text before the reasoning: the reply acts, and is not stopped.
+        let text = r#"data: {"choices":[{"delta":{"content":"Writing the header."}}]}"#.to_string();
+        let mut wrote = vec![text];
+        wrote.extend(ScriptedSseBackend::reasoning_then(7_000, late.clone()));
+        let backend = ScriptedSseBackend::new(vec![wrote, ScriptedSseBackend::answer("Done.")]);
+        let out = run_scripted_sse(&backend).await;
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call-late"]);
+
+        // A provider that bounds reasoning itself is not stopped.
+        let backend = ScriptedSseBackend::with_reasoning_budget(
+            vec![
+                ScriptedSseBackend::reasoning_then(7_000, late),
+                ScriptedSseBackend::answer("Done."),
+            ],
+            8_000,
+        );
+        let out = run_scripted_sse(&backend).await;
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call-late"]);
     }
 
     /// The retry is once per cut: two reasoning-only cuts in a row end the
@@ -4102,9 +4321,12 @@ mod tests {
         use crate::agent::Agent;
         use crate::usage::UsageSource;
 
+        // An output limit whose reasoning limit (12,288 tokens, gap-f3f950)
+        // is above what these streams reason, so the stream is what cuts.
         let priced = ModelProfile {
             cost_input_per_m: Some(0.6),
             cost_output_per_m: Some(2.2),
+            max_output: Some(32_768),
             ..test_model_profile(128_000)
         };
 
@@ -4381,6 +4603,38 @@ mod tests {
             other => panic!("expected BackendError, got {other:?}"),
         }
         assert_eq!(backend.attempts(), 1);
+    }
+
+    /// bug-35b190: a request the provider refused, an HTTP 4xx that names no
+    /// rate limit, bad key or unknown model, is not sent again: the same
+    /// request gets the same answer. The run ends on it in the provider's
+    /// words. An untyped provider error is still tried again.
+    #[tokio::test]
+    async fn a_refused_request_is_not_sent_again() {
+        let refused = ProviderError::RequestRefused {
+            provider: "openai".to_string(),
+            status: 400,
+            message: "Function tools with reasoning_effort are not supported for gpt-5.4-mini \
+                      in /v1/chat/completions. (param reasoning_effort)"
+                .to_string(),
+        };
+        let backend = Arc::new(RetryingBackend::new(usize::MAX, refused.clone()));
+        let tl = make_tool_loop(backend.clone(), 25).with_retry_policy(test_retry_policy());
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        match &out.stop_reason {
+            StopReason::BackendError(msg) => assert!(
+                msg.contains("openai refused the request (HTTP 400): Function tools"),
+                "msg={msg}"
+            ),
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+        assert_eq!(backend.attempts(), 1);
+        assert_eq!(ErrorClass::from(&refused).to_string(), "request_refused");
+        let other = ProviderError::Other("HTTP 499".to_string());
+        assert!(test_retry_policy().should_retry(&other, 0));
     }
 
     /// bug-7debad (TD-006): `dispatch_batch` returns parallel results as they

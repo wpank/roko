@@ -203,6 +203,10 @@ pub struct TaskContext {
     pub workspace: Option<String>,
     /// Optional structured context assembled for this task.
     pub context_layer: Option<String>,
+    /// The contents of the files the task declares, already fitted to the
+    /// role's budget for files (bug-a8a787): a section of their own, so a
+    /// long read never cuts the structured context.
+    pub file_layer: Option<String>,
     /// Optional extra domain notes.
     pub domain_notes: Option<String>,
 }
@@ -242,6 +246,14 @@ impl TaskContext {
     #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context_layer = Some(context.into());
+        self
+    }
+
+    /// Attach the declared files' contents, fitted to the role's budget for
+    /// files (bug-a8a787).
+    #[must_use]
+    pub fn with_file_context(mut self, files: impl Into<String>) -> Self {
+        self.file_layer = Some(files.into());
         self
     }
 
@@ -537,6 +549,14 @@ impl RoleSystemPromptSpec {
         }
         if let Some(context) = self.task_context.context_layer() {
             builder = builder.with_context(context);
+        }
+        if let Some(files) = self
+            .task_context
+            .file_layer
+            .as_deref()
+            .filter(|files| !files.trim().is_empty())
+        {
+            builder = builder.with_file_context(files);
         }
         let task = self.task_context.task_layer();
         if !task.is_empty() {

@@ -3644,6 +3644,59 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert_eq!(requests.lock().len(), 1, "the fresh verdict is reused");
     }
 
+    /// bug-35b190: a rung whose provider refuses the probe's request fails
+    /// its probe, and the probe records the refusal in the provider's own
+    /// words and its class, as OpenAI refused reasoning_effort beside
+    /// function tools in phase 4's run 16fc88ae; it read "unknown: agent error
+    /// (openai): network error: http 400: {…" before. The refused request is
+    /// not sent again.
+    #[tokio::test]
+    async fn a_rung_probe_records_a_refusals_words() {
+        use crate::dispatch::RoutingLadder;
+        use crate::dispatch::rung_probe::{RungProbes, probe_ladder};
+
+        let temp = tempdir().expect("tempdir");
+        let refused = refused_turn(
+            400,
+            serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for \
+                            gpt-5.4-mini in /v1/chat/completions.",
+                "type": "invalid_request_error",
+                "param": "reasoning_effort",
+                "code": null
+            } }),
+        );
+        // A second answer, so a call sent again would show.
+        let (base_url, requests) = spawn_openai_mock(vec![refused.clone(), refused]);
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &temp.path().join("claude-models.log"));
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+        mid_api.base_url = Some(base_url);
+        let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+
+        let failed = probe_ladder(&config, &ladder, temp.path()).await;
+        assert_eq!(
+            requests.lock().len(),
+            1,
+            "the refused request is not sent again"
+        );
+        let reason = failed.get("mid-1").expect("the mid rung failed its probe");
+        assert_eq!(
+            reason,
+            "request_refused: mid_api refused the request (HTTP 400): Function tools with \
+             reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions. \
+             (param reasoning_effort)"
+        );
+        let cached = RungProbes::load(&RungProbes::path(temp.path()));
+        assert_eq!(&cached.models["mid-1"].reason, reason);
+    }
+
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover
     /// passes it over before any call, runs the task on a provider that can,
     /// and records why.

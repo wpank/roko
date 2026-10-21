@@ -207,6 +207,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
+            source_documents: self.plan_sources(spec),
         };
         // M3, as on the batch path (bug-78e5ce): the self-model forecasts the
         // attempt before it is routed (6128), surfaces a refine-spec or

@@ -205,8 +205,9 @@ pub use token_estimator::{
     estimate_tokens,
 };
 pub use tool_immune::{
-    ToolBoundaryEffect, ToolBoundaryRecord, ToolControl, ToolControlState,
-    detect_tool_result_anomaly, quarantine_vault_path, tool_controls_path,
+    ReleasedToolControl, ToolBoundaryEffect, ToolBoundaryRecord, ToolControl, ToolControlState,
+    detect_tool_result_anomaly, list_tool_controls, quarantine_vault_path, release_tool_control,
+    tool_control_releases_path, tool_controls_path,
 };
 pub use tool_loop::{
     OnTurnCallback, StreamEvent, StreamEventKind, ToolLoopAgent, TurnConfig, TurnProgress,

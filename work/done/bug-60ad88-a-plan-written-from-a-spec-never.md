@@ -2,7 +2,7 @@
 id = "bug-60ad88"
 kind = "bug"
 title = "A plan written from a spec never gives its tasks the spec: phase 3's T1 tries worked from the tests and the PRD, never read docs/specs/phase-3-sequencer.md, and got the step rule wrong"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "ad8da0a2a"
 source = "round-v7-undertow-spec#phase-3-T1-failures"
 discovered_from = "agent:undertow-spec (round v7, phase 3 run bdc4461e)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-fe4225", "gap-ac6b9b"], 
 
 [[verify]]
 command = "grep -rqw 'fn every_task_of_a_spec_sourced_plan_reads_the_spec' crates/roko-cli/src && cargo test -p roko-cli --lib -- every_task_of_a_spec_sourced_plan_reads_the_spec"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T06:05:54Z"
+commit = "8d0075cfe"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-21T01:11:55Z"
+forced = false
+evidence = "Merged e32750fc3 (work/bug-60ad88: 8d0075cfe). PlanRequest.source_path, set by plan generate --from-file and by serve's spec_path (HTTP and MCP) through CliRuntime::generate_plan_reporting's new PlanGenerationOptions { max_usd, spec_path }. plan_generate/source_reads.rs, a logged repair: every task reads each source document (the file the source is, and the documents a request names) whole, first among its read_files; a partial range widens; the plan records them in [meta] sources; sources count toward no generated task's PLAN_BUDGET_READ_FILES (the 3-read generated budget left no room in the first replay); only the running lane's cap (16, or 3 under ROKO_FAST_MODE) can keep one out, logged. plan validate: PLAN_061 warns about a task that does not read a [meta] source. Post-merge verify at e32750fc3: grep OK; every_task_of_a_spec_sourced_plan_reads_the_spec and plan_validate_warns_about_a_task_that_never_reads_its_spec: 2 passed. Branch: roko-cli lib 3958/3958, roko-serve lib 1076 (plan_generate_passes_its_spec_path_on), plan_validation 38/38, plan_validate 23/25 (bug-2a31bc's 2), clippy -D warnings clean (roko-cli, roko-serve), nightly fmt. $0 replay of phase 3's write (written plan as the draft, --from-file docs/specs/phase-3-sequencer.md at 1f62c61): before (d7d1fbb8b) T1 read the tests and the PRD, T2 engine.h, engine.cpp and the PRD, no sources, 0 diagnostics; after: 1 call, 16/16 kept, T1 and T2 read the spec whole and first, [meta] sources names it, 0 diagnostics. Caveat (hermes-pilot's phase-4 evidence): the implementer's 4,000-token runner_context cap still cuts what follows the first ~16 KB of declared context; raised with the lead as a follow-up."
 +++
 
 ## Problem

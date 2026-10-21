@@ -29,6 +29,16 @@ struct StreamResponseMetadata {
     thread_id: Option<String>,
 }
 
+/// How long a call the rate limiter holds back waits for a slot at its
+/// provider before it fails as rate-limited, without calling the provider
+/// (bug-33a61f). The limit a refusal taught lapses
+/// [`LEARNED_LIMIT_HOLDS_FOR`](crate::rate_limit::LEARNED_LIMIT_HOLDS_FOR)
+/// after the provider's last refusal, so a hold rarely lasts this long.
+pub const HELD_CALL_WAIT: Duration = Duration::from_secs(300);
+
+/// How often a held call looks for its slot (bug-33a61f).
+const HELD_CALL_POLL: Duration = Duration::from_millis(250);
+
 /// The process-wide rate limiter every OpenAI-compatible backend shares,
 /// unless given its own ([`OpenAiCompatLlmBackend::with_rate_limiter`]): it
 /// learns per endpoint ([`chat_endpoint`]) how many calls at once a provider
@@ -193,6 +203,11 @@ pub struct OpenAiCompatLlmBackend {
     supports_vision: bool,
     /// Optional circuit-breaker outcome recorder.
     outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
+    /// Where a call that waits for a slot at its provider says it is queued
+    /// (bug-33a61f).
+    live_output: Option<crate::live_output::LiveOutput>,
+    /// How long a held call waits for its slot ([`HELD_CALL_WAIT`]).
+    held_call_wait: Duration,
 }
 
 impl OpenAiCompatLlmBackend {
@@ -225,6 +240,8 @@ impl OpenAiCompatLlmBackend {
             metrics: None,
             supports_vision: false,
             outcome_recorder: None,
+            live_output: None,
+            held_call_wait: HELD_CALL_WAIT,
         }
     }
 
@@ -294,6 +311,23 @@ impl OpenAiCompatLlmBackend {
     #[must_use]
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<ProviderRateLimiter>) -> Self {
         self.rate_limiter = rate_limiter;
+        self
+    }
+
+    /// Say on `live_output`, as queued, while a call waits for a slot at its
+    /// provider, so the stall watchdog and the try's time bound skip the wait
+    /// (bug-33a61f).
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: Option<crate::live_output::LiveOutput>) -> Self {
+        self.live_output = live_output;
+        self
+    }
+
+    /// How long a held call waits for its slot before it fails as
+    /// rate-limited ([`HELD_CALL_WAIT`] by default).
+    #[must_use]
+    pub const fn with_held_call_wait(mut self, wait: Duration) -> Self {
+        self.held_call_wait = wait;
         self
     }
 
@@ -424,24 +458,77 @@ impl OpenAiCompatLlmBackend {
         chat_endpoint(&self.base_url)
     }
 
-    /// Admit a call to the endpoint, or hold it back as a rate limit, without
-    /// calling, while the provider is at the calls at once it showed it takes:
-    /// the tool loop and dispatch then wait it out or fail it over as they do a
-    /// 429, and parallel tasks do not all call a provider that refuses them
-    /// (bug-4b6844).
-    fn admit(&self) -> Result<crate::rate_limit::AdmittedCall, LlmError> {
-        self.rate_limiter.admit(&self.endpoint()).map_err(|held| {
-            tracing::info!(
-                provider = %self.provider_id,
-                in_flight = held.in_flight,
-                limit = held.limit,
-                "holding a call back: its provider rate-limited one with this many calls in \
-                 flight, so it is held as rate-limited without calling the provider"
-            );
-            LlmError::Provider(ProviderError::RateLimit {
-                retry_after_ms: None,
-            })
-        })
+    /// Admit a call to the endpoint. While the provider is at the calls at
+    /// once it showed it takes, parallel tasks do not all call a provider that
+    /// refuses them (bug-4b6844): the call waits for a slot, without calling,
+    /// until one of the calls in flight ends, and then goes out in the same
+    /// run, its conversation intact (bug-33a61f). The wait is said on the live
+    /// output as queued, so the stall watchdog and the try's time bound skip
+    /// it. A call held [`Self::with_held_call_wait`] long fails as a rate
+    /// limit, still without calling, and the tool loop and dispatch take it
+    /// from there as they do a 429.
+    async fn admit(&self) -> Result<crate::rate_limit::AdmittedCall, LlmError> {
+        let endpoint = self.endpoint();
+        let mut held_since: Option<std::time::Instant> = None;
+        let admitted = loop {
+            let held = match self.rate_limiter.admit(&endpoint) {
+                Ok(call) => break Ok(call),
+                Err(held) => held,
+            };
+            let since = match held_since {
+                Some(since) => since,
+                None => {
+                    tracing::info!(
+                        provider = %self.provider_id,
+                        in_flight = held.in_flight,
+                        limit = held.limit,
+                        "holding a call back: its provider rate-limited one with this many calls \
+                         in flight, so it waits for one of them to end without calling the \
+                         provider"
+                    );
+                    *held_since.insert(std::time::Instant::now())
+                }
+            };
+            if since.elapsed() >= self.held_call_wait {
+                tracing::warn!(
+                    provider = %self.provider_id,
+                    waited_secs = since.elapsed().as_secs(),
+                    "a held call waited its longest for a slot; failing it as rate-limited \
+                     without calling the provider"
+                );
+                break Err(LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: None,
+                }));
+            }
+            // Said on every look: the run's own last events, its tool's
+            // result among them, reach the live output through the immune
+            // boundary's buffer, and one that lands after this would end the
+            // queue.
+            self.say_queued(true);
+            tokio::time::sleep(HELD_CALL_POLL).await;
+        };
+        if let Some(since) = held_since {
+            self.say_queued(false);
+            if admitted.is_ok() {
+                tracing::info!(
+                    provider = %self.provider_id,
+                    waited_ms = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    "a held call got its slot"
+                );
+            }
+        }
+        admitted
+    }
+
+    /// Say on the live output whether a call is `waiting` for a slot at its
+    /// provider. The output's channel is never waited on: an event that does
+    /// not fit is dropped.
+    fn say_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .try_send(crate::live_output::LiveAgentEvent::Queued { waiting });
+        }
     }
 
     /// Note a refusal `error` that is a rate limit with the run's limiter,
@@ -688,7 +775,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
     ) -> Result<BackendResponse, LlmError> {
         let body_bytes = self.build_body(messages, tools, session, false)?;
         self.rate_limiter.acquire(&self.provider_id).await;
-        let _admitted = self.admit()?;
+        let _admitted = self.admit().await?;
 
         let raw = match self
             .poster
@@ -736,7 +823,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
     > {
         let body_bytes = self.build_body(messages, tools, session, true)?;
         self.rate_limiter.acquire(&self.provider_id).await;
-        let admitted = self.admit()?;
+        let admitted = self.admit().await?;
 
         let mut req = crate::provider::shared_http_client().post(self.endpoint());
         for (key, value) in &self.computed_headers {
@@ -2431,11 +2518,12 @@ mod tests {
         }
     }
 
-    /// bug-4b6844: parallel calls to one provider share what its rate limits
-    /// taught. With one call in flight the provider refused a second (HTTP
-    /// 429), so it takes one at a time: the second caller's next call is held
-    /// back as rate-limited without reaching the provider, and goes out once
-    /// the first call has ended.
+    /// bug-4b6844, bug-33a61f: parallel calls to one provider share what its
+    /// rate limits taught. With one call in flight the provider refused a
+    /// second (HTTP 429), so it takes one at a time. A call held past its
+    /// wait fails as rate-limited without reaching the provider. The second
+    /// caller's next call waits for its slot, said on its live output as
+    /// queued, and goes out once the first call has ended.
     #[tokio::test]
     async fn parallel_calls_share_a_providers_rate_limit() {
         let answer = serde_json::json!({
@@ -2458,9 +2546,18 @@ mod tests {
             )),
             Ok(answer),
         ]);
+        let (sink, mut events) = tokio::sync::mpsc::channel(64);
         let second = OpenAiCompatLlmBackend::new("test-key", "model")
             .with_rate_limiter(Arc::clone(&limiter))
-            .with_poster(Box::new(poster));
+            .with_poster(Box::new(poster))
+            .with_live_output(Some(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            }));
+        let impatient = OpenAiCompatLlmBackend::new("test-key", "model")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_poster(Box::new(MockPoster::new(Vec::new()).0))
+            .with_held_call_wait(Duration::from_millis(300));
         let messages = [serde_json::json!({"role": "user", "content": "hi"})];
         let tools = RenderedTools::JsonArray(serde_json::json!([]));
         let session = SessionState::default();
@@ -2485,7 +2582,7 @@ mod tests {
             ),
             "{refused:?}"
         );
-        let held = second.send_turn(&messages, &tools, &session).await;
+        let held = impatient.send_turn(&messages, &tools, &session).await;
         assert!(
             matches!(
                 held,
@@ -2495,22 +2592,47 @@ mod tests {
             ),
             "{held:?}"
         );
+
+        let waiting = tokio::spawn(async move {
+            let messages = [serde_json::json!({"role": "user", "content": "hi"})];
+            second
+                .send_turn(
+                    &messages,
+                    &RenderedTools::JsonArray(serde_json::json!([])),
+                    &SessionState::default(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             requests.lock().expect("requests lock").len(),
             1,
-            "the held call never reached the provider"
+            "the held calls never reached the provider"
         );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
 
         gate.notify_one();
         in_flight
             .await
             .expect("the first call's task")
             .expect("the first call is served");
-        second
-            .send_turn(&messages, &tools, &session)
+        waiting
             .await
-            .expect("with the first call ended, the second goes out");
+            .expect("the held call's task")
+            .expect("with the first call ended, the held call goes out");
         assert_eq!(requests.lock().expect("requests lock").len(), 2);
+        let mut said = Vec::new();
+        while let Ok(crate::live_output::LiveAgentEvent::Queued { waiting }) = events.try_recv() {
+            said.push(waiting);
+        }
+        assert_eq!(said.last(), Some(&false), "{said:?}");
+        assert!(
+            said[..said.len() - 1].iter().all(|waiting| *waiting),
+            "{said:?}"
+        );
     }
 
     #[tokio::test]

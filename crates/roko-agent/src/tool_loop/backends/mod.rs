@@ -10,6 +10,7 @@ use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 
 use crate::http::{HttpPostError, HttpPoster};
+use crate::live_output::LiveOutput;
 use crate::provider::openai_compat::{
     base_url_for_tool_loop, build_extra_body_params, max_tokens_for_model, resolve_api_key,
     should_use_max_completion_tokens,
@@ -50,6 +51,19 @@ pub fn create_openai_compat_backend(
     model: &ModelProfile,
     poster: Arc<dyn HttpPoster>,
 ) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
+    create_observed_openai_compat_backend(provider, model, poster, None)
+}
+
+/// [`create_openai_compat_backend`], whose calls say on `live_output`, as
+/// queued, while they wait for a slot at their provider (bug-33a61f). The
+/// adapters pass the agent's live output, so the stall watchdog and the
+/// try's time bound skip the wait.
+pub fn create_observed_openai_compat_backend(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    poster: Arc<dyn HttpPoster>,
+    live_output: Option<LiveOutput>,
+) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
     match provider.kind {
         // The Hermes and OpenClaw harnesses speak the same chat completions
         // protocol over HTTP (bug-02d5ad).
@@ -71,7 +85,8 @@ pub fn create_openai_compat_backend(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
-                .with_provider_kind(provider.kind);
+                .with_provider_kind(provider.kind)
+                .with_live_output(live_output);
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }
@@ -113,7 +128,8 @@ pub fn create_openai_compat_backend(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
-                .with_provider_kind(ProviderKind::PerplexityApi);
+                .with_provider_kind(ProviderKind::PerplexityApi)
+                .with_live_output(live_output);
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }
@@ -147,7 +163,8 @@ pub fn create_openai_compat_backend(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
-                .with_provider_kind(ProviderKind::CerebrasApi);
+                .with_provider_kind(ProviderKind::CerebrasApi)
+                .with_live_output(live_output);
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }

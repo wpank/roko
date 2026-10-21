@@ -31,7 +31,7 @@ use crate::provider::{
     build_provider_tool_dispatcher, tool_limit_for_temperament,
     tool_loop_max_iterations_for_options, with_tool_observability,
 };
-use crate::tool_loop::backends::create_openai_compat_backend;
+use crate::tool_loop::backends::create_observed_openai_compat_backend;
 use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
 use crate::translate::Translator;
 use crate::translate::capability::{cap_tools_for_profile, translator_for_openai_compat};
@@ -214,15 +214,17 @@ pub(crate) fn base_url_for_tool_loop(provider: &ProviderConfig) -> String {
 /// [`shared_rate_limiter`]: crate::openai_compat_backend::shared_rate_limiter
 #[must_use]
 pub fn rate_limit_endpoint(provider: &ProviderConfig) -> Option<String> {
-    matches!(
-        provider.kind,
-        ProviderKind::OpenAiCompat
-            | ProviderKind::PerplexityApi
-            | ProviderKind::Hermes
-            | ProviderKind::OpenClaw
-            | ProviderKind::CerebrasApi
-    )
-    .then(|| crate::openai_compat_backend::chat_endpoint(&base_url_for_tool_loop(provider)))
+    // Each kind's base URL as `create_openai_compat_backend` defaults it.
+    let default = match provider.kind {
+        ProviderKind::OpenAiCompat | ProviderKind::Hermes | ProviderKind::OpenClaw => {
+            "https://api.openai.com/v1"
+        }
+        ProviderKind::PerplexityApi => "https://api.perplexity.ai",
+        ProviderKind::CerebrasApi => "https://api.cerebras.ai/v1",
+        _ => return None,
+    };
+    let base_url = provider.base_url.as_deref().unwrap_or(default);
+    Some(crate::openai_compat_backend::chat_endpoint(base_url))
 }
 
 /// The process's own calls in flight to `provider` from roko's tool loop,
@@ -597,7 +599,12 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
             let poster = Arc::new(ReqwestPoster::new());
-            let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
+            let backend = create_observed_openai_compat_backend(
+                &tool_loop_provider,
+                model,
+                poster,
+                options.live_output.clone(),
+            )?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
                 .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
@@ -723,6 +730,36 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    /// bug-33a61f: the rate limiter keys a provider's calls by the chat
+    /// endpoint its backend calls, each kind's default base URL included, and
+    /// keys none for a provider no OpenAI-compatible backend calls.
+    #[test]
+    fn rate_limit_endpoint_is_the_chat_endpoint_its_backend_calls() {
+        let provider = |kind, base_url: Option<&str>| ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            ..ProviderConfig::default()
+        };
+        let endpoint = |kind, base_url| rate_limit_endpoint(&provider(kind, base_url));
+        assert_eq!(
+            endpoint(
+                ProviderKind::OpenAiCompat,
+                Some("https://api.z.ai/api/paas/v4/")
+            )
+            .as_deref(),
+            Some("https://api.z.ai/api/paas/v4/chat/completions")
+        );
+        assert_eq!(
+            endpoint(ProviderKind::CerebrasApi, None).as_deref(),
+            Some("https://api.cerebras.ai/v1/chat/completions")
+        );
+        assert_eq!(
+            endpoint(ProviderKind::PerplexityApi, None).as_deref(),
+            Some("https://api.perplexity.ai/chat/completions")
+        );
+        assert_eq!(endpoint(ProviderKind::ClaudeCli, None), None);
     }
 
     fn spawn_chat_server(

@@ -831,22 +831,40 @@ impl GraphTaskDispatcher {
 
     /// Return a helper agent wired to the model chosen by
     /// [`select_cheap_model_key`] among those the run's side calls may use
-    /// ([`Self::side_call_models`]), or `None` when no such model is
-    /// dispatchable. Used for best-effort error enrichment, quality judgment
-    /// and gate reflection calls, which count toward the attempt being
-    /// verified ([`HelperAgent`]).
+    /// ([`Self::side_call_models`]) that are healthy ([`Self::helper_healthy`]),
+    /// or `None` when no such model is dispatchable: its callers then fall
+    /// back as they do with no model configured. Used for best-effort error
+    /// enrichment, quality judgment and gate reflection calls, which count
+    /// toward the attempt being verified ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
         let models = self.side_call_models();
-        select_cheap_model_key(&self.config, |key| models.allow(key))
-            .map(|model_key| self.helper_agent(model_key))
+        select_cheap_model_key(&self.config, |key| {
+            models.allow(key) && self.helper_healthy(key)
+        })
+        .map(|model_key| self.helper_agent(model_key))
     }
 
     /// The helper model that judges an attempt `executor` (a model slug) ran
     /// ([`routing_context::select_judge_model_key`], 9123), among the models
-    /// the run's side calls may use.
+    /// the run's side calls may use that are healthy.
     fn judge_model_key(&self, executor: &str) -> Option<(String, bool)> {
         let models = self.side_call_models();
-        routing_context::select_judge_model_key(&self.config, executor, |key| models.allow(key))
+        routing_context::select_judge_model_key(&self.config, executor, |key| {
+            models.allow(key) && self.helper_healthy(key)
+        })
+    }
+
+    /// Whether a helper call may use the model `key` (bug-f9ca2f): its
+    /// provider's circuit is closed in the run's health registry, as task
+    /// routing asks, and it did not fail its tool-use probe this run.
+    fn helper_healthy(&self, key: &str) -> bool {
+        let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+            .resolve(key);
+        self.factory
+            .health_registry
+            .is_available(&target.provider_id)
+            && self.factory.failed_probe(key).is_none()
+            && self.factory.failed_probe(&target.model_slug).is_none()
     }
 
     /// Whether this run's tasks hold their outbound tool calls for approval,

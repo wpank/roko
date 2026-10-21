@@ -963,4 +963,74 @@ mod tests {
         assert_eq!(agent.model_key, "cli-sonnet");
         assert_eq!(agent.timeout_ms, 7_000);
     }
+
+    /// bug-f9ca2f, the shape of run 82b7e069: the cheapest helper model's
+    /// provider answers 402 until its circuit opens, and the next one's rung
+    /// probe failed this run, so helper calls pass over both and take the
+    /// next cheapest healthy model; the judge does too. With no healthy model
+    /// left, no helper is called, and its callers keep their deterministic
+    /// fallback.
+    #[tokio::test]
+    async fn helper_model_passes_over_a_provider_with_an_open_circuit() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let temp = tempdir().expect("tempdir");
+        let priced = |provider: &str, slug: &str, input: f64| ModelProfile {
+            cost_input_per_m: Some(input),
+            cost_output_per_m: Some(input * 2.0),
+            ..model(provider, slug, None)
+        };
+        let mut config = config_with_models(vec![
+            ("oss", priced("cerebras", "gpt-oss-120b", 0.35)),
+            ("mini", priced("openai", "gpt-5.4-mini", 0.5)),
+            ("glm", priced("zai", "glm-4.7", 0.6)),
+        ]);
+        config.providers.clear();
+        for provider in ["cerebras", "openai", "zai"] {
+            config
+                .providers
+                .insert(provider.to_string(), cli_provider("/bin/sh"));
+        }
+        crate::graph_task_dispatch::tests::fence_audits(&mut config);
+        let config = Arc::new(config);
+        let failed = [(
+            "gpt-5.4-mini".to_string(),
+            "insufficient_credits: http 402".to_string(),
+        )]
+        .into();
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .skip_failed_rungs(&failed);
+        let dispatcher =
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf());
+        assert_eq!(
+            dispatcher.cheap_agent().expect("a helper").model_key,
+            "oss",
+            "the cheapest, while its provider is healthy"
+        );
+
+        let health = &dispatcher.factory.health_registry;
+        for _ in 0..3 {
+            health.record_failure("cerebras", ErrorClass::Billing);
+        }
+        assert_eq!(
+            dispatcher
+                .cheap_agent()
+                .expect("a healthy helper")
+                .model_key,
+            "glm"
+        );
+        let (judge, _) = dispatcher
+            .judge_model_key("claude-sonnet-4-6")
+            .expect("a healthy judge");
+        assert_eq!(judge, "glm");
+
+        for _ in 0..3 {
+            health.record_failure("zai", ErrorClass::Billing);
+        }
+        assert!(
+            dispatcher.cheap_agent().is_none(),
+            "no healthy helper: no call"
+        );
+    }
 }

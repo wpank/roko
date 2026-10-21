@@ -591,7 +591,8 @@ async fn call_tool(
             let title = optional_title(&arguments)?;
             // gap-33d458: a cap the call names, under the run tools' ceiling.
             let cap = super::plans::GenerationCap::resolve(state, mcp_cap(state, &arguments)?);
-            Ok(generate_plan(state, request, &mcp_origin(auth), title, cap).await)
+            let origin = mcp_origin(auth);
+            Ok(generate_plan(state, request, &origin, title, cap, spec_path).await)
         }
         "run_cancel" => {
             let run_id = required_str(&arguments, name, "run_id")?;
@@ -1090,9 +1091,10 @@ async fn generate_plan(
     origin: &RunOrigin,
     title: Option<String>,
     cap: super::plans::GenerationCap,
+    spec_path: Option<&str>,
 ) -> Value {
     let (operation_id, plan_id) =
-        super::plans::start_plan_generation(state, prompt, origin, title, cap).await;
+        super::plans::start_plan_generation(state, prompt, origin, title, cap, spec_path).await;
     let mut answer = json!({
         "run_id": operation_id,
         "plan_id": plan_id,
@@ -1494,13 +1496,13 @@ mod tests {
             slug: &str,
             _prompt: &str,
             _for_chat_host: bool,
-            max_usd: Option<f64>,
+            options: crate::runtime::PlanGenerationOptions,
             _progress: crate::runtime::ProgressReporter,
         ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
             self.generations
                 .lock()
                 .expect("lock plan generations")
-                .push(max_usd);
+                .push(options.max_usd);
             let plans_root = workdir.join("plans");
             Ok(crate::runtime::PlanGenerationResult {
                 plan_targets: vec![plans_root.join(slug)],

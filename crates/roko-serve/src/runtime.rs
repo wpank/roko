@@ -93,6 +93,17 @@ pub struct PlanGenerationResult {
     pub repairs: Vec<String>,
 }
 
+/// What a plan generation runs under, beyond its request's text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlanGenerationOptions {
+    /// What its planner calls may cost together, in USD (gap-33d458); 0 sets
+    /// no cap. `None` leaves the cap to `[authoring] max_generation_usd`.
+    pub max_usd: Option<f64>,
+    /// The workspace file the request's text is, when a host named it with
+    /// `spec_path` (bug-60ad88): every task of the plan reads it.
+    pub spec_path: Option<std::path::PathBuf>,
+}
+
 /// Where a long operation reports what it is doing, as a JSON object, each
 /// time it moves on (gap-11d870): the operation's status shows the latest.
 pub type ProgressReporter = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
@@ -666,9 +677,8 @@ pub trait CliRuntime: Send + Sync + 'static {
     /// [`Self::generate_plan_from_prompt`], reporting what the generation is
     /// doing to `progress` each time it moves on (gap-11d870): a JSON object
     /// with its `stage`, `attempt` of `attempts`, `reason`, `model`, `calls`
-    /// and `cost_usd` so far. Its planner calls may cost `max_usd` together
-    /// (gap-33d458), where 0 sets no cap; `None` leaves the cap to `[authoring]
-    /// max_generation_usd`. The default reports nothing and leaves the cap to
+    /// and `cost_usd` so far, under `options`: its cap and the file its
+    /// request's text is. The default reports nothing and leaves `options` to
     /// the method it calls.
     async fn generate_plan_reporting(
         &self,
@@ -676,10 +686,10 @@ pub trait CliRuntime: Send + Sync + 'static {
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
-        max_usd: Option<f64>,
+        options: PlanGenerationOptions,
         progress: ProgressReporter,
     ) -> anyhow::Result<PlanGenerationResult> {
-        let _ = (max_usd, progress);
+        let _ = (options, progress);
         if for_chat_host {
             self.generate_plan_for_chat_host(workdir, slug, prompt)
                 .await

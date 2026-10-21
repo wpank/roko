@@ -1027,6 +1027,8 @@ async fn plan_generate_with_a_spec_path_plans_from_the_file() {
 /// writes the plan (gap-33d458).
 struct CapRuntime {
     caps: Arc<Mutex<Vec<Option<f64>>>>,
+    /// The file each generation's request was read from (bug-60ad88).
+    spec_paths: Arc<Mutex<Vec<Option<PathBuf>>>>,
     notify: Arc<Notify>,
 }
 
@@ -1046,10 +1048,14 @@ impl CliRuntime for CapRuntime {
         slug: &str,
         _prompt: &str,
         _for_chat_host: bool,
-        max_usd: Option<f64>,
+        options: crate::runtime::PlanGenerationOptions,
         _progress: crate::runtime::ProgressReporter,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
-        self.caps.lock().expect("lock caps").push(max_usd);
+        self.caps.lock().expect("lock caps").push(options.max_usd);
+        self.spec_paths
+            .lock()
+            .expect("lock spec paths")
+            .push(options.spec_path);
         self.notify.notify_one();
         let plans_root = workdir.join("plans");
         Ok(crate::runtime::PlanGenerationResult {
@@ -1091,6 +1097,7 @@ async fn plan_generate_takes_a_spend_cap() {
     let notify = Arc::new(Notify::new());
     let runtime = Arc::new(CapRuntime {
         caps: Arc::clone(&caps),
+        spec_paths: Arc::default(),
         notify: Arc::clone(&notify),
     });
     let (_dir, state) = test_state_with_runtime(runtime);
@@ -1129,6 +1136,38 @@ async fn plan_generate_takes_a_spend_cap() {
             "{max_usd}"
         );
     }
+}
+
+/// bug-60ad88: a `spec_path` reaches the runtime as the file the request's
+/// text was read from, so every task of the plan reads it.
+#[tokio::test]
+async fn plan_generate_passes_its_spec_path_on() {
+    let spec_paths = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
+    let runtime = Arc::new(CapRuntime {
+        caps: Arc::default(),
+        spec_paths: Arc::clone(&spec_paths),
+        notify: Arc::clone(&notify),
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    std::fs::create_dir_all(state.workdir.join("docs/specs")).expect("docs");
+    std::fs::write(state.workdir.join("docs/specs/phase-3.md"), "# Phase 3\n").expect("a spec");
+    let request = GenerateRequest {
+        slug: None,
+        prompt: None,
+        spec_path: Some("docs/specs/phase-3.md".into()),
+        max_usd: None,
+    };
+    generate_plan(State(Arc::clone(&state)), ValidJson(request))
+        .await
+        .expect("the generation starts");
+    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+        .await
+        .expect("the runtime is called");
+    assert_eq!(
+        *spec_paths.lock().expect("lock spec paths"),
+        [Some(state.workdir.join("docs/specs/phase-3.md"))]
+    );
 }
 
 /// A runtime whose plan generation returns without writing a plan.
@@ -3192,6 +3231,7 @@ async fn a_chat_host_plan_is_generated_for_a_chat_host() {
             &origin,
             None,
             GenerationCap::resolve(&state, None),
+            None,
         )
         .await;
         tokio::time::timeout(std::time::Duration::from_secs(1), notified)
@@ -3233,6 +3273,7 @@ async fn plan_generation_status_reports_its_cost() {
         &origin,
         None,
         GenerationCap::resolve(&state, None),
+        None,
     )
     .await;
 
@@ -3281,7 +3322,7 @@ impl CliRuntime for StagedRuntime {
         slug: &str,
         _prompt: &str,
         _for_chat_host: bool,
-        _max_usd: Option<f64>,
+        _options: crate::runtime::PlanGenerationOptions,
         progress: crate::runtime::ProgressReporter,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
         let stage = |stage: &str, cost_usd: f64| {
@@ -3367,6 +3408,7 @@ async fn plan_generation_status_reports_its_stage() {
         &crate::runtime::RunOrigin::Http,
         None,
         GenerationCap::resolve(&state, None),
+        None,
     )
     .await;
     let status = |app: axum::Router| {
@@ -3440,6 +3482,7 @@ async fn plan_generation_status_outlives_its_handle() {
         &crate::runtime::RunOrigin::Http,
         None,
         GenerationCap::resolve(&state, None),
+        None,
     )
     .await;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {

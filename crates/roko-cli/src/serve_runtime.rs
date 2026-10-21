@@ -21,9 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CheckpointRun, CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult,
-    PlanRunOptions, ProgressReporter, RepoInfo, RestoredCheckpoint, RunResult, RunResultUsage,
-    RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CheckpointRun, CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationOptions,
+    PlanGenerationResult, PlanRunOptions, ProgressReporter, RepoInfo, RestoredCheckpoint,
+    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -263,8 +263,15 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, false, None, None)
-            .await
+        self.generate_plan(
+            workdir,
+            slug,
+            prompt,
+            false,
+            PlanGenerationOptions::default(),
+            None,
+        )
+        .await
     }
 
     async fn generate_plan_for_chat_host(
@@ -273,8 +280,15 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, true, None, None)
-            .await
+        self.generate_plan(
+            workdir,
+            slug,
+            prompt,
+            true,
+            PlanGenerationOptions::default(),
+            None,
+        )
+        .await
     }
 
     async fn generate_plan_reporting(
@@ -283,7 +297,7 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
-        max_usd: Option<f64>,
+        options: PlanGenerationOptions,
         progress: ProgressReporter,
     ) -> anyhow::Result<PlanGenerationResult> {
         // gap-11d870: each stage the generator reports, as the JSON object
@@ -299,7 +313,7 @@ impl CliRuntime for RokoCliRuntime {
             slug,
             prompt,
             for_chat_host,
-            max_usd,
+            options,
             Some(progress),
         )
         .await
@@ -934,15 +948,16 @@ impl RokoCliRuntime {
     /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
     /// run is an error that names why and what it cost, so the operation
     /// fails. Each stage goes to `progress` as it starts (gap-11d870). The
-    /// planner calls may cost `max_usd` together (gap-33d458); `None` is
-    /// `[authoring] max_generation_usd`.
+    /// planner calls may cost `options.max_usd` together (gap-33d458; `None`
+    /// is `[authoring] max_generation_usd`), and every task reads the file
+    /// `options.spec_path` the prompt is, when it is one (bug-60ad88).
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
-        max_usd: Option<f64>,
+        options: PlanGenerationOptions,
         progress: Option<plan_generate::PlanProgressSink>,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
@@ -952,7 +967,8 @@ impl RokoCliRuntime {
             unattended: for_chat_host,
             for_chat_host,
             progress,
-            max_usd,
+            max_usd: options.max_usd,
+            source_path: options.spec_path.as_deref(),
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,

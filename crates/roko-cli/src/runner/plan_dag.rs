@@ -653,6 +653,7 @@ mod tests {
                     allow_unverified: false,
                     outbound: None,
                     dropped_checks: Vec::new(),
+                    sources: Vec::new(),
                 },
                 tasks,
             },

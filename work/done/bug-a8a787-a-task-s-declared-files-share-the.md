@@ -2,7 +2,7 @@
 id = "bug-a8a787"
 kind = "bug"
 title = "A task's declared files share the 4,000-token context layer with its structured context and come first, so a whole spec read (phase 4's, 21 KB numbered) cuts off the task's other reads, Files in scope, acceptance and verify commands"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "ef4487f14"
 source = "round-v7-hermes-pilot#N-context-cap"
 discovered_from = "agent:hermes-pilot (round v7, phase 4 plan, captest-proof)"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::build_runner_context", "crates/roko-compose/src/system_prompt_builder.rs::section_budget_cap"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-60ad88"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_whole_spec_and_its_headers_fit_the_file_context_or_say_what_is_cut' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_whole_spec_and_its_headers_fit_the_file_context_or_say_what_is_cut"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T08:30:08Z"
+commit = "e70eb3ff6"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-21T06:08:26Z"
+forced = false
+evidence = "Closed by e70eb3ff6: prompt: a task's declared files get a section of their own under the role's file budget, sources first and cut last, each cut named, so a whole spec never cuts the structured context (bug-a8a787)"
 +++
 
 ## Problem

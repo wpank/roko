@@ -2614,6 +2614,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::SpecGateStarted { .. }
         | DashboardEvent::SpecGateFinished { .. }
         | DashboardEvent::SpecGateStep { .. }
+        | DashboardEvent::ReasoningCut { .. }
         | DashboardEvent::RungSlow { .. }
         | DashboardEvent::ProviderExhausted { .. }
         | DashboardEvent::KnowledgeWritten { .. }

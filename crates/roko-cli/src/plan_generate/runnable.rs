@@ -668,13 +668,22 @@ pub(super) fn repair_build_checks(
 /// every source, without listing that file: each edit was out of scope. A
 /// build-registration file may sit in several tasks' `files`: generation
 /// counts it as neither split ownership nor an overlap
-/// ([`roko_graph::exclusion::is_registration_file`]). Returns one line per
-/// file added.
-pub(super) fn repair_build_lists(plan: &mut TasksFile, workdir: &Path) -> Vec<String> {
+/// ([`roko_graph::exclusion::is_registration_file`]). A task whose sources a
+/// task it waits for makes that file collect with a glob gets no entry
+/// (bug-7a5aca): that earlier task owns the file, and its own text, or the
+/// plan's source `texts`, says the glob covers them ([`glob_owner`]). Returns
+/// one line per file added, and one per file left out for a glob.
+pub(super) fn repair_build_lists(
+    plan: &mut TasksFile,
+    workdir: &Path,
+    texts: &[&str],
+) -> Vec<String> {
     let mut repairs = Vec::new();
     for index in 0..plan.tasks.len() {
         let written = written_before_and_by(plan, index);
-        let mut lists: Vec<(String, String)> = Vec::new();
+        // Each file a source the task creates must be listed in, with the
+        // source and the earlier task whose glob covers it, if one does.
+        let mut needed: Vec<(String, String, Option<(String, bool)>)> = Vec::new();
         for source in created_by(plan, index, workdir) {
             let compiled = Path::new(&source)
                 .extension()
@@ -686,22 +695,163 @@ pub(super) fn repair_build_lists(plan: &mut TasksFile, workdir: &Path) -> Vec<St
             let Some(list) = cmake_list_for(&source, workdir, &written) else {
                 continue;
             };
-            let task = &plan.tasks[index];
-            if !task.files.contains(&list) && !lists.iter().any(|(added, _)| *added == list) {
-                lists.push((list, source));
+            if !plan.tasks[index].files.contains(&list) {
+                let owner = glob_owner(plan, index, &list, &source, texts);
+                needed.push((list, source, owner));
             }
         }
-        for (list, source) in lists {
-            let task = &mut plan.tasks[index];
-            repairs.push(format!(
-                "{}: added `{list}` to its files: it creates `{source}`, which that CMake file \
-                 lists",
-                task.id
-            ));
-            task.files.push(list);
+        let mut done: Vec<&str> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
+        for (list, source, owner) in &needed {
+            if done.contains(&list.as_str()) {
+                continue;
+            }
+            done.push(list.as_str());
+            let task = &plan.tasks[index];
+            // The file goes in once any of its sources is no glob's.
+            let unglobbed = needed
+                .iter()
+                .find(|(other, _, owner)| other == list && owner.is_none());
+            match (unglobbed, owner) {
+                (Some((_, source, _)), _) => {
+                    repairs.push(format!(
+                        "{}: added `{list}` to its files: it creates `{source}`, which that CMake \
+                         file lists",
+                        task.id
+                    ));
+                    added.push(list.clone());
+                }
+                (None, Some((owner, own_text))) => {
+                    let says = if *own_text {
+                        format!("as {owner}'s own text says")
+                    } else {
+                        "as the plan's source says".to_string()
+                    };
+                    repairs.push(format!(
+                        "{}: left `{list}` out of its files, though it creates `{source}`: \
+                         {owner}, which it waits for, makes that CMake file collect it with a \
+                         glob, {says}",
+                        task.id
+                    ));
+                }
+                (None, None) => {}
+            }
         }
+        plan.tasks[index].files.extend(added);
     }
     repairs
+}
+
+/// The task, among those `plan.tasks[index]` waits for, that makes `list`
+/// collect `source` with a glob (bug-7a5aca), and whether its own text says
+/// so: it has `list` in its `files`, and its text says a glob covers
+/// `source` ([`says_glob_covers`]), or else one of the plan's source `texts`
+/// does. In Undertow's phase 4, T1 adds `plugin/ui/*.cpp` to
+/// `plugin/CMakeLists.txt` by a glob, and the widget tasks that create
+/// `plugin/ui/*.cpp` all wait for it.
+fn glob_owner(
+    plan: &TasksFile,
+    index: usize,
+    list: &str,
+    source: &str,
+    texts: &[&str],
+) -> Option<(String, bool)> {
+    let owners: Vec<&TaskDef> = waited_for(plan, index)
+        .into_iter()
+        .map(|earlier| &plan.tasks[earlier])
+        .filter(|task| task.files.iter().any(|file| file == list))
+        .collect();
+    if let Some(owner) = owners
+        .iter()
+        .find(|task| says_glob_covers(&task_text(task), list, source))
+    {
+        return Some((owner.id.clone(), true));
+    }
+    let owner = owners.first()?;
+    texts
+        .iter()
+        .any(|text| says_glob_covers(text, list, source))
+        .then(|| (owner.id.clone(), false))
+}
+
+/// The indices of the tasks `plan.tasks[index]` waits for, directly or
+/// through others, in plan order.
+fn waited_for(plan: &TasksFile, index: usize) -> Vec<usize> {
+    let mut found: Vec<usize> = Vec::new();
+    let mut pending: Vec<&str> = plan.tasks[index]
+        .depends_on
+        .iter()
+        .map(String::as_str)
+        .collect();
+    while let Some(id) = pending.pop() {
+        let Some(earlier) = plan.tasks.iter().position(|task| task.id == id) else {
+            continue;
+        };
+        if earlier == index || found.contains(&earlier) {
+            continue;
+        }
+        found.push(earlier);
+        pending.extend(plan.tasks[earlier].depends_on.iter().map(String::as_str));
+    }
+    found.sort_unstable();
+    found
+}
+
+/// A task's own words: its title, goal, description and acceptance
+/// criteria, a passage each.
+fn task_text(task: &TaskDef) -> String {
+    std::iter::once(task.title.as_str())
+        .chain(task.spec.goal.as_deref())
+        .chain(task.description.as_deref())
+        .chain(task.acceptance.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Whether `text` says that `list`, a CMake file, collects `source` with a
+/// glob: a passage of it (blank lines part them) says "glob" and names a
+/// pattern that covers the source, as a workspace path (`plugin/ui/*.cpp`),
+/// or, when the passage names `list`, as a path from the list's directory
+/// (`src/*.cpp`, `${CMAKE_CURRENT_SOURCE_DIR}/ui/*.cpp`).
+fn says_glob_covers(text: &str, list: &str, source: &str) -> bool {
+    let list_dir = Path::new(list)
+        .parent()
+        .map(|dir| dir.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let from_list = |pattern: &str| {
+        if list_dir.is_empty() {
+            pattern.to_string()
+        } else {
+            format!("{list_dir}/{pattern}")
+        }
+    };
+    text.split("\n\n").any(|passage| {
+        if !passage.to_lowercase().contains("glob") {
+            return false;
+        }
+        let names_list = passage.contains(list);
+        let options = glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: !passage.contains("GLOB_RECURSE"),
+            require_literal_leading_dot: false,
+        };
+        let covers = |pattern: &str| {
+            glob::Pattern::new(pattern).is_ok_and(|pattern| pattern.matches_with(source, options))
+        };
+        passage
+            .split(|c: char| c.is_whitespace() || "`\"'(),;".contains(c))
+            .map(|word| word.trim_end_matches(['.', ':']))
+            .filter(|word| word.contains('*'))
+            .any(|word| {
+                let relative = word
+                    .strip_prefix("${CMAKE_CURRENT_SOURCE_DIR}/")
+                    .or_else(|| word.strip_prefix("${CMAKE_CURRENT_LIST_DIR}/"));
+                match relative {
+                    Some(pattern) => names_list && covers(&from_list(pattern)),
+                    None => covers(word) || (names_list && covers(&from_list(word))),
+                }
+            })
+    })
 }
 
 /// The `CMakeLists.txt` that lists `source`: the nearest one in a directory
@@ -3138,7 +3288,7 @@ pub(super) mod tests {
         for source in ["core/src/params.cpp", "core/src/engine.cpp"] {
             std::fs::write(temp.path().join(source), "// phase 0\n").expect("a source");
         }
-        let repairs = repair_build_lists(&mut plan, temp.path());
+        let repairs = repair_build_lists(&mut plan, temp.path(), &[]);
         assert_eq!(repairs.len(), 4, "{repairs:?}");
         assert_eq!(
             repairs[0],
@@ -3161,7 +3311,7 @@ pub(super) mod tests {
             .collect();
         assert_eq!(shared, Vec::<String>::new());
         assert!(
-            repair_build_lists(&mut plan, temp.path()).is_empty(),
+            repair_build_lists(&mut plan, temp.path(), &[]).is_empty(),
             "added once"
         );
 
@@ -3172,8 +3322,103 @@ pub(super) mod tests {
         )
         .expect("a globbing list");
         assert_eq!(
-            repair_build_lists(&mut plan, temp.path()),
+            repair_build_lists(&mut plan, temp.path(), &[]),
             Vec::<String>::new()
+        );
+    }
+
+    /// bug-7a5aca: round v7's phase-4 plan (op fe5ffce6) gives
+    /// `plugin/CMakeLists.txt` to T1, which adds `plugin/ui/*.cpp` to the
+    /// plugin by a glob, and this repair, reading only the base file, gave it
+    /// to the widget tasks T4 to T7 too, which create `plugin/ui/*.cpp` and
+    /// all wait for T1: five owners where the spec allows two. A task whose
+    /// sources an earlier task's glob covers now gets no entry, by that task's
+    /// own text or else by the spec's, and the repair says why. Without
+    /// either, or for a task that does not wait for the glob's owner, the file
+    /// goes in as before.
+    #[test]
+    fn a_glob_an_earlier_task_adds_keeps_the_build_list_out_of_later_tasks() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p4_build_lists");
+        let spec = std::fs::read_to_string(fixture.join("spec.md")).expect("the spec");
+        let draft = || TasksFile::parse(&fixture.join("tasks.toml")).expect("the phase-4 draft");
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Undertow's base: the plugin names its sources.
+        std::fs::create_dir_all(temp.path().join("plugin")).expect("plugin");
+        std::fs::create_dir_all(temp.path().join("core/src")).expect("core");
+        std::fs::write(
+            temp.path().join("plugin/CMakeLists.txt"),
+            "juce_add_plugin(Undertow)\n\
+             target_sources(Undertow PRIVATE\n    PluginProcessor.cpp\n    PluginEditor.cpp\n)\n",
+        )
+        .expect("the plugin list");
+        for source in [
+            "plugin/PluginProcessor.cpp",
+            "plugin/PluginEditor.cpp",
+            "core/src/engine.cpp",
+        ] {
+            std::fs::write(temp.path().join(source), "// base\n").expect("a source");
+        }
+        let owners = |plan: &TasksFile| -> Vec<String> {
+            plan.tasks
+                .iter()
+                .filter(|task| {
+                    task.files
+                        .iter()
+                        .any(|file| file == "plugin/CMakeLists.txt")
+                })
+                .map(|task| task.id.clone())
+                .collect()
+        };
+        let plumbing = "Implement the phase 4 plumbing in the engine and processor.".to_string();
+
+        // T1's description adds `plugin/ui/*.cpp` "with the requested CMake glob".
+        let mut plan = draft();
+        let repairs = repair_build_lists(&mut plan, temp.path(), &[]);
+        assert_eq!(owners(&plan), ["T1"]);
+        assert_eq!(repairs.len(), 4, "{repairs:#?}");
+        assert_eq!(
+            repairs[0],
+            "T4: left `plugin/CMakeLists.txt` out of its files, though it creates \
+             `plugin/ui/UnitArray.cpp`: T1, which it waits for, makes that CMake file collect it \
+             with a glob, as T1's own text says"
+        );
+
+        // The spec says so when T1's text does not.
+        let mut plan = draft();
+        plan.tasks[0].description = Some(plumbing.clone());
+        let repairs = repair_build_lists(&mut plan, temp.path(), &[&spec]);
+        assert_eq!(owners(&plan), ["T1"]);
+        assert_eq!(repairs.len(), 4, "{repairs:#?}");
+        assert!(
+            repairs
+                .iter()
+                .all(|line| line.ends_with("as the plan's source says")),
+            "{repairs:#?}"
+        );
+
+        // With neither, each widget task gets the file, as before.
+        let mut plan = draft();
+        plan.tasks[0].description = Some(plumbing);
+        let repairs = repair_build_lists(&mut plan, temp.path(), &[]);
+        assert_eq!(owners(&plan), ["T1", "T4", "T5", "T6", "T7"]);
+        assert_eq!(
+            repairs[3],
+            "T7: added `plugin/CMakeLists.txt` to its files: it creates `plugin/ui/Status.cpp`, \
+             which that CMake file lists"
+        );
+
+        // A task that does not wait for T1 may run before its glob exists.
+        let mut plan = draft();
+        plan.tasks[5].depends_on.clear();
+        let repairs = repair_build_lists(&mut plan, temp.path(), &[&spec]);
+        assert_eq!(owners(&plan), ["T1", "T6"], "{repairs:#?}");
+        assert!(
+            repairs.contains(
+                &"T6: added `plugin/CMakeLists.txt` to its files: it creates \
+                  `plugin/ui/Displays.cpp`, which that CMake file lists"
+                    .to_string()
+            ),
+            "{repairs:#?}"
         );
     }
 

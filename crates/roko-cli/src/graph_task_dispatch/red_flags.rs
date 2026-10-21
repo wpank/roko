@@ -902,12 +902,25 @@ fn output_limit_note(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> Opti
     let acted = closing["tool_calls"]
         .as_array()
         .is_some_and(|calls| !calls.is_empty());
-    (closing["finish_reason"] == "length" && !acted).then(|| {
-        "Its closing reply reached the model's output limit (finish_reason=length) while it was \
-         still reasoning, and made no tool call: the attempt stopped before it acted. Keep your \
-         reasoning short, make a tool call early, work in small steps, and write a large file in \
-         several smaller edits."
-            .to_string()
+    let act = "Keep your reasoning short, make a tool call early, work in small steps, and write \
+               a large file in several smaller edits.";
+    if acted {
+        return None;
+    }
+    // roko stops a reply that only reasons at its reasoning limit
+    // (gap-f3f950).
+    if closing["finish_reason"] == roko_agent::streaming::REASONING_LIMIT_FINISH {
+        return Some(format!(
+            "Its closing reply reasoned past its limit (finish_reason=reasoning_limit) with no \
+             tool call and no text, so it was stopped: the attempt stopped before it acted. {act}"
+        ));
+    }
+    (closing["finish_reason"] == "length").then(|| {
+        format!(
+            "Its closing reply reached the model's output limit (finish_reason=length) while it \
+             was still reasoning, and made no tool call: the attempt stopped before it acted. \
+             {act}"
+        )
     })
 }
 
@@ -1875,6 +1888,78 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
                 .is_some_and(|lead| lead.contains(stopped)),
             "{feedback:?}"
         );
+    }
+
+    /// A reply that streams only reasoning, about 500 tokens of it, past
+    /// roko's reasoning limit for a 1,024-token output limit (384), so roko
+    /// stops it (gap-f3f950).
+    fn long_reasoning_turn() -> serde_json::Value {
+        let mut turn = reasoning_cut_turn(1_024);
+        turn["choices"][0]["message"]["reasoning_content"] =
+            serde_json::json!("Let me plan each line. ".repeat(87));
+        turn
+    }
+
+    /// gap-f3f950: a reply that only reasons is stopped at 3/8 of the
+    /// model's output limit (384 of 1,024 tokens here) and asked again, and a
+    /// second such reply in a row ends the try. The hub hears a
+    /// `reasoning_cut` for each, with what its re-ask did, and the rejection
+    /// says the closing reply was stopped.
+    #[tokio::test]
+    async fn a_reply_stopped_twice_for_its_reasoning_ends_the_try_and_says_so() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
+        let read = serde_json::json!({ "path": "src/lib.rs" });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("call-read", "read_file", read),
+            long_reasoning_turn(),
+            long_reasoning_turn(),
+        ]);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path())
+            .await
+            .with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(hub.sender()));
+        let marker = temp.path().join("verify-ran");
+        let task = add_two_task(&marker);
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:no_changes");
+        assert!(
+            message.contains("finish_reason=reasoning_limit"),
+            "{message}"
+        );
+        let sent = requests.lock();
+        assert_eq!(sent.len(), 3, "read and two stopped replies");
+        assert!(
+            sent[2].to_string().contains("so it was stopped"),
+            "the call after the stop says why: {}",
+            sent[2]
+        );
+        drop(sent);
+        let cuts: Vec<(u64, u64, String)> = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::ReasoningCut {
+                    reasoning_tokens,
+                    limit_tokens,
+                    reask,
+                    ..
+                } => Some((reasoning_tokens, limit_tokens, reask)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cuts.len(), 2, "{cuts:?}");
+        assert!(
+            cuts.iter()
+                .all(|(tokens, limit, _)| *limit == 384 && *tokens >= 384),
+            "{cuts:?}"
+        );
+        let reasks: Vec<&str> = cuts.iter().map(|(_, _, reask)| reask.as_str()).collect();
+        assert_eq!(reasks, ["cut_again", "ended"]);
     }
 
     /// gap-2e455d: a refusal note names each refused call with its file and

@@ -99,6 +99,7 @@ fn canary_context(task: &TaskDef, workdir: &Path) -> DispatchContext {
         knowledge_section: true,
         self_model_rung: None,
         skip_enrichment: false,
+        source_documents: Vec::new(),
     }
 }
 

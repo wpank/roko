@@ -411,6 +411,8 @@ impl ToolLoopAgent {
                 // Why the turn ended, so a closing reply cut at the output
                 // limit can be named in its attempt's feedback (bug-872885).
                 "finish_reason": trace.finish_reason.clone(),
+                // How long its model call ran (gap-f3f950).
+                "duration_ms": trace.duration_ms,
                 "usage": {
                     "input_tokens": trace.usage.input_tokens,
                     "output_tokens": trace.usage.output_tokens,

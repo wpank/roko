@@ -2,15 +2,16 @@
 id = "bug-83d420"
 kind = "bug"
 title = "run_tests adds its filter to every runner's command as one more word: go reads it as a package, make as a target, pytest as a path, forge does not filter by it, and cargo flags in it reach cargo as one argument"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-std/tools"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "ea2bd8669"
 source = "bug-1f8db7 fix; golden-path live runs 2026-10-19 (gap-f30b8e)"
 discovered_from = "bug-1f8db7"
 anchors = ["crates/roko-std/src/tool/builtin/run_tests.rs::run"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-1f8db7"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_filter_reaches_each_runner_as_its_own_option' crates/roko-std/src && cargo test -p roko-std --lib a_filter_reaches_each_runner_as_its_own_option"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T03:12:29Z"
+commit = "ea2bd8669"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-21T01:31:03Z"
+forced = false
+evidence = "ea2bd8669. Cause: run() appended the filter to Runner::args as one more word for every runner but node and unittest, so go read it as a package, make as a second target, pytest as a path from the root, forge as no filter, and cargo flags reached cargo as one word. A scratch two-crate workspace reproduces golden-path run 3's error (cargo test --workspace '-p alpha --test accept_word_count': invalid character ` ` in package name) and shows cargo ignores -p beside --workspace (both crates' tests ran). Fix (crates/roko-std/src/tool/builtin/run_tests.rs::runner_args): cargo takes a test name, or the filter's words when every flag is on CARGO_FLAGS (package, target, feature and profile selection) or after -- on HARNESS_FLAGS; any other flag (--config, --manifest-path, --target-dir, -Z, ...) is refused with what filter takes, since a run_tests call has no command for the bash policy to screen; --workspace is dropped when the filter picks packages. go gets -run=<filter>, or a ./package in place of ./...; forge --match-test=<filter>, or --match-path=<filter> for a .sol file; pytest a test file, directory or node id inside the checkout as given, a test file's bare name resolved from the scan (test_textutil.py::test_shout runs py/test_textutil.py::test_shout), else -k <filter>, refusing a filter that begins with - or a path outside the checkout; npm runs npm test -- <filter> and refuses one that begins with -; make gets TEST=<filter> when the Makefile reads $(TEST) and the filter is a plain name, else an error naming the runners that fit. The filter description in tool_def says what each runner does with it. Checked through heavy.sh on ea2bd8669's roko-std: cargo test -p roko-std --lib run_tests, 15 passed, among them the [[verify]] test a_filter_reaches_each_runner_as_its_own_option (15 runner and filter cases recorded by stand-ins on a test PATH, 7 refused filters that run nothing, make without a TEST variable); roko-std builtin_handlers 33 and golden_tools 17 passed; cargo clippy -p roko-std --no-deps -- -D warnings and cargo +nightly fmt -p roko-std -- --check clean. Filed bug-f831b3 (read_counts reads forge's summary lines as unittest's; pytest and go results carry no counts)."
 +++
 
 ## Problem

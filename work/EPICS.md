@@ -22,12 +22,6 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: paper 1
 - next: none ready (1 unverified)
 
-## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
-
-- **27/28 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 1
-- next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
-
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
 
 - **1/2 closed** · goal `golden-path` · severity p1
@@ -42,9 +36,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **59/72 closed** · goal `proof` · severity p1
-- open by lane: bench 13
-- next: [gap-dd670b](items/gap-dd670b-pilot-a-s-cheap-ladder-misses-s08.md) Pilot A's cheap ladder misses S08's bands: gpt-oss-120b solves 1 of 12 level-1 runs where G0 wants 0.6, so F1 and F4 need re-knobbing before Pilot B
+- **63/80 closed** · goal `proof` · severity p1
+- open by lane: bench 17
+- next: [gap-f3944c](items/gap-f3944c-cerebras-answers-http-402-payment-required-to.md) Cerebras answers HTTP 402 payment_required to every call since 2026-10-20 15:17Z, so every gpt-oss-120b run (Pilot B's roko_fixed arm, Pilot C, LOG1) is blocked until the account has credit
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -52,8 +46,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **23/30 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 4, rust-cold 3
+- **26/32 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-cold 3, rust-hot 3
 - next: [gap-398dee](items/gap-398dee-a-phase-b-audit-call-can-cost.md) A phase-B audit call can cost more than its audit has left: nothing bounds one call before it starts, and B3's brief carries the whole test-file diff
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
@@ -67,6 +61,10 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - **26/27 closed** · goal `tooling` · severity p2
 - open by lane: none 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
+
+## [spec-ce1484](done/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1 (done)
+
+- **28/28 closed** · goal `whitepaper` · severity p1
 
 ## [spec-e9d7ec](done/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) honest verdicts end to end (done)
 
@@ -104,12 +102,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 117 | 158 | 41 (33) |
+| bench | 121 | 166 | 45 (37) |
 | docs | 27 | 31 | 4 (3) |
 | frontend | 7 | 9 | 2 (2) |
-| none | 475 | 585 | 110 (100) |
-| paper | 77 | 87 | 10 (8) |
-| rust-cold | 260 | 314 | 54 (45) |
-| rust-hot | 270 | 300 | 30 (28) |
+| none | 552 | 675 | 123 (115) |
+| paper | 79 | 87 | 8 (7) |
+| rust-cold | 261 | 315 | 54 (45) |
+| rust-hot | 277 | 307 | 30 (28) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 26 | 29 | 3 (2) |

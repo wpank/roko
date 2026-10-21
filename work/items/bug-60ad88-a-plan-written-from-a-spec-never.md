@@ -61,3 +61,33 @@ The spec is where the person states the rules. A cheap model that never reads it
 ## Done when
 
 The test in `[[verify]]` passes, and a $0 replay of phase 3's write (op 1e9ab2e7) shows every task reading the spec.
+
+## More evidence: phase 4 (hermes-pilot, 2026-10-21)
+
+Plan `p4-undertow-phosphor-editor` (op fe5ffce6, roko 5a9884c95 + bug-5e597a) was written from
+`docs/specs/phase-4-ui.md`, a 264-line spec, by the gpt-5.4 planner.
+- The spec's planner note asks for the spec first among every task's reads. The planner did that, but gave T4–T7
+  ranges that leave out all of their own "What to build" item:
+
+  | Task | Spec lines read | Its item |
+  |---|---|---|
+  | T4 (unit array) | 86-179 | 81-85 |
+  | T5 (look) | 97-179 | 87-92 |
+  | T6 (CHEST displays) | 105-179 | 94-96 |
+  | T7 (status, budget, images) | 129-223 | 98-106 |
+
+  - T3 read 63-179 and missed the rules (212-219).
+  - T1 and T2 read 1-223 and missed the planner notes.
+  - roko only clamps a range that runs past the end of a file.
+  - The person reviewing the plan set every spec read to `1-264` by hand (plan.md, "Review edits (person)").
+- **For the fix: a whole spec may still not reach the agent whole.**
+  - The declared files open the task's runner context (`build_runner_context`: declared context first, then Files in
+    scope, acceptance, verify, Prior Task Outputs, Sibling Tasks, workspace map).
+  - The system prompt's `context_layer` is capped at the role's `runner_context` budget: 4,000 tokens for an
+    implementer (`section_budget_cap`). `enforce_hard_cap` keeps the first 16,000 bytes and appends "…[truncated N
+    tokens]".
+  - In Undertow's phases 0–3, 39 of the 57 tries that recorded a `context_layer` had 4,006 or 4,007 tokens: the
+    cap plus the marker. That is every phase's plan, 0 to 3.
+  - Phase 4's spec, numbered, is about 20.7 KB. A whole read is cut at line 212, just before "Rules every task
+    keeps", and every read file after it is cut too.
+  - A source read may need its own budget, or a place outside the capped layer.

@@ -1011,6 +1011,12 @@ pub enum DashboardEvent {
         /// β̂, when judged.
         #[serde(default)]
         beta: Option<f64>,
+        /// β's interval, or why β is not judged, and the opportunities on
+        /// each arm (gap-1ee8c4), as the event's own fields (`beta_lcb`,
+        /// `beta_ucb`, `beta_reason`, `n_learned`, `n_default`). Boxed, so
+        /// every other event stays small.
+        #[serde(flatten)]
+        detail: Box<LoopHealthDetail>,
         /// When the auditor evaluated it (RFC 3339).
         ts: String,
     },
@@ -1273,6 +1279,25 @@ pub struct RouteLadder {
     /// never changes the route in shadow mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forecast: Option<RouteForecast>,
+}
+
+/// What a [`DashboardEvent::LoopHealth`] says of the loop's β besides β̂,
+/// and of its opportunities on each arm (gap-1ee8c4): its ledger row's
+/// `beta.lcb`, `beta.ucb`, `beta.reason`, `n_L` and `n_D`. Every field is
+/// optional, so an event written before them still parses.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoopHealthDetail {
+    /// The lower end of β's confidence sequence, when judged.
+    pub beta_lcb: Option<f64>,
+    /// The upper end of β's confidence sequence, when judged.
+    pub beta_ucb: Option<f64>,
+    /// Why β is not judged yet, e.g. `n_below_n_beta`.
+    pub beta_reason: Option<String>,
+    /// Learned-arm opportunities (the ledger row's `n_L`).
+    pub n_learned: Option<u64>,
+    /// Default-arm opportunities (the ledger row's `n_D`).
+    pub n_default: Option<u64>,
 }
 
 /// How a Graph attempt ended, where it ran on the model ladder and what it
@@ -5788,7 +5813,9 @@ mod tests {
 
     /// S03 §5: M2's loop events carry the `loop_health` and
     /// `loop_transition` kinds, round-trip through serde, and a transition
-    /// lands in the snapshot's event log.
+    /// lands in the snapshot's event log. A health event carries β's
+    /// interval or why β is not judged, and the arm counts, as its own
+    /// fields (gap-1ee8c4); one written before them still parses.
     #[test]
     fn loop_events_serialize_with_kind() {
         let health = DashboardEvent::LoopHealth {
@@ -5800,6 +5827,12 @@ mod tests {
             eps: Some(0.0),
             iota_net: Some(0.94),
             beta: None,
+            detail: Box::new(LoopHealthDetail {
+                beta_reason: Some("eps_below_min".into()),
+                n_learned: Some(32),
+                n_default: Some(8),
+                ..LoopHealthDetail::default()
+            }),
             ts: "2026-10-03T10:00:00Z".into(),
         };
         let transition = DashboardEvent::LoopTransition {
@@ -5817,6 +5850,25 @@ mod tests {
             let again: DashboardEvent = serde_json::from_value(json).expect("parse a loop event");
             assert_eq!(&again, event);
         }
+        let mut older = serde_json::to_value(&health).expect("serialize the health event");
+        let fields = older.as_object_mut().expect("a JSON object");
+        assert_eq!(fields["beta_reason"], "eps_below_min");
+        let arms = (fields["n_learned"].as_u64(), fields["n_default"].as_u64());
+        assert_eq!(arms, (Some(32), Some(8)));
+        for added in [
+            "beta_lcb",
+            "beta_ucb",
+            "beta_reason",
+            "n_learned",
+            "n_default",
+        ] {
+            fields.remove(added);
+        }
+        let parsed: DashboardEvent = serde_json::from_value(older).expect("parse an older event");
+        let DashboardEvent::LoopHealth { detail, .. } = &parsed else {
+            panic!("a loop_health event: {parsed:?}");
+        };
+        assert_eq!(**detail, LoopHealthDetail::default());
 
         let mut snap = DashboardSnapshot::default();
         snap.apply_with_ts(&health, 1);

@@ -441,6 +441,66 @@ mod tests {
         let reason = unjudged.and_then(|measured| measured.beta.reason);
         assert_eq!(reason.as_deref(), Some("n_below_n_beta"));
     }
+
+    /// gap-1ee8c4: past `n_beta`, `roko learn loops` prints a loop's β with
+    /// its interval, and the opportunities on each arm, ε̂ and ι_net, in its
+    /// table line; `--json` has the same numbers in the row's `measured`.
+    /// Under S03's defaults the line says why β is not judged yet.
+    #[test]
+    fn learn_loops_table_prints_beta_interval() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let toml = "[learning.audit]\nn_beta = 100\n";
+        std::fs::write(workdir.join("roko.toml"), toml).expect("write roko.toml");
+        write_knowledge_run(workdir, "gr-1ee8c4", 150);
+
+        let printed = loops_output(workdir, true).expect("the census");
+        let parsed: serde_json::Value = serde_json::from_str(&printed).expect("JSON");
+        let rows = parsed["rows"].as_array().expect("the census rows");
+        let know = rows
+            .iter()
+            .find(|row| row["loop"] == "L-know")
+            .expect("L-know's row");
+        let measured = &know["measured"];
+        let arms = (measured["n_L"].as_u64(), measured["n_D"].as_u64());
+        assert_eq!(arms, (Some(120), Some(30)), "{measured}");
+        let beta = &measured["beta"];
+        let number = |field: &str| beta[field].as_f64().unwrap_or_else(|| panic!("β {field}"));
+        let (est, lcb, ucb) = (number("est"), number("lcb"), number("ucb"));
+        let eps = measured["eps"]["est"].as_f64().expect("ε̂");
+        let iota = measured["iota_net"].as_f64().expect("ι_net");
+
+        let table = loops_output(workdir, false).expect("the table");
+        let header = table.lines().next().expect("a header");
+        assert!(
+            header.contains("n_L/n_D") && header.contains("β [LCB, UCB]"),
+            "{header}"
+        );
+        let line = table
+            .lines()
+            .find(|line| line.starts_with("L-know "))
+            .unwrap_or_else(|| panic!("an L-know line: {table}"));
+        let columns = [
+            "measured".to_string(),
+            "120/30".to_string(),
+            format!("{eps:.2}"),
+            format!("{iota:.2}"),
+            format!("{est:.3} [{lcb:.3}, {ucb:.3}]"),
+        ];
+        for column in &columns {
+            assert!(line.contains(column.as_str()), "{column:?} in {line:?}");
+        }
+
+        // With S03's N_β = 200, the line says why β waits.
+        std::fs::remove_file(workdir.join("roko.toml")).expect("remove roko.toml");
+        let table = loops_output(workdir, false).expect("the table");
+        let line = table
+            .lines()
+            .find(|line| line.starts_with("L-know "))
+            .unwrap_or_else(|| panic!("an L-know line: {table}"));
+        assert!(line.ends_with("not judged (n_below_n_beta)"), "{line:?}");
+    }
+
     /// S03 §5 (backlog 5134): `roko learn loops canary <id>` and `roko learn
     /// loops fault <id> <kind>` parse. The canary traces L-know dry in a fresh
     /// workspace, its first failure P6 (a dry run writes no decision row),

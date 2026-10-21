@@ -38,7 +38,7 @@ import run_roko
 import validate
 import vb
 from common import canary, hmac_seed
-from stub_provider import StubServer
+from stub_provider import ErrorStatus, StubServer
 
 TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
@@ -349,6 +349,47 @@ def one_more_newline(template: str | object) -> str | object:
     return lambda resolved: (template(resolved) + "\n") if resolved else ""
 
 
+def validate_report(*diagnostics: tuple[str, str], errors: int = 0) -> str:
+    """`plan validate --strict --dag --json`'s output: its report, then the DAG analysis."""
+    report = {"plans": [{"plan_id": "plan-x", "diagnostics": [
+        {"severity": severity, "rule_id": rule, "plan_id": "plan-x", "task_id": "T01", "message": f"{rule} says so"}
+        for severity, rule in diagnostics]}],
+        "totals": {"errors": errors, "warnings": len(diagnostics) - errors, "plans_checked": 1}}
+    return json.dumps(report, indent=2) + "\n" + json.dumps({"total_plans": 1, "dangling_refs": []}, indent=2) + "\n"
+
+
+def test_a_validation_that_failed_only_on_the_tier_size_advice_does_not_fail_the_task():
+    # 10 of the 20 pilot instances' specs run past the focused tier's 350 words (PLAN_TIER_SIZE), which `--strict`
+    # rejects; `plan run` never checks it, and every arm gets the same spec, so only that warning is tolerated.
+    def ran(stdout: str, returncode: int | None = 1, timed_out: bool = False) -> run_roko.Ran:
+        return run_roko.Ran(argv=[], returncode=returncode, stdout=stdout, stderr="", timed_out=timed_out, seconds=1.0)
+
+    size = ("warning", "PLAN_TIER_SIZE")
+    assert run_roko.advisory_only(ran(validate_report(size))) == [
+        {"rule_id": "PLAN_TIER_SIZE", "message": "PLAN_TIER_SIZE says so"}]
+    for refused in (ran(validate_report(size, ("warning", "PLAN_037"))), ran(validate_report(("warning", "PLAN_037"))),
+                    ran(validate_report(("error", "PLAN_TIER_SIZE"), errors=1)), ran(validate_report()),
+                    ran(validate_report(size), returncode=2), ran(validate_report(size), None, timed_out=True),
+                    ran("1 diagnostics in 1 plan\n")):
+        assert run_roko.advisory_only(refused) is None
+    summary = run_roko._validate_summary(ran(validate_report(("warning", "PLAN_037"))))
+    assert summary == "PLAN_037: PLAN_037 says so"
+
+
+def test_every_roko_arm_but_roko_full_turns_audits_off():
+    # gap-d76b1b turned Roko's audits on by default, and an audit dispatches models outside the arm (bug-082810): the
+    # shakedown's ladder run met an audit's gpt-5.4-mini review as a model mismatch (gap-c7c462). Every Roko arm runs
+    # `plan run --no-audit` but roko_full, whose overlay turns audits on (S05).
+    arms = {path.stem: tomllib.loads(path.read_text()) for path in layout.ARMS_DIR.glob("*.toml")}
+    roko = {name: arm for name, arm in arms.items() if arm["arm"]["harness"] == "roko"}
+    assert {"roko_fixed", "roko_fixed_glm", "roko_fixed_kimi", "roko_fixed_mini", "fr_claude", "roko_ladder",
+            "roko_plan", "roko_full"} <= set(roko)
+    for name, arm in roko.items():
+        assert run_roko.run_switches(arm) == ([] if name == "roko_full" else ["--no-audit"]), name
+    assert roko["roko_full"]["overlay"]["audit_floor"] >= 0.05
+    assert run_roko.run_switches({"roko": {"audit": True}}) == run_roko.run_switches({"roko": {}}) == []
+
+
 def test_the_roko_arms_prompt_hash_covers_every_template(places, tmp_path, monkeypatch):
     """bug-85e982: the prompt `vb run` records for a Roko arm (`vb.runner_prompt`: the run config's `prompt`, and so its
     `config_hash`) names the planemit templates that arm's plans are emitted from (`run_roko.arm_prompt`), not only
@@ -477,6 +518,8 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     validate_argv, run_argv = calls[1]["argv"], calls[2]["argv"]
     assert validate_argv[validate_argv.index("plan"):][:4] == ["plan", "validate", "--strict", "--dag"]
     assert run_argv[run_argv.index("plan"):][:2] == ["plan", "run"] and "--no-tui" in run_argv
+    # The arm file's `audit = false`: audits are on by default since gap-d76b1b and dispatch other models (bug-082810).
+    assert "--no-audit" in run_argv and "--no-audit" not in validate_argv
     for argv in (validate_argv, run_argv):
         assert argv[argv.index("--model") + 1] == PIN and "--no-serve" in argv
     env = calls[2]["env"]
@@ -912,6 +955,29 @@ def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):
     assert [(attempt["calls"], attempt["ended_by"]) for attempt in attempts] == [(3, "attempt_input_tokens")] * 3
     assert record["execution"]["status"] == "failed" and validate.validate("run-record", record) == []
 
+def test_a_task_the_provider_refused_for_the_account_is_an_infra_error(places, tmp_path):
+    # Pilot B, 2026-10-20: Cerebras answered 402 (payment required) to every call of a unit's last 9 tasks, which Roko
+    # reported as failed attempts. Through the metering proxy the 402s are forwarded answers, so the task measured
+    # the account, not the arm: infra_error, which the report excludes and counts.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(RETRYING_ROKO.replace("__PYTHON__", sys.executable))
+    binary.chmod(0o755)
+    with StubServer(lambda body: ErrorStatus(status=402)) as stub:
+        assert run_vb(places, arm_with(tmp_path, binary), stub.url, "--proxy") == 0
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    assert [(row["status"], row["forwarded"]) for row in read_jsonl(out / "proxy.jsonl")] == [(402, True)] * 3
+    [record] = read_jsonl(out / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "infra_error"
+    assert record["execution"]["reason"].startswith("provider_account: the provider refused 3 call(s) with HTTP 402")
+    rows = [{"forwarded": True, "status": 200}, {"forwarded": True, "status": 401},
+            {"forwarded": False, "status": 403, "refused": "attempt_input_cap"},  # the proxy's own refusal
+            {"forwarded": False, "status": 503, "fault_injected": "http_5xx"}, {"forwarded": True, "status": 429}]
+    assert run_roko.account_refusals(rows) == ["provider_account: the provider refused 1 call(s) with HTTP 401"]
+    assert run_roko.account_refusals(rows[2:]) == run_roko.account_refusals(None) == []
+
+
 def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path, monkeypatch):
     # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds
     # their calls, one of them rate limited. The record carries the queue wait, each attempt's class and busy time,
@@ -997,6 +1063,22 @@ def test_real_roko_validates_the_emitted_plan(tmp_path):
                              env=env, capture_output=True, text=True, timeout=120, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert "0 diagnostics in 1 plan" in checked.stdout and "Tasks: 1" in checked.stdout
+
+
+@real_roko
+def test_real_roko_fails_a_long_spec_only_on_the_tier_size_advice(tmp_path):
+    # The runner's own command on a 400-word spec: Roko's report is JSON, and its one diagnostic is PLAN_TIER_SIZE.
+    task = toy_task(tmp_path)
+    long_spec = task.spec_text + "\n\n" + "Keep the function pure and document every branch. " * 50
+    emitted = planemit.emit(plan_spec(task, spec_text=long_spec), task.workdir)
+    env = {**agent_env.build(home=tmp_path / "home"), "ROKO_CONFIG": str(emitted.config_path),
+           "CEREBRAS_API_KEY": run_roko.OFFLINE_KEY}
+    checked = run_roko._roko([str(REAL_ROKO), "--repo", str(task.workdir), "--model", PIN, "--no-serve", "plan",
+                              "validate", "--strict", "--dag", "--json", str(task.workdir / "plans")], task.workdir,
+                             env, 120, [])
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    [advice] = run_roko.advisory_only(checked)
+    assert advice["rule_id"] == "PLAN_TIER_SIZE" and "limit 350" in advice["message"]
 
 
 class ToolStub:

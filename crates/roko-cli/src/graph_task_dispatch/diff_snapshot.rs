@@ -398,20 +398,7 @@ pub(super) fn is_roko_state(path: &str) -> bool {
 /// through a copy of the repository's index, which is left untouched.
 /// `None` outside a git work tree, or when git fails.
 pub(super) async fn snapshot_tree(workdir: &Path) -> Option<String> {
-    let index = git_line(workdir, &["rev-parse", "--git-path", "index"], None).await?;
-    let scratch = tempfile::tempdir().ok()?;
-    let scratch_index = scratch.path().join("index");
-    // The copy keeps the index's stat cache, so `git add` rehashes only what
-    // changed. A repository without an index yet starts from an empty one.
-    let _ = tokio::fs::copy(workdir.join(index), &scratch_index).await;
-    git_bytes(
-        workdir,
-        &["add", "--all", "--", "."],
-        Some(&scratch_index),
-        RAW_LIMIT,
-    )
-    .await?;
-    git_line(workdir, &["write-tree"], Some(&scratch_index)).await
+    roko_std::tool::builtin::checkout_tree::snapshot_tree(workdir).await
 }
 
 /// Trimmed stdout of git in `workdir`, or `None` when it fails or prints

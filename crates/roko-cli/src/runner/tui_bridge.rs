@@ -652,10 +652,24 @@ impl TuiBridge {
         });
     }
 
-    /// The task's next try starts from `from` (`"try 2's files"`, or `"the
-    /// checkout's base"` for a resumed task no try of which passed a step),
-    /// because its last try passed fewer verify steps than its best one
-    /// (gap-fefdf5) or the run resumed it (gap-586507).
+    /// A try is judged on the tree its own checks saw at `at`, put back with
+    /// `paths` because the tree it ended with was worse (gap-56f761).
+    pub fn checked_tree_restored(&self, plan_id: &str, task_id: &str, at: &str, paths: &[String]) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: "checked_tree_restored".to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            message: format!(
+                "the try is judged on the tree its own checks saw at {at} ({} files put back)",
+                paths.len()
+            ),
+        });
+    }
+
+    /// The task's next try starts from `from` (`"try 2's files"`), because
+    /// its last try got less far than its best one (gap-fefdf5, gap-54089d)
+    /// or the run resumed it (gap-586507).
     pub fn best_try_restored(&self, plan_id: &str, task_id: &str, from: &str, paths: &[String]) {
         self.sender.publish(DashboardEvent::EventLogEntry {
             timestamp_ms: timestamp_now_ms(),

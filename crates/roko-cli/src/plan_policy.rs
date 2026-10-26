@@ -871,6 +871,71 @@ pub(crate) fn fit_ranges_to_checkout(task: &mut TaskDef, workspace_root: &Path) 
         .collect()
 }
 
+/// Make each explicit symbol anchor of `task` that none of its declared
+/// files holds, as `workspace_root`, a try's checkout, has them, a note
+/// rather than an anchor ([`symbol_note`], bug-41791b). The planner wrote the
+/// anchors before the plan's work, and an earlier task, or the task's own last
+/// try, may have renamed or removed the symbol since: the entry keeps its
+/// text, and the try's prompt shows the files as they are. A task that
+/// declares no file reads none to anchor in, and is left alone. Returns one
+/// line per anchor it dropped, for the log.
+pub(crate) fn drop_missing_anchors(task: &mut TaskDef, workspace_root: &Path) -> Vec<String> {
+    let Some(context) = task.context.as_mut() else {
+        return Vec::new();
+    };
+    if context.read_files.is_empty() {
+        return Vec::new();
+    }
+    let texts: Vec<String> = context
+        .read_files
+        .iter()
+        .filter_map(|read_file| validate_repo_relative_path(&read_file.path).ok())
+        .filter_map(|relative| std::fs::read_to_string(workspace_root.join(relative)).ok())
+        .collect();
+    let mut dropped = Vec::new();
+    for symbol in &mut context.symbols {
+        let Some(anchor) = explicit_symbol_anchor(symbol) else {
+            continue;
+        };
+        if texts
+            .iter()
+            .any(|text| find_anchor_line(text, &anchor).is_some())
+        {
+            continue;
+        }
+        dropped.push(format!(
+            "`{anchor}` is in no file the try reads, so its symbol entry is a note, not an anchor"
+        ));
+        *symbol = symbol_note(symbol, &anchor);
+    }
+    dropped
+}
+
+/// Leave out of `task`'s declared reads each file that `workspace_root`, a
+/// try's checkout, no longer holds (bug-41791b): the task's own last try, or
+/// an earlier task, may have removed or renamed it since the plan was
+/// written, and a read of a missing file would fail the try's prompt. A path
+/// that is not a safe relative path stays, for [`render_declared_context`] to
+/// refuse. Returns one line per read it left out, for the log.
+pub(crate) fn drop_missing_reads(task: &mut TaskDef, workspace_root: &Path) -> Vec<String> {
+    let Some(context) = task.context.as_mut() else {
+        return Vec::new();
+    };
+    let mut dropped = Vec::new();
+    context.read_files.retain(|read_file| {
+        let missing = validate_repo_relative_path(&read_file.path)
+            .is_ok_and(|relative| !workspace_root.join(relative).exists());
+        if missing {
+            dropped.push(format!(
+                "`{}` is not in the try's checkout, so the try does not read it",
+                read_file.path
+            ));
+        }
+        !missing
+    });
+    dropped
+}
+
 /// Fit `plan`'s declared line ranges in files no earlier task of the plan
 /// changes to those files as `workspace_root` holds them (gap-b95913), the
 /// way [`fit_ranges_to_checkout`] fits every range of a try: the planner
@@ -961,12 +1026,14 @@ pub fn render_declared_context(
     let canonical_root = workspace_root
         .canonicalize()
         .map_err(|error| format!("resolve workspace root: {error}"))?;
+    // An anchor no declared file holds shows nothing, and never fails the
+    // try: the plan's work may have renamed it (bug-41791b), and the
+    // dispatcher makes such an entry a note ([`drop_missing_anchors`]).
     let anchors = context
         .symbols
         .iter()
-        .filter_map(|symbol| explicit_symbol_anchor(symbol).map(|anchor| (symbol, anchor)))
+        .filter_map(|symbol| explicit_symbol_anchor(symbol))
         .collect::<Vec<_>>();
-    let mut anchor_found = vec![false; anchors.len()];
     let mut output = String::from(
         "# Declared source context (authoritative and bounded)\n\
          Use these supplied snippets directly. Do not search home directories, session history, \
@@ -1002,9 +1069,8 @@ pub fn render_declared_context(
             }
             ranges.push((start, end));
         }
-        for (index, (_, anchor)) in anchors.iter().enumerate() {
+        for anchor in &anchors {
             if let Some(line) = find_anchor_line(&content, anchor) {
-                anchor_found[index] = true;
                 let start = line.saturating_sub(ANCHOR_CONTEXT_RADIUS).max(1);
                 let end = line.saturating_add(ANCHOR_CONTEXT_RADIUS).min(lines.len());
                 ranges.push((start, end));
@@ -1026,18 +1092,6 @@ pub fn render_declared_context(
         return Err(format!(
             "declared snippets for task {} exceed the {} byte prompt budget; narrow read_files ranges",
             task.id, policy.max_declared_context_bytes
-        ));
-    }
-
-    let missing = anchors
-        .iter()
-        .zip(anchor_found)
-        .filter_map(|((_, anchor), found)| (!found).then_some(anchor.as_str()))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(format!(
-            "explicit symbol anchors were not found in declared context: {}",
-            missing.join(", ")
         ));
     }
 
@@ -1512,6 +1566,29 @@ pub(crate) fn parse_line_range(
     Ok((start, end))
 }
 
+/// `symbol`, an anchor no file the task reads holds, written as a note that
+/// is no anchor: `Look::drawStaticLayer (in no file the task reads): <what
+/// the planner said of it>`. Plan generation writes it for a symbol no file
+/// holds yet (bug-417c4a), and a try for one its files no longer hold
+/// (bug-41791b).
+pub(crate) fn symbol_note(symbol: &str, anchor: &str) -> String {
+    let trimmed = symbol.trim();
+    let said = trimmed
+        .split_once('—')
+        .map(|(_, said)| said.trim())
+        .or_else(|| {
+            trimmed
+                .strip_prefix('`')
+                .and_then(|rest| rest.split_once('`'))
+                .map(|(_, said)| said.trim_start_matches([' ', ':', '-']).trim())
+        })
+        .filter(|said| !said.is_empty());
+    match said {
+        Some(said) => format!("{anchor} (in no file the task reads): {said}"),
+        None => format!("{anchor} (in no file the task reads)"),
+    }
+}
+
 pub(crate) fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
     let trimmed = symbol.trim();
     let candidate = if let Some(exact) = trimmed.strip_prefix("exact:") {
@@ -1954,6 +2031,66 @@ mod tests {
         assert_eq!(
             fit_ranges_to_checkout(&mut fitted_task, root.path()),
             ["`5-25` of `src/other.py` (17 lines) became `5-17`"]
+        );
+    }
+
+    /// bug-41791b: at dispatch, an anchor none of the task's declared files
+    /// holds becomes a note that keeps its text, a declared file the try's
+    /// checkout no longer holds drops out of its reads, and prompt assembly
+    /// never fails on either; an anchor a file holds, and an unsafe path,
+    /// stay as they were.
+    #[test]
+    fn a_missing_anchor_or_file_is_left_out_of_a_try() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        std::fs::write(root.path().join("src/lib.rs"), "pub struct Widget;\n").expect("source");
+        let mut plan_task = unranged_task(&["src/lib.rs", "src/gone.rs"]);
+        let context = plan_task.context.as_mut().expect("context");
+        context.symbols = vec![
+            "Widget — the widget".to_string(),
+            "`Gadget`: renamed by the last try".to_string(),
+            "a plain note".to_string(),
+        ];
+        let unrepaired = plan_task.clone();
+
+        assert_eq!(
+            drop_missing_reads(&mut plan_task, root.path()),
+            ["`src/gone.rs` is not in the try's checkout, so the try does not read it"]
+        );
+        assert_eq!(
+            drop_missing_anchors(&mut plan_task, root.path()),
+            ["`Gadget` is in no file the try reads, so its symbol entry is a note, not an anchor"]
+        );
+        let context = plan_task.context.as_ref().expect("context");
+        assert_eq!(
+            context.symbols,
+            [
+                "Widget — the widget",
+                "Gadget (in no file the task reads): renamed by the last try",
+                "a plain note"
+            ]
+        );
+        let reads: Vec<&str> = context
+            .read_files
+            .iter()
+            .map(|read_file| read_file.path.as_str())
+            .collect();
+        assert_eq!(reads, ["src/lib.rs"]);
+        let rendered =
+            render_declared_context(&plan_task, root.path(), PlanExecutionPolicy::normal())
+                .expect("the repaired context renders");
+        assert!(rendered.contains("1 | pub struct Widget;"), "{rendered}");
+        // Unrepaired, a missing anchor no longer fails the render either.
+        let mut anchored = unrepaired;
+        anchored.context.as_mut().expect("context").read_files.pop();
+        render_declared_context(&anchored, root.path(), PlanExecutionPolicy::normal())
+            .expect("a missing anchor renders nothing");
+        // An unsafe path stays, for the render to refuse.
+        let mut unsafe_read = unranged_task(&["../secret"]);
+        assert!(drop_missing_reads(&mut unsafe_read, root.path()).is_empty());
+        assert!(
+            render_declared_context(&unsafe_read, root.path(), PlanExecutionPolicy::normal())
+                .is_err()
         );
     }
 

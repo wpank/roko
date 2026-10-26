@@ -53,10 +53,30 @@ A task that renames what its plan anchored can never be retried. Each dead try c
 In `render_declared_context`, name the missing anchors in a line of the rendered context rather than return an
 error. Test it with a declared file whose anchored function a try renamed.
 
+## Design
+
+roko-exact, 2026-10-26, on the lead's call: a missing anchor degrades the way a range does. Keep the text, drop the
+anchor, log a repair line, and never fail prompt assembly.
+
+- **At dispatch.** `fit_declared_context`, which was `fit_declared_ranges`, runs on every try. It applies three
+  repairs to the try's checkout, in this order, and logs each line it changes:
+  1. `drop_missing_reads` leaves out a declared read whose file the checkout no longer holds. A try that removed or
+     renamed its declared file would otherwise fail on "invalid context file", the same failure. An unsafe path
+     stays, for the render to refuse.
+  2. `fit_ranges_to_checkout` (bug-fa22cc).
+  3. `drop_missing_anchors` makes an explicit anchor that no remaining read file holds a note, which is not an
+     anchor: `renderAll (in no file the task reads): the renderer's entry point`. A task with no read files is left
+     alone.
+- **The note** is plan generation's (bug-417c4a), moved from `plan_generate::symbol_reads::note` to
+  `plan_policy::symbol_note`, so both write the same text.
+- **`render_declared_context`** no longer fails on a missing anchor on any path: the anchor shows nothing.
+- **The plan check at load** (PLAN_CONTEXT_SYMBOL, PLAN_CONTEXT_MISSING) is unchanged. Before anything runs, these
+  are planning errors.
+
 ## Done when
 
-The test in `[[verify]]` passes: a try whose declared files no longer hold an anchored symbol renders its context,
-naming the missing anchor, and does not fail.
+The test in `[[verify]]` passes: a try whose declared files no longer hold an anchored symbol, or no longer include a
+declared file, runs. Its prompt keeps the symbol's text as a note and leaves the missing file out.
 
 ## Notes
 

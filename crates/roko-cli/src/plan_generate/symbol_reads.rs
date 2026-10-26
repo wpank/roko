@@ -12,7 +12,7 @@ use std::path::Path;
 use super::runnable::NOT_THE_PROJECT;
 use crate::plan_policy::{
     PlanExecutionPolicy, contains_identifier, explicit_symbol_anchor, find_anchor_line,
-    transitive_dependency_outputs,
+    symbol_note as note, transitive_dependency_outputs,
 };
 use crate::task_parser::{ReadFile, TaskDef, TasksFile};
 
@@ -217,27 +217,6 @@ fn qualified_line(text: &str, anchor: &str) -> Option<usize> {
     text.lines()
         .position(|line| contains_identifier(line, anchor))
         .map(|index| index + 1)
-}
-
-/// `symbol`, an anchor no file the task reads holds, written as a note that
-/// is no anchor: `Look::drawStaticLayer (in no file the task reads): <what
-/// the planner said of it>`.
-fn note(symbol: &str, anchor: &str) -> String {
-    let trimmed = symbol.trim();
-    let said = trimmed
-        .split_once('—')
-        .map(|(_, said)| said.trim())
-        .or_else(|| {
-            trimmed
-                .strip_prefix('`')
-                .and_then(|rest| rest.split_once('`'))
-                .map(|(_, said)| said.trim_start_matches([' ', ':', '-']).trim())
-        })
-        .filter(|said| !said.is_empty());
-    match said {
-        Some(said) => format!("{anchor} (in no file the task reads): {said}"),
-        None => format!("{anchor} (in no file the task reads)"),
-    }
 }
 
 /// The workspace's source files ([`CODE_EXTENSIONS`]) with their text,

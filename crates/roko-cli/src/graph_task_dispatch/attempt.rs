@@ -2097,10 +2097,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
         };
         let (dispatcher, mut task) =
             make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
-        // A declared context file that does not exist fails prompt assembly.
+        // A declared context file outside the workspace fails prompt
+        // assembly; a missing one no longer does (bug-41791b).
         task.context = Some(crate::task_parser::TaskContext {
             read_files: vec![crate::task_parser::ReadFile {
-                path: "src/missing.rs".to_string(),
+                path: "../outside.rs".to_string(),
                 lines: None,
                 why: "context".to_string(),
             }],
@@ -2213,6 +2214,62 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             assert!(sent.contains(shown), "{shown}: {sent}");
         }
         assert!(!sent.contains("echo note-03"), "{sent}");
+    }
+
+    /// bug-41791b: a try whose declared files no longer hold a symbol its
+    /// plan anchors, or no longer include a file it declares, runs: the
+    /// anchor becomes a note that keeps its text, the missing file drops out
+    /// of its reads, and the prompt shows the files as they are. Both used
+    /// to fail prompt assembly before any model call, on every later try of
+    /// the task, as a stale line range did (bug-fa22cc).
+    #[tokio::test]
+    async fn a_missing_anchor_never_fails_a_try() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            PROMPT_KEEPING_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        std::fs::create_dir(temp.path().join("tools")).expect("tools");
+        std::fs::write(
+            temp.path().join("tools/render.cpp"),
+            "void renderEveryPreset() {}\n",
+        )
+        .expect("the renderer");
+        let read = |path: &str| crate::task_parser::ReadFile {
+            path: path.to_string(),
+            lines: None,
+            why: "context".to_string(),
+        };
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![read("tools/render.cpp"), read("tools/render-old.sh")],
+            symbols: vec!["renderAll — the renderer's entry point".to_string()],
+            ..crate::task_parser::TaskContext::default()
+        });
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try runs");
+
+        let prompt = std::fs::read_to_string(temp.path().join("prompt")).expect("the prompt");
+        assert!(
+            prompt.contains(
+                "- Symbol: renderAll (in no file the task reads): the renderer's entry point"
+            ),
+            "{prompt}"
+        );
+        assert!(prompt.contains("- Read `tools/render.cpp`"), "{prompt}");
+        assert!(!prompt.contains("render-old.sh"), "{prompt}");
+        let sent = std::fs::read_to_string(temp.path().join("args")).expect("the arguments");
+        assert!(
+            format!("{sent}{prompt}").contains("void renderEveryPreset() {}"),
+            "{sent}{prompt}"
+        );
     }
 
     /// An attempt the pre-verify screen rejected settles as the agent's

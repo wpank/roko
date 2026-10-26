@@ -157,6 +157,14 @@ What a cap on a resume means (the lead's question): the whole run, dead and resu
 
 ## Notes
 
+- **What a hold commit costs:** 0.49 ms, measured by `measure_a_hold_commit` (roko-cli, `--ignored`) over 400
+  commits with 3 holds in flight, on the branch at 4f829cc10, on the round's Mac under cargo load.
+  - Each call an attempt admits or records writes `costs.json` and the manifest, each to a temp file renamed in
+    place, under the plan ledger's lock. That lock serializes the commits of parallel attempts.
+  - A model call takes seconds, so two commits per call cost well under 0.1% of it.
+  - bug-4026d8's fsync will lengthen each commit, and the lock holds while it runs. Measure again then: if a synced
+    commit runs to milliseconds on a 3-wide run, commit the holds off the lock (the latest state wins) rather than
+    making a call wait.
 - The pilot's live resume (round v7, `tmp/hermes-roko-v7/findings/hermes-pilot.md`, 11:09–11:25) matches kill point c.
 - Reproduce one kill point at zero cost:
   `cd tmp/hermes-roko-v7/roko-recovery && python3 harness/matrix.py --scenarios a-stream-t2 --paths serve --out runs/dev && python3 harness/show.py runs/dev/a-stream-t2-serve`.

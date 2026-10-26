@@ -2,15 +2,16 @@
 id = "find-697944"
 kind = "finding"
 title = "A roko plan run --no-audit run's S01 manifest lists only learning_frozen in ablation_flags, so Roko's own record does not say its audits were off"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-21
-updated = 2026-10-21
-last_verified = 2026-10-21
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "9d68ed77f"
 source = "gap-327242 worker (claude-agent), 2026-10-20: Pilot B s01 copies at c962955af"
 discovered_from = "gap-327242"
 anchors = ["crates/roko-cli/src/graph_execution/run_manifest.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-327242", "gap-d76b1b", "
 
 [[verify]]
 command = "grep -rq 'audit_off' crates/roko-cli/src/graph_execution/run_manifest.rs && cargo test -p roko-cli --lib -- run_manifest"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:03:52Z"
+commit = "9d68ed77f"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T10:26:24Z"
+forced = false
+evidence = "crates/roko-cli/src/graph_execution/run_manifest.rs: RunManifests::capture reads config.audit.enabled and config.experiments.maximize (which apply_run_switches already lands --no-audit/--no-holdout into, same as --frozen-learning into config.learning.frozen) and pushes new consts AUDIT_OFF_FLAG (\"audit_off\") / HOLDOUT_OFF_FLAG (\"holdout_off\") into ablation_flags alongside learning_frozen. Two new tests: ablation_flags_record_audit_and_holdout_switches (both flags present when audit is off and maximize is on) and ablation_flags_omit_audit_and_holdout_when_both_stand (neither flag present on the default config). `grep -rq 'audit_off' crates/roko-cli/src/graph_execution/run_manifest.rs && cargo test -p roko-cli --lib -- run_manifest` passes at 9d68ed77f (4 passed, including the existing run_manifest_records_the_price_snapshot_id and plan_runner::graph_plan_run_writes_run_manifest). `cargo +nightly fmt --all` and `cargo clippy --workspace --no-deps -- -D warnings` both clean."
 +++
 
 ## Problem

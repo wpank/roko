@@ -410,6 +410,80 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// The checks a try's own run passed on the tree the try ends with
+/// (gap-6df2bf), which the gate takes as passed instead of running them
+/// again ([`GraphTaskDispatcher::self_checked`]).
+#[derive(Debug)]
+pub(super) struct SelfChecked {
+    /// When the run was, in Unix milliseconds.
+    at_ms: i64,
+    /// Each check the run passed, by label: its command and how many
+    /// milliseconds it ran, when the run timed it.
+    passed: HashMap<String, (String, Option<u64>)>,
+}
+
+impl SelfChecked {
+    /// The verdict of step `label`, which runs `command`, when the run passed
+    /// that check with that command: passed, with the run's time and a note
+    /// that says where the pass came from. `None` for any other step, which
+    /// runs.
+    pub(super) fn verdict(&self, label: &str, command: &str) -> Option<roko_core::Verdict> {
+        let (ran, ms) = self.passed.get(label)?;
+        if ran != command {
+            return None;
+        }
+        let mut verdict = roko_core::Verdict::pass(label).with_detail(format!(
+            "passed in this try's own checks at {}, on this tree: not run again",
+            local_time(self.at_ms)
+        ));
+        verdict.duration_ms = ms.unwrap_or_default();
+        Some(verdict)
+    }
+}
+
+impl GraphTaskDispatcher {
+    /// The checks the attempt `attempt_key`'s own run passed on the tree its
+    /// checkout `workdir` holds now (gap-6df2bf): the newest run its checks
+    /// recorded on that tree, the agent's `run_tests` or the hand-off check,
+    /// when every check that run ran passed. Only roko's runs count: an
+    /// agent's own shell runs record nothing. `None` when no such run
+    /// exists, as for a tree changed since, or a record written before runs
+    /// kept their commands.
+    ///
+    /// The tree holds the tracked and unignored files: what a check reads
+    /// under ignored paths, such as build trees, counts as it was in that
+    /// run, as the gate would read it in the same checkout. The plan's check
+    /// and the delivery's regression check still run on the integrated tree.
+    pub(super) async fn self_checked(
+        &self,
+        attempt_key: &str,
+        workdir: &Path,
+    ) -> Option<SelfChecked> {
+        let runs = read_check_runs(&task_check_runs_path(&self.workdir, attempt_key));
+        if runs.is_empty() {
+            return None;
+        }
+        let tree = snapshot_tree(workdir).await?;
+        let run = runs.iter().rev().find(|run| run.tree == tree)?;
+        if run.failed.is_some() || run.commands.len() != run.passed.len() {
+            return None;
+        }
+        let passed = run
+            .passed
+            .iter()
+            .zip(&run.commands)
+            .enumerate()
+            .map(|(index, (label, command))| {
+                (label.clone(), (command.clone(), run.ms.get(index).copied()))
+            })
+            .collect();
+        Some(SelfChecked {
+            at_ms: run.at_ms,
+            passed,
+        })
+    }
+}
+
 /// `at_ms`, Unix milliseconds, as local time of day: `05:32:54`.
 fn local_time(at_ms: i64) -> String {
     chrono::Local

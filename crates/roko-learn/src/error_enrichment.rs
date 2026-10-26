@@ -13,7 +13,9 @@ use roko_core::{Body, Context, Kind, Signal};
 const RAW_ERROR_LIMIT: usize = 4_000;
 const TASK_CONTEXT_LIMIT: usize = 1_000;
 const DIAGNOSIS_SENTENCE_LIMIT: usize = 2;
-const DIAGNOSIS_CHAR_LIMIT: usize = 320;
+/// The longest diagnosis kept, in characters: two sentences such as phase 5's
+/// stand whole (bug-cdd885), and the raw output below them is short.
+const DIAGNOSIS_CHAR_LIMIT: usize = 600;
 
 /// The most failing cases a fallback diagnosis names one by one.
 const CASES_NAMED: usize = 6;
@@ -29,16 +31,7 @@ const CASE_PART_CHARS: usize = 120;
 /// output, this falls back to a deterministic two-sentence digest extracted
 /// from the raw error text.
 pub async fn enrich_error_digest(raw_error: &str, agent: &dyn Agent, task_context: &str) -> String {
-    let prompt = format!(
-        "Diagnose this compilation/test error in 2 sentences. \
-         Be specific about which file, line, and type mismatch.\n\
-         Error output:\n{}\n\
-         Task context:\n{}\n\
-         Diagnosis:",
-        truncate_chars(raw_error, RAW_ERROR_LIMIT),
-        truncate_chars(task_context, TASK_CONTEXT_LIMIT),
-    );
-
+    let prompt = diagnosis_prompt(raw_error, task_context);
     let input = Signal::builder(Kind::Prompt)
         .body(Body::text(prompt))
         .build();
@@ -56,18 +49,50 @@ pub async fn enrich_error_digest(raw_error: &str, agent: &dyn Agent, task_contex
     fallback_diagnosis(raw_error, task_context)
 }
 
+/// The prompt that asks the cheap model to diagnose `raw_error`: what failed
+/// against what it expected, for a test or a check as for a compiler
+/// (bug-cdd885).
+fn diagnosis_prompt(raw_error: &str, task_context: &str) -> String {
+    format!(
+        "Diagnose this build or test failure in 2 sentences. \
+         Say which file and line, or which test or check, failed, and what it found against what \
+         it expected; then name what else fails, if anything.\n\
+         Error output:\n{}\n\
+         Task context:\n{}\n\
+         Diagnosis:",
+        truncate_chars(raw_error, RAW_ERROR_LIMIT),
+        truncate_chars(task_context, TASK_CONTEXT_LIMIT),
+    )
+}
+
+/// The model's `text` as a diagnosis: as many of its first sentences as fit
+/// whole in [`DIAGNOSIS_CHAR_LIMIT`], up to [`DIAGNOSIS_SENTENCE_LIMIT`]. A
+/// first sentence longer than the limit is cut at a word boundary and marked
+/// with "…", so a diagnosis never ends mid-word (bug-cdd885).
 fn normalize_diagnosis(text: &str) -> String {
     let compact = collapse_whitespace(text);
     if compact.is_empty() {
         return String::new();
     }
 
-    let sentences = first_sentences(&compact, DIAGNOSIS_SENTENCE_LIMIT);
-    if !sentences.is_empty() {
-        return truncate_chars(&sentences, DIAGNOSIS_CHAR_LIMIT);
+    let sentences = leading_sentences(&compact, DIAGNOSIS_SENTENCE_LIMIT);
+    let mut kept = String::new();
+    for sentence in &sentences {
+        let joined = if kept.is_empty() {
+            sentence.clone()
+        } else {
+            format!("{kept} {sentence}")
+        };
+        if joined.chars().count() > DIAGNOSIS_CHAR_LIMIT {
+            break;
+        }
+        kept = joined;
     }
-
-    truncate_chars(&compact, DIAGNOSIS_CHAR_LIMIT)
+    if kept.is_empty() {
+        let first = sentences.first().unwrap_or(&compact);
+        return cut_at_word(first, DIAGNOSIS_CHAR_LIMIT);
+    }
+    kept
 }
 
 fn fallback_diagnosis(raw_error: &str, task_context: &str) -> String {
@@ -261,7 +286,9 @@ fn focus_fragment(text: &str) -> String {
         .to_string()
 }
 
-fn first_sentences(text: &str, limit: usize) -> String {
+/// The first `limit` sentences of `text`; a last one without an end mark gets
+/// a full stop.
+fn leading_sentences(text: &str, limit: usize) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut start = 0;
 
@@ -286,15 +313,22 @@ fn first_sentences(text: &str, limit: usize) -> String {
         }
     }
 
-    if sentences.is_empty() {
-        String::new()
-    } else {
-        sentences
-            .into_iter()
-            .take(limit)
-            .collect::<Vec<_>>()
-            .join(" ")
+    sentences.truncate(limit);
+    sentences
+}
+
+/// The first `max_chars` characters of `text`, cut at the last word boundary
+/// and ending with "…" when anything is cut.
+fn cut_at_word(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
     }
+    let head: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    let words = head
+        .rfind(' ')
+        .map_or(head.as_str(), |end| &head[..end])
+        .trim_end_matches([',', ';', ':', ' ']);
+    format!("{words}…")
 }
 
 fn is_sentence_boundary(text: &str, idx: usize, ch: char) -> bool {
@@ -328,7 +362,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{enrich_error_digest, fallback_diagnosis};
+    use super::{DIAGNOSIS_CHAR_LIMIT, diagnosis_prompt, enrich_error_digest, fallback_diagnosis};
     use roko_agent::MockAgent;
 
     /// bug-3e3d08: with the cheap model out of balance, Undertow's phase 4.2
@@ -442,5 +476,68 @@ error[E0308]: mismatched types
             diagnosis,
             "The primary error is thread 'router' panicked at src/lib.rs:91:5: assertion failed: left == right. The retry should focus on the cited file and align the implementation with the failing check."
         );
+    }
+
+    /// The diagnosis the cheap model's `reply` comes to.
+    async fn diagnosed(reply: &str) -> String {
+        let agent = MockAgent::reply(reply);
+        enrich_error_digest("CHECK( -33.0571 >= -30 )", &agent, "Render the demos").await
+    }
+
+    /// bug-cdd885: phase 5's diagnoses were cut at 320 characters mid-word,
+    /// dropping what else failed. Two sentences that fit in 600 characters
+    /// stand whole; of two that don't, the first stands alone; a first
+    /// sentence longer than the limit is cut at a word boundary and marked
+    /// with "…". A diagnosis never ends mid-word.
+    #[tokio::test]
+    async fn a_long_diagnosis_ends_on_a_whole_sentence() {
+        let t4 = "The failure is in `tests/spec/p5/demos_test.cpp:28`, where \
+                  `spec::toDb(spec::rms(wav.left))` is expected to be at least `-30.0`, but the \
+                  generated audio is only `-33.0571 dBFS RMS`. In other words, the rendered WAVs are \
+                  too quiet by about 3 dB, so the signal-level check fails for \
+                  `artifacts/audio/init.wav` (and also `sub-pure-foundation.wav` and \
+                  `rumble-dark-room.wav`).";
+        assert!(t4.chars().count() > 320, "{}", t4.len());
+        assert_eq!(diagnosed(t4).await, t4);
+
+        let first = format!(
+            "The spectral check fails{}.",
+            " because the preset keeps too much energy below the filter".repeat(6)
+        );
+        let second = format!(
+            "Other checks fail{}.",
+            " for the same reason in another preset file".repeat(8)
+        );
+        assert!(first.chars().count() + second.chars().count() > DIAGNOSIS_CHAR_LIMIT);
+        let both = format!("{first} {second} A third sentence is dropped.");
+        assert_eq!(diagnosed(&both).await, first);
+
+        let long = format!(
+            "The check fails{}.",
+            " because a long reason continues here".repeat(20)
+        );
+        let diagnosis = diagnosed(&long).await;
+        assert!(
+            diagnosis.chars().count() <= DIAGNOSIS_CHAR_LIMIT,
+            "{diagnosis}"
+        );
+        let cut = diagnosis.strip_suffix('…').expect("a marked cut");
+        assert!(long.starts_with(cut), "{diagnosis}");
+        assert!(long[cut.len()..].starts_with(' '), "{diagnosis}");
+    }
+
+    /// bug-cdd885: the prompt asks what failed against what it expected, for
+    /// a test or a check as for a compiler, not for a "type mismatch".
+    #[test]
+    fn the_diagnosis_prompt_asks_what_failed_against_what_it_expected() {
+        let prompt = diagnosis_prompt("CHECK( -33.0571 >= -30 )", "Render the demos");
+        assert!(prompt.contains("test or check"), "{prompt}");
+        assert!(
+            prompt.contains("what it found against what it expected"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("type mismatch"), "{prompt}");
+        assert!(prompt.contains("CHECK( -33.0571 >= -30 )"), "{prompt}");
+        assert!(prompt.contains("Render the demos"), "{prompt}");
     }
 }

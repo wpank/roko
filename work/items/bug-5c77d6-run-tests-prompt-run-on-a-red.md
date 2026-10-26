@@ -67,3 +67,11 @@ The test passes in the full suite, run three times in a row under heavy.sh.
   rerun).
 - Found by roko-planner (round v7) while testing bug-daa54e; filed at the lead's request. No round-v7 agent owns
   baseline_verify.
+- 2026-10-26 (roko-learnguard, the full lib suite of bug-cdd885 on main c39ddd6fb, heavy.sh, `RUST_TEST_THREADS=4`):
+  - **It failed again, at another assertion.** `run.rs:1618`, "the prompt names the old failures": the fake agent's
+    recorded prompt lacked the base-check note.
+  - **The run:** 4044 passed, 1 failed.
+  - **The same test binary, alone, passed** in 4.6 s.
+  - **The log** is `tmp/hermes-roko-v7/roko-learnguard/logs/cdd885-chain.log`.
+  - **So two different assertions fail under load.** That points at the test's shared state or its timing more than
+    at `judge`.

@@ -367,9 +367,12 @@ fn display_cost_precise(cost_usd: f64, input_tokens: u64, output_tokens: u64) ->
 /// `roko learn rungs`: how each rung did over the workspace's newest `runs`
 /// runs, or every run (gap-3217a0).
 fn cmd_learn_rungs(workdir: &Path, runs: Option<usize>, json: bool) -> Result<i32> {
-    let runs_dir = roko_fs::RokoLayout::for_project(workdir).runs_dir();
-    let records = roko_learn::telemetry::rung_stats::load_runs(&runs_dir, runs);
-    let report = roko_learn::telemetry::rung_stats::RungReport::of(&records);
+    let layout = roko_fs::RokoLayout::for_project(workdir);
+    let records = roko_learn::telemetry::rung_stats::load_runs(&layout.runs_dir(), runs);
+    let report = roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+        &records,
+        &layout.learn_dir().join("costs.jsonl"),
+    );
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(EXIT_SUCCESS);

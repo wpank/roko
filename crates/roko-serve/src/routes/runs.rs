@@ -319,21 +319,27 @@ async fn get_run_summary(
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
     let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
     // gap-3217a0: how each rung did, from the run's own records, and whether
-    // a higher rung beat a lower one.
+    // a higher rung beat a lower one; bug-b7d9ad: the tries whose checks
+    // changed the person's own checkout instead of their worktree.
     let workdir = state.workdir.clone();
     let io_run_id = run_id.to_string();
-    let rungs = blocking_io(move || {
-        let dir = roko_fs::RokoLayout::for_project(&workdir)
-            .runs_dir()
-            .join(&io_run_id);
+    let (rungs, checkout_written) = blocking_io(move || {
+        let layout = roko_fs::RokoLayout::for_project(&workdir);
+        let dir = layout.runs_dir().join(&io_run_id);
         let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
-        Ok(roko_learn::telemetry::rung_stats::RungReport::of(
-            std::slice::from_ref(&records),
+        // A rung's refused calls count on it (gap-5cfa9c).
+        Ok((
+            roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+                std::slice::from_ref(&records),
+                &layout.learn_dir().join("costs.jsonl"),
+            ),
+            records.checkout_writes(),
         ))
     })
     .await?;
     summary["rungs"] = json!(rungs.rows);
     summary["misordered"] = json!(rungs.misordered.map(|misorder| misorder.line));
+    summary["checkout_written"] = json!(checkout_written);
     // gap-8409d0: an ended run's summary says where its verified work is, so a
     // chat host can tell its person what changed and how to take it.
     if summary["active"] == Value::Bool(false) {
@@ -2460,6 +2466,9 @@ fn run_summary(
     let mut reasoning_cuts = Vec::<Value>::new();
     // The rungs the run said ran slow, as it went (gap-3217a0).
     let mut rung_slow = Vec::<Value>::new();
+    // The rungs the run skipped at plan start because their model failed its
+    // tool-use probe, the latest event of each plan and rung (gap-20301d).
+    let mut rungs_skipped = BTreeMap::<(String, String), Value>::new();
     // The providers the run went on without because they refused a call for
     // want of usage, an account they can't bill included, the latest refusal
     // of each (bug-390e4b).
@@ -2499,6 +2508,24 @@ fn run_summary(
                 "detail": data.get("detail"),
                 "at": event_time(value),
             }));
+        }
+        if kind == "rung_skipped" {
+            let data = event_data(value);
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            let rung = string_field(value, "rung").unwrap_or_default().to_string();
+            rungs_skipped.insert(
+                (plan_id.clone(), rung.clone()),
+                json!({
+                    "plan_id": plan_id,
+                    "rung": rung,
+                    "model": data.get("model"),
+                    "provider": data.get("provider"),
+                    "reason": data.get("reason"),
+                    "until_ms": data.get("until_ms"),
+                    "detail": data.get("detail"),
+                    "at": event_time(value),
+                }),
+            );
         }
         if kind == "reasoning_cut" {
             let data = event_data(value);
@@ -2712,6 +2739,7 @@ fn run_summary(
         "milestones": milestones,
         "reasoning_cuts": reasoning_cuts,
         "rung_slow": rung_slow,
+        "rungs_skipped": rungs_skipped.into_values().collect::<Vec<_>>(),
         "provider_exhausted": provider_exhausted.into_values().collect::<Vec<_>>(),
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
@@ -4477,9 +4505,144 @@ mod tests {
         assert_eq!(cuts[0]["reask"], "acted");
     }
 
+    /// gap-20301d: a run's summary lists the rungs it skipped at plan start
+    /// because their model failed its tool-use probe, the latest event of
+    /// each plan and rung, as a resumed process says it again.
+    #[tokio::test]
+    async fn a_runs_summary_lists_its_skipped_rungs() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "s1").unwrap();
+        let skipped = |until: i64| json!({"type":"rung_skipped","run_id":"s1","plan_id":"p1","rung":"cheap","model":"gpt-oss-120b","provider":"cerebras","reason":"insufficient_credits: cerebras refused the request (HTTP 402): payment required","until_ms":until,"detail":"rung cheap (gpt-oss-120b on cerebras) is skipped until 20:33: its tool-use probe failed"});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"s1","timestamp_ms":1,"plan_id":"p1"}),
+                skipped(1_000),
+                skipped(2_000),
+                json!({"type":"run.completed","run_id":"s1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("s1".into()))
+            .await
+            .unwrap();
+        let rungs = summary["rungs_skipped"].as_array().expect("rungs_skipped");
+        assert_eq!(rungs.len(), 1, "{summary}");
+        assert_eq!(rungs[0]["plan_id"], "p1");
+        assert_eq!(rungs[0]["rung"], "cheap");
+        assert_eq!(rungs[0]["model"], "gpt-oss-120b");
+        assert_eq!(rungs[0]["provider"], "cerebras");
+        assert_eq!(rungs[0]["until_ms"], 2_000, "the latest event");
+        assert!(
+            rungs[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("(HTTP 402)")),
+            "{summary}"
+        );
+    }
+
+    /// bug-b7d9ad: a run's summary names the tries whose checks changed the
+    /// person's own checkout instead of their worktree, with the paths, from
+    /// their verdicts' `checkout_written` findings; a try without one is not
+    /// named.
+    #[tokio::test]
+    async fn a_runs_summary_names_the_checks_that_changed_the_checkout() {
+        use roko_learn::telemetry::records::{
+            AttemptKey, AttemptOutcome, SCOPE_CHECKOUT_WRITTEN, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord, ScopeFinding};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "w1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"w1","timestamp_ms":1,"plan_id":"p4"}),
+                json!({"type":"run.completed","run_id":"w1","timestamp_ms":3,"outcome":"unverified"}),
+            ],
+        );
+        let verdict = |task: &str, outcome, findings: Vec<ScopeFinding>| {
+            let identity = AttemptIdentity::new(&AttemptKey::new("w1", "p4", task, 1));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.set_scope_findings(findings);
+            let mut line = json!({
+                "schema_version": VERDICT_SCHEMA,
+                "record_id": format!("r-{task}"),
+                "seq": 1,
+                "ts": "2026-10-26T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (
+                line.as_object_mut(),
+                serde_json::to_value(&verdict).unwrap(),
+            ) {
+                line.extend(fields);
+            }
+            line
+        };
+        let written = |path: &str| ScopeFinding {
+            path: path.to_string(),
+            kind: SCOPE_CHECKOUT_WRITTEN.to_string(),
+        };
+        write_rows(
+            &state.layout.runs_dir().join("w1").join("attempts.jsonl"),
+            &[
+                verdict("T1", AttemptOutcome::Passed, Vec::new()),
+                verdict(
+                    "T2",
+                    AttemptOutcome::Unverified,
+                    vec![
+                        written("artifacts/ui/editor-idle.png"),
+                        written("artifacts/ui/editor-playing.png"),
+                    ],
+                ),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("w1".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            summary["checkout_written"],
+            json!([{
+                "plan_id": "p4",
+                "task_id": "T2",
+                "attempt": 1,
+                "paths": ["artifacts/ui/editor-idle.png", "artifacts/ui/editor-playing.png"],
+            }]),
+            "{summary}"
+        );
+    }
+
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own
     /// records, with their passes, time and cost, says when a higher rung
-    /// beat a lower one, and names the rungs the run said ran slow.
+    /// beat a lower one, and names the rungs the run said ran slow. A call
+    /// its provider refused before failover counts on the rung of the model
+    /// that made it, as `refused_usd` (gap-5cfa9c).
     #[tokio::test]
     async fn run_summary_lists_its_rungs() {
         use roko_learn::telemetry::records::{
@@ -4559,6 +4722,14 @@ mod tests {
             &state.layout.runs_dir().join("r3").join("attempts.jsonl"),
             &lines,
         );
+        // glm-4.7's calls refused before T4 failed over to strong.
+        let t4 = AttemptKey::new("r3", "p1", "T4", 1).attempt_key();
+        write_rows(
+            &state.layout.learn_dir().join("costs.jsonl"),
+            &[
+                json!({"attempt_key": t4, "role": "failover_refused", "model": "glm-4.7", "cost_usd": 0.2076}),
+            ],
+        );
 
         let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r3".into()))
             .await
@@ -4569,8 +4740,10 @@ mod tests {
         assert_eq!(rungs[0]["model"], "glm-4.7", "{summary}");
         assert_eq!(rungs[0]["verified_passes"], 3, "{summary}");
         assert_eq!(rungs[0]["try_s"]["median"], 600.0, "{summary}");
+        assert_eq!(rungs[0]["refused_usd"], 0.2076, "{summary}");
         assert_eq!(rungs[1]["rung"], "strong", "{summary}");
         assert_eq!(rungs[1]["pass_s"]["median"], 45.0, "{summary}");
+        assert_eq!(rungs[1]["refused_usd"], 0.0, "{summary}");
         let misordered = summary["misordered"].as_str().expect("misordered");
         assert!(
             misordered.starts_with("strong (gpt-5.4-mini) is cheaper and faster per verified pass"),

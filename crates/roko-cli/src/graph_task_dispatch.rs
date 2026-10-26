@@ -59,6 +59,7 @@ mod best_try;
 mod budget;
 mod call_cost;
 mod check_output;
+mod checkout_writes;
 mod decision_log;
 mod diff_snapshot;
 mod failover;
@@ -341,6 +342,14 @@ pub struct GraphTaskDispatcher {
     /// Attempts running now, so a verify step that fails while siblings edit
     /// the same working tree can wait for them to settle.
     in_flight: sibling_settle::InFlightTasks,
+    /// The paths of the person's checkout that changed while a task's checks
+    /// ran, by plan and task, for the end of the plan run (bug-b7d9ad).
+    checkout_writes: parking_lot::Mutex<
+        std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+        >,
+    >,
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
@@ -451,6 +460,7 @@ impl GraphTaskDispatcher {
             unchanged_tries: parking_lot::Mutex::default(),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
+            checkout_writes: parking_lot::Mutex::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),
             depths: verify_depth::Depths::default(),
@@ -1071,6 +1081,12 @@ impl GraphTaskDispatcher {
         // A rung the task must pass whose kind is not built yet fails the
         // attempt before its agent runs, and is not retried (9120).
         if let Some(rejection) = self.unbuilt_rung(spec, task) {
+            return Err(rejection);
+        }
+        // So does a task the ladder routes when every rung of it failed its
+        // probe at plan start: no model outside the ladder runs it
+        // (gap-20301d).
+        if let Some(rejection) = self.unroutable(task) {
             return Err(rejection);
         }
         // The prompt shows every check that will judge the task: its own

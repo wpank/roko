@@ -2,15 +2,16 @@
 id = "gap-343a23"
 kind = "gap"
 title = "The planner prompt teaches a grep -q guard before every fail_on_base check (rule 6 and three example plans), so planners guard the spec's own check commands and run_exactly strips them on every spec-sourced plan (phase 3's re-plan: 7 of 7 steps)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-21
-updated = 2026-10-21
-last_verified = 2026-10-21
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "f45fc8ff6"
 source = "round-v7-team-lead#phase-3-replan-guards"
 discovered_from = "agent:roko-planner (round v7, phase 3 re-plan op 3b13af5f, the lead's ask)"
 anchors = ["crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT", "crates/roko-cli/src/plan_generate/source_checks.rs::SELF_CONTAINED"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-56a806", "gap-115c2a"], 
 
 [[verify]]
 command = "grep -rqw 'fn the_planner_is_told_not_to_guard_a_source_check' crates/roko-cli/src && cargo test -p roko-cli --lib -- the_planner_is_told_not_to_guard_a_source_check"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T11:37:58Z"
+commit = "1dcad4591"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 1dcad4591 (branch dca28c426; main merged in at 8a82040ff and 7de5836a0). Post-merge verify in main at 1dcad4591: the grep finds the test and the_planner_is_told_not_to_guard_a_source_check passes. Branch suites at 7de5836a0: roko-cli lib 3992 passed, 0 failed, 7 ignored (share test skipped); plan_generate 171/171; nightly fmt clean; clippy -p roko-cli -D warnings clean. The guard is now taught only for the planner's own checks, in rule 6, the first example plan (Rust and the CMake rewrite Undertow reads), the source-check block (the guard paragraph only for a check with no given command), the CMake note and the hidden-output re-ask. Live (10-21, gpt-5.4-mini, phase 3 at Undertow c9dc249): the CLI and serve MCP plan_generate {spec_path} each wrote the spec's 7 commands alone, with 0 grep -q and 0 guard repairs ($0.0359, $0.0139). The old prompt (dafb6316f) did the same ($0.0497, $0.0150), so the guard is intermittent and the pinned test is the proof; run_exactly stays the safety net."
 +++
 
 ## Problem

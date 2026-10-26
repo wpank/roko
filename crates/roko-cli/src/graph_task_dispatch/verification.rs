@@ -150,6 +150,9 @@ impl GraphTaskDispatcher {
             )
             .await?;
         let unchanged_tree = matches!(screened, red_flags::Screened::UnchangedTree(_));
+        // What the checks write into the person's checkout, when the attempt
+        // runs outside it (bug-b7d9ad).
+        let checkout_before = self.checkout_before_checks(spec, effective_workdir).await;
         let verified = self
             .run_verify_steps(
                 spec,
@@ -165,8 +168,44 @@ impl GraphTaskDispatcher {
                 steps,
             )
             .await;
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        let written = self.checkout_written(checkout_before, &task_key).await;
+        // Checks that pass on a tree the attempt left unchanged while the
+        // person's checkout changes may have tested that checkout: the task
+        // is not shown to be satisfied.
+        let unverified = !written.is_empty()
+            && unchanged_tree
+            && matches!(
+                verified,
+                Ok(TaskGateVerdict::Passed | TaskGateVerdict::PassedWithPreexistingFailures)
+            );
+        if !written.is_empty() {
+            self.report_checkout_written(
+                spec,
+                task,
+                attempt_number,
+                effective_workdir,
+                &written,
+                unverified,
+                scope_findings,
+            );
+        }
         match screened {
             red_flags::Screened::Clear => verified,
+            red_flags::Screened::UnchangedTree(_) if unverified => {
+                if let Some(progress_tx) = progress_tx {
+                    let message = "unverified: the verify steps pass on the unchanged tree, but \
+                                   the person's checkout changed while they ran";
+                    let _ = progress_tx
+                        .send(GraphTaskEvent::Progress {
+                            message: message.to_string(),
+                            completed: None,
+                            total: None,
+                        })
+                        .await;
+                }
+                Ok(TaskGateVerdict::Unverified)
+            }
             red_flags::Screened::UnchangedTree(unchanged) => {
                 self.settle_unchanged_tree(
                     spec,
@@ -290,6 +329,15 @@ impl GraphTaskDispatcher {
                 .gate_retry_context
                 .passed_steps(&spec.plan_id, &task.id);
             let mut regressed_now = false;
+            // The checks the try's own run passed on the tree it ends with:
+            // those steps are not run again (gap-6df2bf). A probe of an
+            // unchanged tree runs its steps: they decide whether the work was
+            // already there.
+            let self_checked = if unchanged_tree {
+                None
+            } else {
+                self.self_checked(attempt_key, &effective_workdir).await
+            };
 
             for (i, (step_label, step)) in steps.iter().enumerate() {
                 // How feedback and events quote the step: a pinned acceptance
@@ -303,6 +351,35 @@ impl GraphTaskDispatcher {
                 if promise_terminated || (!failures.is_empty() && !regressed_now) {
                     skipped_steps.push(format!("{step_label} (`{shown}`)"));
                     step_verdicts.push(skipped_step_verdict(i, step));
+                    continue;
+                }
+                // A step the try's own checks passed on this tree passes
+                // without running again, and its verdict says so (gap-6df2bf).
+                if let Some(verdict) = self_checked
+                    .as_ref()
+                    .and_then(|checked| checked.verdict(step_label, &step.command))
+                {
+                    tracing::info!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        step = i,
+                        "verify step passed in the try's own checks of this tree: not run again"
+                    );
+                    step_outcomes.push((step.phase.clone(), true));
+                    if let Some(tui) = &self.tui_bridge {
+                        tui.gate_result_with_output(
+                            &spec.plan_id,
+                            &task.id,
+                            &verdict.gate,
+                            true,
+                            Some(&published_gate_output(shown, &verdict)),
+                        );
+                    }
+                    step_verdicts.push(VerifyStepVerdict {
+                        self_checked: true,
+                        ..ran_step_verdict(i, step, &verdict, Some(0))
+                    });
+                    ran_steps.push((step.phase.clone(), verdict));
                     continue;
                 }
 
@@ -1303,6 +1380,7 @@ fn ran_step_verdict(
         timed_out: roko_gate::verdict_timed_out(verdict),
         skipped: false,
         skip_reason: None,
+        self_checked: false,
         confirmed_by_user: false,
     }
 }
@@ -1895,6 +1973,117 @@ mod tests {
                 "attempt {attempt}: {error}"
             );
         }
+    }
+
+    /// gap-6df2bf: a step the try's own checks passed on the tree it ends
+    /// with passes without running again, and its verdict says so, with that
+    /// run's time. In round v7, 36 tries spent 11.2 min re-running checks
+    /// their last self-check had passed. A tree changed since that run, or a
+    /// step whose command differs from the one the run passed, runs as
+    /// before.
+    #[tokio::test]
+    async fn a_green_run_tests_on_the_final_tree_is_not_run_again() {
+        use roko_std::tool::builtin::task_checks::{CheckRun, task_check_runs_path};
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let workdir = temp.path();
+        let git = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workdir)
+            .status()
+            .expect("git init");
+        assert!(git.success());
+        // roko's own state stays out of the tree, as in a workspace.
+        std::fs::write(workdir.join(".gitignore"), ".roko/\n").expect("the ignore file");
+        let outside = tempdir().expect("a directory outside the checkout");
+        let ran = outside.path().join("ran.log");
+        let command = format!("echo ran >> '{}'", ran.display());
+        task.verify = vec![verify_step("test", &command)];
+        let spec = make_spec(&task);
+        let attempt_key = "self-check-run:plan:T-STREAM:1";
+        let runs = task_check_runs_path(workdir, attempt_key);
+        std::fs::create_dir_all(runs.parent().expect("the checks' directory")).expect("mkdir");
+        let tree = crate::graph_task_dispatch::diff_snapshot::snapshot_tree(workdir)
+            .await
+            .expect("the checkout's tree");
+        // The try's own checks passed the step on this tree, in 1.5 s.
+        let green = |tree: &str, command: &str| CheckRun {
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            tree: tree.to_string(),
+            passed: vec!["verify[0:test]".to_string()],
+            commands: vec![command.to_string()],
+            ms: vec![1_500],
+            failed: None,
+        };
+        let record = |run: CheckRun| {
+            let line = serde_json::to_string(&run).expect("a run record");
+            std::fs::write(&runs, format!("{line}\n")).expect("the run record");
+        };
+        let ran_lines = || {
+            std::fs::read_to_string(&ran)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let verify = || async {
+            let mut steps = Vec::new();
+            let verified = dispatcher
+                .run_verify_steps(
+                    &spec,
+                    &task,
+                    workdir,
+                    "retry",
+                    1,
+                    attempt_key,
+                    "fixture",
+                    None,
+                    None,
+                    false,
+                    &mut steps,
+                )
+                .await;
+            (verified, steps)
+        };
+
+        record(green(&tree, &command));
+        let (verified, steps) = verify().await;
+        assert!(
+            matches!(verified, Ok(TaskGateVerdict::Passed)),
+            "{verified:?}"
+        );
+        assert_eq!(ran_lines(), 0, "the step ran again");
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(steps[0].self_checked, "{steps:?}");
+        assert_eq!(steps[0].passed, Some(true));
+        assert_eq!(steps[0].duration_ms, Some(1_500));
+
+        // The run passed another command under the step's label: it runs.
+        record(green(&tree, "true"));
+        let (verified, steps) = verify().await;
+        assert!(
+            matches!(verified, Ok(TaskGateVerdict::Passed)),
+            "{verified:?}"
+        );
+        assert_eq!(ran_lines(), 1);
+        assert!(!steps[0].self_checked, "{steps:?}");
+
+        // The tree changed after the run: the step runs.
+        record(green(&tree, &command));
+        std::fs::write(workdir.join("later.txt"), "an edit after the run").expect("an edit");
+        let (verified, steps) = verify().await;
+        assert!(
+            matches!(verified, Ok(TaskGateVerdict::Passed)),
+            "{verified:?}"
+        );
+        assert_eq!(ran_lines(), 2);
+        assert!(!steps[0].self_checked, "{steps:?}");
     }
 
     #[tokio::test]

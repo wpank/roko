@@ -488,6 +488,33 @@ pub enum DashboardEvent {
         #[serde(default)]
         detail: String,
     },
+    /// A rung of the model ladder the run skips (gap-20301d): its model
+    /// failed the tool-use probe roko gives each API rung at plan start, and
+    /// the verdict stands until `until_ms`. A task that would start on the
+    /// rung starts on the next one that runs. One per plan of the run and
+    /// skipped rung, once the plan set is announced.
+    RungSkipped {
+        /// A plan of the run.
+        plan_id: String,
+        /// The rung.
+        rung: String,
+        /// Its model, as dispatch runs it.
+        #[serde(default)]
+        model: String,
+        /// The model's provider.
+        #[serde(default)]
+        provider: String,
+        /// Why the probe failed, in its own words.
+        #[serde(default)]
+        reason: String,
+        /// When roko probes the rung again, unix ms: when it was probed, plus
+        /// the day a verdict stands.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_ms: Option<i64>,
+        /// The finding in words.
+        #[serde(default)]
+        detail: String,
+    },
     /// A provider refused a try's call because the account is out of usage
     /// or can't be billed (bug-390e4b): roko skips it until `until_ms`, and
     /// the try goes on with the next model, with no retry, no wait and no try
@@ -3665,6 +3692,17 @@ impl DashboardSnapshot {
                     "rung_slow".to_string(),
                     plan_id.clone(),
                     task_id.clone(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::RungSkipped {
+                plan_id, detail, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "rung_skipped".to_string(),
+                    plan_id.clone(),
+                    String::new(),
                     detail.clone(),
                 );
             }

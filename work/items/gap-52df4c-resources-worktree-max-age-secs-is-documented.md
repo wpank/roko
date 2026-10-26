@@ -9,7 +9,7 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-10-08
-updated = 2026-10-08
+updated = 2026-10-26
 last_verified = 2026-10-08
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "stash triage side finding"
@@ -50,3 +50,13 @@ and its documentation. Wiring it is preferable; removal needs a config migration
 
 - [ ] The key is read by the cleanup, or it is gone from the schema and docs.
 - [ ] `[[verify]]` passes.
+
+## Notes
+
+- 2026-10-26 (roko-recovery, round v7): **crashes now feed this.**
+  - Each start-over after a crash keeps the dead attempt's checkout as `.roko/worktrees/attempt-<id>-<run8>` (or
+    `-graphrec`), with branch `roko/attempt/attempt-<id>-<run8>` and the dead try's edits. That covers `--fresh`,
+    `--force-resume`, serve's resume when it can't continue, and the Run button.
+  - Nothing removes them. The kill matrix (`tmp/hermes-roko-v7/roko-recovery/`) leaves one per start-over.
+  - Wiring `worktree_max_age_secs` would clear them, once gap-36f3fb saves their edits as a patch.
+  - bug-f6d1a3 (p3) tracks the other crash leftovers.

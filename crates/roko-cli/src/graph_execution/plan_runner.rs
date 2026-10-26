@@ -1306,6 +1306,21 @@ async fn run_graph_plan_body(
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
     super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
+    // The rung probes run before the spec gate, whose red-on-base pre-check
+    // can build and run every task's steps on the base for minutes: a run
+    // whose ladder can't serve any of its tasks stops here, in the probes'
+    // own words (gap-c96097).
+    if let Some(stop) = unrunnable_ladder(
+        &roko_config,
+        workdir,
+        &plans,
+        no_budget,
+        cli_model_override.as_deref(),
+    )
+    .await
+    {
+        anyhow::bail!(stop);
+    }
     // 3231: the plan-load spec gate, which every run passes (plan run,
     // serve, ACP, roko run): score each task, prove its shell checks red on
     // the base when `[spec_quality] red_on_base` is on, and refuse the plans
@@ -1468,9 +1483,15 @@ async fn run_graph_plan_body(
     let probe_rungs = roko_config.routing.ladder.probe
         && !no_budget
         && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    // The rungs the probes skip: each plan's `rung_skipped` events name them
+    // once the plan set is announced, and the run's readout lists them at its
+    // end (gap-20301d).
+    let mut skipped_rungs = Vec::new();
     if probe_rungs && let Some(ladder) = shared_factory.dispatcher().routing_ladder().cloned() {
         let failed =
             crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
+        skipped_rungs =
+            crate::dispatch::rung_probe::skipped_rungs(&roko_config, &ladder, &failed, workdir);
         shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
     // A chat host's run holds its tasks' outbound tool calls for approval
@@ -1568,14 +1589,21 @@ async fn run_graph_plan_body(
     // Announce the whole selected set before any plan starts, so the TUI and
     // StateHub consumers show every plan, the whole-set task total, and one
     // run clock across plan boundaries.
-    state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded {
-        plans: plan_set_entries(
-            &crate::plan::plans_dir(workdir),
-            &plans,
-            &plan_order,
-            &plan_conflicts,
-        ),
-    });
+    let plan_set = plan_set_entries(
+        &crate::plan::plans_dir(workdir),
+        &plans,
+        &plan_order,
+        &plan_conflicts,
+    );
+    let plan_ids: Vec<String> = plan_set.iter().map(|plan| plan.plan_id.clone()).collect();
+    state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded { plans: plan_set });
+    // Each plan's view of the ladder shows the rungs the probes skipped, and
+    // until when (gap-20301d).
+    for plan_id in &plan_ids {
+        for rung in &skipped_rungs {
+            state_hub_sender.publish(rung.event(plan_id));
+        }
+    }
     let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         crate::runner::graph_tui_bridge::StateHubTelemetrySink::new(state_hub_sender.clone()),
     );
@@ -2558,7 +2586,11 @@ async fn run_graph_plan_body(
                 roko_learn::telemetry::report::RunRecords::load(&runs_dir.join(run_id)).ok()
             })
             .collect();
-        roko_learn::telemetry::rung_stats::RungReport::of(&records)
+        // A rung's refused calls count on it (gap-5cfa9c).
+        roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+            &records,
+            &graph_layout.learn_dir().join("costs.jsonl"),
+        )
     };
 
     if json {
@@ -2578,7 +2610,15 @@ async fn run_graph_plan_body(
                 "plan_outcomes": plan_outcome_labels,
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
                 "rungs": rungs.rows,
+                "rungs_skipped": skipped_rungs,
                 "misordered": rungs.misordered.as_ref().map(|misorder| &misorder.line),
+                // The paths of the person's checkout each task's checks
+                // changed, by plan and task (bug-b7d9ad).
+                "checkout_written": plans
+                    .iter()
+                    .map(|plan| (plan.id.clone(), graph_task_dispatcher.checkout_writes(&plan.id)))
+                    .filter(|(_, writes)| !writes.is_empty())
+                    .collect::<std::collections::BTreeMap<_, _>>(),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
                     "discarded": batch_discarded,
@@ -2644,9 +2684,13 @@ async fn run_graph_plan_body(
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
         }
         // How each rung did, and whether a higher one beat a lower one
-        // (gap-3217a0).
+        // (gap-3217a0); then the rungs the probes skipped, and why
+        // (gap-20301d).
         for line in rungs.lines() {
             println!("{line}");
+        }
+        for rung in &skipped_rungs {
+            println!("Rung {}", rung.line());
         }
         // Work no check ran on is never delivered: say where it is
         // (bug-db89d4).
@@ -2659,6 +2703,15 @@ async fn run_graph_plan_body(
                 short_oid(&work.commit),
                 work.review_command()
             );
+        }
+        // Checks that changed the person's checkout, not their own worktree
+        // (bug-b7d9ad).
+        for plan in &plans {
+            let note =
+                checkout_written_note(&workdir, &graph_task_dispatcher.checkout_writes(&plan.id));
+            if !note.is_empty() {
+                println!("Plan {}{note}", plan.id);
+            }
         }
         // Where each delivered plan's work landed (gap-415c54).
         if let Some(batch) = batch.as_ref() {
@@ -3909,6 +3962,33 @@ impl FlowWatch {
     }
 }
 
+/// What a plan's end says of the tasks whose checks changed the person's
+/// checkout at `workdir` instead of their own worktree (bug-b7d9ad), from the
+/// paths of each, by task; empty without any.
+fn checkout_written_note(
+    workdir: &Path,
+    writes: &std::collections::BTreeMap<String, Vec<String>>,
+) -> String {
+    if writes.is_empty() {
+        return String::new();
+    }
+    let tasks: Vec<String> = writes
+        .iter()
+        .map(|(task, paths)| {
+            let paths: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
+            format!("{task} ({})", paths.join(", "))
+        })
+        .collect();
+    let paths: Vec<&str> = writes.values().flatten().map(String::as_str).collect();
+    format!(
+        ". The checks of {} changed your checkout, not their own worktree; roko left the \
+         changes there and did not deliver them: see them with `git -C {} status -- {}`",
+        tasks.join("; "),
+        workdir.display(),
+        paths.join(" ")
+    )
+}
+
 /// Run one admitted plan to a terminal checkpoint.
 ///
 /// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
@@ -4585,11 +4665,22 @@ async fn run_one_plan(
             work.review_command()
         )
     });
+    // Tasks whose checks changed the person's checkout, not their own
+    // worktree (bug-b7d9ad).
+    let checkout_written = checkout_written_note(
+        ctx.workdir,
+        &ctx.graph_task_dispatcher.checkout_writes(&plan.id),
+    );
     if outcome == PlanOutcome::Unverified {
+        let why = if checkout_written.is_empty() {
+            "ran no verify step"
+        } else {
+            "ran no verify step, or their checks changed your checkout"
+        };
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}' is unverified: {} task(s) ran no verify step{unverified_at}",
+                "plan '{}' is unverified: {} task(s) {why}{unverified_at}{checkout_written}",
                 plan.id, task_verdicts.unverified
             ),
         );
@@ -4597,10 +4688,15 @@ async fn run_one_plan(
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': task(s) {} ran no verify step{unverified_at}",
+                "plan '{}': task(s) {} ran no verify step{unverified_at}{checkout_written}",
                 plan.id,
                 work.tasks.join(", ")
             ),
+        );
+    } else if !checkout_written.is_empty() {
+        graph_tui_bridge.log_event(
+            "graph.plan_unverified",
+            &format!("plan '{}'{checkout_written}", plan.id),
         );
     }
     // Why each failed task failed, in the run's events, so a host can tell
@@ -4727,6 +4823,73 @@ impl PlanCheckResult {
             delivery_id: None,
         }
     }
+}
+
+/// Why no task of `plans` can start (gap-c96097): every rung of the routing
+/// ladder failed its tool-use probe, each named here with the probe's own
+/// words, and the ladder routes every task, none pinned to a model by
+/// `--model` (`cli_model_override`), a `model_hint` or a `preferred_model`.
+/// The probes are plan start's ([`crate::dispatch::rung_probe::probe_ladder`],
+/// under its conditions), whose verdicts stand for a day, so the probe at plan
+/// start reads them again. `None` when the probes are off, a rung can run, a
+/// task can start without the ladder, or a rung failed on its provider's
+/// billing or usage window ([`billing_refusal`]): the person's fix there is
+/// to recharge and run again, which a day-old verdict must not stop.
+async fn unrunnable_ladder(
+    config: &roko_core::config::schema::RokoConfig,
+    workdir: &Path,
+    plans: &[crate::runner::plan_loader::Plan],
+    no_budget: bool,
+    cli_model_override: Option<&str>,
+) -> Option<String> {
+    let probes = config.routing.ladder.probe
+        && !no_budget
+        && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    if !probes || cli_model_override.is_some() {
+        return None;
+    }
+    let ladder = crate::dispatch::RoutingLadder::from_config(config)?;
+    let routes_every_task = plans.iter().flat_map(|plan| &plan.tasks.tasks).all(|task| {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        task.model_hint.is_none()
+            && task.hints.preferred_model.is_none()
+            && ladder
+                .start(role, task.tier_class(), task.hints.rung.as_deref())
+                .is_some()
+    });
+    if !routes_every_task {
+        return None;
+    }
+    let failed = crate::dispatch::rung_probe::probe_ladder(config, &ladder, workdir).await;
+    let models = ladder.rung_models();
+    if !models.iter().all(|model| failed.contains_key(model))
+        || failed.values().any(|reason| billing_refusal(reason))
+    {
+        return None;
+    }
+    let rungs = models
+        .iter()
+        .map(|model| format!("{model}: {}", failed[model]))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "no rung of the routing ladder can run, so no task of this run can start: {rungs}. \
+         The run stops before any check runs: fix the providers, or pin a model with --model, \
+         and run again"
+    ))
+}
+
+/// Whether a rung's probe failed on its provider's billing or usage window:
+/// an HTTP 402 or another billing refusal (`insufficient_credits`, z.ai's
+/// 1113, an insufficient balance) or an exhausted plan
+/// (`provider_exhausted`). A recharge or the window's reset fixes it while
+/// the probe's verdict still stands, so the early stop leaves the run to the
+/// probe at plan start (gap-c96097, the lead's call with gap-20301d).
+fn billing_refusal(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    reason.starts_with("insufficient_credits")
+        || reason.starts_with("provider_exhausted")
+        || roko_agent::provider::error_classify::is_billing_message(&reason)
 }
 
 /// What the plan-load gate's red-on-base check runs for `plans` (gap-6a319c):
@@ -6393,6 +6556,119 @@ files = ["README.md"]
             crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-disabled"),
             Some(GraphCheckpointStatus::Failed)
         );
+    }
+
+    /// A two-rung ladder of OpenAI-compatible models, as the rung probes
+    /// probe them, on a provider nothing listens at: a test seeds their
+    /// verdicts, so no probe call is made.
+    const PROBED_LADDER_CONFIG: &str = r#"
+[providers.cheap_api]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "PATH"
+
+[providers.mid_api]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "PATH"
+
+[models.cheap-model]
+provider = "cheap_api"
+slug = "cheap-1"
+supports_tools = true
+tool_format = "openai_json"
+
+[models.mid-model]
+provider = "mid_api"
+slug = "mid-1"
+supports_tools = true
+tool_format = "openai_json"
+
+[routing.ladder]
+rungs = [{ name = "cheap", model = "cheap-model" }, { name = "mid", model = "mid-model" }]
+"#;
+
+    /// gap-20301d: a rung whose model's fresh probe failed is skipped at plan
+    /// start with one `rung_skipped` event for the run's plan, naming the
+    /// rung, its model and provider, the probe's words and until when the
+    /// verdict stands, and the run's own record keeps it for its summary. The
+    /// rung whose fresh probe passed gets none. Both verdicts are fresh, so
+    /// no probe runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_probe_skips_its_rung_with_an_event() {
+        use crate::dispatch::rung_probe::{PROBE_TTL_MS, RungProbe, RungProbes};
+
+        let dir = disabled_role_plan_set(&[("a", "a.txt", &[])], PROBED_LADDER_CONFIG);
+        let probed_at_ms = chrono::Utc::now().timestamp_millis() - 60_000;
+        let probe = |passed: bool, reason: &str| RungProbe {
+            passed,
+            reason: reason.to_string(),
+            probed_at_ms,
+        };
+        let probes = RungProbes {
+            models: [
+                (
+                    "cheap-1".to_string(),
+                    probe(
+                        false,
+                        "insufficient_credits: cheap_api refused the request (HTTP 402): \
+                         payment required",
+                    ),
+                ),
+                ("mid-1".to_string(), probe(true, "")),
+            ]
+            .into(),
+        };
+        let path = RungProbes::path(dir.path());
+        std::fs::create_dir_all(path.parent().expect("learn dir")).expect("learn dir");
+        std::fs::write(&path, serde_json::to_string(&probes).expect("probes")).expect("probes");
+
+        let (_, _, hub) = run_plan_set_with(dir.path(), Some(1), None, false, false).await;
+
+        let skipped: Vec<_> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::RungSkipped {
+                    plan_id,
+                    rung,
+                    model,
+                    provider,
+                    reason,
+                    until_ms,
+                    detail,
+                } => Some((plan_id, rung, model, provider, reason, until_ms, detail)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(skipped.len(), 1, "one rung, one plan: {skipped:?}");
+        let (plan_id, rung, model, provider, reason, until_ms, detail) = &skipped[0];
+        assert_eq!(
+            (
+                plan_id.as_str(),
+                rung.as_str(),
+                model.as_str(),
+                provider.as_str()
+            ),
+            ("a", "cheap", "cheap-1", "cheap_api")
+        );
+        assert!(reason.contains("(HTTP 402)"), "{reason}");
+        assert_eq!(*until_ms, Some(probed_at_ms + PROBE_TTL_MS));
+        assert!(
+            detail.starts_with("rung cheap (cheap-1 on cheap_api) is skipped until ")
+                && detail.contains("its tool-use probe failed: insufficient_credits"),
+            "{detail}"
+        );
+        let events =
+            std::fs::read_to_string(RokoLayout::for_project(dir.path()).events_jsonl_path())
+                .expect("the run's event log");
+        let kept = events
+            .lines()
+            .filter(|line| line.contains("\"type\":\"rung_skipped\""))
+            .count();
+        assert_eq!(kept, 1, "the run's record keeps the event for its summary");
+        assert_eq!(RungProbes::load(&path), probes, "no probe ran");
     }
 
     /// gap-568056: a Graph run keeps `.roko/state/status.json` current and
@@ -10425,6 +10701,46 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+        // bug-b7d9ad: the plans live in the checkout and the run changes
+        // nothing there, so no task's checks are said to have changed it. Each
+        // plan keeps its records under a run of its own.
+        let runs: Vec<roko_learn::telemetry::report::RunRecords> =
+            std::fs::read_dir(repo.join(".roko/runs"))
+                .expect("read .roko/runs")
+                .map(|entry| entry.expect("run directory").path())
+                .filter(|path| path.is_dir())
+                .map(|path| {
+                    roko_learn::telemetry::report::RunRecords::load(&path)
+                        .expect("the run's records")
+                })
+                .collect();
+        let verdicts: usize = runs.iter().map(|run| run.verdicts.len()).sum();
+        assert!(verdicts >= 2, "{verdicts}");
+        assert!(runs.iter().all(|run| run.checkout_writes().is_empty()));
+    }
+
+    /// bug-b7d9ad: what roko writes in the person's checkout during a run,
+    /// its own `.roko/` here not ignored by git, beside plans that live in the
+    /// checkout, is not taken for a task's checks changing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rokos_own_writes_in_the_checkout_raise_no_checkout_flag() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        git_in(repo, &["rm", "-q", ".gitignore"]);
+        git_in(repo, &["commit", "-q", "-m", "show .roko to git"]);
+
+        let exit_code = run_graph_plan_in_run(worktree_run_params(repo), Some("run-own".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let status = git_stdout(repo, &["status", "--porcelain"]);
+        assert!(status.contains(".roko/"), "roko wrote its state: {status}");
+        let records =
+            roko_learn::telemetry::report::RunRecords::load(&repo.join(".roko/runs/run-own"))
+                .expect("the run's records");
+        assert!(!records.verdicts.is_empty());
+        assert!(records.checkout_writes().is_empty());
     }
 
     /// backlog 3104: with per-task worktrees and `max_parallel_plans = 2`,
@@ -10584,6 +10900,159 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 );
             }
         }
+    }
+
+    /// gap-c96097: the rung probes run before the red-on-base pre-check.
+    /// Every rung of the ladder failed its probe within the day, as OpenAI
+    /// refused phase 4's in run 16fc88ae, and the ladder routes the run's one
+    /// task. The run stops in the probes' own words before the pre-check runs
+    /// the task's step on the base, which would leave a mark. 16fc88ae
+    /// pre-checked for 134 s, then died in 7 s on the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_rung_probes_run_before_the_red_on_base_pre_check() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let marks = tempfile::tempdir().expect("a directory for the mark");
+        let mark = marks.path().join("ran-on-base");
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks)
+            .expect("tasks.toml")
+            .replace(
+                "command = \"test -f alpha.txt\"",
+                &format!(
+                    "command = {:?}",
+                    format!("touch '{}'; test -f alpha.txt", mark.display())
+                ),
+            );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        std::fs::write(
+            repo.join("roko.toml"),
+            "[agent]\ndefault_model = \"mid-model\"\n\n\
+             [providers.rungs_api]\nkind = \"openai_compat\"\nbase_url = \"http://127.0.0.1:9/v1\"\n\
+             api_key_env = \"PATH\"\n\n\
+             [models.cheap-model]\nprovider = \"rungs_api\"\nslug = \"cheap-1\"\n\n\
+             [models.mid-model]\nprovider = \"rungs_api\"\nslug = \"mid-1\"\n\n\
+             [models.strong-model]\nprovider = \"rungs_api\"\nslug = \"strong-1\"\n\n\
+             [routing.ladder]\nrungs = [\n  { name = \"cheap\", model = \"cheap-model\" },\n  \
+             { name = \"mid\", model = \"mid-model\" },\n  { name = \"strong\", model = \"strong-model\" },\n]\n\n\
+             [spec_quality]\nred_on_base = true\n\n[audit]\nenabled = false\n",
+        )
+        .expect("roko.toml");
+        git_in(
+            repo,
+            &[
+                "commit",
+                "-qam",
+                "a ladder whose rungs the provider refuses",
+            ],
+        );
+        let refused = "request_refused: rungs_api refused the request (HTTP 400): Function tools \
+                       with reasoning_effort are not supported";
+        let now = chrono::Utc::now().timestamp_millis();
+        let probes = crate::dispatch::rung_probe::RungProbes {
+            models: ["cheap-1", "mid-1", "strong-1"]
+                .into_iter()
+                .map(|model| {
+                    let probe = crate::dispatch::rung_probe::RungProbe {
+                        passed: false,
+                        reason: refused.to_string(),
+                        probed_at_ms: now,
+                    };
+                    (model.to_string(), probe)
+                })
+                .collect(),
+        };
+        let path = crate::dispatch::rung_probe::RungProbes::path(repo);
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+        let params = GraphPlanRunParams {
+            worktree_per_task: false,
+            no_budget: false,
+            ..worktree_run_params(repo)
+        };
+
+        let error = run_graph_plan_in_run(params, Some("run-refused".into()))
+            .await
+            .expect_err("no task can start");
+
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("no rung of the routing ladder can run"),
+            "{error}"
+        );
+        assert!(error.contains(&format!("mid-1: {refused}")), "{error}");
+        assert!(!mark.exists(), "the pre-check ran a step on the base");
+
+        // A task that can start without the ladder lets the run go on: one
+        // pinned to a model, or every task under `--model`; and a run that
+        // probes nothing stops nothing.
+        let config = roko_core::config::loader::load_config_validated(repo)
+            .expect("the config")
+            .into_config();
+        let mut plans = crate::runner::plan_loader::load_plans(&repo.join("plans")).expect("plans");
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, false, None)
+                .await
+                .is_some()
+        );
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, true, None)
+                .await
+                .is_none()
+        );
+        let pinned = unrunnable_ladder(&config, repo, &plans, false, Some("mid-model"));
+        assert!(pinned.await.is_none());
+        // A rung refused on its provider's billing does not stop the run
+        // early: a recharge fixes it while the day-old verdict stands, and
+        // the probe at plan start decides (gap-20301d).
+        let billing = crate::dispatch::rung_probe::RungProbes {
+            models: ["cheap-1", "mid-1", "strong-1"]
+                .into_iter()
+                .map(|model| {
+                    let probe = crate::dispatch::rung_probe::RungProbe {
+                        passed: false,
+                        reason: "insufficient_credits: rungs_api refused the request (HTTP 402): \
+                                 payment required"
+                            .to_string(),
+                        probed_at_ms: now,
+                    };
+                    (model.to_string(), probe)
+                })
+                .collect(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&billing).expect("json")).expect("probes");
+        let billed = unrunnable_ladder(&config, repo, &plans, false, None);
+        assert!(billed.await.is_none());
+        for (reason, billed) in [
+            (
+                "insufficient_credits: cerebras refused the request (HTTP 402)",
+                true,
+            ),
+            (
+                "provider_exhausted: the plan's usage window ends at 20:00",
+                true,
+            ),
+            (
+                "unknown: z.ai: insufficient balance or no resource package (1113)",
+                true,
+            ),
+            (
+                "request_refused: openai refused the request (HTTP 400): reasoning_effort",
+                false,
+            ),
+            (
+                "empty_response: the model answered with reasoning only",
+                false,
+            ),
+        ] {
+            assert_eq!(billing_refusal(reason), billed, "{reason}");
+        }
+        plans[0].tasks.tasks[0].model_hint = Some("mid-model".to_string());
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, false, None)
+                .await
+                .is_none()
+        );
     }
 
     /// A scripted provider like [`WRITES_NAMED_FILE_AGENT`] that, when its

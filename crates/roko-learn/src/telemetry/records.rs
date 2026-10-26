@@ -520,6 +520,11 @@ pub struct VerifyStepVerdict {
     pub skipped: bool,
     /// Why the step was skipped, e.g. `fail_fast`.
     pub skip_reason: Option<String>,
+    /// Whether the gate took the step's pass from the try's own checks of
+    /// the tree it ends with instead of running it again (gap-6df2bf); its
+    /// `duration_ms` is then that run's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub self_checked: bool,
     /// Whether the person the work is for confirmed the outcome: a passed
     /// `confirm` rung (9137). It is a person's judgement, kept apart from
     /// the machine checks, which routing and audits read as such.
@@ -531,16 +536,23 @@ pub struct VerifyStepVerdict {
 /// ([`AttemptVerdictRecord::scope_findings_omitted`]).
 pub const SCOPE_FINDINGS_LISTED: usize = 50;
 
+/// [`ScopeFinding::kind`] of a path of the person's own checkout that an
+/// attempt's checks, run in its worktree, changed (bug-b7d9ad).
+pub const SCOPE_CHECKOUT_WRITTEN: &str = "checkout_written";
+
 /// A path a settled attempt changed outside its task's `files`, as the
 /// pre-verify screen found it (`scope_findings[]`, backlog 1125). Under
 /// `[gates] diff_scope = "record"` it is recorded and does not fail the
-/// attempt.
+/// attempt. Kind [`SCOPE_CHECKOUT_WRITTEN`] is a path of the person's own
+/// checkout that the attempt's checks, run in its worktree, changed
+/// (bug-b7d9ad).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScopeFinding {
-    /// The path, relative to the attempt's working tree.
+    /// The path, relative to the attempt's working tree, or to the person's
+    /// checkout for a `checkout_written` finding.
     pub path: String,
-    /// The finding's kind, e.g. `outside_scope`.
+    /// The finding's kind, e.g. `outside_scope` or `checkout_written`.
     pub kind: String,
 }
 

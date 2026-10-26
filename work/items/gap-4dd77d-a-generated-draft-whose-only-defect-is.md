@@ -4,7 +4,7 @@ kind = "gap"
 title = "A generated draft whose only defect is a verify written as a string, or a task over its tier's size limits that a higher tier fits, goes back to the planner for a whole new draft: 3 of round v7's 11 rejected drafts ($0.18) could have been repaired in place"
 status = "open"
 triage = "verified"
-severity = "p3"
+severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_generate"]
@@ -18,6 +18,9 @@ links = { depends_on = [], blocks = [], related = ["gap-b95913"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_string_verify_step_is_repaired_not_regenerated' crates/roko-cli/src && grep -rqw 'fn a_task_over_its_tier_is_raised_not_regenerated' crates/roko-cli/src && cargo test -p roko-cli --lib a_string_verify_step_is_repaired_not_regenerated && cargo test -p roko-cli --lib a_task_over_its_tier_is_raised_not_regenerated"
+
+[[verify]]
+command = "grep -rqw 'fn a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised' crates/roko-cli/src && cargo test -p roko-cli --lib a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised"
 +++
 
 ## Problem
@@ -40,11 +43,35 @@ Expected: roko repairs both in place and records each repair, as it already clam
 
 ## Why it matters
 
-Golden path, cost.
+Golden path: cost, and, as phase 4.3 showed (below), a plan's coverage of its source's checks.
 - In round v7, 11 of the 32 planner calls produced drafts that roko threw away: $0.756.
 - These two shapes were 3 of them, $0.18.
 - At gpt-5.4's prices a regeneration costs $0.10–0.16, and the planner model follows the ladder's strongest rung
   unless `[authoring] planner_model` is set.
+
+## Evidence: phase 4.3, a coverage loss (2026-10-26, hermes-pilot; raised to p2 by the lead)
+
+Undertow phase 4.3's plan was written from a chat: op `ff02a005`, roko f50dc58fa, planner gpt-5.4-mini. The log is
+Undertow's `.roko/roko.log.2026-10-26`, 12:20:02–12:20:25Z.
+
+1. **The draft dropped 5 of the spec's 16 checks** (34,990 in / 1,521 out, $0.0400).
+   - It left out T1's four regression checks: `tools/spec.sh 4_2 layout`, `4 editor`, `4 display 'P4.05*'` and
+     `4 steps`.
+   - It also left out T2's `tools/spec.sh 4 display 'P4.07*'`.
+   - It validated: T1 was focused, with 1 step.
+2. **The source-check coverage re-ask's regeneration put T1's five steps back** (14,571 in / 1,475 out, $0.0286).
+3. **roko threw the regeneration away and wrote the draft.** It logged "plan generate: regeneration not kept … why=its
+   plan does not validate: … PLAN_TIER_SIZE [T1]: focused task is over its tier's size limits: 5 verify steps (limit
+   4); split it into smaller tasks, or raise its tier to integrative".
+   - The chat's plan card read "YOUR SPEC'S CHECKS 12 of 17 kept · 5 missing · asked again".
+
+**So the tier rule discarded the regeneration that had restored coverage, and kept the draft that lacked it.**
+- A person caught the gap: hermes-pilot's plancheck counted 11 of the 16 spec commands run.
+- The person fixed it by hand: T1 raised to integrative with its four regression steps, T2's joined step split
+  (gap-77220d) and P4.07 added. This is in Undertow `plans/p4-3-the-editor-s-finish/plan.md`, "Review edits
+  (person)".
+- roko logged "repaired the draft" for the regeneration too. So the raise this item asks for, in
+  `repair_generated_draft`, would have kept the 17-of-17 plan for no extra call.
 
 ## Where
 
@@ -82,6 +109,9 @@ should still ask for a split is a choice to make here.
   `a_string_verify_step_is_repaired_not_regenerated`.
 - A draft whose oversized task fits a higher tier is written with the tier raised, and no extra planner call. Test:
   `a_task_over_its_tier_is_raised_not_regenerated`.
+- A coverage re-ask's regeneration that restores missing source checks, and goes over its tier by doing so, is kept
+  with the tier raised, not thrown away for the draft that lacks them (phase 4.3). Test:
+  `a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised`.
 - The `[[verify]]` passes.
 
 ## Notes

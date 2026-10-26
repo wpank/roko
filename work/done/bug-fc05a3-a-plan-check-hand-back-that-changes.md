@@ -2,15 +2,16 @@
 id = "bug-fc05a3"
 kind = "bug"
 title = "A plan-check hand-back that changes nothing is settled already_satisfied and accepted while the plan check still fails, so a hand-back can't fix a cross-task failure (phase 4 run c4fa953f: T7#2 already_satisfied, T6#2 $0.79 within its own files, the round $1.13 for nothing; the bone pixels came from T5's Look.cpp)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-21
-updated = 2026-10-21
-last_verified = 2026-10-21
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "9177ae9ac"
 source = "round-v7-hermes-pilot#N-p4-run-c4fa953f"
 discovered_from = "agent:hermes-pilot (round v7, phase 4 run c4fa953f, the lead ask)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-60ad88"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T10:42:31Z"
+commit = "9177ae9ac"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-21T10:19:31Z"
+forced = false
+evidence = "9177ae9ac: a failed whole-plan check goes back as one try (plan_runner::hand_back_plan_check, plan_handback). A task whose own verify steps run the failing test leads it (runs_failing_test: phase 4's 'P4.06*' matches the failure), else the highest tier, the last among equals (lead_task). It may change the files of every implicated task (the owners of the files the output names, else every task that changed a file: implicated_tasks), and its task (handback_task) is judged by its own steps, the other tasks' and the plan's [[meta.verify]], so a try that changes nothing while the check fails is rejected pre_verify:no_changes, never already_satisfied. At most 1 retry (HANDBACK_RETRIES, HandbackRetries) and none after a try that changed nothing (GraphTaskDispatcher::changed_nothing, from the pre-verify screen's diff); the excerpt leads with the failure (is_failure_line); a failed step that printed nothing is not handed back. Verify: a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails passes in the shared tree and under --worktree-per-task (T1: passed, gate_failed; result unchanged; nothing reached the plan branch); a_failure_across_two_tasks_goes_back_as_one_try_at_both_files (phase 4's shape: two tasks draw bone, the check names neither file and fails until both are fixed) succeeds after one hand-back led by T2; with a_hand_back_whose_try_fails_ends_the_plan, a_plan_check_is_handed_back_at_most_max_handbacks_times and a_failed_plan_check_goes_back_to_the_task_whose_file_it_names, 5 of 5; plan_handback 8 of 8."
 +++
 
 ## Problem

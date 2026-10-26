@@ -2,14 +2,16 @@
 id = "bug-41791b"
 kind = "bug"
 title = "A try dies in prompt assembly when an explicit symbol anchor is gone from its declared files, as a stale range did before bug-fa22cc: a try that renamed or removed the symbol leaves every later try of its task dead before any model call"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "886d80a20"
 source = "round-v7 roko-exact (found fixing bug-fa22cc)"
 discovered_from = "agent:roko-exact (round v7)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::render_declared_context"]
@@ -17,6 +19,20 @@ links = { depends_on = [], blocks = [], related = ["bug-fa22cc", "bug-c5f406"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_missing_anchor_never_fails_a_try' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_missing_anchor_never_fails_a_try"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T22:01:55Z"
+commit = "886d80a20"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+model = "claude-opus-5-5"
+size = "S"
+claimed_at = "2026-10-26T21:23:44Z"
+forced = false
+evidence = "886d80a20: graph_task_dispatch::fit_declared_context (was fit_declared_ranges) repairs a try's declared context to its checkout on every try and logs each line: plan_policy::drop_missing_reads leaves out a read whose file is gone (an unsafe path stays, for the render to refuse), fit_ranges_to_checkout fits ranges (bug-fa22cc), and drop_missing_anchors makes an explicit anchor no read file holds a note that keeps its text ('renderAll (in no file the task reads): the renderer's entry point'), with plan generation's note moved to plan_policy::symbol_note; render_declared_context no longer fails on a missing anchor; the plan check at load is unchanged. Verify: a_missing_anchor_never_fails_a_try passes (the try runs; its prompt lists the symbol as a note and reads only the file that exists). chain32 on the branch: the verify test 1/1, fmt and clippy -D warnings clean on roko-cli; its related run caught one test that used a missing declared file to make prompt assembly fail (a_prompt_assembly_failure_settles_as_a_harness_error, and the same fixture in feedback.rs), now an unsafe path. chain33: the verify test, plan_policy::, plan_generate::symbol_reads::, dispatch::prompt_builder, graph_task_dispatch::attempt::, ::feedback:: and ::blocked:: 117/117, fmt clean."
 +++
 
 ## Problem

@@ -54,6 +54,15 @@ correct!` and `values:` pairs.
 Parse doctest (and Catch2's similar) failure blocks into `test_failures`: the test case name, the file:line, the
 failing expression and its `values:` line. Name the first one in the diagnosis instead of the summary line.
 
+## Design
+
+roko-exact, 2026-10-26, after bug-3e3d08:
+- bug-3e3d08 made `from_raw` list a doctest `TEST CASE:` and each C++ failed check once, never a runner's summary,
+  and its fallback diagnosis now names each failing case.
+- This item adds what each check saw. A failed check is listed with the line after it: doctest's
+  `values: CHECK( … )`, or Catch2's check and its `with expansion:` line (`observed_values`). The entry is capped at
+  400 characters, so a long path doesn't cut the values off.
+
 ## Done when
 
 The `[[verify]]` test feeds `from_raw` a doctest failure output and gets the failing CHECKs with their values, not

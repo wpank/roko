@@ -95,6 +95,12 @@ roko-exact, 2026-10-26, with the lead's call on the key.
      for, can still run, so then the run goes on. gap-20301d (roko-ladder) refuses the ladder's own tasks at
      dispatch.
    - The probe at plan start is unchanged; gap-20301d edits it.
+   - **Billing refusals don't stop it.** Some rungs fail on their provider's billing or usage window: an HTTP 402,
+     z.ai's 1113, an insufficient balance, or an exhausted plan (`billing_refusal`). The person's fix there is to
+     recharge and run again, and a day-old cached verdict must not block that. So the early stop leaves such a run
+     to the probe at plan start.
+   - This is the lead's call with gap-20301d. Its billing re-probe isn't on main yet. Once a shared "usable rungs
+     now" check exists, the early stop should run after it.
 2. **The cache key.** `CACHE_VERSION` becomes `red-on-base/2`: the entry format and what the check does with a
    step. It is bumped by hand when how the check runs a step or reads its result changes. roko's build leaves the
    key, so a new build reuses what an earlier one decided.

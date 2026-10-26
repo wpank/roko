@@ -4772,8 +4772,10 @@ impl PlanCheckResult {
 /// `--model` (`cli_model_override`), a `model_hint` or a `preferred_model`.
 /// The probes are plan start's ([`crate::dispatch::rung_probe::probe_ladder`],
 /// under its conditions), whose verdicts stand for a day, so the probe at plan
-/// start reads them again. `None` when the probes are off, a rung can run, or
-/// a task can start without the ladder.
+/// start reads them again. `None` when the probes are off, a rung can run, a
+/// task can start without the ladder, or a rung failed on its provider's
+/// billing or usage window ([`billing_refusal`]): the person's fix there is
+/// to recharge and run again, which a day-old verdict must not stop.
 async fn unrunnable_ladder(
     config: &roko_core::config::schema::RokoConfig,
     workdir: &Path,
@@ -4801,7 +4803,9 @@ async fn unrunnable_ladder(
     }
     let failed = crate::dispatch::rung_probe::probe_ladder(config, &ladder, workdir).await;
     let models = ladder.rung_models();
-    if !models.iter().all(|model| failed.contains_key(model)) {
+    if !models.iter().all(|model| failed.contains_key(model))
+        || failed.values().any(|reason| billing_refusal(reason))
+    {
         return None;
     }
     let rungs = models
@@ -4814,6 +4818,19 @@ async fn unrunnable_ladder(
          The run stops before any check runs: fix the providers, or pin a model with --model, \
          and run again"
     ))
+}
+
+/// Whether a rung's probe failed on its provider's billing or usage window:
+/// an HTTP 402 or another billing refusal (`insufficient_credits`, z.ai's
+/// 1113, an insufficient balance) or an exhausted plan
+/// (`provider_exhausted`). A recharge or the window's reset fixes it while
+/// the probe's verdict still stands, so the early stop leaves the run to the
+/// probe at plan start (gap-c96097, the lead's call with gap-20301d).
+fn billing_refusal(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    reason.starts_with("insufficient_credits")
+        || reason.starts_with("provider_exhausted")
+        || roko_agent::provider::error_classify::is_billing_message(&reason)
 }
 
 /// What the plan-load gate's red-on-base check runs for `plans` (gap-6a319c):
@@ -10886,6 +10903,51 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         let pinned = unrunnable_ladder(&config, repo, &plans, false, Some("mid-model"));
         assert!(pinned.await.is_none());
+        // A rung refused on its provider's billing does not stop the run
+        // early: a recharge fixes it while the day-old verdict stands, and
+        // the probe at plan start decides (gap-20301d).
+        let billing = crate::dispatch::rung_probe::RungProbes {
+            models: ["cheap-1", "mid-1", "strong-1"]
+                .into_iter()
+                .map(|model| {
+                    let probe = crate::dispatch::rung_probe::RungProbe {
+                        passed: false,
+                        reason: "insufficient_credits: rungs_api refused the request (HTTP 402): \
+                                 payment required"
+                            .to_string(),
+                        probed_at_ms: now,
+                    };
+                    (model.to_string(), probe)
+                })
+                .collect(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&billing).expect("json")).expect("probes");
+        let billed = unrunnable_ladder(&config, repo, &plans, false, None);
+        assert!(billed.await.is_none());
+        for (reason, billed) in [
+            (
+                "insufficient_credits: cerebras refused the request (HTTP 402)",
+                true,
+            ),
+            (
+                "provider_exhausted: the plan's usage window ends at 20:00",
+                true,
+            ),
+            (
+                "unknown: z.ai: insufficient balance or no resource package (1113)",
+                true,
+            ),
+            (
+                "request_refused: openai refused the request (HTTP 400): reasoning_effort",
+                false,
+            ),
+            (
+                "empty_response: the model answered with reasoning only",
+                false,
+            ),
+        ] {
+            assert_eq!(billing_refusal(reason), billed, "{reason}");
+        }
         plans[0].tasks.tasks[0].model_hint = Some("mid-model".to_string());
         assert!(
             unrunnable_ladder(&config, repo, &plans, false, None)

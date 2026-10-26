@@ -2,7 +2,7 @@
 id = "bug-ee2752"
 kind = "bug"
 title = "A helper agent (cheap-factory-agent) runs with the operator's checkout as its working directory, so a CLI helper model can write there"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-16
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "781ce32a4"
 source = "tmp/hermes-roko-v5/findings/roko-delivery.md (roko-delivery, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: testing bug-74164c"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::CheapFactoryAgent", "crates/roko-cli/src/graph_task_dispatch.rs::cheap_agent", "crates/roko-cli/tests/worktree_task_diff.rs"]
@@ -21,6 +22,17 @@ command = "grep -qw 'fn a_helper_call_after_a_failed_verify_leaves_the_operators
 
 [[verify]]
 command = "! grep -q 'ignore = \"bug-ee2752' crates/roko-cli/tests/worktree_task_diff.rs && grep -rqw 'fn cheap_agent_runs_its_provider_outside_the_operators_checkout' crates/roko-cli/src/ && cargo test -p roko-cli --lib cheap_agent_runs_its_provider_outside_the_operators_checkout"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T21:25:30Z"
+commit = "781ce32a4"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T16:06:44Z"
+forced = false
+evidence = "CheapFactoryAgent (graph_task_dispatch/routing_context.rs) now runs each helper call (error diagnosis, LLM judge, pack-rung judge, audit B3 reviewers) in a tempfile scratch directory of its own (prefix roko-helper-, removed when the call ends), never the operators checkout, and names the workspace as its immune_root so immune state, the model-call learning row and the price snapshot stay with the workspace; helper_agent and audit_reviewers pass workspace_root. a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone is no longer ignored and now also checks the attempt ran in its worktree and the helper call outside the repo; new unit test cheap_agent_runs_its_provider_outside_the_operators_checkout. On main 7fb439cf7 merged: cargo test -p roko-cli --test worktree_task_diff -- --include-ignored 3/3, the unit test passes, roko-cli lib suite 4048 passed (gist test skipped), clippy -p roko-cli --lib --bins clean, nightly fmt clean. By hand with a pre-fix binary the fixture left ?? feature.txt in the repo root; fixed, the helper ran in $TMPDIR/roko-helper-* and the checkout stayed clean."
 +++
 
 ## Problem

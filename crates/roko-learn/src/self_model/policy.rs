@@ -191,11 +191,19 @@ impl LcbAci {
         {
             RouteAction::RefineSpec
         } else {
-            // The likeliest arm, the first of equals.
+            // The likeliest arm, the first of equals. When no arm reaches p_abandon, the
+            // prior must agree before the task is abandoned: else the arm it rates highest
+            // runs (gap-d91691).
             let likeliest = eligible
                 .iter()
                 .min_by(|a, b| b.p_vs.total_cmp(&a.p_vs))
-                .filter(|forecast| forecast.p_vs >= self.config.p_abandon);
+                .filter(|forecast| forecast.p_vs >= self.config.p_abandon)
+                .or_else(|| {
+                    eligible
+                        .iter()
+                        .min_by(|a, b| b.prior_p_vs.total_cmp(&a.prior_p_vs))
+                        .filter(|forecast| forecast.prior_p_vs >= self.config.p_abandon)
+                });
             match likeliest {
                 Some(forecast) => RouteAction::Dispatch {
                     arm: forecast.arm.clone(),
@@ -248,6 +256,7 @@ mod tests {
             lat_q90_s: 120.0,
             cold_start: false,
             basis: crate::telemetry::ForecastBasis::Logit,
+            prior_p_vs: p,
             cost_prior: false,
             latency_prior: false,
         }
@@ -328,6 +337,32 @@ mod tests {
         assert_eq!(abandon.action, RouteAction::Abandon);
         let nothing = policy.choose(&[], None, None, 0.05);
         assert_eq!(nothing.action, RouteAction::Abandon);
+    }
+
+    /// gap-d91691, the shape of phase 4.2's T1#2 and phase 4.3's T2#2: L1 forecast every arm
+    /// below p_abandon on a retry while the prior rated them 0.6 and 0.7. L1 alone no longer
+    /// abandons: the arm the prior rates highest runs, below target. With the prior below
+    /// p_abandon too, the task is abandoned.
+    #[test]
+    fn an_abandon_needs_the_prior_to_agree() {
+        let policy = LcbAci::new(LcbAciConfig::default());
+        let mut retry = ladder(&[1e-12, 1e-15]);
+        retry[0].prior_p_vs = 0.6;
+        retry[1].prior_p_vs = 0.7;
+        let kept = policy.choose(&retry, None, None, 0.05);
+        assert_eq!(
+            kept.action,
+            RouteAction::Dispatch {
+                arm: retry[1].arm.clone(),
+                below_target: true,
+            }
+        );
+        let hopeless = ladder(&[0.05, 0.1]);
+        assert_eq!(
+            policy.choose(&hopeless, None, None, 0.05).action,
+            RouteAction::Abandon,
+            "both layers agree"
+        );
     }
 
     #[test]

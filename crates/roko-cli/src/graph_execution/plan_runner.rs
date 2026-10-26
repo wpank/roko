@@ -18,7 +18,6 @@ use roko_core::config::learning::GuardedCommitMode;
 use roko_fs::RokoLayout;
 
 use super::plan_set::{BlockReason, PlanConflicts, PlanOutcome, PlanSetOrder, PlanSetScheduler};
-use crate::dispatch::rung_probe::billing_refusal;
 use crate::execution_control::{
     CommandAckReceiver, CommandAckStatus, ExecutionCommandKind, ExecutionCommandSender, ack_for,
 };
@@ -4922,10 +4921,10 @@ impl PlanCheckResult {
 /// under its conditions, for the run that started at `run_started_ms`), whose
 /// verdicts stand for a day, so the probe at plan start reads them again. A
 /// billing failure from an earlier run is probed again here first
-/// (bug-374384). `None` when the probes are off, a rung can run, a
-/// task can start without the ladder, or a rung failed on its provider's
-/// billing or usage window ([`billing_refusal`]): the person's fix there is
-/// to recharge and run again, which a day-old verdict must not stop.
+/// (bug-374384), so one the stop reads is this run's: the person recharges
+/// either way, and the run stops before the pre-check (gap-d91691). `None`
+/// when the probes are off, a rung can run, or a task can start without the
+/// ladder.
 async fn unrunnable_ladder(
     config: &roko_core::config::schema::RokoConfig,
     workdir: &Path,
@@ -4955,9 +4954,7 @@ async fn unrunnable_ladder(
     let failed =
         crate::dispatch::rung_probe::probe_ladder(config, &ladder, workdir, run_started_ms).await;
     let models = ladder.rung_models();
-    if !models.iter().all(|model| failed.contains_key(model))
-        || failed.values().any(|reason| billing_refusal(reason))
-    {
+    if !models.iter().all(|model| failed.contains_key(model)) {
         return None;
     }
     let rungs = models
@@ -4968,7 +4965,8 @@ async fn unrunnable_ladder(
     Some(format!(
         "no rung of the routing ladder can run, so no task of this run can start: {rungs}. \
          The run stops before any check runs: fix the providers, or pin a model with --model, \
-         and run again"
+         and run again; a rung refused on its provider's billing is probed again when the next \
+         run starts"
     ))
 }
 
@@ -11114,9 +11112,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         let pinned = unrunnable_ladder(&config, repo, &plans, false, Some("mid-model"), now);
         assert!(pinned.await.is_none());
-        // A rung refused on its provider's billing does not stop the run
-        // early: a recharge fixes it while the day-old verdict stands, and
-        // the probe at plan start decides (gap-20301d).
+        // A rung refused on its provider's billing in this run stops the run
+        // early too: one from an earlier run is probed again first
+        // (bug-374384), so the person recharges either way (gap-d91691).
         let billing = crate::dispatch::rung_probe::RungProbes {
             models: ["cheap-1", "mid-1", "strong-1"]
                 .into_iter()
@@ -11133,8 +11131,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 .collect(),
         };
         std::fs::write(&path, serde_json::to_vec(&billing).expect("json")).expect("probes");
-        let billed = unrunnable_ladder(&config, repo, &plans, false, None, now);
-        assert!(billed.await.is_none());
+        let billed = unrunnable_ladder(&config, repo, &plans, false, None, now)
+            .await
+            .expect("a billing failure of this run stops the run early");
+        assert!(billed.contains("(HTTP 402)"), "{billed}");
+        assert!(
+            billed.contains("probed again when the next run starts"),
+            "{billed}"
+        );
         for (reason, billed) in [
             (
                 "insufficient_credits: cerebras refused the request (HTTP 402)",
@@ -11157,7 +11161,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 false,
             ),
         ] {
-            assert_eq!(billing_refusal(reason), billed, "{reason}");
+            assert_eq!(
+                crate::dispatch::rung_probe::billing_refusal(reason),
+                billed,
+                "{reason}"
+            );
         }
         plans[0].tasks.tasks[0].model_hint = Some("mid-model".to_string());
         assert!(

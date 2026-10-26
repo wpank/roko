@@ -524,8 +524,13 @@ impl HomeostasisSink {
         true
     }
 
-    /// Fold one settled verdict.
+    /// Fold one settled verdict. A try refused because every rung failed its
+    /// probe ran nothing, and says nothing of θ: it is not folded
+    /// (gap-b856d3, gap-d91691).
     fn settle(&self, verdict: &AttemptVerdictRecord) {
+        if verdict.outcome == AttemptOutcome::AllRungsSkipped {
+            return;
+        }
         let mut state = self.state.lock();
         let identity = &verdict.identity;
         let chain = identity.chain_key.clone();

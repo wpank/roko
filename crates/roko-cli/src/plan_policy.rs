@@ -57,6 +57,12 @@ pub struct PlanExecutionPolicy {
     pub require_one_verify: bool,
     pub reject_duplicate_verify: bool,
     pub bounded_context_only: bool,
+    /// Whether a task may read as many files as it owns when it owns more
+    /// than `max_read_files_per_task`: a generated plan outside the FAST lane
+    /// (bug-417c4a). Round v7's phase-4.2 T1 owned 6 files and could read 3,
+    /// its spec among them, so each draft anchored a symbol in a file it did
+    /// not read.
+    pub reads_cover_owned_files: bool,
 }
 
 impl PlanExecutionPolicy {
@@ -78,6 +84,7 @@ impl PlanExecutionPolicy {
             require_one_verify: false,
             reject_duplicate_verify: false,
             bounded_context_only: false,
+            reads_cover_owned_files: false,
         }
     }
 
@@ -100,6 +107,7 @@ impl PlanExecutionPolicy {
             require_one_verify: true,
             reject_duplicate_verify: true,
             bounded_context_only: true,
+            reads_cover_owned_files: false,
         }
     }
 
@@ -125,6 +133,7 @@ impl PlanExecutionPolicy {
             require_one_verify: false,
             reject_duplicate_verify: true,
             bounded_context_only: true,
+            reads_cover_owned_files: true,
         }
     }
 
@@ -139,10 +148,23 @@ impl PlanExecutionPolicy {
             Self {
                 max_verify_steps_per_task: FAST_MAX_VERIFY_STEPS,
                 require_one_verify: true,
+                reads_cover_owned_files: false,
                 ..policy
             }
         } else {
             policy
+        }
+    }
+
+    /// The files `task` may read besides the plan's sources: the policy's
+    /// limit, or as many as it owns when it owns more and
+    /// [`Self::reads_cover_owned_files`] (bug-417c4a).
+    #[must_use]
+    pub fn max_read_files_for(&self, task: &TaskDef) -> usize {
+        if self.reads_cover_owned_files {
+            self.max_read_files_per_task.max(task.files.len())
+        } else {
+            self.max_read_files_per_task
         }
     }
 
@@ -422,7 +444,7 @@ pub fn validate_plan_budgets(
                     .filter(|read| !tasks.meta.sources.contains(&read.path))
                     .count()
             }),
-            policy.max_read_files_per_task,
+            policy.max_read_files_for(task),
         );
         check_count(
             &mut issues,
@@ -1371,7 +1393,7 @@ fn validate_regular_file(path: &Path, canonical_root: &Path) -> Result<(), Strin
     Ok(())
 }
 
-fn transitive_dependency_outputs(
+pub(crate) fn transitive_dependency_outputs(
     task: &TaskDef,
     task_by_id: &HashMap<&str, &TaskDef>,
 ) -> HashSet<String> {
@@ -1458,7 +1480,7 @@ pub(crate) fn parse_line_range(
     Ok((start, end))
 }
 
-fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
+pub(crate) fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
     let trimmed = symbol.trim();
     let candidate = if let Some(exact) = trimmed.strip_prefix("exact:") {
         exact.trim()
@@ -1490,7 +1512,7 @@ fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
     }
 }
 
-fn find_anchor_line(content: &str, anchor: &str) -> Option<usize> {
+pub(crate) fn find_anchor_line(content: &str, anchor: &str) -> Option<usize> {
     let final_segment = anchor.rsplit("::").next().unwrap_or(anchor);
     content.lines().enumerate().find_map(|(index, line)| {
         (contains_identifier(line, anchor) || contains_identifier(line, final_segment))
@@ -1498,7 +1520,7 @@ fn find_anchor_line(content: &str, anchor: &str) -> Option<usize> {
     })
 }
 
-fn contains_identifier(line: &str, identifier: &str) -> bool {
+pub(crate) fn contains_identifier(line: &str, identifier: &str) -> bool {
     line.match_indices(identifier).any(|(start, _)| {
         let before = line[..start].chars().next_back();
         let end = start + identifier.len();

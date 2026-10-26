@@ -103,6 +103,7 @@ mod watchdog;
 mod wiring;
 
 pub use attempt_workspace::{AWAITING_APPROVAL_PHASE, record_review};
+pub(crate) use budget::micro_usd_to_usd;
 pub use budget::{
     GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
     plan_ceiling_micro_usd,
@@ -350,6 +351,10 @@ pub struct GraphTaskDispatcher {
             std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         >,
     >,
+    /// The checkout of each task's latest accepted attempt, by
+    /// `"{plan_id}/{task_id}"`, with the order it was accepted in: a task that
+    /// depends on it warms its build trees from there (gap-b6b7a1).
+    accepted_checkouts: parking_lot::Mutex<HashMap<String, (u64, PathBuf)>>,
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
@@ -461,6 +466,7 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             checkout_writes: parking_lot::Mutex::default(),
+            accepted_checkouts: parking_lot::Mutex::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),
             depths: verify_depth::Depths::default(),
@@ -1309,8 +1315,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .as_ref()
             .filter(|_| scratch.is_none());
         let lease = if let Some(provider) = provider {
+            // A task that depends on another starts from its accepted work:
+            // its build trees come warm from that checkout (gap-b6b7a1).
+            let seed = self.dependency_checkout(&spec.plan_id, &task);
             let lease = provider
-                .acquire(&attempt_id)
+                .acquire_seeded(&attempt_id, seed.as_deref())
                 .await
                 .map_err(|e| RokoError::Agent {
                     backend: "worktree-isolation".to_string(),
@@ -1438,8 +1447,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let retry_key = format!("{}/{}", spec.plan_id, task.id);
         // The attempt opens before prompt assembly (S01 §4.2): if the process
         // dies from here on, the attempt keeps its key and counts as
-        // abandoned.
+        // abandoned, and a resume settles it with what its hold on the plan
+        // budget says it spent (bug-b7f6a8).
         let mut attempt = self.open_attempt(spec, &task, ctx);
+        budget_reservation.bind_attempt(&attempt.key.attempt_key());
         attempt.record_setup(setup);
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).
@@ -1763,6 +1774,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // gap-770cb5: the agent can run its task's checks mid-try. They stay
         // until the try is judged, which reads their runs (gap-56f761).
         let _left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
+        // reg-d2deba: the person's checkout over the try, when it runs in a
+        // checkout of its own.
+        let try_watch = self.watch_checkout(spec, &effective_workdir).await;
         attempt.dispatch_started();
         attempt.record_effort(request.effort.clone());
         let started_at = Instant::now();
@@ -1803,6 +1817,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // The calls a provider refused before the one that ran cost what
         // they used, which the verdict counts beside it (bug-8bcd98).
         attempt.record_refused_spend(progress.refused_usd());
+        // What the try changed in the person's checkout, its own checks
+        // included, said now: the try may end before its gate (reg-d2deba).
+        let (try_written, try_findings) = self
+            .try_checkout_written(
+                spec,
+                &task,
+                attempt_number,
+                &attempt.key.attempt_key(),
+                &effective_workdir,
+                try_watch,
+            )
+            .await;
+        attempt.record_checkout_findings(try_findings);
         if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
             attempt.record_continues(continues);
         }
@@ -2184,6 +2211,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &attempt_key,
                 None,
                 attempt.harness_params(),
+                &try_written,
             ))
             .await;
         attempt.verify_ended();

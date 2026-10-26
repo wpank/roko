@@ -14,6 +14,7 @@
 
 use super::{
     accept_blocks, dry_run_fs, file_paths, overview, runnable, sizes, source_checks, source_reads,
+    symbol_reads,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -908,6 +909,7 @@ fn repair_generated_draft(
     plan: &mut TasksFile,
     policy: crate::plan_policy::PlanExecutionPolicy,
     workdir: &Path,
+    sources: &[String],
 ) -> Vec<String> {
     let mut repairs = Vec::new();
     let total = u32::try_from(plan.tasks.len()).unwrap_or(u32::MAX);
@@ -938,18 +940,28 @@ fn repair_generated_draft(
             task.max_loc = Some(limit);
         }
     }
-    let keep = policy.max_read_files_per_task;
+    // bug-417c4a: the documents the plan is written from are no part of a
+    // task's reads, and a generated task may read as many files as it owns.
     for task in &mut plan.tasks {
-        if let Some(context) = task.context.as_mut()
-            && context.read_files.len() > keep
-        {
-            let dropped: Vec<String> = context
-                .read_files
-                .drain(keep..)
-                .map(|read_file| read_file.path)
-                .collect();
+        let keep = policy.max_read_files_for(task);
+        let Some(context) = task.context.as_mut() else {
+            continue;
+        };
+        let mut counted = 0;
+        let mut dropped = Vec::new();
+        context.read_files.retain(|read_file| {
+            if sources.contains(&read_file.path) {
+                return true;
+            }
+            counted += 1;
+            if counted > keep {
+                dropped.push(read_file.path.clone());
+            }
+            counted <= keep
+        });
+        if !dropped.is_empty() {
             repairs.push(format!(
-                "{}: kept its first {keep} read_files and dropped {}",
+                "{}: kept its first {keep} read_files besides the plan's sources and dropped {}",
                 task.id,
                 dropped.join(", ")
             ));
@@ -1880,7 +1892,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // gap-b95913: what the planner need not be asked to fix; and
                 // gap-dc5d7c: a step that covers a source check by its id names
                 // a criterion of its task that states the check.
-                let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+                let mut repairs =
+                    repair_generated_draft(&mut parsed, policy, workdir_ref, &source_documents);
                 // bug-7c6f1b: under "No new files", a `files` path the
                 // workspace lacks names the file of that name its task reads;
                 // bug-ce1e4b: never one the source names.
@@ -1900,6 +1913,14 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     &source_documents,
                     crate::plan_policy::PlanExecutionPolicy::for_environment()
                         .max_read_files_per_task,
+                ));
+                // bug-417c4a: a symbol a task anchors in a file it does not
+                // read brings that file into its reads, or becomes a note
+                // when no file holds it yet, instead of a new draft.
+                repairs.extend(symbol_reads::repair_symbol_anchors(
+                    &mut parsed,
+                    workdir_ref,
+                    policy,
                 ));
                 // gap-9e212c: a task whose size its source states gets the
                 // smallest tier that covers it.
@@ -4820,6 +4841,185 @@ mod tests {
         assert_eq!((checks.kept, checks.total), (13, 13), "{checks:?}");
     }
 
+    /// Phase 4.2's editor as its base (Undertow 4db168c) had it, in brief:
+    /// each file the plan's drafts name, as long as it was, with the lines
+    /// that hold the symbols they anchor where they were, and the spec.
+    #[cfg(unix)]
+    fn editor_workspace(workdir: &Path, spec: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        cmake_workspace(workdir);
+        let code = |lines: usize, held: &[(usize, &str)]| {
+            (1..=lines)
+                .map(|number| {
+                    held.iter().find(|(at, _)| *at == number).map_or_else(
+                        || format!("// line {number}\n"),
+                        |(_, line)| format!("{line}\n"),
+                    )
+                })
+                .collect::<String>()
+        };
+        for (file, text) in [
+            (
+                "plugin/ui/Theme.h",
+                code(
+                    233,
+                    &[
+                        (5, "namespace undertow::ui::theme {"),
+                        (40, "inline const Panel controlPanels[] = {};"),
+                    ],
+                ),
+            ),
+            (
+                "plugin/ui/Look.h",
+                code(
+                    29,
+                    &[(
+                        23,
+                        "    void drawStaticLayer(juce::Graphics&, float physicalScale);",
+                    )],
+                ),
+            ),
+            (
+                "plugin/ui/Look.cpp",
+                code(
+                    131,
+                    &[
+                        (97, "    drawStaticLayer(ig, scale);"),
+                        (
+                            100,
+                            "void Look::drawStaticLayer(juce::Graphics& g, float) {",
+                        ),
+                    ],
+                ),
+            ),
+            (
+                "plugin/PluginEditor.h",
+                code(56, &[(40, "    void initialiseControls();")]),
+            ),
+            (
+                "plugin/PluginEditor.cpp",
+                code(
+                    175,
+                    &[
+                        (36, "    initialiseControls();"),
+                        (47, "void UndertowEditor::initialiseControls() {"),
+                    ],
+                ),
+            ),
+            (
+                "core/src/engine.cpp",
+                code(
+                    305,
+                    &[
+                        (20, "struct Engine::Impl {"),
+                        (120, "void Engine::reset() {"),
+                    ],
+                ),
+            ),
+            ("plugin/ui/Status.h", code(30, &[(10, "class Status {")])),
+            (
+                "plugin/ui/Status.cpp",
+                code(116, &[(30, "void Status::paint(juce::Graphics& g) {")]),
+            ),
+            (
+                "plugin/ui/Displays.h",
+                code(40, &[(12, "class Displays {")]),
+            ),
+            (
+                "plugin/ui/Displays.cpp",
+                code(
+                    241,
+                    &[(150, "void Displays::paintBone(juce::Graphics& g) {")],
+                ),
+            ),
+            ("docs/specs/phase-4.2-layout.md", spec.to_string()),
+        ] {
+            let path = workdir.join(file);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, text).expect("a file");
+        }
+        for script in ["tools/spec.sh", "tools/check.sh"] {
+            let path = workdir.join(script);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("a script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("permissions");
+        }
+    }
+
+    /// bug-417c4a: round v7's phase-4.2 plan write (op 1b0a97ed, gpt-5.4)
+    /// went back to the planner twice on PLAN_CONTEXT_SYMBOL. Its first draft
+    /// anchored `Look::drawStaticLayer` without reading `plugin/ui/Look.cpp`,
+    /// its second `UndertowEditor::initialiseControls` without reading
+    /// `plugin/PluginEditor.cpp`; the base defines both, in files T1 owns.
+    /// Each draft is now written after one call, with that file among T1's
+    /// reads and every check of the spec kept.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_symbol_in_a_file_the_task_does_not_read_is_repaired_not_regenerated() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p4_2_symbols");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        for (draft, file, symbol) in [
+            (
+                "draft-1.toml",
+                "plugin/ui/Look.cpp",
+                "Look::drawStaticLayer",
+            ),
+            (
+                "draft-2.toml",
+                "plugin/PluginEditor.cpp",
+                "UndertowEditor::initialiseControls",
+            ),
+        ] {
+            let plan = std::fs::read_to_string(fixture.join(draft)).expect("the draft");
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            editor_workspace(workdir, &spec);
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &[&plan],
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let source = PlanSource::Text {
+                text: &spec,
+                kind: "prompt",
+            };
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(source, "p4-2-the-editor-laid-out-as-designed", workdir)
+            };
+            let (_, outcome) = generate_plan(request)
+                .await
+                .unwrap_or_else(|error| panic!("{draft}: {error:#}"));
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), 1, "{draft}: written after one call");
+            let line = format!("T1: reads `{file}`, which holds `{symbol}`, a symbol it names");
+            assert!(
+                outcome.repairs.contains(&line),
+                "{draft}: {:?}",
+                outcome.repairs
+            );
+            let written = TasksFile::parse(
+                &workdir.join("plans/p4-2-the-editor-laid-out-as-designed/tasks.toml"),
+            )
+            .expect("the plan");
+            let reads: Vec<&str> = written.tasks[0]
+                .context
+                .iter()
+                .flat_map(|context| &context.read_files)
+                .map(|read| read.path.as_str())
+                .collect();
+            assert!(reads.contains(&file), "{draft}: {reads:?}");
+            let checks = outcome
+                .source_checks
+                .expect("the spec's checks are reported");
+            assert_eq!((checks.kept, checks.total), (19, 19), "{draft}: {checks:?}");
+        }
+    }
+
     /// bug-8723fc: in a CMake workspace (Undertow's phase 2), the plan writer
     /// taught by Rust examples and added `cargo check --workspace` to a task
     /// with no check. Now the examples, the note on runners and a task with
@@ -5159,7 +5359,7 @@ mod tests {
         let code = WIDGET_PLAN.replace("tier = \"focused\"", "tier = \"focused\"\nmax_loc = 300");
         let mut plan = TasksFile::parse_str(&code).expect("a plan");
         let policy = crate::plan_policy::PlanExecutionPolicy::generated(8);
-        let repairs = repair_generated_draft(&mut plan, policy, workdir);
+        let repairs = repair_generated_draft(&mut plan, policy, workdir, &[]);
         assert!(repairs.is_empty(), "{repairs:?}");
         assert_eq!(plan.tasks[0].max_loc, Some(300));
     }

@@ -1921,6 +1921,64 @@ mod tests {
         assert!(text.contains(r#"\"status\":\"ok\""#), "{text}");
     }
 
+    /// reg-d2deba: a run of an attempt's checks in a worktree of its own
+    /// records what it changed in the person's checkout, the workspace root,
+    /// as a check writing through a path compiled in from that checkout does;
+    /// roko's own `.roko/` there is no change of the run's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_check_run_records_what_it_changed_in_the_persons_checkout() {
+        use super::super::task_checks::{
+            TaskCheck, read_check_runs, task_check_runs_path, task_checks_path,
+        };
+
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        let person = tempfile::tempdir().expect("the person's checkout");
+        let worktree = tempfile::tempdir().expect("the attempt's worktree");
+        for dir in [person.path(), worktree.path()] {
+            git(dir, &["init", "--quiet"]);
+        }
+        let mut ctx = ToolContext::testing(worktree.path());
+        ctx.immune_root_path = person.path().to_path_buf();
+        ctx.correlation.attempt_id = "run-1:plan-a:T1:1".to_string();
+        let shot = person.path().join("art/shot.png");
+        let checks = vec![TaskCheck {
+            label: "verify[0:test]".to_string(),
+            command: format!(
+                "mkdir -p '{}' && printf png > '{}'",
+                person.path().join("art").display(),
+                shot.display()
+            ),
+            timeout_ms: Some(30_000),
+        }];
+        let path = task_checks_path(&ctx.immune_root_path, &ctx.correlation.attempt_id);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(&path, serde_json::to_vec(&checks).expect("json")).expect("checks");
+        let call = ToolCall::new("c", NAME, serde_json::json!({"build": "checks"}));
+
+        let result = run(call, &ctx, None).await;
+
+        assert!(matches!(result, ToolResult::Ok { .. }), "{result:?}");
+        assert!(shot.is_file(), "the check wrote into the person's checkout");
+        let runs = read_check_runs(&task_check_runs_path(
+            &ctx.immune_root_path,
+            &ctx.correlation.attempt_id,
+        ));
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].passed, ["verify[0:test]"]);
+        assert_eq!(runs[0].checkout_written, ["art/shot.png"]);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn run_tests_env_excludes_provider_keys() {

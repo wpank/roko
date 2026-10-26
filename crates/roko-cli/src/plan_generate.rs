@@ -22,6 +22,7 @@ mod runnable;
 mod sizes;
 mod source_checks;
 mod source_reads;
+mod symbol_reads;
 
 pub use runnable::{
     LaterFile, Probe, SettledStep, Unrunnable, creates_without_write, implementers_without_a_shell,
@@ -662,8 +663,10 @@ pub fn render_generated_plan_limits() -> String {
         "Each draft is checked against these limits before the plan is written. A draft that \
          breaks one comes back to you, and every retry costs a full planner call, so meet them in \
          the first draft.\n\
-         - `[task.context] read_files`: at most {read_files} entries per task \
-         (PLAN_BUDGET_READ_FILES); keep the files the task needs most.\n\
+         - `[task.context] read_files`: at most {read_files} entries per task, or as many as \
+         the files the task owns when it owns more, not counting the documents the plan is written \
+         from (PLAN_BUDGET_READ_FILES); keep the files the task needs most, and the files that \
+         hold the symbols it names.\n\
          - `[[task.verify]]`: {verify_steps}.\n\
          - `lines`: one range `START-END` inside the file, at most {range_lines} lines long \
          (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET). Never a list such as `1-25,320-332`: \
@@ -1454,8 +1457,12 @@ mod tests {
         assert!(fast.starts_with("exactly 1 step per task"), "{fast}");
         let limits = render_generated_plan_limits();
         for expected in [
+            // bug-417c4a: a task may read the files it owns, and the
+            // documents the plan is written from are no part of the count.
             format!(
-                "`[task.context] read_files`: at most {} entries per task (PLAN_BUDGET_READ_FILES)",
+                "`[task.context] read_files`: at most {} entries per task, or as many as the \
+                 files the task owns when it owns more, not counting the documents the plan is \
+                 written from (PLAN_BUDGET_READ_FILES)",
                 policy.max_read_files_per_task
             ),
             format!("`[[task.verify]]`: {verify_steps}"),

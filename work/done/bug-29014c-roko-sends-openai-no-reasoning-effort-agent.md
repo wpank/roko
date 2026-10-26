@@ -2,15 +2,16 @@
 id = "bug-29014c"
 kind = "bug"
 title = "roko sends OpenAI no reasoning_effort: [agent] default_effort = \"medium\" never reaches openai_compat; build_extra_body_params (provider/openai_compat.rs:241) adds only sampling, GLM, Kimi and routing params, so the GPT-5.4 family runs at the API default (0 reasoning tokens in all 52 gpt-5.4-mini efficiency events in Undertow, phases 0-3, and in the 2026-10-21 gpt-5.4 probe)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-agent/provider"]
 created = 2026-10-21
-updated = 2026-10-21
-last_verified = 2026-10-21
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "4a8c6a72d"
 source = "round-v7-hermes-pilot#N-gpt54-proof"
 discovered_from = "agent:hermes-pilot (round v7, the fenced gpt-5.4 call before phase 4; tmp/hermes-roko-v7/pilot/gpt54-proof)"
 anchors = ["crates/roko-agent/src/provider/openai_compat.rs::build_extra_body_params", "crates/roko-agent/src/openai_compat_backend.rs::build_body", "crates/roko-agent/src/tool_loop/backends/mod.rs::create_observed_openai_compat_backend", "crates/roko-core/src/config/provider.rs::ModelProfile", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::request_sampling"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-cbbaa8", "gap-13bbbd", "
 
 [[verify]]
 command = "grep -rqw 'fn an_openai_reasoning_model_request_carries_reasoning_effort' crates/roko-agent/src && cargo test -p roko-agent --lib -- an_openai_reasoning_model_request_carries_reasoning_effort"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T10:46:47Z"
+commit = "e8ca7a243"
+by = "roko-effort"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-21T06:13:57Z"
+forced = false
+evidence = "Merged as 4a8c6a72d (narrowed fix e8ca7a243 on f37c1431f). [models.*] reasoning_effort (roko_core::ReasoningEffort; loader sentinel, ModelProfileLayer); create_agent_for_model, the data-LLM boundary and ACP give a model that names none the request's effort, else [agent] default_effort; build_extra_body_params sends it to gpt-5*, o1, o3, o4 (not -chat, o1-mini, o1-preview; max as high), and OpenAiCompatLlmBackend::build_body leaves it off any request with function tools, which chat completions refuses for the GPT-5.4 family (phase 4 run 16fc88ae's HTTP 400 on f37c1431f). The verdict records executed.reasoning_effort: none for a model that calls tools. Verify an_openai_reasoning_model_request_carries_reasoning_effort passes, with reasoning_effort_goes_only_on_requests_without_function_tools, openai_reasoning_models_take_the_profile_effort, a_models_reasoning_effort_survives_a_load and a_verdict_records_the_reasoning_effort_sent. On 8a3774bcd fmt, clippy (6 crates), check --tests and the lib suites are green: roko-core 2048, roko-agent 2400, roko-learn 1393, roko-cli 3992, roko-serve 1081, roko-acp 237. Real API on roko-effort-e4bd6ad74 (the same request path): the pilot's check.sh PASS (5 tool calls, HTTP 200, none with reasoning_effort, verdict none, $0.00384), and a fenced tool-less gpt-5.4-mini call at medium: HTTP 200, 10 reasoning tokens, verdict medium ($0.00084). Reasoning with tools needs the Responses API: gap-1ba0ac."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-7ecea3"
 kind = "bug"
 title = "Every system prompt's conventions layer describes roko's own repository: CONTEXT_LAYOUT_STANZA sends agents to .roko/plans/workspace-map.md \"instead of find/ls on crates/\" and to three other files that exist in neither roko nor the project (every Undertow try of round v7)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-compose/role_prompts"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "d7afb69f6"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 9, run 3752b8ff), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-compose/src/templates/common.rs::CONTEXT_LAYOUT_STANZA", "crates/roko-compose/src/role_prompts.rs::conventions_text", "crates/roko-cli/src/dispatch/prompt_builder.rs::assemble"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["spec-882b36", "gap-c135ba"],
 
 [[verify]]
 command = "grep -rqw 'fn conventions_carry_no_roko_repo_layout' crates/roko-compose/src && cargo test -p roko-compose conventions_carry_no_roko_repo_layout"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:57:03Z"
+commit = "b2feceb6a"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-26T19:33:01Z"
+forced = false
+evidence = "b2feceb6a: conventions_text starts from DEFAULT_CONVENTIONS_SUFFIX, and CONTEXT_LAYOUT_STANZA (roko's own crates/ and .roko/plans layout) is gone from every role's conventions layer: 919 bytes off each of the 22 recorded Undertow first prompts of phases 4.3, 5 and 5.1, 1.8-2.4% of each 38-52 KB prompt. Test conventions_carry_no_roko_repo_layout (implementer, conductor and researcher name no crates/ nor workspace-map.md); 29 system prompt snapshots lose the stanza. Red not run (the old layer opened with the stanza, which names crates/). Chain on the stack (base 5e9af6682): red at 20:54, both new tests failed on the old code; green: roko-learn lib 1408/0, roko-compose lib 528/0, roko-cli lib 4033 passed and 3 failed (reg-1bf684's two, since fixed on main, and bug-c5f406's own test, whose 'not shown' check also matched the section's intro; it now checks the note's own words); roko-compose's 3 and roko-learn's 10 integration tests pass; clippy -D warnings and nightly fmt clean. With main c39ddd6fb merged in (4d376a003): the four items' tests, their neighbours and roko-planner's three new generation tests pass (19), lib suites roko-cli 4046/0, roko-compose 528/0, roko-learn 1409/0, the integration tests pass, clippy and fmt clean."
 +++
 
 ## Problem

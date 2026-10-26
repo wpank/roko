@@ -104,3 +104,25 @@ run-analyst checked it over round v7 (`tmp/hermes-roko-v7/run-analyst`).
 - Not here: `reasoning_tokens` and `finish_reason` on `call_cost`. roko-effort takes those with gap-1ba0ac.
 - The time fields on every call (`wall_ms`, `ttft_ms`, provider waits) are in gap-ece700.
 - Evidence: `tmp/hermes-roko-v7/findings/run-analyst.md`, "How the numbers were made" and telemetry gaps T1 and T8.
+
+- 2026-10-26 (roko-recovery, round v7): **part 3 (killed tries) moves to bug-b7f6a8 (p1).**
+  - On resume, the dead attempt is settled `abandoned` with its `call_cost` spend, the call in flight estimated, in
+    `attempts.jsonl`, `learn/costs.jsonl` and the plan ledger.
+  - The seam, as the lead set it: roko-recovery takes part 3, and roko-speed takes parts 1 and 2.
+  - Where a dead try's spend lands. Kill matrix on 4d22b94e8 (`tmp/hermes-roko-v7/roko-recovery/runs/roko-main-4d22b94e8`,
+    a call costs $0.041):
+
+  | kill point | dead try's calls | verdict row | plan ledger `costs.json` | `learn/costs.jsonl` | serve summary of the dead run |
+  |---|---|---|---|---|---|
+  | a: model stream | $0.041 | none | no ($0 spent, $1.00 reserved) | no | yes |
+  | b: tool call | $0.082 | none | no (reserved) | no | yes |
+  | c': hand-off check | $0.082 | none | no (reserved) | no | yes |
+  | c: gate verify after the hand-off | $0.082 | none | **yes** (committed at the agent's end) | no | yes |
+  | d: a settled try, killed before its cost row | T1#1 settled ($0.164) | yes | yes | **no** (the row comes after the verdict) | yes |
+  | d'' / d3: just after T1's settle (serve run) | none open | yes | yes | yes | **no: $0 and 0 tasks** (its index lacks the rows after `ev.update`; not traced further) |
+
+  - After a resume (c), the plan ledger counts dead and new spend ($0.287). `learn/costs.jsonl` and the resumed serve
+    run's summary count only the new ($0.205).
+  - After a start-over (a, a', b, c', d3), the old ledger is set aside and the new one starts at $0. Only the
+    `call_cost` events and the dead run's summary keep the dead try.
+  - The pilot's live P4.1 numbers match row c: the plan ledger has $0.0627, and the cost rows have $0.0406.

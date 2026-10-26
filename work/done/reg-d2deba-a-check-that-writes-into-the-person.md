@@ -2,7 +2,7 @@
 id = "reg-d2deba"
 kind = "regression"
 title = "A check that writes into the person's checkout during the try's own run_tests or hand-off check goes unseen: bug-b7d9ad watches the checkout only around the gate's verify steps, and since gap-6df2bf the gate no longer re-runs a step the try's own checks passed on its final tree"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "fe7ebcfa9"
 source = "round-v7 roko-speed, found when bug-b7d9ad merged over gap-6df2bf; the lead's direction and priority"
 discovered_from = "agent:roko-speed (round v7)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/checkout_writes.rs::checkout_before_checks", "crates/roko-cli/src/graph_task_dispatch/verification.rs::screen_and_verify", "crates/roko-std/src/tool/builtin/task_checks.rs::run_checks"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-b7d9ad", "gap-6df2bf", "
 
 [[verify]]
 command = "grep -rqw 'fn a_try_s_own_checks_that_write_into_the_checkout_say_so' crates/roko-cli/src && cargo test -p roko-cli --lib a_try_s_own_checks_that_write_into_the_checkout_say_so"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:34:46Z"
+commit = "7f9faa6a2"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T14:33:39Z"
+forced = false
+evidence = "chain46 on main eab74f5b2 (with gap-b6b7a1): fmt and clippy clean (the six packages, roko-std and roko-graph); the verify list passed 14/14 in roko-cli (a_try_s_own_checks_that_write_into_the_checkout_say_so: the agent's run_tests checks write artifacts/shot.png into the person's checkout and its bash writes notes/agent.txt there; the gate takes the self-check and runs nothing; both reach the hub diagnosis, the verdict's checkout_written findings and the end-of-run registry, the note put down to the agent; plus bug-b7d9ad's tests, gap-6df2bf's self-check, best-try and streaming tests) and 1/1 in roko-serve; roko-std's a_check_run_records_what_it_changed_in_the_persons_checkout, a_checkout_state_comes_from_git_status and run_tests_runs_the_task_checks passed; lib suites green: roko-agent 2400, roko-cli 4017, roko-core 2048, roko-learn 1401, roko-runtime 213, roko-serve 1083. Merged with main (gap-1ba0ac and the work-batch merges) on the branch; the API doc's summary row was the one conflict."
 +++
 
 ## Problem

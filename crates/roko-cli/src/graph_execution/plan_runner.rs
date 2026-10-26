@@ -2264,11 +2264,18 @@ async fn run_graph_plan_body(
             let _ = acks.try_send(ack);
         }
     }
-    // A conductor `Fail` stopped the run: it fails, naming the watcher.
-    if let Some(stop) = conductor_stop.lock().take() {
-        return Err(anyhow!("{stop}"));
-    }
-    if let Some(error) = first_error {
+    // A conductor `Fail` stopped the run: it fails, naming the watcher. A
+    // run that ends with an error delivered nothing, so its knowledge batch
+    // is rolled back now, with the error as the reason (bug-2ad4fa).
+    let conductor_failure = conductor_stop.lock().take().map(|stop| anyhow!("{stop}"));
+    if let Some(error) = conductor_failure.or(first_error) {
+        super::learning_commit::settle_errored_run_knowledge(
+            workdir,
+            &roko_config,
+            knowledge_batch.as_deref(),
+            &error,
+            Some(&state_hub),
+        );
         return Err(error);
     }
 
@@ -2441,8 +2448,9 @@ async fn run_graph_plan_body(
     // later load does not replay them again (bug-dfb28f). If the save fails,
     // the journal keeps them for that load. `[learning] guarded_commit`
     // proposes the router's merge and the run's knowledge batch to their
-    // guards, whatever the run's outcome; `off` saves the router unchecked.
-    // A frozen run saves and proposes nothing.
+    // guards, whatever the run's outcome; the batch commits only when every
+    // plan was delivered and nothing stopped the run (bug-2ad4fa). `off`
+    // saves the router unchecked. A frozen run saves and proposes nothing.
     let plan_run_ids: Vec<String> = plans
         .iter()
         .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
@@ -2451,6 +2459,12 @@ async fn run_graph_plan_body(
         .cascade_router
         .as_deref()
         .zip(cascade_journal.as_deref());
+    let delivery = super::learning_commit::run_delivery(
+        plan_execution_order
+            .iter()
+            .map(|plan_id| (plan_id.as_str(), scheduler.outcome(plan_id))),
+        stopped_by,
+    );
     super::learning_commit::commit_run_learning(&super::learning_commit::RunLearning {
         workdir,
         config: &roko_config,
@@ -2458,6 +2472,7 @@ async fn run_graph_plan_body(
         router,
         run_ids: &plan_run_ids,
         notices: Some(&state_hub),
+        delivery,
     });
 
     // ── Persist the section bandit (S02 L9) ─────────────────────────

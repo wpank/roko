@@ -2,7 +2,7 @@
 id = "bug-3e3d08"
 kind = "bug"
 title = "Retry feedback for a C++ doctest failure names only part of it: GateFeedback::from_raw doesn't recognise doctest, Catch2 or gtest failure lines, step_failure keeps a blind 30-line tail, and the deterministic diagnosis repeats one fragment (Undertow phase 4.2 run 1447385e T1#1: 2 failing cases, the retry named 1 in full and the other by half a line)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/dispatch", "roko-learn"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "189d23bf2"
 source = "round-v7-hermes-pilot#P-p4-2-run-1447385e"
 discovered_from = "agent:hermes-pilot (round v7, phase 4.2 run 1447385e, the lead's ask)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-learn/src/error_enrichment.rs", "crates/roko-cli/src/graph_execution/plan_handback.rs"]
@@ -21,6 +22,18 @@ command = "grep -rqw 'fn retry_feedback_names_every_failing_doctest_case' crates
 
 [[verify]]
 command = "grep -rqw 'fn fallback_diagnosis_repeats_no_fragment' crates/roko-learn/src && cargo test -p roko-learn --lib -- fallback_diagnosis_repeats_no_fragment"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T14:51:57Z"
+commit = "189d23bf2"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T12:21:23Z"
+forced = false
+evidence = "189d23bf2: roko_learn::failure_text reads a failed check's output (failure, progress and summary lines; failing cases by doctest's TEST CASE:, Catch2's rules, GoogleTest's [ RUN ], cargo's ---- stdout ---- and pytest's ____; each failure with the lines under it), and failure_excerpt keeps each case's header and first failure with why, an also: line per further failure, then the summary, within 2,400 chars. step_failure uses it instead of the last 30 lines (kept for output with no failure line); GateFeedback::from_raw lists TEST CASE:, C++ failed assertions and GoogleTest's [  FAILED  ] Suite.Test once each and never a summary line; the rendered raw excerpt is 4 KB; key_line takes the first C++ failed assertion; fallback_diagnosis names each failing case once with file:line, assertion and count; the hand-back excerpt shares the reader. Verify: retry_feedback_names_every_failing_doctest_case (phase 4.2's best-tree output: P4.2.01 with lfo2_phase and P4.2.04 with FINE, SUB, SUB OCT and TRACK; 4 failing tests, no summary line) and fallback_diagnosis_repeats_no_fragment pass; roko-learn failure_text + error_enrichment 9/9; roko-cli graph_task_dispatch:: + plan_handback + dispatch::prompt_builder 555/555; nightly fmt and clippy -p roko-cli -p roko-learn -D warnings clean."
 +++
 
 ## Problem

@@ -322,10 +322,17 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
         "server_error"
     } else if lower.contains("empty_response") {
         "empty_response"
+    } else if lower.contains(PROVIDER_GLITCH_MARKER) {
+        "provider_glitch"
     } else {
         "unknown"
     }
 }
+
+/// What roko's tool loop says when the model broke a reply in a way no
+/// prompt asks for, twice in a row: its tool call's arguments stopped being
+/// JSON (bug-af5c20). The provider served the call; the model glitched.
+pub const PROVIDER_GLITCH_MARKER: &str = "provider_glitch";
 
 /// Whether lowercase failure text says the connection broke while a
 /// response streamed: the transport's own words for a cut connection
@@ -1003,6 +1010,10 @@ mod tests {
             (
                 "provider returned an empty response (empty_response)",
                 "empty_response",
+            ),
+            (
+                "provider_glitch: malformed_tool_arguments: ls: a whitespace run outside strings",
+                "provider_glitch",
             ),
             ("something else went wrong", "unknown"),
         ];

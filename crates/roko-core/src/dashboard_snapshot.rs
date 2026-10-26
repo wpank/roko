@@ -498,10 +498,17 @@ pub enum DashboardEvent {
         #[serde(default)]
         reason: String,
         /// When roko probes the rung again, unix ms: when it was probed, plus
-        /// the day a verdict stands.
+        /// the day a verdict stands. Absent for a billing failure, which the
+        /// next run probes again.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         until_ms: Option<i64>,
-        /// The finding in words.
+        /// The probe failed on the provider's billing or usage window (a 402,
+        /// z.ai's 1113, an insufficient balance, an exhausted plan): it stands
+        /// only for this run, and the next run probes the rung again
+        /// (bug-374384).
+        #[serde(default)]
+        billing: bool,
+        /// The finding in words, with how to probe the rung again now.
         #[serde(default)]
         detail: String,
     },

@@ -40,6 +40,9 @@ pub const N_MIN: usize = 30;
 pub const SHADOW_OUTCOMES: usize = 30;
 /// The rung L1 learns while units carry one gate verdict.
 const GATE_RUNG: &str = "gate";
+/// How near 0 or 1 an L1 forecast may come before it counts as saturated: a fit that ran away
+/// rather than evidence, so the forecast takes L0's rate instead (bug-bce0ed).
+const SATURATED: f64 = 1e-6;
 
 /// The version of a predictor of `class` over features `schema`, priced at `snapshot_id`:
 /// `m3-l1-` and eight hex digits of their blake3 hash.
@@ -195,18 +198,23 @@ impl SelfModel {
             (l0.p, l0_lcb, FALSE_GREEN_PRIOR, ForecastBasis::Prior)
         } else {
             let p_fg = self.false_greens.forecast(&arm.model);
-            if task.attempt <= 1 {
-                (l0.p, l0_lcb, p_fg, ForecastBasis::Prior)
-            } else {
-                let x = self.features(task, arm);
-                let gate = self.gates.forecast(&x, l0.p, &[GATE_RUNG]);
-                let p_gate = self.recal.apply(gate.p_gate);
-                (
-                    p_gate,
-                    gate.p_gate_lcb.min(p_gate),
-                    p_fg,
-                    ForecastBasis::Logit,
-                )
+            let gate = (task.attempt > 1).then(|| {
+                self.gates
+                    .forecast(&self.features(task, arm), l0.p, &[GATE_RUNG])
+            });
+            match gate {
+                // A saturated L1 forecast is a fit that ran away, not evidence: L0's rate
+                // stands (bug-bce0ed).
+                Some(gate) if (SATURATED..=1.0 - SATURATED).contains(&gate.p_gate) => {
+                    let p_gate = self.recal.apply(gate.p_gate);
+                    (
+                        p_gate,
+                        gate.p_gate_lcb.min(p_gate),
+                        p_fg,
+                        ForecastBasis::Logit,
+                    )
+                }
+                _ => (l0.p, l0_lcb, p_fg, ForecastBasis::Prior),
             }
         };
         let price = self.attempt_prices.of_model(&arm.model);
@@ -540,6 +548,57 @@ mod tests {
             "{first:?}"
         );
         assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
+    }
+
+    /// bug-bce0ed, the shape of phase 4.2's run 1447385e. A task text of dozens of words is
+    /// dozens of fresh bag-of-words features, and L1's explicit step on such an outcome threw the
+    /// score tens of logits past it: 57 of 66 raw forecasts in Undertow's model were saturated, a
+    /// retry's P(VS) came out exactly 0 on every arm, and the shadow self-model flagged a task its
+    /// next try passed. Warm on such outcomes, no raw L1 forecast runs away, and a retry's P(VS)
+    /// and its bound stay above 0.
+    #[test]
+    fn a_warm_model_never_forecasts_a_retry_at_exactly_zero() {
+        const RUNAWAY: f64 = 1e-6;
+        let arms = [
+            ArmKey::roko("openai", "gpt-5.4-mini"),
+            ArmKey::roko("openai", "gpt-5.4"),
+        ];
+        let mut model = SelfModel::new(&snapshot());
+        let mut rng = TestRng::new(17);
+        let wordy = |index: usize, attempt: u32| TaskFeatures {
+            title: (0..40)
+                .map(|word| format!("w{index}t{word}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            attempt,
+            has_prior_failure: attempt > 1,
+            ..task()
+        };
+        for index in 0..70 {
+            let arm = &arms[index % 2];
+            let attempt = 1 + u32::from(index % 3 == 0);
+            let passed = rng.bernoulli(if attempt == 1 { 0.6 } else { 0.4 });
+            let mut tried = unit(&arm.model, &format!("T{index}"), attempt, passed);
+            tried.arm = arm.clone();
+            tried.prior_failure = attempt > 1;
+            model.observe_with(&tried, &wordy(index, attempt), 1.0);
+        }
+        assert!(!model.cold_start());
+
+        let runaway: Vec<f64> = (0..70)
+            .map(|index| {
+                let (task, arm) = (wordy(index, 2), &arms[index % 2]);
+                let l0 = model.prior.forecast(&arm.model, &task.family, &task.role);
+                let x = model.features(&task, arm);
+                model.gates.forecast(&x, l0.p, &[GATE_RUNG]).p_gate
+            })
+            .filter(|p| !(RUNAWAY..=1.0 - RUNAWAY).contains(p))
+            .collect();
+        assert!(runaway.is_empty(), "raw L1 forecasts ran away: {runaway:?}");
+        let retry = model.forecast(&wordy(999, 2), &arms);
+        for forecast in &retry {
+            assert!(forecast.p_vs > 0.0 && forecast.p_vs_lcb > 0.0, "{retry:?}");
+        }
     }
 
     #[test]

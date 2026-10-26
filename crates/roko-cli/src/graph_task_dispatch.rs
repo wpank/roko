@@ -874,13 +874,18 @@ impl GraphTaskDispatcher {
 
     /// Whether a helper call may use the model `key` (bug-f9ca2f): its
     /// provider's circuit is closed in the run's health registry, as task
-    /// routing asks, and it did not fail its tool-use probe this run.
+    /// routing asks, and it did not fail its tool-use probe this run. Nor was
+    /// its provider last seen refusing for want of pay (bug-e33b7e): by a
+    /// rung's probe this run, or by a call with no success since, which a
+    /// lapsed quarantine does not change, since a balance comes back only
+    /// when someone pays.
     fn helper_healthy(&self, key: &str) -> bool {
         let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
             .resolve(key);
-        self.factory
-            .health_registry
-            .is_available(&target.provider_id)
+        let health = &self.factory.health_registry;
+        health.is_available(&target.provider_id)
+            && !health.last_seen_unpaid(&target.provider_id)
+            && !self.factory.unpaid_provider(&target.provider_id)
             && self.factory.failed_probe(key).is_none()
             && self.factory.failed_probe(&target.model_slug).is_none()
     }

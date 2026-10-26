@@ -965,6 +965,66 @@ mod tests {
         assert_eq!(agent.timeout_ms, 7_000);
     }
 
+    /// bug-e33b7e, the shape of phase 4.2's run 1447385e: z.ai refused for
+    /// want of pay days ago and its quarantine has lapsed, so its circuit
+    /// routes again, yet helper calls pass over it until a call there
+    /// succeeds. A rung whose probe was refused on billing this run takes
+    /// its provider's other models out of helper calls too.
+    #[tokio::test]
+    async fn a_helper_skips_a_provider_last_seen_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        let priced = |provider: &str, slug: &str, input: f64| ModelProfile {
+            cost_input_per_m: Some(input),
+            cost_output_per_m: Some(input * 2.0),
+            ..model(provider, slug, None)
+        };
+        let mut config = config_with_models(vec![
+            ("glm", priced("zai", "glm-4.7", 0.3)),
+            ("oss", priced("cerebras", "gpt-oss-120b", 0.35)),
+            ("oss-small", priced("cerebras", "gpt-oss-20b", 0.4)),
+            ("mini", priced("openai", "gpt-5.4-mini", 0.5)),
+        ]);
+        config.providers.clear();
+        for provider in ["zai", "cerebras", "openai"] {
+            config
+                .providers
+                .insert(provider.to_string(), cli_provider("/bin/sh"));
+        }
+        crate::graph_task_dispatch::tests::fence_audits(&mut config);
+        let config = Arc::new(config);
+        let failed = [(
+            "gpt-oss-120b".to_string(),
+            "insufficient_credits: cerebras refused the request (HTTP 402)".to_string(),
+        )]
+        .into();
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .skip_failed_rungs(&failed);
+        let dispatcher =
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf());
+        let health = &dispatcher.factory.health_registry;
+        // z.ai's 1113, its quarantine over at once.
+        health.record_exhaustion("zai", 0);
+        assert!(health.is_available("zai"), "its circuit routes again");
+
+        assert_eq!(
+            dispatcher.cheap_agent().expect("a helper").model_key,
+            "mini",
+            "not glm, last seen unpaid, nor a cerebras model, its probe refused on billing"
+        );
+        let (judge, _) = dispatcher
+            .judge_model_key("claude-sonnet-4-6")
+            .expect("a judge");
+        assert_eq!(judge, "mini");
+
+        health.record_success("zai");
+        assert_eq!(
+            dispatcher.cheap_agent().expect("a helper").model_key,
+            "glm",
+            "a success shows z.ai can pay again"
+        );
+    }
+
     /// bug-f9ca2f, the shape of run 82b7e069: the cheapest helper model's
     /// provider answers 402 until its circuit opens, and the next one's rung
     /// probe failed this run, so helper calls pass over both and take the

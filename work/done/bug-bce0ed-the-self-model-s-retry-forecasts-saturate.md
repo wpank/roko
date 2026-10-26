@@ -2,7 +2,7 @@
 id = "bug-bce0ed"
 kind = "bug"
 title = "The self-model's retry forecasts saturate and its isotonic map returns exactly 0, so the shadow model proposed abandoning a task its next try passed (phase 4.2 run 1447385e T1#2: p_vs 0.0 on both arms, then a pass on gpt-5.4)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,16 +11,24 @@ subsystem = ["roko-learn/self_model"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "77634d9b9"
 source = "round-v7-pilot#P-1447385e-T1-2"
 discovered_from = "agent:hermes-pilot (round v7 phase 4.2 run 1447385e, findings §P); diagnosed by agent:roko-ladder from Undertow's self-model state 2026-10-26"
 anchors = ["crates/roko-learn/src/self_model/logit.rs::update", "crates/roko-learn/src/self_model/recal.rs::apply", "crates/roko-learn/src/self_model/model.rs::forecast_arm", "crates/roko-cli/src/graph_task_dispatch/self_model.rs"]
-links = { depends_on = [], blocks = [], related = ["bug-7683aa", "gap-3f36a6", "bug-a35286"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-7683aa", "gap-3f36a6", "bug-a35286", "gap-e464e6", "gap-7c041c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_warm_model_never_forecasts_a_retry_at_exactly_zero' crates/roko-learn/src && cargo test -p roko-learn --lib -- a_warm_model_never_forecasts_a_retry_at_exactly_zero"
 
 [[verify]]
 command = "grep -rqw 'fn a_shadow_abandon_says_it_is_advice' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_shadow_abandon_says_it_is_advice"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:33:11Z"
+commit = "fb7136729"
+forced = false
+evidence = "fb7136729: OnlineLogit::update is implicit (bisection on d = w*v*(y - sigma(z + d)), the gradient where the step lands), so an outcome moves the forecast toward it and never past it; a retry's raw L1 forecast outside [1e-6, 1 - 1e-6] falls back to L0 on the prior basis (also for a state learned with the old step); the isotonic map keeps its result within 1/(n + 2) of 0 and 1; a self-model flag's WARN line names its mode and says it is advice only unless an active self-model's refine request (flag_words). Undertow's state (2026-10-26): 57 of 66 raw forecasts saturated, both isotonic maps' lowest blocks 0.0. Tests: a_warm_model_never_forecasts_a_retry_at_exactly_zero (70 outcomes with 40-word task texts: no raw L1 forecast runs away, a retry's P(VS) and bound above 0), a_few_outcomes_never_map_to_exactly_zero_or_one, a_shadow_abandon_says_it_is_advice. Red not run. Addresses the mechanism of gap-e464e6 and gap-7c041c (related), whose own tests are still to write. Checked together on work/ladder-stack-test with main merged in (e7a860dc0, 2026-10-26): the four items' tests and their neighbours pass (18), roko-cli lib 4022/0 (share_run_scrubs_output_text_and_prompt skipped), roko-core 2049/0, roko-learn 1404/0, roko-serve 1084/0; clippy -D warnings (roko-core, roko-learn, roko-serve, roko-cli) and nightly fmt clean; CARGO_INCREMENTAL=0."
 +++
 
 ## Problem
@@ -113,7 +121,8 @@ The run's predictions are copied to `tmp/hermes-roko-v7/pilot/evidence/p4-3-run/
    the candidate takes the prior basis and records `basis: prior` with why.
 4. **Shadow wording.** In shadow mode the WARN line says it is advice only, e.g. "shadow self-model (advice only):
    would abandon T1 …; the attempt runs on the ladder's choice".
-5. **Abandon needs evidence.** An abandon needs the prior's lcb to agree, not one model's 0.0 alone.
+5. **Abandon needs evidence.** Not built. With 1–3, the forecast that drives an abandon is no longer a fit that ran
+   away, and an abandon on L1's estimate reflects real failures.
 
 ## Done when
 

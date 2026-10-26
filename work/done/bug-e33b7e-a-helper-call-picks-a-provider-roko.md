@@ -2,7 +2,7 @@
 id = "bug-e33b7e"
 kind = "bug"
 title = "A helper call picks a provider roko last saw out of balance: helper_healthy checks only an open circuit and this run's failed probes, so once z.ai's 30-minute exhaustion cooldown had lapsed, phase 4.2's retry-diagnosis helper (11:14:05Z) went to glm-4.7 on z.ai, out of balance since 10-21, and failed in 0.6 s"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "1a1371cca"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 8, run 1447385e), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::helper_healthy", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::select_cheap_model_key", "crates/roko-learn/src/provider_failover.rs::record_exhaustion"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["bug-3e3d08", "gap-20301d", "
 
 [[verify]]
 command = "grep -rqw 'fn a_helper_skips_a_provider_last_seen_exhausted' crates/roko-cli/src && cargo test -p roko-cli --lib a_helper_skips_a_provider_last_seen_exhausted"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:33:09Z"
+commit = "67e09771b"
+forced = false
+evidence = "67e09771b: ProviderHealth::last_seen_unpaid (latest failure Billing or Exhausted, no success since) keeps a provider out of helper calls past its quarantine; helper_healthy also passes over every model of a provider whose rung probe was refused on billing this run (factory unpaid_providers, by bug-374384's shared billing_refusal); a rung that passed its probe in this run records a success on its provider (rung_probe::passed_in_run), so a recharged provider serves helpers again, re-probed by bug-374384's rule. Test a_helper_skips_a_provider_last_seen_exhausted (phase 4.2's shape: z.ai exhausted, quarantine over, helper takes gpt-5.4-mini, not glm-4.7 nor a cerebras model whose rung probe got a 402; after a success z.ai serves again), with a_provider_last_seen_unpaid_stays_so_until_a_success and the_probes_passed_in_this_run_are_named. Red not run (on the old code the helper picks glm-4.7, by construction). Checked together on work/ladder-stack-test with main merged in (e7a860dc0, 2026-10-26): the four items' tests and their neighbours pass (18), roko-cli lib 4022/0 (share_run_scrubs_output_text_and_prompt skipped), roko-core 2049/0, roko-learn 1404/0, roko-serve 1084/0; clippy -D warnings (roko-core, roko-learn, roko-serve, roko-cli) and nightly fmt clean; CARGO_INCREMENTAL=0."
 +++
 
 ## Problem

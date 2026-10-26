@@ -330,6 +330,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // gap-770cb5: the agent can run its task's checks mid-try. They stay
         // until the try is judged, which reads their runs (gap-56f761).
         let _left_checks = self.leave_task_checks(&task, &attempt_key);
+        // reg-d2deba: the person's checkout over the try.
+        let try_watch = self.watch_checkout(spec, &lease.path).await;
         attempt.dispatch_started();
         attempt.record_effort(request.effort.clone());
         progress.call_started(
@@ -348,6 +350,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             )
             .await;
         attempt.dispatch_ended();
+        // What the try changed there, said now (reg-d2deba).
+        let (try_written, try_findings) = self
+            .try_checkout_written(
+                spec,
+                &task,
+                attempt_number,
+                &attempt_key,
+                &lease.path,
+                try_watch,
+            )
+            .await;
+        attempt.record_checkout_findings(try_findings);
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
             // The stall watchdog, the conductor or a stopping plan run
@@ -559,6 +573,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             &attempt_key,
                             Some(&event_tx),
                             attempt.harness_params(),
+                            &try_written,
                         ))
                         .await;
                     attempt.verify_ended();

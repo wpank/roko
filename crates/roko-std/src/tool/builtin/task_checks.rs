@@ -11,7 +11,10 @@
 //! Each run of an attempt's checks, the agent's and the hand-off check's
 //! (bug-cbbaa8), is recorded beside its checks file with the tree it judged
 //! (gap-56f761), so dispatch can judge a try on the best tree its checks saw
-//! when its last edit made the tree worse.
+//! when its last edit made the tree worse. When the attempt runs in a
+//! worktree of its own, the record also names what the run changed in the
+//! person's checkout (reg-d2deba), as a check writing through a path compiled
+//! in from that checkout does.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,6 +24,7 @@ use roko_core::child_env;
 use roko_core::tool::{ToolContext, ToolError, ToolResult};
 use serde::{Deserialize, Serialize};
 
+use super::checkout_state::CheckoutState;
 use super::child_group;
 
 /// The lines of a failing check's output the agent gets back.
@@ -90,6 +94,12 @@ pub struct CheckRun {
     /// The check that did not pass, when one did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<FailedCheck>,
+    /// The paths of the person's checkout that changed while the checks ran,
+    /// when they ran in a worktree of the attempt's own, roko's own `.roko/`
+    /// left out (reg-d2deba): a check that writes through a path compiled
+    /// in from the person's checkout writes there, not in the worktree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkout_written: Vec<String>,
 }
 
 /// The check of a [`CheckRun`] that did not pass.
@@ -235,21 +245,55 @@ pub async fn run_checks(
     } else {
         super::checkout_tree::snapshot_tree(ctx.worktree()).await
     };
+    // The person's checkout, when the checks run in a worktree of the
+    // attempt's own: what they change there is recorded with the run
+    // (reg-d2deba).
+    let person = person_checkout(ctx).filter(|_| tree.is_some());
+    let skipped = [super::checkout_state::ROKO_DIR.to_string()];
+    let before = match &person {
+        Some(checkout) => CheckoutState::of(checkout, &skipped).await,
+        None => None,
+    };
     let outcome = run_each(checks, ctx, budget, parent_env).await;
+    let checkout_written = match (&person, &before) {
+        (Some(checkout), Some(before)) => CheckoutState::of(checkout, &skipped)
+            .await
+            .map(|after| after.changes_since(before).paths())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     if let Some(tree) = tree {
         record_run(
             &task_check_runs_path(&ctx.immune_root_path, key),
             checks,
             &outcome,
             tree,
+            checkout_written,
         );
     }
     outcome
 }
 
-/// Append the run of `checks` that came to `outcome` on the tree `tree` to
-/// the record at `path`; a run that did not run its checks is not one.
-fn record_run(path: &Path, checks: &[TaskCheck], outcome: &ChecksOutcome, tree: String) {
+/// The person's checkout, the workspace root, when `ctx`'s checkout is
+/// another: a worktree or a scratch copy of the attempt's own.
+fn person_checkout(ctx: &ToolContext) -> Option<PathBuf> {
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = canonical(&ctx.immune_root_path);
+    (!ctx.immune_root_path.as_os_str().is_empty() && root != canonical(ctx.worktree()))
+        .then_some(root)
+}
+
+/// Append the run of `checks` that came to `outcome` on the tree `tree`, while
+/// the person's checkout changed at `checkout_written`, to the record at
+/// `path`; a run that did not run its checks is not one.
+fn record_run(
+    path: &Path,
+    checks: &[TaskCheck],
+    outcome: &ChecksOutcome,
+    tree: String,
+    checkout_written: Vec<String>,
+) {
     use std::io::Write;
 
     let timed = |ran: &[(String, f64)]| -> (Vec<String>, Vec<u64>) {
@@ -313,6 +357,7 @@ fn record_run(path: &Path, checks: &[TaskCheck], outcome: &ChecksOutcome, tree: 
         commands,
         ms,
         failed,
+        checkout_written,
     };
     let written = serde_json::to_string(&run)
         .map_err(std::io::Error::other)

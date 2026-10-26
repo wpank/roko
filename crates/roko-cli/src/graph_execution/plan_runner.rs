@@ -3980,9 +3980,10 @@ impl FlowWatch {
     }
 }
 
-/// What a plan's end says of the tasks whose checks changed the person's
-/// checkout at `workdir` instead of their own worktree (bug-b7d9ad), from the
-/// paths of each, by task; empty without any.
+/// What a plan's end says of the tasks that changed the person's checkout at
+/// `workdir` instead of their own worktree, through their checks or commands
+/// their agents ran (bug-b7d9ad, reg-d2deba), from the paths of each, by task;
+/// empty without any.
 fn checkout_written_note(
     workdir: &Path,
     writes: &std::collections::BTreeMap<String, Vec<String>>,
@@ -3999,8 +4000,8 @@ fn checkout_written_note(
         .collect();
     let paths: Vec<&str> = writes.values().flatten().map(String::as_str).collect();
     format!(
-        ". The checks of {} changed your checkout, not their own worktree; roko left the \
-         changes there and did not deliver them: see them with `git -C {} status -- {}`",
+        ". Your checkout changed while {} ran, not their own worktree; roko left the changes \
+         there and did not deliver them: see them with `git -C {} status -- {}`",
         tasks.join("; "),
         workdir.display(),
         paths.join(" ")
@@ -4693,7 +4694,7 @@ async fn run_one_plan(
         let why = if checkout_written.is_empty() {
             "ran no verify step"
         } else {
-            "ran no verify step, or their checks changed your checkout"
+            "ran no verify step, or changed your checkout while they ran"
         };
         graph_tui_bridge.log_event(
             "graph.plan_unverified",

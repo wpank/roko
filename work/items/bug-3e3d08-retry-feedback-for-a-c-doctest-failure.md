@@ -117,6 +117,39 @@ round trip costs a strong-rung try (about $1 here).
 - **Fix `fallback_diagnosis`:** read C++ (and other) `file:line` locations, drop repeated fragments, and lead with the
   first failing assertion rather than a summary line.
 
+## Design
+
+roko-exact, 2026-10-26, with the lead's call: failure first, as bug-fc05a3's hand-back excerpt.
+
+- **One reader, in roko-learn.** A new `roko_learn::failure_text` module holds it, so roko-learn's fallback and
+  roko-cli share it.
+  - `is_failure_line` adds doctest's `ERROR:`, Catch2's `FAILED:` and GoogleTest's `Failure`.
+  - `is_progress_line` adds CMake, make and ninja progress to cargo's.
+  - `is_summary_line` covers doctest's, Catch2's, cargo's, CTest's, GoogleTest's and pytest's count lines.
+  - `failed_cases` reads each failing case, with its header and its failures. Each failure keeps the lines under it:
+    `values:`, `logged:`, Catch2's expansion, GoogleTest's `Which is:`. The cases come from doctest's `TEST CASE:`,
+    Catch2's name between dashed rules, GoogleTest's `[ RUN      ]`, cargo's `---- name stdout ----` and pytest's
+    `____ name ____`.
+- **The step's entry (`step_failure`).**
+  - `failure_excerpt` cuts it to 2,400 chars. It starts with the failure lines printed before the first case
+    (CTest's `***Failed`), then gives each failing case its header and its first failure, with the lines under it.
+  - As far as the budget goes, each further failure gets one `also:` line, using what tells it apart (its own
+    assertion, or what it logged). Then come at most 3 summary lines.
+  - A further failure never crowds out another case.
+  - Output with no failure line keeps its last 30 lines, as before.
+- **`from_raw`.** "## Failing tests" takes a doctest `TEST CASE:`, a C++ failed assertion and GoogleTest's
+  `[  FAILED  ] Suite.Test`, each once, and never a summary line. The raw excerpt rendered goes from 2 KB to 4 KB,
+  so one step's entry shows whole.
+- **`key_line`.** It takes a C++ runner's first failed assertion before an assertion scan, and never a summary line.
+  It used to give `[doctest] assertions: …`.
+- **`fallback_diagnosis`.**
+  - With failing cases, it names each case once: its name, `file:line` and assertion, and how many failures it had.
+    For phase 4.2: "2 test cases failed: P4.2.01 … at layout_test.cpp:109: CHECK( !b.intersects(otherBounds) ); P4.2.04
+    … at layout_test.cpp:219: CHECK( found != nullptr ), 4 failures."
+  - Otherwise it reads any `file.ext:line` and a C++ `: error:` headline, skips summary lines, and says a mismatch
+    fragment once.
+- **The hand-back excerpt** (`plan_handback::excerpt`) uses the same reader.
+
 ## Done when
 
 The tests in `[[verify]]` pass:

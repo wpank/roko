@@ -2,7 +2,7 @@
 id = "bug-c5f406"
 kind = "bug"
 title = "A declared line range stays at the base file's length on a retry: fitted to 1-254 when the plan was written, it showed phase 4.3's T2#3 lines 1-247 of a kept tree's 290-line Displays.cpp, and the \"not shown\" note named only 248-254, not the 36 lines past the range"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_policy"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "70c408cd2"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 9, run 3752b8ff), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::fit_range", "crates/roko-cli/src/plan_policy.rs::render_declared_files"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-7ff055", "gap-b95913", "
 
 [[verify]]
 command = "grep -rqw 'fn a_grown_file_shows_or_names_the_lines_past_its_planned_range' crates/roko-cli/src && cargo test -p roko-cli --lib a_grown_file_shows_or_names_the_lines_past_its_planned_range"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:58:19Z"
+commit = "dd74a8ceb"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-26T19:33:23Z"
+forced = false
+evidence = "dd74a8ceb: fit_range makes a range from line 1 to the file's end or past it unranged, so the prompt shows the whole file as it is at dispatch (at write time, gap-b95913, and for files an earlier task changed, bug-7ff055); render_declared_files names the lines a file has past a range from line 1, less any anchor block, merged with a cut's: T2#3's 1-254 of a 290-line Displays.cpp cut by the budget now reads [... lines 164-290 not shown]. A part the planner chose stays as it is. roko-exact keeps the pre-validation half (render_declared_context). Test a_grown_file_shows_or_names_the_lines_past_its_planned_range; red at 20:54: the write-time fit left 1-10 and cut 1-12 to 1-10. Chain on the stack (base 5e9af6682): red at 20:54, both new tests failed on the old code; green: roko-learn lib 1408/0, roko-compose lib 528/0, roko-cli lib 4033 passed and 3 failed (reg-1bf684's two, since fixed on main, and bug-c5f406's own test, whose 'not shown' check also matched the section's intro; it now checks the note's own words); roko-compose's 3 and roko-learn's 10 integration tests pass; clippy -D warnings and nightly fmt clean. With main c39ddd6fb merged in (4d376a003): the four items' tests, their neighbours and roko-planner's three new generation tests pass (19), lib suites roko-cli 4046/0, roko-compose 528/0, roko-learn 1409/0, the integration tests pass, clippy and fmt clean."
 +++
 
 ## Problem

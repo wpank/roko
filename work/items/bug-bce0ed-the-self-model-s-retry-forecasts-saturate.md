@@ -14,7 +14,7 @@ last_verified = 2026-10-26
 source = "round-v7-pilot#P-1447385e-T1-2"
 discovered_from = "agent:hermes-pilot (round v7 phase 4.2 run 1447385e, findings §P); diagnosed by agent:roko-ladder from Undertow's self-model state 2026-10-26"
 anchors = ["crates/roko-learn/src/self_model/logit.rs::update", "crates/roko-learn/src/self_model/recal.rs::apply", "crates/roko-learn/src/self_model/model.rs::forecast_arm", "crates/roko-cli/src/graph_task_dispatch/self_model.rs"]
-links = { depends_on = [], blocks = [], related = ["bug-7683aa", "gap-3f36a6", "bug-a35286"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-7683aa", "gap-3f36a6", "bug-a35286", "gap-e464e6", "gap-7c041c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_warm_model_never_forecasts_a_retry_at_exactly_zero' crates/roko-learn/src && cargo test -p roko-learn --lib -- a_warm_model_never_forecasts_a_retry_at_exactly_zero"
@@ -113,7 +113,8 @@ The run's predictions are copied to `tmp/hermes-roko-v7/pilot/evidence/p4-3-run/
    the candidate takes the prior basis and records `basis: prior` with why.
 4. **Shadow wording.** In shadow mode the WARN line says it is advice only, e.g. "shadow self-model (advice only):
    would abandon T1 …; the attempt runs on the ladder's choice".
-5. **Abandon needs evidence.** An abandon needs the prior's lcb to agree, not one model's 0.0 alone.
+5. **Abandon needs evidence.** Not built. With 1–3, the forecast that drives an abandon is no longer a fit that ran
+   away, and an abandon on L1's estimate reflects real failures.
 
 ## Done when
 

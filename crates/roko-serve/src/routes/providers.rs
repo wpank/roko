@@ -836,6 +836,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
 
@@ -946,6 +947,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
 
@@ -1046,6 +1048,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
 
@@ -1127,6 +1130,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
 
@@ -1363,6 +1367,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
         config.models.insert(
@@ -1403,6 +1408,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
 
@@ -1620,6 +1626,7 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
             },
         );
 

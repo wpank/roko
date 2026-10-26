@@ -1262,6 +1262,8 @@ pub struct ModelProfileLayer {
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<roko_core::ReasoningEffort>,
 }
 
 impl ModelProfileLayer {
@@ -1316,6 +1318,7 @@ impl ModelProfileLayer {
             max_tool_iterations: overlay.max_tool_iterations.or(self.max_tool_iterations),
             temperature: overlay.temperature.or(self.temperature),
             seed: overlay.seed.or(self.seed),
+            reasoning_effort: overlay.reasoning_effort.or(self.reasoning_effort),
         }
     }
 
@@ -1358,6 +1361,7 @@ impl ModelProfileLayer {
             tier: self.tier,
             temperature: self.temperature,
             seed: self.seed,
+            reasoning_effort: self.reasoning_effort,
         })
     }
 }

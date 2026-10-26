@@ -374,6 +374,7 @@ mod tests {
             tier: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
         }
     }
 

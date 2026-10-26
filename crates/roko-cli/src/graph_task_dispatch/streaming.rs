@@ -331,6 +331,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // until the try is judged, which reads their runs (gap-56f761).
         let _left_checks = self.leave_task_checks(&task, &attempt_key);
         attempt.dispatch_started();
+        attempt.record_effort(request.effort.clone());
         progress.call_started(
             crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
                 .resolve(&request.model_key),

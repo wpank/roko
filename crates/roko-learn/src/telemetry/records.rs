@@ -611,6 +611,13 @@ pub struct ExecutedModel {
     /// out of the record, when the provider's defaults applied (gap-13bbbd).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub sampling: BTreeMap<String, serde_json::Value>,
+    /// The `reasoning_effort` roko sent with each request to an OpenAI
+    /// reasoning model (bug-29014c): `low`, `medium` or `high`, or `none`
+    /// when its requests carried function tools, which take no effort on
+    /// chat completions, so the API's default ran. Left out of the record
+    /// for any other model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// The tool policy the attempt's contract asked for and what its provider
     /// enforced, for a provider that runs its own tools; left out otherwise
     /// (gap-baab0a).

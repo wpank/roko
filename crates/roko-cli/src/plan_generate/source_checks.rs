@@ -1062,23 +1062,32 @@ pub(super) fn planner_block(checks: &[SourceCheck], states: &str) -> String {
          {states} the {} checks below. Keep each one as a verify step of the task that \
          delivers it: a step whose `covers` names the check (`covers = [\"SC3\"]`) and whose \
          command checks what the check states, by running a test the repository has or a test \
-         the task writes. Name a test the task writes in its description, and put a `grep -q` \
-         for it before the run, so the step fails until the task is done. A grep, a file test \
-         or a compile check alone does not keep a check: it passes when the behavior is wrong. \
-         One command may cover several checks when one run checks them all. Drop a check only \
-         when no command can check it (it needs a person, hardware, or another plan's work \
-         first), and then list it in `[meta] dropped_checks` as `\"SCk: <why no command can \
-         check it>\"`. Never merge two checks, reword one away, or leave one out.\n\n",
+         the task writes. One command may cover several checks when one run checks them all. \
+         Drop a check only when no command can check it (it needs a person, hardware, or \
+         another plan's work first), and then list it in `[meta] dropped_checks` as `\"SCk: \
+         <why no command can check it>\"`. Never merge two checks, reword one away, or leave \
+         one out.\n\n",
         checks.len()
     );
+    // gap-343a23: a `grep -q` guard is for a command the planner writes
+    // itself, never for one the source gives.
     if checks.iter().any(|check| check.run.is_some()) {
         block.push_str(
             "A check given with `run:` has its command already: that command, unchanged, is its \
              step's whole command. Put no `grep -q`, file test or other command before or after \
-             it; roko runs the source's commands alone. ",
+             it, not even to make it fail on the unchanged code: roko runs the source's commands \
+             alone. ",
         );
         block.push_str(SELF_CONTAINED);
         block.push_str("\n\n");
+    }
+    if checks.iter().any(|check| check.run.is_none()) {
+        block.push_str(
+            "For a check with no command given, name a test the task writes in its description, \
+             and put a `grep -q` for it before the run, so the step fails until the task is done. \
+             A grep, a file test or a compile check alone does not keep a check: it passes when \
+             the behavior is wrong.\n\n",
+        );
     }
     if checks.iter().any(|check| check.plan_level) {
         block.push_str(

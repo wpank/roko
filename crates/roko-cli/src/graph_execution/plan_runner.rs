@@ -1247,9 +1247,6 @@ async fn run_graph_plan_body(
     }
 
     let run_start = std::time::Instant::now();
-    // `compute_plan_run_set` selects and orders the plans as this does
-    // before a run starts (serve's member list, `run.started`): keep them in
-    // step.
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
     // Apply only_plans filter: keep exactly the named ids, in name order, and
     // fail immediately if any listed id does not exist in the directory.
@@ -1276,7 +1273,9 @@ async fn run_graph_plan_body(
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
-    // batch.
+    // batch. `compute_plan_run_set` selects and orders the plans as the lines
+    // from `load_plans` to here do, before a run starts (serve's member
+    // list, `run.started`): keep them in step.
     let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
     let plan_execution_order = plan_order.order.clone();
 

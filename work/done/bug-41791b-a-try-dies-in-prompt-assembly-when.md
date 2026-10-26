@@ -1,0 +1,99 @@
++++
+id = "bug-41791b"
+kind = "bug"
+title = "A try dies in prompt assembly when an explicit symbol anchor is gone from its declared files, as a stale range did before bug-fa22cc: a try that renamed or removed the symbol leaves every later try of its task dead before any model call"
+status = "done"
+triage = "verified"
+severity = "p2"
+goal = "golden-path"
+size = "S"
+subsystem = ["roko-cli/graph_task_dispatch"]
+created = 2026-10-26
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "886d80a20"
+source = "round-v7 roko-exact (found fixing bug-fa22cc)"
+discovered_from = "agent:roko-exact (round v7)"
+anchors = ["crates/roko-cli/src/plan_policy.rs::render_declared_context"]
+links = { depends_on = [], blocks = [], related = ["bug-fa22cc", "bug-c5f406"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_missing_anchor_never_fails_a_try' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_missing_anchor_never_fails_a_try"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T22:01:55Z"
+commit = "886d80a20"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "S"
+claimed_at = "2026-10-26T21:23:44Z"
+forced = false
+evidence = "886d80a20: graph_task_dispatch::fit_declared_context (was fit_declared_ranges) repairs a try's declared context to its checkout on every try and logs each line: plan_policy::drop_missing_reads leaves out a read whose file is gone (an unsafe path stays, for the render to refuse), fit_ranges_to_checkout fits ranges (bug-fa22cc), and drop_missing_anchors makes an explicit anchor no read file holds a note that keeps its text ('renderAll (in no file the task reads): the renderer's entry point'), with plan generation's note moved to plan_policy::symbol_note; render_declared_context no longer fails on a missing anchor; the plan check at load is unchanged. Verify: a_missing_anchor_never_fails_a_try passes (the try runs; its prompt lists the symbol as a note and reads only the file that exists). chain32 on the branch: the verify test 1/1, fmt and clippy -D warnings clean on roko-cli; its related run caught one test that used a missing declared file to make prompt assembly fail (a_prompt_assembly_failure_settles_as_a_harness_error, and the same fixture in feedback.rs), now an unsafe path. chain33: the verify test, plan_policy::, plan_generate::symbol_reads::, dispatch::prompt_builder, graph_task_dispatch::attempt::, ::feedback:: and ::blocked:: 117/117, fmt clean."
++++
+
+## Problem
+
+A try dies in prompt assembly when an explicit symbol anchor in its task's `context.symbols` is not found in any of
+its declared files, as they stand in the try's checkout. `plan_policy::render_declared_context` returns "explicit
+symbol anchors were not found in declared context: <anchor>", which becomes `PreValidationFailed`: a harness_error
+before any model call.
+
+The anchors are checked against the try's checkout. A retry reuses its last try's checkout, so a try that renamed or
+removed the symbol leaves every later try of its task dead, at $0, as a stale line range did before bug-fa22cc. This
+is the same failure as bug-fa22cc's: pre-validation checks the plan's context against files the plan's own work has
+changed.
+
+It hasn't been seen live yet. Phase 5.1's T2 declares `symbols = ["undertow_render — offline renderer entry point"]`,
+which `explicit_symbol_anchor` reads as the anchor `undertow_render`. T2 survives only because its spec, which it
+also declares, names the symbol.
+
+**Expected:** a missing anchor never fails the try. The declared files render without the anchor's lines, and the
+prompt says which anchors were not found.
+
+## Why it matters
+
+A task that renames what its plan anchored can never be retried. Each dead try counts toward the task's retries.
+
+## Where
+
+- `crates/roko-cli/src/plan_policy.rs::render_declared_context`: the `missing` anchors return `Err`.
+- The plan check at load (`validate_plan_context`, PLAN_CONTEXT_SYMBOL) should stay: before anything runs, a
+  missing anchor is a planning error.
+
+## Plan
+
+In `render_declared_context`, name the missing anchors in a line of the rendered context rather than return an
+error. Test it with a declared file whose anchored function a try renamed.
+
+## Design
+
+roko-exact, 2026-10-26, on the lead's call: a missing anchor degrades the way a range does. Keep the text, drop the
+anchor, log a repair line, and never fail prompt assembly.
+
+- **At dispatch.** `fit_declared_context`, which was `fit_declared_ranges`, runs on every try. It applies three
+  repairs to the try's checkout, in this order, and logs each line it changes:
+  1. `drop_missing_reads` leaves out a declared read whose file the checkout no longer holds. A try that removed or
+     renamed its declared file would otherwise fail on "invalid context file", the same failure. An unsafe path
+     stays, for the render to refuse.
+  2. `fit_ranges_to_checkout` (bug-fa22cc).
+  3. `drop_missing_anchors` makes an explicit anchor that no remaining read file holds a note, which is not an
+     anchor: `renderAll (in no file the task reads): the renderer's entry point`. A task with no read files is left
+     alone.
+- **The note** is plan generation's (bug-417c4a), moved from `plan_generate::symbol_reads::note` to
+  `plan_policy::symbol_note`, so both write the same text.
+- **`render_declared_context`** no longer fails on a missing anchor on any path: the anchor shows nothing.
+- **The plan check at load** (PLAN_CONTEXT_SYMBOL, PLAN_CONTEXT_MISSING) is unchanged. Before anything runs, these
+  are planning errors.
+
+## Done when
+
+The test in `[[verify]]` passes: a try whose declared files no longer hold an anchored symbol, or no longer include a
+declared file, runs. Its prompt keeps the symbol's text as a note and leaves the missing file out.
+
+## Notes
+
+- Related: bug-fa22cc (stale ranges, the same failure), bug-c5f406.
+- Found while fixing bug-fa22cc. Predicted from the code path; not yet seen live.

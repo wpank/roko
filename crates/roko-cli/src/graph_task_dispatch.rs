@@ -1065,19 +1065,27 @@ impl GraphTaskDispatcher {
         self.uncounted_tries.lock().remove(task_key)
     }
 
-    /// Fit `task`'s declared line ranges to its files in `workdir`, the
-    /// attempt's checkout, on every try (bug-7ff055, bug-fa22cc): the planner
-    /// wrote them before the plan's work, and an earlier task, or the task's
-    /// own last try, whose checkout a retry reuses, may have changed a file
-    /// since. Phase 5.1's T2#1 cut `tools/render-demos.sh` from 121 lines to
+    /// Fit `task`'s declared context to its files in `workdir`, the
+    /// attempt's checkout, on every try: the planner wrote it before the
+    /// plan's work, and an earlier task, or the task's own last try, whose
+    /// checkout a retry reuses, may have changed a file since. A read of a
+    /// file the checkout no longer holds is left out, a line range is fitted
+    /// to its file (bug-7ff055, bug-fa22cc), and a symbol anchor no read file
+    /// holds becomes a note (bug-41791b), so none of them fails the try's
+    /// prompt. Phase 5.1's T2#1 cut `tools/render-demos.sh` from 121 lines to
     /// 43, and T2#2 to #4 died on its declared `1-121` before any model call.
-    fn fit_declared_ranges(&self, spec: &TaskExecutionSpec, task: &mut TaskDef, workdir: &Path) {
-        for fitted in crate::plan_policy::fit_ranges_to_checkout(task, workdir) {
+    fn fit_declared_context(&self, spec: &TaskExecutionSpec, task: &mut TaskDef, workdir: &Path) {
+        let repairs = [
+            crate::plan_policy::drop_missing_reads(task, workdir),
+            crate::plan_policy::fit_ranges_to_checkout(task, workdir),
+            crate::plan_policy::drop_missing_anchors(task, workdir),
+        ];
+        for fitted in repairs.into_iter().flatten() {
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
                 %fitted,
-                "fitted a declared line range to the file in the try's checkout"
+                "fitted the task's declared context to the try's checkout"
             );
         }
     }
@@ -1194,7 +1202,7 @@ impl GraphTaskDispatcher {
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let mut task = self.prompt_task(spec, task);
-        self.fit_declared_ranges(spec, &mut task, &dispatch_ctx.workdir);
+        self.fit_declared_context(spec, &mut task, &dispatch_ctx.workdir);
         let task = &task;
         let mut dispatch_plan = match self.factory.dispatcher().plan(task, dispatch_ctx) {
             Err(error) if dispatch_ctx.prompt_experiment.is_some() => {

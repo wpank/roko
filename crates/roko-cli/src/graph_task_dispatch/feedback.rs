@@ -1969,11 +1969,12 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             .dispatch(&make_spec(&task), Vec::new(), &ctx)
             .await
             .expect_err("the provider call fails");
-        // A declared context file that does not exist fails prompt assembly.
+        // A declared context file outside the workspace fails prompt
+        // assembly; a missing one no longer does (bug-41791b).
         let mut unassembled = task.clone();
         unassembled.context = Some(crate::task_parser::TaskContext {
             read_files: vec![crate::task_parser::ReadFile {
-                path: "src/missing.rs".to_string(),
+                path: "../outside.rs".to_string(),
                 lines: None,
                 why: "context".to_string(),
             }],

@@ -2469,6 +2469,9 @@ fn run_summary(
     // The rungs the run skipped at plan start because their model failed its
     // tool-use probe, the latest event of each plan and rung (gap-20301d).
     let mut rungs_skipped = BTreeMap::<(String, String), Value>::new();
+    // Why roko refused a task the ladder routes because every rung failed its
+    // probe, from the first try that settled so (gap-b856d3).
+    let mut ladder_refusal = None::<String>;
     // The providers the run went on without because they refused a call for
     // want of usage, an account they can't bill included, the latest refusal
     // of each (bug-390e4b).
@@ -2508,6 +2511,14 @@ fn run_summary(
                 "detail": data.get("detail"),
                 "at": event_time(value),
             }));
+        }
+        if kind == "attempt_settled"
+            && string_field(value, "verdict") == Some("all_rungs_skipped")
+            && ladder_refusal.is_none()
+        {
+            let detail = string_field(value, "detail").unwrap_or_default();
+            let reason = detail.strip_prefix("all_rungs_skipped: ").unwrap_or(detail);
+            ladder_refusal = Some(reason.to_string());
         }
         if kind == "rung_skipped" {
             let data = event_data(value);
@@ -2689,6 +2700,22 @@ fn run_summary(
                     "reason": gate_refusals.join("; "),
                 })
             })
+        })
+        .or_else(|| {
+            // Every rung of the ladder failed its probe, so roko refused the
+            // tasks the ladder routes (gap-b856d3). A recharge and a resume
+            // fix it when every rung failed on billing (bug-374384).
+            let reason = ladder_refusal.filter(|_| state == RunState::Failed)?;
+            let billing_only = !rungs_skipped.is_empty()
+                && rungs_skipped
+                    .values()
+                    .all(|rung| rung["billing"] == Value::Bool(true));
+            Some(json!({
+                "stage": "ladder",
+                "kind": "all_rungs_skipped",
+                "reason": reason,
+                "billing_only": billing_only,
+            }))
         });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
@@ -4637,6 +4664,67 @@ mod tests {
             }]),
             "{summary}"
         );
+    }
+
+    /// gap-b856d3: a run whose every rung failed its probe, so roko refused
+    /// the tasks the ladder routes, says so under `refused`: stage `ladder`,
+    /// kind `all_rungs_skipped`, and whether every rung failed on billing,
+    /// which a recharge and a resume fix. A run whose rungs failed otherwise
+    /// says `billing_only: false`.
+    #[tokio::test]
+    async fn a_runs_summary_names_an_all_rungs_skipped_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let refused = |run: &str, cheap_billing: bool| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run).unwrap();
+            let skipped = |rung: &str, model: &str, billing: bool| json!({"type":"rung_skipped","run_id":run,"ts_millis":2,"plan_id":"p1","rung":rung,"model":model,"provider":"p","reason":"refused","billing":billing,"detail":"skipped"});
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"plan_started","run_id":run,"ts_millis":1,"plan_id":"p1"}),
+                    skipped("cheap", "gpt-oss-120b", cheap_billing),
+                    skipped("mid", "gpt-5.4-mini", true),
+                    json!({"type":"attempt_settled","run_id":run,"ts_millis":3,"plan_id":"p1","task_id":"T1","attempt":1,"verdict":"all_rungs_skipped","blame":"harness","detail":"all_rungs_skipped: task `T1` was not run: no rung of the routing ladder can run, as every rung's model failed its tool-use probe at plan start"}),
+                    json!({"type":"task_completed","run_id":run,"ts_millis":4,"plan_id":"p1","task_id":"T1","outcome":"failed"}),
+                    json!({"type":"run_completed","run_id":run,"ts_millis":5,"outcome":"failed","duration_ms":4}),
+                ],
+            );
+        };
+        refused("billed", true);
+        refused("mixed", false);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("billed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        let why = &summary["refused"];
+        assert_eq!(why["stage"], "ladder", "{summary}");
+        assert_eq!(why["kind"], "all_rungs_skipped", "{summary}");
+        assert!(
+            why["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("task `T1` was not run: no rung")),
+            "{summary}"
+        );
+        assert_eq!(why["billing_only"], true, "{summary}");
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("mixed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["refused"]["kind"], "all_rungs_skipped", "{summary}");
+        assert_eq!(summary["refused"]["billing_only"], false, "{summary}");
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

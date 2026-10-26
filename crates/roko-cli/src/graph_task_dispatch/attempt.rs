@@ -1019,13 +1019,20 @@ impl Settlement {
     }
 
     /// The harness failed the attempt outside its provider call and verify
-    /// steps: prompt assembly, or recording its spend in the cost ledger.
+    /// steps: prompt assembly, or recording its spend in the cost ledger. A
+    /// task refused because every rung of the ladder failed its probe settles
+    /// as that (gap-b856d3).
     pub(super) fn harness_failure(error: &RokoError) -> Self {
+        let (outcome, class) = if super::ladder::refused_for_no_rung(error) {
+            (AttemptOutcome::AllRungsSkipped, "all_rungs_skipped")
+        } else {
+            (AttemptOutcome::HarnessError, "harness")
+        };
         Self {
-            outcome: AttemptOutcome::HarnessError,
+            outcome,
             gate_verdict: None,
             first_token_seen: false,
-            failure_reason: Some(format!("harness: {error}")),
+            failure_reason: Some(format!("{class}: {error}")),
             rung: None,
         }
     }

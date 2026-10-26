@@ -298,7 +298,8 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
 | `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
 | `roko new <type> <name>` | Scaffold boilerplate |
-| `roko safety controls/release` | List immune isolation controls that deny agents before dispatch, and release one with an audit record |
+| `roko safety controls` | List the immune controls in force: agents denied before dispatch, tools refused in the workspace |
+| `roko safety release <agent> --reason <why>` | Release an agent's control, or a tool's (`--tool`, `--scope`), with an audit line (`by`, `reason`, `via`). Only a person releases one: the default bash policy refuses the command, and it exits 1 under the variables roko sets on its agents and checks |
 | `roko effects list/show/approve/reject` | List, inspect and approve or reject a staged (held) tool call |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |

@@ -910,14 +910,28 @@ Supervised HTTP JSON connectors.
 | POST | `/api/connectors/{name}/query` | Bounded idempotent query |
 | POST | `/api/connectors/{name}/execute` | Bounded mutation |
 
-### 8.27 Safety Observability
+### 8.27 Safety Observability and Controls
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout. Each entry gives its review `status`, its `full_hash` and its `vault`; each vault gives its `capacity` and whether it is `full` (a full vault cannot index further withheld results) |
 | GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
+| GET | `/api/safety/controls` | The agent isolation controls in force, from `.roko/immune/agent-controls.json` (the response's `ledger`): `total`, `controls`, and a `reason` when there are none. Each control gives its `agent_id`, `state` (`isolated`), `reason` (`provider_output_immune_containment` for one the provider immune boundary wrote on containing a provider result), `control_id`, `isolated_at_ms` and `expires_at_ms`. A control denies its agent before every dispatch until it expires, 7 days after it was written, or is released; an older one with `expires_at_ms: null` stays until released. Expired controls are left out; an unreadable ledger answers 500 |
+| POST | `/api/safety/controls/{agent_id}/release` | `{ "reason": "..." }`: release that agent's control as the authenticated principal, or as `local-api` when the credential names no user (the launch token, or a serve without auth). Needs permission `config:edit` (the owner and admin roles; the launch token counts as admin); agent tokens are refused. Percent-encode a `/` in the id (`live-a%2Fcli`). Removes the control and appends an audit line to `.roko/immune/agent-control-releases.jsonl`: `released_at_ms`, `agent_id`, `control_id`, `by`, `reason`, and `via` (`channel` `serve_api`; `by_source` `authenticated_user` or `local_api`). Answers `{ "released": <that line>, "audit": <the file's path> }`; 404 when the agent has no control in force, 400 for a malformed agent id or reason |
 | GET | `/api/effects?run_id=` | Staged outbound effects (9133): the tool calls runs hold for approval under a `stage` outbound policy (9131), without their arguments, and the decisions made on them, newest first |
 | POST | `/api/effects/{id}/decision` | `{ "approve": bool, "note": ... }`: approve an effect, which replays its call once and runs the receipt rungs of its task's pack, or reject it, as the authenticated principal (scope `write`, permission `plan:execute`). Answers the decision's record with the call's result and the receipt verdicts; 409 for a decided effect, 404 for an unknown one |
+
+Only a person releases an immune control, after reviewing it (find-d05b5e).
+`roko safety release` is the CLI equivalent: it refuses to run under the
+variables roko sets on the agents and checks it starts, and the default bash
+policy refuses it in an agent's `bash` and `run_tests` calls. The CLI also
+covers the tool controls the tool-result immune boundary writes
+(`.roko/immune/tool-controls.json`), which have no route: `roko safety controls`
+lists them beside the agent controls, and
+`roko safety release --tool <tool> --scope <scope> --reason <why>` releases one,
+with its audit line in `.roko/immune/tool-control-releases.jsonl`. A CLI
+release records `via` as well: `channel` `cli`, `by_source` `flag` (`--by`),
+`user_env` or `fallback`, and whether standard input was a `terminal`.
 
 ### 8.28 Affect (Daimon)
 

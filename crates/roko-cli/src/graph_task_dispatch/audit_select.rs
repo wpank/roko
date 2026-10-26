@@ -582,7 +582,7 @@ impl super::GraphTaskDispatcher {
                 agent: Arc::new(super::routing_context::CheapFactoryAgent {
                     factory: Arc::clone(&self.factory),
                     model_key: key.clone(),
-                    workdir: self.workdir.clone(),
+                    workspace_root: self.workdir.clone(),
                     timeout_ms,
                 }),
             })

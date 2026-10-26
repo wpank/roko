@@ -91,3 +91,11 @@ names only lines inside that range, so the lines past it are hidden without a wo
   tries added".
 - Keep a partial range that the planner chose on purpose (say `40-80` of a 300-line file) as it is. Only a range
   that covered the whole file at write time should follow the file.
+- **A second case: phase 5, run 1f677933 (2026-10-26).** T8#2 was the hand-back try after the plan check failed. It
+  ran on T8#1's accepted tree, where `plugin/ui/Displays.cpp` had grown from 301 to 304 lines and
+  `plugin/ui/Displays.h` from 53 to 54.
+  - Its prompt showed `Displays.cpp` 1–90 of 304, with a note for "lines 91-301" only. Lines 302–304 weren't
+    mentioned.
+  - It showed `Displays.h` 1–53 of 54, with no note.
+  - The prompt log is `.roko/prompt-logs/p5-ship-T8-1793030314833.txt`, and the rows are in
+    `tmp/hermes-roko-v7/run-analyst/data/prompt_files_1f677933.csv`.

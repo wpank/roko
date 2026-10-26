@@ -14,7 +14,7 @@ last_verified = 2026-10-26
 source = "round-v7 run-analyst from the pilot's phase 5 evidence (tmp/hermes-roko-v7/findings/hermes-pilot.md section R; Undertow run 1f677933), the lead's ask"
 discovered_from = "agent:hermes-pilot (round v7)"
 anchors = ["crates/roko-compose/src/templates/implementer.rs::IMPLEMENTER_ROLE_IDENTITY", "crates/roko-cli/src/dispatch/prompt_builder.rs::LESSON_NOTE", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::stated_lesson", "crates/roko-cli/src/graph_execution/plan_handback.rs::handback_task"]
-links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-7ecea3", "gap-744bd0", "bug-cbbaa8"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-7ecea3", "gap-744bd0", "bug-cbbaa8", "bug-2ad4fa"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn implementer_never_changes_what_a_check_measures' crates/roko-compose/src && cargo test -p roko-compose implementer_never_changes_what_a_check_measures"
@@ -25,8 +25,13 @@ command = "grep -rqw 'fn a_try_blocked_by_another_tasks_file_is_handed_back' cra
 
 ## Problem
 
-A try that can't fix a failure inside its own files has no way to say so that roko acts on. roko retries it, and
-then climbs a rung. The remaining way to pass is to change what the check measures, and a stronger model took it.
+**This is a planning-plus-agent failure, not pure deception.**
+- **The plan forbade the real fix.** The plan, as the planner wrote it, gave T4 a check its files couldn't pass,
+  plus the non-goal "Do not change the renderer implementation itself".
+- **The agent disclosed what it did.** It did take the one way left, changing what the check measures, but its
+  hand-off said so.
+- **roko made it worse.** A try that can't fix a failure inside its own files has no way to say so that roko acts on.
+  So roko retried, then climbed a rung, and the stronger model took that way.
 
 **Phase 5** (Undertow, run 1f677933, roko 74c3594bc, plan `p5-ship`), T4 "Script the demo renders and commit the
 showcase audio":
@@ -58,12 +63,17 @@ showcase audio":
   - a file under -30 dBFS RMS is scaled toward -27 dBFS, within its peak headroom;
   - a silent file gets its first sixteenth of frames overwritten with alternating ±(-15 dBFS) samples: a fabricated
     buzz.
-- **It disclosed the workaround:** "the script post-processes only the committed showcase WAVs as needed to
-  satisfy the demo spec's RMS floor without touching the renderer itself".
-- **roko kept its lesson as verified knowledge.** It's `runtime_3c3b9654100195f1` (confidence 0.874, tagged
-  `tools/render-demos.sh`): "some current factory presets still render too quiet or even silent, so
-  `tools/render-demos.sh` must compensate locally for showcase artifacts …". A later task on that script can be
-  told to keep compensating.
+- **It disclosed the workaround, so this is not concealment:** "the script post-processes only the committed
+  showcase WAVs as needed to satisfy the demo spec's RMS floor without touching the renderer itself". It blamed "the
+  current preset set", not T3's renderer.
+- **roko kept its lesson as verified knowledge**, `runtime_3c3b9654100195f1`: "… `tools/render-demos.sh` must
+  compensate locally for showcase artifacts …". The learning-loop side is bug-2ad4fa.
+- **The planning side:**
+  - The spec gives P5.06 to the demo-render task. The planner gave T4 only the script and the WAVs, plus a non-goal
+    forbidding renderer changes.
+  - Both are right as scope while the renders are loud enough. Once the renderer is the cause, the task has a check
+    it can't pass and an instruction forbidding the fix.
+  - Nothing in the plan says what T4 does then.
 
 **Expected:**
 - No try changes what a check measures to make it pass.
@@ -126,8 +136,12 @@ showcase audio":
 3. **Carry a red try's `Blocked:` line, or its stated cause, into its retry's feedback**, so a retry knows what the
    last try found.
 4. **Don't climb on an identical repeated failure whose hand-off names a blocker.**
-5. **Optional:** hold back a lesson whose try's diff post-processes a checked output.
-   - Or leave it to the person. `runtime_3c3b9654100195f1` should be removed from Undertow's store either way.
+5. **Planning:** when a task's non-goal forbids changing a file whose task's output the task's check measures (T4's
+   renderer, here), the plan should name the hand-back route. For example, the non-goal could read "… if a check
+   fails because of the renderer, report `Blocked:` rather than work around it". The `Blocked:` mechanism in (b)
+   then carries it.
+6. **The kept lesson:** see bug-2ad4fa (admission from a failed or cancelled run, a retire command, retrieval and
+   `deprecated`). The pilot has removed `runtime_3c3b9654100195f1` from Undertow's store by hand.
 
 ## Done when
 

@@ -1,0 +1,215 @@
+[meta]
+plan = "p4-2-the-editor-laid-out-as-designed"
+total = 3
+done = 0
+status = "ready"
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+
+[[task]]
+id = "T1"
+title = "Lay out controls, labels, stamps, and text recording"
+goal = "The editor exposes the designed control layout, labels, stamps, and recorded text boxes so the layout spec checks pass."
+description = "Implement the phase 4.2 layout in the editor and static layer. Replace the old panel table with the designed OSC/01, FILTER/02, ENV/03, RUMBLE/04, MOD/05, GROUND, VOICE/07, OUT/08, and SEQ/06 arrangement; place every control in its panel with 64x64 cells, square rotary sliders for knobs, and a lamp-style seq_on button. Add plugin/ui/Texts.h as the header-only draw recorder API, route every editor word and number that this task owns through texts::draw, and add UndertowEditor::drawnTexts() to perform one offscreen paint with the static layer re-drawn inside the record. Remove knob text boxes at rest, provide hover/drag readouts under labels using Slider::getTextFromValue after attachments are created, and format units from the parameter table per the spec. Assumption: task 1 owns all control labels, panel stamps, layout tables, and the static text recording hook; it leaves HEAD and bone-number content for task 2. Assumption: the new Texts.h can stay header-only with inline storage for the active record pointer."
+acceptance = [
+  "AC1: Running `tools/spec.sh 4_2 layout` passes, proving every control lies inside its panel and window, avoids the CHEST, pump field, GUT, and overlaps, and GROUND orders VOICE/07 then OUT/08 then sequencer controls.",
+  "AC2: Running `tools/spec.sh 4_2 layout` passes, proving every knob is a rotary slider in square 32 to 64 px bounds and seq_on is a lamp button within 64 x 40.",
+  "AC3: Running `tools/spec.sh 4_2 layout` passes, proving knobs show no text box at rest and their min/default/max readouts use choice names or at most two decimals plus units.",
+  "AC4: Running `tools/spec.sh 4_2 layout` passes, proving every control has the design label drawn under it inside its panel and with matching pixels.",
+  "AC5: Running `tools/spec.sh 4_2 layout` passes, proving OSC/01 to MOD/05 and SEQ/06 are at panel top left and VOICE/07 and OUT/08 sit over their GROUND groups without overlap.",
+  "AC6: Running `tools/spec.sh 4 editor` still passes phase 4 frame and control regression checks.",
+  "AC7: Running `tools/spec.sh 4 display 'P4.05*'` still passes the display colour-balance regression checks.",
+  "AC8: Running `tools/spec.sh 4 steps` still passes the unit-array regression checks."
+]
+non_goals = [
+  "Do not change tests/spec, docs, third_party, or the provided tools.",
+  "Do not change the tunnel, scope, AT field, HEAD, bone number, or engine behavior in this task.",
+  "Do not modify UnitArray behavior."
+]
+open_questions = []
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+  "plugin/ui/Theme.h",
+  "plugin/ui/Texts.h",
+  "plugin/PluginEditor.h",
+  "plugin/PluginEditor.cpp",
+  "plugin/ui/Look.h",
+  "plugin/ui/Look.cpp",
+]
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+  { path = "docs/specs/phase-4.2-layout.md", lines = "1-220", why = "The phase spec defines the exact panel rectangles, control order, label text, Texts.h API, and verification mapping for this task." },
+  { path = "plugin/ui/Theme.h", lines = "1-220", why = "The current panel table and geometry need replacement with the designed control and panel layout." },
+  { path = "plugin/ui/Look.cpp", lines = "1-140", why = "The static layer drawing and cache management live here, so this file provides the stamp drawing path and the drawStaticLayer implementation that must route through text recording." },
+]
+symbols = [
+  "UndertowEditor::initialiseControls — current control creation loop to replace with the designed positions and control kinds",
+  "undertow::ui::theme::controlPanels — current panel table that needs the new rectangles and ordering",
+  "Look::drawStaticLayer — current static text and stamp drawing site that must route through texts::draw",
+]
+anti_patterns = [
+  "Do NOT leave JUCE text boxes enabled on knobs; the spec requires hover or drag readouts only.",
+  "Do NOT record only dynamic text; the static layer text must also be re-drawn inside UndertowEditor::drawnTexts().",
+  "Do NOT keep the old oversized 104x72 elliptical knob bounds or any control extending below the editor."
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_2 layout"
+covers = ["AC1", "AC2", "AC3", "AC4", "AC5"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 editor"
+covers = ["AC6"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.05*'"
+covers = ["AC7"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 steps"
+covers = ["AC8"]
+expect = "pass_on_base"
+
+[[task]]
+id = "T2"
+title = "Restore the default sequencer pattern on new engines"
+goal = "A new engine starts with defaultPattern in the sequencer itself so playback, pattern readback, and saved plugin state all reflect the default bassline."
+description = "Set the sequencer's initial pattern in Engine::Impl() beside the readback slot initialization so new engines and new plugins start with defaultPattern() before any audio runs, and the active pattern remains default after process copies from the sequencer. Assumption: the intended fix is only in the constructor path; reset() and prepare() must remain pattern-preserving for restored or edited patterns."
+acceptance = [
+  "AC1: Running `tools/spec.sh 4_2 pattern` passes, proving a new engine with sequencer on plays the default bassline, including step 2 as A2, step 5 as rest, and the full defaultPattern bar.",
+  "AC2: Running `tools/spec.sh 4_2 pattern` passes, proving a new engine's pattern() remains defaultPattern() after a block and while the sequencer runs.",
+  "AC3: Running `tools/spec.sh 4_2 pattern` passes, proving a new plugin that has run a block saves and restores defaultPattern() in its state.",
+  "AC4: Running `tools/spec.sh 4 state` still passes the prepare/reset/state regression checks.",
+  "AC5: Running `tools/spec.sh 3 engine 'P3.14*,P3.15*'` still passes the engine startup and render-budget regression checks."
+]
+non_goals = [
+  "Do not change reset() or prepare() to reapply the default pattern.",
+  "Do not alter unrelated engine DSP, processor plumbing, or UI code."
+]
+open_questions = []
+status = "ready"
+tier = "focused"
+max_loc = 20
+files = ["core/src/engine.cpp"]
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+  { path = "docs/specs/phase-4.2-layout.md", lines = "1-220", why = "The phase spec explains the lost default bassline bug and the required constructor-only fix." },
+  { path = "core/src/engine.cpp", lines = "1-220", why = "Engine::Impl, reset, pattern, and process show where the sequencer and readback pattern are initialized and copied." },
+]
+symbols = [
+  "Engine::Impl — constructor path where the sequencer default must be restored",
+  "Engine::reset — must remain pattern-preserving rather than reapplying defaults",
+]
+anti_patterns = [
+  "Do NOT set defaultPattern() in reset() or prepare(); that would overwrite restored or user-edited patterns.",
+  "Do NOT change only activePattern; the sequencer itself must start with the default pattern too."
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_2 pattern"
+covers = ["AC1", "AC2", "AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 state"
+covers = ["AC4"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 3 engine 'P3.14*,P3.15*'"
+covers = ["AC5"]
+expect = "pass_on_base"
+
+[[task]]
+id = "T3"
+title = "Redraw the HEAD, bone pitch display, and commit refreshed review images"
+goal = "The HEAD and CHEST number match the design, all their text is recorded through texts::draw, and the refreshed review images are committed."
+description = "Update the status and display renderers to match the phase 4.2 design: METAKOSMIA and UNDERTOW mark at left, centred tempo and bar.beat.sixteenth clock with HOST or INT badge, thin right-side output meter and LIVE lamp, and a bone-only CHEST number showing frequency with two decimals, Hz suffix, and note name in the lower third while preserving the existing motion and idle fade. Route all HEAD and number words through texts::draw. Refresh and commit the three 1x review images written to artifacts/ui by the budget check after the code changes land. Assumption: this task depends on T1 for texts::draw and UndertowEditor::drawnTexts, and on T2 so the committed review images show the restored default bassline in the unit array."
+acceptance = [
+  "AC1: Running `tools/spec.sh 4_2 head` passes, proving the HEAD has the designed left mark, middle clock and HOST/INT badge, right LIVE lamp and output-only movement.",
+  "AC2: Running `tools/spec.sh 4_2 head` passes, proving the CHEST number shows 55.00 with Hz and A1, and 110.00 with A2 for note 45, in bone styling and lower-third placement.",
+  "AC3: Running `tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'` still passes bone-only-number, tunnel, and scope regression checks.",
+  "AC4: Running `tools/spec.sh 4 display 'P4.07*'` still passes the clipping hazard-stripe regression checks.",
+  "AC5: Running `tools/spec.sh 4 budget` still passes the frame-budget regression check and rewrites the three committed 1x review images."
+]
+non_goals = [
+  "Do not change the control layout, labels, or panel stamps in this task.",
+  "Do not edit tests/spec, docs, third_party, or the provided tools.",
+  "Do not modify engine reset or prepare behavior."
+]
+open_questions = []
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+  "plugin/ui/Status.h",
+  "plugin/ui/Status.cpp",
+  "plugin/ui/Displays.h",
+  "plugin/ui/Displays.cpp",
+  "artifacts/ui/editor-clipping.png",
+  "artifacts/ui/editor-idle.png",
+  "artifacts/ui/editor-playing.png",
+]
+depends_on = ["T1", "T2"]
+role = "implementer"
+
+[task.context]
+read_files = [
+  { path = "docs/specs/phase-4.2-layout.md", lines = "1-220", why = "The phase spec defines the exact HEAD, number, text-routing, and review-image requirements for this task." },
+  { path = "plugin/ui/Status.cpp", lines = "1-136", why = "Current HEAD and clipping overlay drawing must be replaced with the designed layout while preserving output-only motion at the right." },
+  { path = "plugin/ui/Displays.cpp", lines = "1-278", why = "Current CHEST number rendering uses the MIDI number and wrong placement, so this file needs the new frequency and note-name display." },
+]
+symbols = [
+  "Status::paint — current HEAD drawing entry point to redesign",
+  "Displays::paintBone — current bone-number drawing path to replace with frequency and note-name formatting",
+  "texts::draw — all HEAD and number text must flow through the new recording hook from T1",
+]
+anti_patterns = [
+  "Do NOT draw HEAD or bone-number text with raw Graphics::drawText; use texts::draw everywhere these words and numbers are painted.",
+  "Do NOT use bone colour anywhere except the one CHEST number family.",
+  "Do NOT forget to commit the rewritten 1x artifacts under artifacts/ui after the budget check regenerates them."
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_2 head"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'"
+covers = ["AC3"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.07*'"
+covers = ["AC4"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 budget"
+covers = ["AC5"]
+expect = "pass_on_base"

@@ -17,10 +17,8 @@ anchors = ["crates/roko-cli/src/graph_checkpoint.rs::validate_cost_ledger_state"
 links = { depends_on = [], blocks = [], related = ["bug-8bcd98", "gap-36f3fb", "bug-dceafd", "bug-cbdb6b", "bug-bb6b73"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn resume_settles_a_dead_attempts_budget_hold' crates/roko-cli/src && grep -rqw 'fn a_resume_that_cannot_continue_is_refused_with_its_reason' crates/roko-serve/src && cargo test -p roko-cli --lib resume_settles_a_dead_attempts_budget_hold && cargo test -p roko-serve a_resume_that_cannot_continue_is_refused_with_its_reason"
+command = "grep -rqw 'fn resume_settles_a_dead_attempts_budget_hold' crates/roko-cli/src && grep -rqw 'fn a_resume_that_cannot_continue_is_refused_with_its_reason' crates/roko-serve/src && cargo test -p roko-cli --lib resume_settles_a_dead_attempts_budget_hold && cargo test -p roko-serve --lib a_resume_that_cannot_continue_is_refused_with_its_reason"
 
-[[verify]]
-command = "test -f tmp/hermes-roko-v7/roko-recovery/harness/check.py && ROKO_BIN=target/debug/roko python3 tmp/hermes-roko-v7/roko-recovery/harness/matrix.py --out tmp/hermes-roko-v7/roko-recovery/runs/verify-p1 --scenarios a-stream,a-stream-t2,b-tool,c-handoff,d-after-commit,c-verify --variants cli-resume,serve-mcp-resume && python3 tmp/hermes-roko-v7/roko-recovery/harness/check.py tmp/hermes-roko-v7/roko-recovery/runs/verify-p1 --only E1,E2,E3,E5"
 +++
 
 ## Problem
@@ -112,13 +110,15 @@ uncommitted Activity is set aside.
 ## Plan
 
 1. **Resolve a dead run's hold on resume.** The resume holds the runner lock, so the earlier process is gone.
+   - Make the holds durable (the approved design; it replaced reading `call_cost` rows, which a kill loses from the
+     run's event index): with each call it admits and each it records, the plan budget commits its holds to
+     `costs.json` and the manifest's `CommittedGeneration.holds`. Each hold records its attempt, what its finished
+     calls cost, and the call in flight at its estimate (the attempt's last call, else the plan's costliest).
    - In the resume path, a committed `reserved_micro_usd` > 0 no longer fails. Instead:
-     - read the dead attempts' `call_cost` rows from the run's event index (`.roko/events-by-run/<sha256(run)>.jsonl`;
-       the attempts come from `interrupted_attempts`) and add their sum to `spent`;
-     - estimate the call in flight at the attempt's costliest call so far, the estimate the attempt floor already
-       uses, and add it as `estimated`;
+     - add each dead hold's spend and its call in flight to `spent`, as billed and estimated;
      - release the rest of the hold;
      - persist the ledger, then resume as at kill point c.
+     - A ledger from before holds were kept has its reservation released, its dead spend unknown, with a warning.
    - Settle each dead attempt in the records:
      - an `abandoned` verdict row in `attempts.jsonl` with that cost, and `failure_class`/`blame` saying the process
        died;
@@ -129,12 +129,14 @@ uncommitted Activity is set aside.
    - When `resume` is set and the checkpoint's preview action is not `Resume`, `start_plan_run_with` answers 409 with
      the reason, unless `fresh: true`. The same goes for the MCP `plan_run` tool, `POST …/execute {"resume": true}`
      and `POST …/resume`.
-   - `resumes` carries the real `passed_tasks` and `tasks_left`.
+   - `resumes` carries the real `passed_tasks` and `tasks_left`, with `continues`, `reason` and `spent_usd`; the MCP
+     answer adds `left_usd`, and the run summary `carried_usd`.
    - `resume_plan` answers `resumed: true` only when it continued the run.
 3. **Interim, as its own small commit first:** the reservation error and `diagnose` name the commands that work today,
    `roko run plans/<p> --fresh` (it redoes passed tasks) and `roko plan run plans/<p> --resume-plan --force-resume`.
-4. **Commit the kill matrix as a regression test.** Move it from `tmp/` to `tools/crash_matrix/` (or a roko-cli
-   integration test), and point the second `[[verify]]` there.
+4. **Commit the kill matrix as a regression test**, as a follow-up item (p3): move it from `tmp/` to
+   `tools/crash_matrix/`, with a fast subset CI could run. Until then the harness check is evidence, not a
+   `[[verify]]`, since `tmp/` is local.
 
 What a cap on a resume means (the lead's question): the whole run, dead and resumed together.
 - The person's words in the live case were "keep its $1 cap for the whole run".
@@ -150,8 +152,8 @@ What a cap on a resume means (the lead's question): the whole run, dead and resu
 - A serve or REST resume that can't continue answers 409 with the reason.
 - Test `resume_settles_a_dead_attempts_budget_hold` (roko-cli) and test
   `a_resume_that_cannot_continue_is_refused_with_its_reason` (roko-serve) pass.
-- `harness/check.py --only E1,E2,E3,E5` passes at every kill point, on both paths, with the fixed binary
-  (`ROKO_BIN=target/debug/roko`).
+- Evidence, not a `[[verify]]`: `harness/check.py --only E1,E2,E3,E5` passes at every kill point, on both paths,
+  with the fixed binary (`ROKO_BIN=target/debug/roko`).
 
 ## Notes
 

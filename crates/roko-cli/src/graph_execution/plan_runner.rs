@@ -1306,6 +1306,21 @@ async fn run_graph_plan_body(
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
     super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
+    // The rung probes run before the spec gate, whose red-on-base pre-check
+    // can build and run every task's steps on the base for minutes: a run
+    // whose ladder can't serve any of its tasks stops here, in the probes'
+    // own words (gap-c96097).
+    if let Some(stop) = unrunnable_ladder(
+        &roko_config,
+        workdir,
+        &plans,
+        no_budget,
+        cli_model_override.as_deref(),
+    )
+    .await
+    {
+        anyhow::bail!(stop);
+    }
     // 3231: the plan-load spec gate, which every run passes (plan run,
     // serve, ACP, roko run): score each task, prove its shell checks red on
     // the base when `[spec_quality] red_on_base` is on, and refuse the plans
@@ -4727,6 +4742,56 @@ impl PlanCheckResult {
             delivery_id: None,
         }
     }
+}
+
+/// Why no task of `plans` can start (gap-c96097): every rung of the routing
+/// ladder failed its tool-use probe, each named here with the probe's own
+/// words, and the ladder routes every task, none pinned to a model by
+/// `--model` (`cli_model_override`), a `model_hint` or a `preferred_model`.
+/// The probes are plan start's ([`crate::dispatch::rung_probe::probe_ladder`],
+/// under its conditions), whose verdicts stand for a day, so the probe at plan
+/// start reads them again. `None` when the probes are off, a rung can run, or
+/// a task can start without the ladder.
+async fn unrunnable_ladder(
+    config: &roko_core::config::schema::RokoConfig,
+    workdir: &Path,
+    plans: &[crate::runner::plan_loader::Plan],
+    no_budget: bool,
+    cli_model_override: Option<&str>,
+) -> Option<String> {
+    let probes = config.routing.ladder.probe
+        && !no_budget
+        && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    if !probes || cli_model_override.is_some() {
+        return None;
+    }
+    let ladder = crate::dispatch::RoutingLadder::from_config(config)?;
+    let routes_every_task = plans.iter().flat_map(|plan| &plan.tasks.tasks).all(|task| {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        task.model_hint.is_none()
+            && task.hints.preferred_model.is_none()
+            && ladder
+                .start(role, task.tier_class(), task.hints.rung.as_deref())
+                .is_some()
+    });
+    if !routes_every_task {
+        return None;
+    }
+    let failed = crate::dispatch::rung_probe::probe_ladder(config, &ladder, workdir).await;
+    let models = ladder.rung_models();
+    if !models.iter().all(|model| failed.contains_key(model)) {
+        return None;
+    }
+    let rungs = models
+        .iter()
+        .map(|model| format!("{model}: {}", failed[model]))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "no rung of the routing ladder can run, so no task of this run can start: {rungs}. \
+         The run stops before any check runs: fix the providers, or pin a model with --model, \
+         and run again"
+    ))
 }
 
 /// What the plan-load gate's red-on-base check runs for `plans` (gap-6a319c):
@@ -10584,6 +10649,114 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 );
             }
         }
+    }
+
+    /// gap-c96097: the rung probes run before the red-on-base pre-check.
+    /// Every rung of the ladder failed its probe within the day, as OpenAI
+    /// refused phase 4's in run 16fc88ae, and the ladder routes the run's one
+    /// task. The run stops in the probes' own words before the pre-check runs
+    /// the task's step on the base, which would leave a mark. 16fc88ae
+    /// pre-checked for 134 s, then died in 7 s on the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_rung_probes_run_before_the_red_on_base_pre_check() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let marks = tempfile::tempdir().expect("a directory for the mark");
+        let mark = marks.path().join("ran-on-base");
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks)
+            .expect("tasks.toml")
+            .replace(
+                "command = \"test -f alpha.txt\"",
+                &format!(
+                    "command = {:?}",
+                    format!("touch '{}'; test -f alpha.txt", mark.display())
+                ),
+            );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        std::fs::write(
+            repo.join("roko.toml"),
+            "[agent]\ndefault_model = \"mid-model\"\n\n\
+             [providers.rungs_api]\nkind = \"openai_compat\"\nbase_url = \"http://127.0.0.1:9/v1\"\n\
+             api_key_env = \"PATH\"\n\n\
+             [models.cheap-model]\nprovider = \"rungs_api\"\nslug = \"cheap-1\"\n\n\
+             [models.mid-model]\nprovider = \"rungs_api\"\nslug = \"mid-1\"\n\n\
+             [models.strong-model]\nprovider = \"rungs_api\"\nslug = \"strong-1\"\n\n\
+             [routing.ladder]\nrungs = [\n  { name = \"cheap\", model = \"cheap-model\" },\n  \
+             { name = \"mid\", model = \"mid-model\" },\n  { name = \"strong\", model = \"strong-model\" },\n]\n\n\
+             [spec_quality]\nred_on_base = true\n\n[audit]\nenabled = false\n",
+        )
+        .expect("roko.toml");
+        git_in(
+            repo,
+            &[
+                "commit",
+                "-qam",
+                "a ladder whose rungs the provider refuses",
+            ],
+        );
+        let refused = "request_refused: rungs_api refused the request (HTTP 400): Function tools \
+                       with reasoning_effort are not supported";
+        let now = chrono::Utc::now().timestamp_millis();
+        let probes = crate::dispatch::rung_probe::RungProbes {
+            models: ["cheap-1", "mid-1", "strong-1"]
+                .into_iter()
+                .map(|model| {
+                    let probe = crate::dispatch::rung_probe::RungProbe {
+                        passed: false,
+                        reason: refused.to_string(),
+                        probed_at_ms: now,
+                    };
+                    (model.to_string(), probe)
+                })
+                .collect(),
+        };
+        let path = crate::dispatch::rung_probe::RungProbes::path(repo);
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+        let params = GraphPlanRunParams {
+            worktree_per_task: false,
+            no_budget: false,
+            ..worktree_run_params(repo)
+        };
+
+        let error = run_graph_plan_in_run(params, Some("run-refused".into()))
+            .await
+            .expect_err("no task can start");
+
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("no rung of the routing ladder can run"),
+            "{error}"
+        );
+        assert!(error.contains(&format!("mid-1: {refused}")), "{error}");
+        assert!(!mark.exists(), "the pre-check ran a step on the base");
+
+        // A task that can start without the ladder lets the run go on: one
+        // pinned to a model, or every task under `--model`; and a run that
+        // probes nothing stops nothing.
+        let config = roko_core::config::loader::load_config_validated(repo)
+            .expect("the config")
+            .into_config();
+        let mut plans = crate::runner::plan_loader::load_plans(&repo.join("plans")).expect("plans");
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, false, None)
+                .await
+                .is_some()
+        );
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, true, None)
+                .await
+                .is_none()
+        );
+        let pinned = unrunnable_ladder(&config, repo, &plans, false, Some("mid-model"));
+        assert!(pinned.await.is_none());
+        plans[0].tasks.tasks[0].model_hint = Some("mid-model".to_string());
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, false, None)
+                .await
+                .is_none()
+        );
     }
 
     /// A scripted provider like [`WRITES_NAMED_FILE_AGENT`] that, when its

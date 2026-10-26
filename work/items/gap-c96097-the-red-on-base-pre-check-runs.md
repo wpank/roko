@@ -72,6 +72,29 @@ nearly every roko change, which in a dogfood round is every run. A doomed run sh
 3. Optional and harder: key on the trees of the paths the steps read, not the base commit, so config-only commits
    hit. Leave it out if it can't be made safe.
 
+## Design
+
+roko-exact, 2026-10-26, with the lead's call on the key.
+
+1. **Probe first.** Before the plan-load spec gate, whose red-on-base pre-check builds and runs the tasks' steps on
+   the base, `run_graph_plan_body` probes the routing ladder with plan start's own probes
+   (`rung_probe::probe_ladder`, under the same conditions: `[routing.ladder] probe`, no `--no-budget`, not FAST).
+   Their verdicts stand for 24 h, so the probe at plan start reads them again and probes nothing twice.
+   - When every rung's model failed its probe and the ladder routes every task of the run, the run stops there,
+     in the probes' own words: "no rung of the routing ladder can run, so no task of this run can start: mid-1:
+     request_refused: …".
+   - A task pinned to a model (`--model`, `model_hint`, `preferred_model`), or one the ladder has no start rung
+     for, can still run, so then the run goes on. gap-20301d (roko-ladder) refuses the ladder's own tasks at
+     dispatch.
+   - The probe at plan start is unchanged; gap-20301d edits it.
+2. **The cache key.** `CACHE_VERSION` becomes `red-on-base/2`: the entry format and what the check does with a
+   step. It is bumped by hand when how the check runs a step or reads its result changes. roko's build leaves the
+   key, so a new build reuses what an earlier one decided.
+   - The base enters as its tree (`<sha>^{tree}`), not the commit, so a commit that changes no file still hits.
+   - The rest stays: the steps (command, timeout, expect), the cargo mode, the step environment, the plan
+     directory's other files, the 12 h time-to-live and `--fresh`.
+3. **Left out:** keying on the trees of the paths the steps read (Plan point 3). A config-only commit still misses.
+
 ## Done when
 
 - A run whose every start rung is refused stops before the pre-check runs a step. Test:

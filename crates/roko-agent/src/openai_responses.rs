@@ -427,9 +427,10 @@ impl ReasoningLedger {
 
 /// What one Responses turn's SSE lines become: text, tool calls and usage as
 /// the tool loop's stream events, a failure as an [`SseError`], and an empty
-/// reasoning delta while the model reasons, so the stall watchdog sees the
-/// call alive (gap-1ba0ac). The completed response's items go to the
-/// ledger before its `Done` is sent, so the next request can replay them.
+/// reasoning delta while the model reasons or OpenAI sends a keepalive, so
+/// the stall watchdog sees the call alive (gap-1ba0ac, gap-a94400). The
+/// completed response's items go to the ledger before its `Done` is sent,
+/// so the next request can replay them.
 pub(crate) struct ResponsesTurn {
     ledger: Arc<ReasoningLedger>,
     /// Each function call's id and name, by its output item's id.
@@ -482,7 +483,9 @@ impl ResponsesTurn {
                 .to_string()
         };
         match json.get("type").and_then(Value::as_str).unwrap_or_default() {
-            "response.in_progress" => {
+            // OpenAI's keepalives, sent while the model works and streams
+            // nothing else, say the call is alive too (gap-a94400).
+            "response.in_progress" | "keepalive" => {
                 vec![Ok(
                     self.event(StreamEventKind::ReasoningDelta(String::new()))
                 )]

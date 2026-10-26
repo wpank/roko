@@ -2,9 +2,10 @@
 //! plan means a file it has (bug-7c6f1b). Round v7's phase-2.1 plan listed
 //! `core/src/envelope.h` for `core/include/undertow/envelope.h`, in `files`
 //! and in the task's own text, while the task's `read_files` named the real
-//! header, under a spec that says "No new files". Generation points such an
-//! entry at the file, and when the source says the work adds no file, sends
-//! the planner back each entry the workspace still lacks.
+//! header, under a spec that says "No new files". When the source says the
+//! work adds no file, generation points such an entry at the file and sends
+//! the planner back each entry the workspace still lacks. Without that
+//! sentence a missing entry may be a file the task creates (bug-ce1e4b).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -29,18 +30,25 @@ pub(super) fn says_no_new_files(source: &str) -> bool {
     NO_NEW.is_match(source)
 }
 
-/// Point each `files` entry the workspace lacks, and that no other task
-/// lists, at the existing file of the same name that its task reads (its
-/// `read_files`). When `no_new_files` (the source adds no file), an entry
-/// whose task reads no such file takes the one file of that name the
-/// workspace has. The task's own text follows: its title, description,
-/// acceptance, goal, non-goals, assumptions and open questions. Returns one
-/// line per entry changed.
+/// When `no_new_files` (the source adds no file), point each `files` entry
+/// the workspace lacks, that no other task lists and that no text of
+/// `sources` names, at the existing file of the same name that its task
+/// reads (its `read_files`), else at the one file of that name the workspace
+/// has. The task's own text follows: its title, description, acceptance,
+/// goal, non-goals, assumptions and open questions. Without that sentence an
+/// entry the workspace lacks may be a file the task creates, and a path the
+/// source names is one it means: round v7's phase-5 spec asks for a new
+/// `tools/render/CMakeLists.txt`, which became the top-level `CMakeLists.txt`
+/// its task reads (bug-ce1e4b). Returns one line per entry changed.
 pub(super) fn repair_file_paths(
     plan: &mut TasksFile,
     workdir: &Path,
     no_new_files: bool,
+    sources: &[&str],
 ) -> Vec<String> {
+    if !no_new_files {
+        return Vec::new();
+    }
     let mut by_name: Option<HashMap<String, Vec<String>>> = None;
     let mut repaired = Vec::new();
     for index in 0..plan.tasks.len() {
@@ -50,6 +58,7 @@ pub(super) fn repair_file_paths(
             if !is_plain_path(path)
                 || workdir.join(path).exists()
                 || listed_elsewhere(plan, index, path)
+                || sources.iter().any(|source| names_path(source, path))
             {
                 continue;
             }
@@ -68,8 +77,11 @@ pub(super) fn repair_file_paths(
                 })
                 .collect();
             let found = match read.as_slice() {
-                [read] => Some(((*read).to_string(), "the file of that name it reads")),
-                [] if no_new_files => {
+                [read] => Some((
+                    (*read).to_string(),
+                    "the file of that name it reads, and the source adds no file",
+                )),
+                [] => {
                     let by_name = by_name.get_or_insert_with(|| workspace_files(workdir));
                     match by_name.get(name).map(Vec::as_slice) {
                         Some([only]) if only != path => Some((
@@ -195,26 +207,43 @@ fn replace_in_text(task: &mut TaskDef, from: &str, to: &str) {
     }
 }
 
-/// `text` with each mention of the path `from` that is a path of its own,
-/// not a part of a longer path or name, replaced by `to`.
+/// `text` with each mention of the path `from` that is a path of its own
+/// ([`own_mention`]) replaced by `to`.
 fn replace_path(text: &str, from: &str, to: &str) -> String {
-    let part_of = |c: char| c.is_alphanumeric() || matches!(c, '/' | '_' | '-');
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(from) {
-        let before = rest[..at].chars().next_back();
-        let after = &rest[at + from.len()..];
-        // A `.` after it ends a sentence unless more of a name follows.
-        let continues = after.chars().next().is_some_and(|c| {
-            part_of(c) || (c == '.' && after[1..].starts_with(|c: char| part_of(c)))
+    let mut start = 0;
+    while let Some(found) = text[start..].find(from) {
+        let at = start + found;
+        out.push_str(&text[start..at]);
+        out.push_str(if own_mention(text, at, from.len()) {
+            to
+        } else {
+            from
         });
-        let own = !before.is_some_and(|c| part_of(c) || c == '.') && !continues;
-        out.push_str(&rest[..at]);
-        out.push_str(if own { to } else { from });
-        rest = after;
+        start = at + from.len();
     }
-    out.push_str(rest);
+    out.push_str(&text[start..]);
     out
+}
+
+/// Whether `text` names `path` as a path of its own ([`own_mention`]).
+fn names_path(text: &str, path: &str) -> bool {
+    text.match_indices(path)
+        .any(|(at, _)| own_mention(text, at, path.len()))
+}
+
+/// Whether the mention at `at..at + len` of `text` is a path of its own, not
+/// a part of a longer path or name.
+fn own_mention(text: &str, at: usize, len: usize) -> bool {
+    let part_of = |c: char| c.is_alphanumeric() || matches!(c, '/' | '_' | '-');
+    let before = text[..at].chars().next_back();
+    let after = &text[at + len..];
+    // A `.` after it ends a sentence unless more of a name follows.
+    let continues = after
+        .chars()
+        .next()
+        .is_some_and(|c| part_of(c) || (c == '.' && after[1..].starts_with(|c: char| part_of(c))));
+    !before.is_some_and(|c| part_of(c) || c == '.') && !continues
 }
 
 #[cfg(test)]
@@ -265,12 +294,13 @@ mod tests {
     }
 
     /// bug-7c6f1b: round v7's phase-2.1 plan listed `core/src/envelope.h`
-    /// where its own `read_files` named `core/include/undertow/envelope.h`.
-    /// The entry takes the path it reads, in `files` and in the task's text
-    /// (a longer name stays); without that read, a missing entry may be a
-    /// file the task creates and stays, unless the source adds no file and
-    /// the workspace has one file of that name. An entry another task lists
-    /// stays, and so do two reads of that name.
+    /// where its own `read_files` named `core/include/undertow/envelope.h`,
+    /// under a spec that says "No new files". The entry takes the path it
+    /// reads, in `files` and in the task's text (a longer name stays);
+    /// without that read, the workspace's one file of that name. Without the
+    /// sentence the entry may be a file the task creates and stays
+    /// (bug-ce1e4b). An entry another task lists stays, and so do two reads
+    /// of that name.
     #[test]
     fn a_missing_files_path_takes_the_read_files_path_of_the_same_name() {
         let temp = workspace();
@@ -279,13 +309,14 @@ mod tests {
             &["core/src/envelope.h", "core/src/envelope.cpp"],
             &["core/include/undertow/envelope.h", "core/src/envelope.cpp"],
         );
-        let lines = repair_file_paths(&mut repaired, root, false);
+        let lines = repair_file_paths(&mut repaired, root, true, &[]);
         assert_eq!(
             lines,
             [
                 "T1: `core/src/envelope.h` became `core/include/undertow/envelope.h` in its files \
                  and its text: `core/src/envelope.h` does not exist, and \
-                 `core/include/undertow/envelope.h` is the file of that name it reads"
+                 `core/include/undertow/envelope.h` is the file of that name it reads, and the \
+                 source adds no file"
             ]
         );
         let task = &repaired.tasks[0];
@@ -306,13 +337,20 @@ mod tests {
         );
         assert_eq!(new_files(&repaired, root), Vec::<String>::new());
 
-        // Without the read, the entry may be new: it stays unless the source
-        // adds no file, and then the workspace's one file of that name.
+        // Without "No new files" the entry may be new, read or not: it stays.
+        let mut new = plan(
+            &["core/src/envelope.h"],
+            &["core/include/undertow/envelope.h"],
+        );
+        assert!(repair_file_paths(&mut new, root, false, &[]).is_empty());
+        assert_eq!(new.tasks[0].files, ["core/src/envelope.h"]);
         let mut kept = plan(&["core/src/envelope.h"], &[]);
-        assert!(repair_file_paths(&mut kept, root, false).is_empty());
+        assert!(repair_file_paths(&mut kept, root, false, &[]).is_empty());
         assert_eq!(kept.tasks[0].files, ["core/src/envelope.h"]);
+        // Under it, an entry no task reads takes the workspace's one file of
+        // that name.
         let mut found = plan(&["core/src/envelope.h"], &[]);
-        assert_eq!(repair_file_paths(&mut found, root, true).len(), 1);
+        assert_eq!(repair_file_paths(&mut found, root, true, &[]).len(), 1);
         assert_eq!(found.tasks[0].files, ["core/include/undertow/envelope.h"]);
 
         // A file nobody has is new: under "no new files", the planner hears.
@@ -332,7 +370,7 @@ mod tests {
             &["core/src/envelope.h"],
             &["core/include/undertow/envelope.h", "legacy/envelope.h"],
         );
-        assert!(repair_file_paths(&mut two, root, true).is_empty());
+        assert!(repair_file_paths(&mut two, root, true, &[]).is_empty());
 
         // An entry another task lists may be one the plan creates.
         let mut shared = plan(
@@ -342,7 +380,69 @@ mod tests {
         let mut other = shared.tasks[0].clone();
         other.id = "T2".to_string();
         shared.tasks.push(other);
-        assert!(repair_file_paths(&mut shared, root, false).is_empty());
+        assert!(repair_file_paths(&mut shared, root, true, &[]).is_empty());
+    }
+
+    /// bug-ce1e4b: round v7's phase-5 spec asks task 3 for a new
+    /// `tools/render/CMakeLists.txt` beside the top-level `CMakeLists.txt` it
+    /// edits and reads, and the repair pointed the new file at the top-level
+    /// one. A spec without "No new files" may add files, so the entry stays;
+    /// with the sentence, a path the source names still stays. A longer path
+    /// or name that holds it is no mention of it.
+    #[test]
+    fn a_path_the_source_names_or_may_create_is_kept() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        std::fs::write(root.join("CMakeLists.txt"), "add_subdirectory(core)\n").expect("a list");
+        let renderer = || {
+            TasksFile::parse_str(
+                "[meta]\nplan = \"p5\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T3\"\ntitle = \"The offline renderer\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"integrative\"\n\
+                 files = [\"tools/render/main.cpp\", \"tools/render/CMakeLists.txt\", \
+                 \"CMakeLists.txt\"]\n\
+                 description = \"Add the target in tools/render/CMakeLists.txt.\"\n\n\
+                 [[task.context.read_files]]\npath = \"CMakeLists.txt\"\nwhy = \"the list\"\n",
+            )
+            .expect("a plan")
+        };
+        let files = [
+            "tools/render/main.cpp",
+            "tools/render/CMakeLists.txt",
+            "CMakeLists.txt",
+        ];
+        let spec = "3. **The offline renderer** (`tools/render/main.cpp`, \
+                    `tools/render/CMakeLists.txt`, the top-level `CMakeLists.txt`): P5.05.";
+        assert!(!says_no_new_files(spec));
+        let mut kept = renderer();
+        assert!(repair_file_paths(&mut kept, root, false, &[spec]).is_empty());
+        assert_eq!(kept.tasks[0].files, files);
+        assert_eq!(
+            kept.tasks[0].description.as_deref(),
+            Some("Add the target in tools/render/CMakeLists.txt.")
+        );
+        let mut named = renderer();
+        assert!(repair_file_paths(&mut named, root, true, &[spec]).is_empty());
+        assert_eq!(named.tasks[0].files, files);
+        // Under "No new files", a path no source names takes the file read.
+        let mut unnamed = renderer();
+        let fix = ["Fix the build. No new files."];
+        assert_eq!(repair_file_paths(&mut unnamed, root, true, &fix).len(), 1);
+        assert_eq!(
+            unnamed.tasks[0].files,
+            ["tools/render/main.cpp", "CMakeLists.txt"]
+        );
+
+        let path = "tools/render/CMakeLists.txt";
+        assert!(names_path(spec, path));
+        assert!(names_path("Write tools/render/CMakeLists.txt.", path));
+        for text in [
+            "Copy `tools/render/CMakeLists.txt.in`.",
+            "See `ext/tools/render/CMakeLists.txt`.",
+            "Write `tools/render/CMakeLists.txt_old`.",
+        ] {
+            assert!(!names_path(text, path), "{text}");
+        }
     }
 
     /// The phrases that say a source's work adds no file.

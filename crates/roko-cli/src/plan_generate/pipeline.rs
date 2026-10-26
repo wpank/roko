@@ -1881,12 +1881,14 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // gap-dc5d7c: a step that covers a source check by its id names
                 // a criterion of its task that states the check.
                 let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
-                // bug-7c6f1b: a `files` path the workspace lacks names the file
-                // of that name its task reads.
+                // bug-7c6f1b: under "No new files", a `files` path the
+                // workspace lacks names the file of that name its task reads;
+                // bug-ce1e4b: never one the source names.
                 repairs.extend(file_paths::repair_file_paths(
                     &mut parsed,
                     workdir_ref,
                     no_new_files,
+                    &size_sources,
                 ));
                 // bug-60ad88: every task reads the documents the plan is
                 // written from.
@@ -4717,6 +4719,105 @@ mod tests {
             .expect("the spec's checks are reported");
         assert_eq!((checks.kept, checks.total), (24, 24), "{checks:?}");
         assert!(!checks.regenerated);
+    }
+
+    /// bug-ce1e4b: round v7's phase-5 spec (Undertow `spec/p5-f15`) gives
+    /// task 3 a new `tools/render/CMakeLists.txt` and the top-level
+    /// `CMakeLists.txt`, which it reads. Replayed with a draft that follows
+    /// the spec's notes, generation rewrote the new file to the top-level one,
+    /// in T3's files and its text. Now the draft is written after one call
+    /// with its files as planned, no file-path repair, and all 13 checks kept.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_new_file_the_source_names_keeps_its_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p5_ship");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let plan = std::fs::read_to_string(fixture.join("tasks.toml")).expect("the plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        cmake_workspace(workdir);
+        // The files the draft's tasks read, long enough for their ranges, and
+        // the spec and its scripts.
+        let code = "// code\n".repeat(240);
+        for file in [
+            "core/include/undertow/params.h",
+            "core/include/undertow/sequencer.h",
+            "core/include/undertow/engine.h",
+            "core/include/undertow/filter.h",
+            "core/src/filter.cpp",
+            "core/src/sequencer.cpp",
+            "plugin/PluginProcessor.h",
+            "plugin/PluginProcessor.cpp",
+            "plugin/CMakeLists.txt",
+        ] {
+            let path = workdir.join(file);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, &code).expect("a file");
+        }
+        std::fs::create_dir_all(workdir.join("docs/specs")).expect("docs");
+        std::fs::write(workdir.join("docs/specs/phase-5-ship.md"), &spec).expect("the spec");
+        for script in ["tools/spec.sh", "tools/check.sh", "tools/pluginval.sh"] {
+            let path = workdir.join(script);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("a script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("permissions");
+        }
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let source = PlanSource::Text {
+            text: &spec,
+            kind: "prompt",
+        };
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "phase-5-ship", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "written after one call");
+        assert!(
+            !outcome
+                .repairs
+                .iter()
+                .any(|line| line.contains("in its files and its text")),
+            "{:?}",
+            outcome.repairs
+        );
+        let written =
+            TasksFile::parse(&workdir.join("plans/phase-5-ship/tasks.toml")).expect("the plan");
+        let renderer = written
+            .tasks
+            .iter()
+            .find(|task| task.id == "T3")
+            .expect("task 3");
+        assert_eq!(
+            renderer.files,
+            [
+                "tools/render/main.cpp",
+                "tools/render/CMakeLists.txt",
+                "CMakeLists.txt"
+            ]
+        );
+        assert!(
+            renderer
+                .description
+                .as_deref()
+                .is_some_and(|text| text.contains("(`tools/render/CMakeLists.txt`,")),
+            "{:?}",
+            renderer.description
+        );
+        let checks = outcome
+            .source_checks
+            .expect("the spec's checks are reported");
+        assert_eq!((checks.kept, checks.total), (13, 13), "{checks:?}");
     }
 
     /// bug-8723fc: in a CMake workspace (Undertow's phase 2), the plan writer

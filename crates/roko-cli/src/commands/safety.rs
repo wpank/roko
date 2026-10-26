@@ -12,17 +12,33 @@
 //! `.roko/immune/agent-control-releases.jsonl` or
 //! `.roko/immune/tool-control-releases.jsonl` (gap-a2787f).
 //!
+//! Only a person releases a control, after reviewing it (find-d05b5e). The
+//! default bash policy refuses `roko safety release` in an agent's shell
+//! before it runs (`roko_agent::safety::bash`). The command itself refuses
+//! to run in a process roko started for an agent or a check, which it tells
+//! by the variables roko sets on them ([`roko_started_markers`]). And its
+//! audit line says how the release came in: through this command, where
+//! the name in `by` came from (`--by`, `$USER`), and whether its standard
+//! input was a terminal ([`roko_agent::ReleaseOrigin`]).
+//!
 //! The commands live in the library, as `diagnose` does, so its tests run
 //! them; the `roko` binary re-exports the module.
 
-use std::io::Write;
+use std::ffi::OsString;
+use std::io::{IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use roko_agent::{ToolControl, ToolControlState};
+use roko_agent::claude_cli_agent::ISOLATION_ENV;
+use roko_agent::{PrincipalSource, ReleaseChannel, ReleaseOrigin, ToolControl, ToolControlState};
+use roko_graph::cells::shell_exec::CELL_INPUT_ENV;
 
+use crate::effects_apply::EFFECT_FILE_ENV;
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS};
+use crate::runner::agent_stream::PROVIDER_CONFIG_DIR_PREFIX;
+use crate::runner::extension_loader::TOOL_ARGS_ENV;
+use crate::runner::gate_dispatch::GATE_RUNG_ENV;
 
 /// Immune isolation controls.
 #[derive(Debug, Subcommand)]
@@ -35,7 +51,9 @@ pub enum SafetyCmd {
         workdir: Option<PathBuf>,
     },
     /// Release one agent's isolation control, or one tool's control (--tool
-    /// and --scope), and record who did it and why.
+    /// and --scope), and record who did it, how and why. Only a person
+    /// releases a control: the command refuses to run in a process roko
+    /// started for an agent or a check.
     Release {
         /// Agent id the control denies, as `roko safety controls` lists it.
         #[arg(required_unless_present = "tool", conflicts_with = "tool")]
@@ -50,7 +68,8 @@ pub enum SafetyCmd {
         /// Why the control is released (recorded in the audit file).
         #[arg(long)]
         reason: String,
-        /// Who releases it (default: $USER, else "operator").
+        /// Who releases it (default: $USER, else "operator"; the audit line
+        /// records which).
         #[arg(long)]
         by: Option<String>,
         /// Workspace root (default: cwd / --repo).
@@ -75,16 +94,55 @@ pub fn cmd_safety(
         cmd,
         json,
         default_workdir,
+        &Caller::current(),
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
     )
 }
 
-/// [`cmd_safety`], printing to `out` and `err`.
+/// The process a `roko safety` command runs in, as much of it as a release
+/// looks at: its environment, and whether its standard input is a terminal.
+#[derive(Clone, Debug, Default)]
+struct Caller {
+    env: Vec<(String, OsString)>,
+    terminal: bool,
+}
+
+impl Caller {
+    /// This process.
+    fn current() -> Self {
+        Self {
+            env: roko_core::child_env::process_env(),
+            terminal: std::io::stdin().is_terminal(),
+        }
+    }
+
+    /// The releasing principal: `--by` when given, else `$USER`, else
+    /// `operator`, and which of them it is.
+    fn principal(&self, by: Option<String>) -> (String, PrincipalSource) {
+        if let Some(by) = by {
+            return (by, PrincipalSource::Flag);
+        }
+        let user = self
+            .env
+            .iter()
+            .rev()
+            .find(|(name, _)| name == "USER")
+            .and_then(|(_, value)| value.to_str())
+            .filter(|user| !user.trim().is_empty());
+        match user {
+            Some(user) => (user.to_string(), PrincipalSource::UserEnv),
+            None => ("operator".to_string(), PrincipalSource::Fallback),
+        }
+    }
+}
+
+/// [`cmd_safety`] for `caller`, printing to `out` and `err`.
 fn run(
     cmd: SafetyCmd,
     json: bool,
     default_workdir: impl FnOnce() -> PathBuf,
+    caller: &Caller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<i32> {
@@ -100,11 +158,21 @@ fn run(
             by,
             workdir,
         } => {
+            // find-d05b5e: refuse before anything is read or written.
+            if let Some(marker) = roko_started_markers(&caller.env).into_iter().next() {
+                refuse_release(&marker, json, out, err)?;
+                return Ok(EXIT_FAILURE);
+            }
             let workdir = workdir.unwrap_or_else(default_workdir);
-            let by = by.unwrap_or_else(default_principal);
+            let (by, by_source) = caller.principal(by);
+            let via = ReleaseOrigin {
+                channel: ReleaseChannel::Cli,
+                by_source,
+                terminal: Some(caller.terminal),
+            };
             let released = match (tool, scope) {
                 (Some(tool), Some(scope)) => {
-                    release_tool(&workdir, &tool, &scope, &by, &reason, json, out)?
+                    release_tool(&workdir, &tool, &scope, &by, &reason, via, json, out)?
                 }
                 // clap requires an agent id when --tool is absent.
                 _ => release_agent(
@@ -112,6 +180,7 @@ fn run(
                     &agent_id.unwrap_or_default(),
                     &by,
                     &reason,
+                    via,
                     json,
                     out,
                 )?,
@@ -162,8 +231,8 @@ fn controls(workdir: &Path, json: bool, out: &mut impl Write) -> Result<i32> {
     }
     writeln!(
         out,
-        "release one after review: roko safety release <agent> --reason <why>, or roko safety \
-         release --tool <tool> --scope <scope> --reason <why>"
+        "a person releases one after review: roko safety release <agent> --reason <why>, or roko \
+         safety release --tool <tool> --scope <scope> --reason <why>"
     )?;
     Ok(EXIT_SUCCESS)
 }
@@ -176,10 +245,11 @@ fn release_tool(
     scope: &str,
     by: &str,
     reason: &str,
+    via: ReleaseOrigin,
     json: bool,
     out: &mut impl Write,
 ) -> Result<std::result::Result<(), String>> {
-    let released = roko_agent::release_tool_control(workdir, tool, scope, by, reason)
+    let released = roko_agent::release_tool_control(workdir, tool, scope, by, reason, via)
         .with_context(|| format!("release the control of tool {tool} ({scope})"))?;
     let audit_path = roko_agent::tool_control_releases_path(workdir);
     if json {
@@ -211,10 +281,11 @@ fn release_agent(
     agent_id: &str,
     by: &str,
     reason: &str,
+    via: ReleaseOrigin,
     json: bool,
     out: &mut impl Write,
 ) -> Result<std::result::Result<(), String>> {
-    let released = roko_agent::release_agent_control(workdir, agent_id, by, reason)
+    let released = roko_agent::release_agent_control(workdir, agent_id, by, reason, via)
         .with_context(|| format!("release the isolation control of {agent_id}"))?;
     let audit_path = roko_agent::agent_control_releases_path(workdir);
     if json {
@@ -262,12 +333,134 @@ fn time_label(at_ms: Option<i64>) -> String {
         .map_or_else(|| format!("{at_ms}ms"), |at| at.to_rfc3339())
 }
 
-/// The releasing principal when `--by` is absent: `$USER`, else `operator`.
-fn default_principal() -> String {
-    std::env::var("USER")
-        .ok()
-        .filter(|user| !user.trim().is_empty())
-        .unwrap_or_else(|| "operator".to_string())
+/// A sign, in a process's environment, that roko started the process for
+/// an agent or a check ([`roko_started_markers`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RokoMarker {
+    /// The variables that make up the sign, as the environment names them.
+    pub variables: Vec<String>,
+    /// What roko sets them on.
+    pub set_on: &'static str,
+}
+
+/// Variables roko sets on one kind of process it starts, beside that kind.
+const ROKO_PROCESS_VARIABLES: [(&[&str], &str); 4] = [
+    (
+        &[TOOL_ARGS_ENV],
+        "the command of an extension tool an agent calls",
+    ),
+    (
+        &GATE_RUNG_ENV,
+        "a gate rung's commands and the tests they run",
+    ),
+    (&[EFFECT_FILE_ENV], "an applied effect's receipt rungs"),
+    (&[CELL_INPUT_ENV], "a Graph shell cell's command"),
+];
+
+/// The signs in `env` that roko started the process for an agent or a
+/// check, which `roko safety release` refuses to run under (find-d05b5e):
+/// no such process is a person. Each is a variable roko sets on those
+/// processes, and their children inherit:
+///
+/// - every pair of [`ISOLATION_ENV`] (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
+///   `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`), on the Claude Code
+///   agents roko runs (plan runs, `roko run`, `roko chat`), and so on each
+///   command their Bash tool runs; one of the two alone, as a person may set
+///   in their own shell, is no sign;
+/// - a variable naming a file in a `roko-cli-provider-*` directory, the
+///   provider config roko writes for one CLI agent's run (Gemini's
+///   `GEMINI_CLI_SYSTEM_SETTINGS_PATH`);
+/// - `ROKO_TOOL_ARGS`, on the command of an extension tool an agent calls;
+/// - `ROKO_GATE_PLAN_ID`, `ROKO_GATE_TASK_ID`, `ROKO_GATE_RUNG` and
+///   `ROKO_GATE_ATTEMPT_SENTINEL`, on a gate rung's commands and the tests
+///   they run, agent-written tests among them;
+/// - [`EFFECT_FILE_ENV`] (`ROKO_EFFECT_FILE`), on an applied effect's
+///   receipt rungs;
+/// - [`CELL_INPUT_ENV`] (`ROKO_CELL_INPUT`), on a Graph shell cell's
+///   command.
+///
+/// Roko's own `bash` and `run_tests` tools, and the Codex, Cursor, Hermes
+/// and OpenClaw agents, set none of them: in their shells the bash policy
+/// is what stops the release. An agent can unset a variable, so a sign is
+/// no boundary against an agent that hides: it keeps roko from offering
+/// the release to its agents and checks, and from recording one of theirs
+/// under a person's name.
+#[must_use]
+pub fn roko_started_markers(env: &[(String, OsString)]) -> Vec<RokoMarker> {
+    let value = |name: &str| {
+        env.iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+    };
+    let mut markers = Vec::new();
+    if ISOLATION_ENV
+        .iter()
+        .all(|(name, expected)| value(name).is_some_and(|found| found.to_str() == Some(*expected)))
+    {
+        markers.push(RokoMarker {
+            variables: ISOLATION_ENV
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect(),
+            set_on: "the Claude Code agents roko runs",
+        });
+    }
+    for (name, path) in env {
+        let in_provider_config_dir = Path::new(path).components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with(PROVIDER_CONFIG_DIR_PREFIX)
+        });
+        if in_provider_config_dir {
+            markers.push(RokoMarker {
+                variables: vec![name.clone()],
+                set_on: "a CLI agent whose provider config roko writes for its run",
+            });
+        }
+    }
+    for (names, set_on) in ROKO_PROCESS_VARIABLES {
+        let present: Vec<String> = names
+            .iter()
+            .filter(|name| value(name).is_some())
+            .map(|name| (*name).to_string())
+            .collect();
+        if !present.is_empty() {
+            markers.push(RokoMarker {
+                variables: present,
+                set_on,
+            });
+        }
+    }
+    markers
+}
+
+/// Say why `roko safety release` does not run here: `marker` says roko
+/// started this process for an agent or a check, and only a person
+/// releases a control.
+fn refuse_release(
+    marker: &RokoMarker,
+    json: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<()> {
+    let message = format!(
+        "refused: roko safety release does not run in a process roko started for an agent or a \
+         check, and this one has {} (set on {}). Only a person releases an immune control, after \
+         reviewing it: from their own terminal, or for an agent's control through roko serve \
+         (POST /api/safety/controls/<agent>/release, which needs config-edit rights). An agent \
+         leaves the control in force and says in its hand-off which one stopped it.",
+        marker.variables.join(" and "),
+        marker.set_on
+    );
+    if json {
+        let report = serde_json::json!({ "refused": message, "variables": marker.variables });
+        writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+    } else {
+        writeln!(err, "{message}")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -277,7 +470,7 @@ mod tests {
 
     use clap::Parser;
     use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
-    use roko_agent::{ReleasedToolControl, SafetyLayer, ToolPermissionPolicy};
+    use roko_agent::{ReleasedControl, ReleasedToolControl, SafetyLayer, ToolPermissionPolicy};
     use roko_core::tool::{
         ToolCall, ToolCategory, ToolContext, ToolDef, ToolError, ToolHandler, ToolPermission,
         ToolRegistry, ToolResult, ToolResultContent, VecToolRegistry,
@@ -292,8 +485,31 @@ mod tests {
         cmd: SafetyCmd,
     }
 
-    /// Run `roko safety <args>`: its exit code, stdout and stderr.
+    /// A caller whose environment holds `vars`, with a terminal or not.
+    fn caller(vars: &[(&str, &str)], terminal: bool) -> Caller {
+        Caller {
+            env: vars
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
+                .collect(),
+            terminal,
+        }
+    }
+
+    /// A person at their terminal, logged in as `will`.
+    fn person() -> Caller {
+        caller(&[("USER", "will")], true)
+    }
+
+    /// Run `roko safety <args>` as [`person`]: its exit code, stdout and
+    /// stderr.
     fn safety(args: &[&str], json: bool) -> (i32, String, String) {
+        safety_as(&person(), args, json)
+    }
+
+    /// Run `roko safety <args>` as `caller`: its exit code, stdout and
+    /// stderr.
+    fn safety_as(caller: &Caller, args: &[&str], json: bool) -> (i32, String, String) {
         let cmd = Safety::try_parse_from(std::iter::once("safety").chain(args.iter().copied()))
             .unwrap_or_else(|error| panic!("{args:?}: {error}"))
             .cmd;
@@ -302,6 +518,7 @@ mod tests {
             cmd,
             json,
             || panic!("the test passes --workdir"),
+            caller,
             &mut out,
             &mut err,
         )
@@ -436,6 +653,14 @@ mod tests {
         assert_eq!(lines[0].issued_at_ms, isolated.issued_at_ms);
         assert_eq!(lines[0].by, "reviewer");
         assert_eq!(lines[0].reason, "a false positive");
+        assert_eq!(
+            lines[0].via,
+            Some(ReleaseOrigin {
+                channel: ReleaseChannel::Cli,
+                by_source: PrincipalSource::Flag,
+                terminal: Some(true),
+            })
+        );
         let (_, listed_after, _) = safety(&["controls", "--workdir", workdir], false);
         assert_eq!(listed_after, "no isolation controls\n");
 
@@ -512,6 +737,274 @@ mod tests {
         assert!(
             released.contains("released isolation control"),
             "{released}"
+        );
+        assert!(
+            roko_agent::list_agent_controls(workspace.path())
+                .expect("controls")
+                .is_empty()
+        );
+    }
+
+    /// A `bash` handler that keeps each command it is handed instead of
+    /// running it.
+    struct RecordingBash {
+        ran: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolHandler for RecordingBash {
+        fn name(&self) -> &str {
+            "bash"
+        }
+
+        async fn execute(&self, call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+            let command = call.arguments["command"].as_str().unwrap_or_default();
+            self.ran.lock().expect("lock").push(command.to_string());
+            ToolResult::text("ran")
+        }
+    }
+
+    /// find-d05b5e: an agent's own shell does not lift an immune control. The
+    /// shell lists the controls, but a `bash` call that runs
+    /// `roko safety release`, however it is spelled, is refused by the
+    /// dispatcher's safety layer before the command runs, and says why; the
+    /// control stays in force. (Refusals count as failures, and the default
+    /// contract stops an agent after three in a row, so the listing goes
+    /// first.)
+    #[tokio::test]
+    async fn an_agents_bash_call_that_runs_the_release_is_refused() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workdir = workspace.path().to_str().expect("utf-8 path");
+        roko_agent::isolate_agent(workspace.path(), "live-a/cli", "operator_isolation")
+            .expect("seed an isolation control");
+        let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler: Arc<dyn ToolHandler> = Arc::new(RecordingBash {
+            ran: Arc::clone(&ran),
+        });
+        let resolver: Arc<dyn HandlerResolver> =
+            Arc::new(move |name: &str| (name == "bash").then(|| Arc::clone(&handler)));
+        let def = ToolDef::new(
+            "bash",
+            "Run a shell command",
+            ToolCategory::Exec,
+            ToolPermission::executes(),
+        );
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![def]));
+        let safety_layer = SafetyLayer::with_defaults()
+            .with_tool_permission_policy(ToolPermissionPolicy::DenyExplicit, Vec::new());
+        let dispatcher = ToolDispatcher::new(registry, resolver).with_safety(safety_layer);
+        let context = ToolContext::testing(workspace.path());
+        let bash = |id: &str, command: &str| {
+            ToolCall::new(id, "bash", serde_json::json!({ "command": command }))
+        };
+        let listed = format!("roko safety controls --workdir {workdir}");
+        let result = dispatcher.dispatch(bash("list", &listed), &context).await;
+        assert!(matches!(result, ToolResult::Ok { .. }), "{result:?}");
+
+        for command in [
+            format!("roko safety release live-a/cli --reason 'looks fine' --workdir {workdir}"),
+            format!("cd {workdir} && ../../target/debug/roko --json safety release live-a/cli"),
+            "cargo run -q -p roko-cli -- safety release --tool t --scope builtin:local".to_string(),
+            "bash -c \"$(printf x); roko safety release live-a/cli --reason ok\"".to_string(),
+        ] {
+            let refused = dispatcher
+                .dispatch(bash("release", &command), &context)
+                .await;
+            assert!(
+                matches!(&refused, ToolResult::Err(ToolError::CommandNotAllowed(why))
+                    if why.contains("`roko safety release`")
+                        && why.contains("only a person releases an immune control")),
+                "{command}: {refused:?}"
+            );
+        }
+        assert_eq!(
+            *ran.lock().expect("lock"),
+            vec![listed],
+            "only the listing ran"
+        );
+        assert_eq!(
+            roko_agent::list_agent_controls(workspace.path())
+                .expect("controls")
+                .len(),
+            1,
+            "the control stays in force"
+        );
+    }
+
+    /// find-d05b5e: `roko safety release` does not run in a process roko
+    /// started for an agent or a check. Under each variable roko sets on one
+    /// it refuses, names the variable and what a person does instead, and
+    /// reads and writes nothing, whatever `--by` says and with a terminal
+    /// attached. One of the Claude pair alone, as a person may set in their
+    /// own shell, does not stop them.
+    #[test]
+    fn release_refuses_in_an_agent_environment() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workdir = workspace.path().to_str().expect("utf-8 path");
+        roko_agent::isolate_agent(workspace.path(), "live-a/cli", "operator_isolation")
+            .expect("seed an isolation control");
+        let provider_config = std::env::temp_dir()
+            .join(format!("{PROVIDER_CONFIG_DIR_PREFIX}a1b2c3"))
+            .join("settings.json");
+        let provider_config = provider_config.to_str().expect("utf-8 path");
+        let cases: [(&[(&str, &str)], &str); 6] = [
+            (
+                ISOLATION_ENV,
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY and CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD \
+                 (set on the Claude Code agents roko runs)",
+            ),
+            (
+                &[("GEMINI_CLI_SYSTEM_SETTINGS_PATH", provider_config)],
+                "GEMINI_CLI_SYSTEM_SETTINGS_PATH (set on a CLI agent whose provider config roko \
+                 writes for its run)",
+            ),
+            (
+                &[("ROKO_TOOL_ARGS", "{}")],
+                "ROKO_TOOL_ARGS (set on the command of an extension tool an agent calls)",
+            ),
+            (
+                &[("ROKO_GATE_RUNG", "2"), ("ROKO_GATE_TASK_ID", "T1")],
+                "ROKO_GATE_TASK_ID and ROKO_GATE_RUNG (set on a gate rung's commands and the \
+                 tests they run)",
+            ),
+            (
+                &[("ROKO_EFFECT_FILE", "/tmp/effect.json")],
+                "ROKO_EFFECT_FILE (set on an applied effect's receipt rungs)",
+            ),
+            (
+                &[("ROKO_CELL_INPUT", "/tmp/input.json")],
+                "ROKO_CELL_INPUT (set on a Graph shell cell's command)",
+            ),
+        ];
+        let agent_release = [
+            "release",
+            "live-a/cli",
+            "--reason",
+            "fine",
+            "--by",
+            "will",
+            "--workdir",
+            workdir,
+        ];
+        let tool_release = [
+            "release",
+            "--tool",
+            "lookup",
+            "--scope",
+            "builtin:local",
+            "--reason",
+            "fine",
+            "--workdir",
+            workdir,
+        ];
+        for (marker, named) in cases {
+            let mut vars = vec![("USER", "will")];
+            vars.extend_from_slice(marker);
+            let agent = caller(&vars, true);
+            for args in [&agent_release[..], &tool_release[..]] {
+                let (code, out, err) = safety_as(&agent, args, false);
+                assert_eq!(code, EXIT_FAILURE, "{marker:?} {args:?}: {out}{err}");
+                assert!(out.is_empty(), "{out}");
+                assert!(
+                    err.starts_with(
+                        "refused: roko safety release does not run in a process roko started \
+                         for an agent or a check, and this one has "
+                    ) && err.contains(named)
+                        && err.contains("Only a person releases an immune control"),
+                    "{marker:?}: {err}"
+                );
+            }
+            let (code, out, _) = safety_as(&agent, &agent_release, true);
+            assert_eq!(code, EXIT_FAILURE, "{out}");
+            let report: serde_json::Value = serde_json::from_str(&out).expect("json");
+            assert!(
+                report["refused"]
+                    .as_str()
+                    .is_some_and(|why| why.contains(named)),
+                "{out}"
+            );
+        }
+        assert_eq!(
+            roko_agent::list_agent_controls(workspace.path())
+                .expect("controls")
+                .len(),
+            1,
+            "the control stays in force"
+        );
+        assert!(!roko_agent::agent_control_releases_path(workspace.path()).exists());
+        assert!(!roko_agent::tool_control_releases_path(workspace.path()).exists());
+
+        let (name, value) = ISOLATION_ENV[0];
+        let half = caller(&[("USER", "will"), (name, value)], true);
+        let (code, out, err) = safety_as(&half, &agent_release, false);
+        assert_eq!(code, EXIT_SUCCESS, "{out}{err}");
+    }
+
+    /// find-d05b5e: a person's release still works, and its audit line says
+    /// how it came in: through the command, with the name from `$USER`,
+    /// `--by` or neither, and with or without a terminal.
+    #[test]
+    fn a_persons_release_still_works_and_records_how() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workdir = workspace.path().to_str().expect("utf-8 path");
+        for agent in ["live-a/cli", "live-b/cli", "live-c/cli"] {
+            roko_agent::isolate_agent(workspace.path(), agent, "operator_isolation")
+                .expect("seed an isolation control");
+        }
+        let release = |agent: &str, by: Option<&str>, caller: &Caller| {
+            let mut args = vec![
+                "release",
+                agent,
+                "--reason",
+                "reviewed",
+                "--workdir",
+                workdir,
+            ];
+            if let Some(by) = by {
+                args.extend(["--by", by]);
+            }
+            let (code, out, err) = safety_as(caller, &args, false);
+            assert_eq!(code, EXIT_SUCCESS, "{out}{err}");
+            assert!(out.contains("released isolation control"), "{out}");
+        };
+
+        release("live-a/cli", None, &person());
+        release(
+            "live-b/cli",
+            Some("reviewer"),
+            &caller(&[("USER", "will")], false),
+        );
+        release("live-c/cli", None, &caller(&[], true));
+
+        let audit =
+            std::fs::read_to_string(roko_agent::agent_control_releases_path(workspace.path()))
+                .expect("audit file");
+        let lines: Vec<ReleasedControl> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("audit line"))
+            .collect();
+        let how: Vec<_> = lines
+            .iter()
+            .map(|line| (line.agent_id.as_str(), line.by.as_str(), line.via))
+            .collect();
+        let cli = |by_source, terminal| {
+            Some(ReleaseOrigin {
+                channel: ReleaseChannel::Cli,
+                by_source,
+                terminal: Some(terminal),
+            })
+        };
+        assert_eq!(
+            how,
+            [
+                ("live-a/cli", "will", cli(PrincipalSource::UserEnv, true)),
+                ("live-b/cli", "reviewer", cli(PrincipalSource::Flag, false)),
+                (
+                    "live-c/cli",
+                    "operator",
+                    cli(PrincipalSource::Fallback, true)
+                ),
+            ]
         );
         assert!(
             roko_agent::list_agent_controls(workspace.path())

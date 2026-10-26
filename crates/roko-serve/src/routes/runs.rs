@@ -22,9 +22,10 @@ use futures::stream::{self, StreamExt};
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::{
-    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
-    TASK_OUTCOME_CANCELLED, TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass,
-    classify_task_outcome,
+    FAILOVER_REFUSED_SIDE_CALL, TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+    TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED, TASK_OUTCOME_CANCELLED,
+    TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
+    side_call_role,
 };
 use roko_core::obs::LogScrubber;
 use serde::Deserialize;
@@ -80,6 +81,90 @@ struct EventQuery {
     limit: Option<usize>,
     types: Option<String>,
     source: Option<String>,
+    /// What to leave out ([`Skip`]): `live_text`, `heartbeats`.
+    skip: Option<String>,
+}
+
+/// What a reader of a run's events leaves out with `?skip=` (gap-cb9044).
+/// With trusted live output every reasoning and text delta is one record, so
+/// a long run's index is almost all words that a page reading its history
+/// does not show; the scan passes over them before parsing them, as a
+/// summary passes over [`STREAM_EVENT_TYPES`]. Cursors stay byte offsets, so
+/// a reader can page one index with and without it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Skip {
+    /// `live_text`: an agent's streamed reasoning, and its text while it
+    /// streams. Its tool steps, tool results and final text stay.
+    live_text: bool,
+    /// `heartbeats`: `agent_heartbeat` and `plan_check_heartbeat`.
+    heartbeats: bool,
+}
+
+/// How the index writes an agent's live stream record: an `agent_output`
+/// whose content is a `roko.stream.v1` envelope. The envelope sits escaped
+/// inside the record, so its fields read `\"kind\":\"reasoning\"` there,
+/// and words an agent quotes in a tool result, escaped once more, never
+/// match them.
+const AGENT_OUTPUT_FIELD: &str = "\"type\":\"agent_output\"";
+const STREAM_ENVELOPE_FIELD: &str = "\"content\":\"\\u001eroko.stream.v1 ";
+const ENVELOPE_REASONING: &str = r#"\"kind\":\"reasoning\""#;
+const ENVELOPE_TEXT: &str = r#"\"kind\":\"text\""#;
+const ENVELOPE_LIVE: &str = r#"\"live\":true"#;
+
+/// The heartbeats' `type` fields as the index writes them.
+const HEARTBEAT_TYPE_FIELDS: [&str; 2] = [
+    "\"type\":\"agent_heartbeat\"",
+    "\"type\":\"plan_check_heartbeat\"",
+];
+
+impl Skip {
+    /// `?skip=`, a comma list of `live_text` and `heartbeats`.
+    fn parse(raw: Option<&str>) -> Result<Self, ApiError> {
+        let mut skip = Self::default();
+        for item in raw
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            match item {
+                "live_text" => skip.live_text = true,
+                "heartbeats" => skip.heartbeats = true,
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "skip takes a comma list of live_text and heartbeats",
+                    ));
+                }
+            }
+        }
+        Ok(skip)
+    }
+
+    /// Whether the record whose raw line is `line` is left out.
+    fn matches(self, line: &str) -> bool {
+        let live_text = || {
+            line.contains(AGENT_OUTPUT_FIELD)
+                && line.contains(STREAM_ENVELOPE_FIELD)
+                && (line.contains(ENVELOPE_REASONING)
+                    || (line.contains(ENVELOPE_TEXT) && line.contains(ENVELOPE_LIVE)))
+        };
+        (self.heartbeats
+            && HEARTBEAT_TYPE_FIELDS
+                .iter()
+                .any(|field| line.contains(field)))
+            || (self.live_text && live_text())
+    }
+
+    /// What it leaves out, as `?skip=` names it.
+    fn names(self) -> Vec<&'static str> {
+        [
+            (self.live_text, "live_text"),
+            (self.heartbeats, "heartbeats"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
+    }
 }
 
 /// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21), and which work it
@@ -138,6 +223,8 @@ struct IndexedPage {
     has_more: bool,
     scanned_bytes: u64,
     quarantined_records: usize,
+    /// The records the scan's `skip` passed over unparsed (gap-4de4b9).
+    skipped_records: usize,
     partial_tail: bool,
     events: Vec<IndexedEvent>,
 }
@@ -231,6 +318,28 @@ async fn get_run_summary(
 /// which the MCP `run_status` tool returns too.
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
     let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
+    // gap-3217a0: how each rung did, from the run's own records, and whether
+    // a higher rung beat a lower one; bug-b7d9ad: the tries whose checks
+    // changed the person's own checkout instead of their worktree.
+    let workdir = state.workdir.clone();
+    let io_run_id = run_id.to_string();
+    let (rungs, checkout_written) = blocking_io(move || {
+        let layout = roko_fs::RokoLayout::for_project(&workdir);
+        let dir = layout.runs_dir().join(&io_run_id);
+        let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
+        // A rung's refused calls count on it (gap-5cfa9c).
+        Ok((
+            roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+                std::slice::from_ref(&records),
+                &layout.learn_dir().join("costs.jsonl"),
+            ),
+            records.checkout_writes(),
+        ))
+    })
+    .await?;
+    summary["rungs"] = json!(rungs.rows);
+    summary["misordered"] = json!(rungs.misordered.map(|misorder| misorder.line));
+    summary["checkout_written"] = json!(checkout_written);
     // gap-8409d0: an ended run's summary says where its verified work is, so a
     // chat host can tell its person what changed and how to take it.
     if summary["active"] == Value::Bool(false) {
@@ -438,11 +547,12 @@ async fn get_run_events(
     let types = parse_types(query.types.as_deref())?;
     let limit = bounded_limit(query.limit)?;
     let source = parse_source(query.source.as_deref())?;
+    let skip = Skip::parse(query.skip.as_deref())?;
     let io_state = Arc::clone(&state);
     let io_run_id = run_id.clone();
     let cursor = query.cursor.unwrap_or(0);
     let page = blocking_io(move || {
-        read_for_run(
+        read_for_run_skipping(
             &io_state,
             &io_run_id,
             source,
@@ -450,12 +560,21 @@ async fn get_run_events(
             limit,
             MAX_PAGE_SCAN_BYTES,
             &types,
+            &|line: &str| skip.matches(line),
         )
     })
     .await?
     .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no event index")))?;
 
-    Ok(Json(page_json(&run_id, page)).into_response())
+    let skipped_rows = page.skipped_records;
+    let mut page = page_json(&run_id, page);
+    if skip != Skip::default() {
+        page["skipped"] = json!(skip.names());
+        // gap-4de4b9: how many rows the page passed over, so a reader's
+        // count stays the index's true size.
+        page["skipped_rows"] = json!(skipped_rows);
+    }
+    Ok(Json(page).into_response())
 }
 
 /// Explicit alias for clients that cannot set an Accept header.
@@ -503,12 +622,13 @@ async fn run_events_sse(
     };
     if !has_runtime_index {
         let types = parse_types(query.types.as_deref())?;
+        let skip = Skip::parse(query.skip.as_deref())?;
         let header_cursor = headers
             .get("Last-Event-ID")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
         let cursor = header_cursor.or(query.cursor).unwrap_or(0);
-        return Ok(runner_index_sse(state, run_id, cursor, types));
+        return Ok(runner_index_sse(state, run_id, cursor, types, skip));
     }
 
     query.source = Some("runtime".to_string());
@@ -629,12 +749,14 @@ fn runner_index_sse(
     run_id: String,
     cursor: u64,
     types: BTreeSet<String>,
+    skip: Skip,
 ) -> Response {
     struct Follow {
         state: Arc<AppState>,
         run_id: String,
         cursor: u64,
         types: BTreeSet<String>,
+        skip: Skip,
         pending: std::collections::VecDeque<Event>,
         ended: bool,
     }
@@ -643,6 +765,7 @@ fn runner_index_sse(
         run_id,
         cursor,
         types,
+        skip,
         pending: std::collections::VecDeque::new(),
         ended: false,
     };
@@ -657,9 +780,11 @@ fn runner_index_sse(
             let io_state = Arc::clone(&follow.state);
             let io_run_id = follow.run_id.clone();
             let cursor = follow.cursor;
-            // Read every row, whatever `types` asks for, so the run's end is seen.
+            let skip = follow.skip;
+            // Read every row, whatever `types` asks for, so the run's end is
+            // seen; what `skip` leaves out is never the end.
             let page = blocking_io(move || {
-                read_for_run(
+                read_for_run_skipping(
                     &io_state,
                     &io_run_id,
                     Some(EventSource::Runner),
@@ -667,6 +792,7 @@ fn runner_index_sse(
                     MAX_SSE_REPLAY,
                     MAX_PAGE_SCAN_BYTES,
                     &BTreeSet::new(),
+                    &|line: &str| skip.matches(line),
                 )
             })
             .await;
@@ -1361,6 +1487,46 @@ fn read_for_run(
     )
 }
 
+/// [`read_for_run`], passing over each record whose raw line `skip` matches
+/// before it is parsed (gap-cb9044).
+fn read_for_run_skipping(
+    state: &AppState,
+    run_id: &str,
+    requested_source: Option<EventSource>,
+    cursor: u64,
+    limit: usize,
+    scan_bytes: u64,
+    types: &BTreeSet<String>,
+    skip: &dyn Fn(&str) -> bool,
+) -> Result<Option<IndexedPage>, ApiError> {
+    let candidates: &[EventSource] = match requested_source {
+        Some(EventSource::Runner) => &[EventSource::Runner],
+        Some(EventSource::Runtime) => &[EventSource::Runtime],
+        None => &[EventSource::Runner, EventSource::Runtime],
+    };
+    for source in candidates {
+        let Some(path) = source_path(state, run_id, *source) else {
+            continue;
+        };
+        if roko_fs::run_index::open_existing_run_index(&path).is_ok() {
+            return read_index_page_scan(
+                &path,
+                run_id,
+                *source,
+                cursor,
+                limit,
+                scan_bytes,
+                types,
+                state.scrubber.as_ref(),
+                &|_| true,
+                skip,
+            )
+            .map(Some);
+        }
+    }
+    Ok(None)
+}
+
 fn read_for_run_filtered(
     state: &AppState,
     run_id: &str,
@@ -1497,6 +1663,7 @@ fn read_for_summary_within(
     page.quarantined_records = page
         .quarantined_records
         .saturating_add(tail.quarantined_records);
+    page.skipped_records = page.skipped_records.saturating_add(tail.skipped_records);
     page.partial_tail = tail.partial_tail;
     Ok(Some(page))
 }
@@ -1621,6 +1788,7 @@ fn read_index_page_scan(
     let mut offset = cursor;
     let mut scanned_bytes = 0u64;
     let mut quarantined = 0usize;
+    let mut skipped = 0usize;
     let mut partial_tail = false;
     let mut events = Vec::new();
     let mut line = String::new();
@@ -1652,6 +1820,7 @@ fn read_index_page_scan(
             break;
         }
         if skip(&line) {
+            skipped += 1;
             continue;
         }
         let parsed = serde_json::from_str::<Value>(line.trim_end());
@@ -1693,6 +1862,7 @@ fn read_index_page_scan(
         has_more: offset < file_len,
         scanned_bytes,
         quarantined_records: quarantined,
+        skipped_records: skipped,
         partial_tail,
         events,
     })
@@ -1879,6 +2049,14 @@ fn is_gate_event(kind: &str) -> bool {
     kind.starts_with("gate.") || kind.starts_with("gate_") || kind.contains("gate")
 }
 
+/// Whether `kind` is one of the plan-load spec gate's own events
+/// (`spec_gate_started`, `spec_gate_step`, `spec_gate_finished`). Its checks
+/// must fail on the base, so a step that did not pass is the result it wants,
+/// not a failed gate (bug-b9df52). A task it refuses ends the run `refused`.
+fn is_spec_gate_event(kind: &str) -> bool {
+    kind.starts_with("spec_gate")
+}
+
 fn is_task_terminal(kind: &str) -> bool {
     matches!(
         kind,
@@ -1959,6 +2137,18 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     let mut efficiency = Efficiency::default();
     // The first time any row carries: a Graph run has no start event of its own.
     let mut first_time = None;
+    // A running try's model calls as they return (gap-5c3347): what each
+    // attempt's priced calls have cost so far, until it settles and its own
+    // records count it.
+    let mut live_calls = BTreeMap::<(String, String, u64), f64>::new();
+    let mut settled = BTreeSet::<(String, String, u64)>::new();
+    // The calls each try's provider refused before it failed over. They are
+    // the try's own calls, so until the try settles, its `call_cost` figure
+    // holds their spend beside their side-call events (bug-11e54b). A side
+    // call's event names its try (gap-1430ea); for one that does not, the
+    // try is the task's running one, as its latest `call_cost` names it.
+    let mut running_try = BTreeMap::<(String, String), u64>::new();
+    let mut refused_in_try = BTreeMap::<(String, String, u64), f64>::new();
 
     for item in events {
         let value = &item.value;
@@ -1992,6 +2182,37 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
         if kind == "efficiency_event" {
             efficiency.add(value);
+            if let Some((metric, amount)) = efficiency_metric(value)
+                && side_call_role(metric) == Some(FAILOVER_REFUSED_SIDE_CALL)
+                && let (Some(plan_id), Some(task_id)) = (event_plan_id(value), event_task_id(value))
+                && let Some(attempt) = event_attempt(value).or_else(|| {
+                    running_try
+                        .get(&(plan_id.to_string(), task_id.to_string()))
+                        .copied()
+                })
+            {
+                *refused_in_try
+                    .entry((plan_id.to_string(), task_id.to_string(), attempt))
+                    .or_default() += amount;
+            }
+        }
+        if matches!(kind, "call_cost" | "attempt_settled")
+            && let (Some(plan_id), Some(task_id), Some(attempt)) = (
+                event_plan_id(value),
+                event_task_id(value),
+                event_attempt(value),
+            )
+        {
+            let key = (plan_id.to_string(), task_id.to_string(), attempt);
+            if kind == "attempt_settled" {
+                settled.insert(key);
+            } else if let Some(cost) = decimal(value, "attempt_cost_usd") {
+                running_try.insert((key.0.clone(), key.1.clone()), attempt);
+                live_calls
+                    .entry(key)
+                    .and_modify(|current| *current = current.max(cost))
+                    .or_insert(cost);
+            }
         }
         // Graph runs report a rung's verdict as `gate_result` (bug-28aae1).
         if kind == "gate_result"
@@ -2053,14 +2274,35 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
     }
     // A Graph run records its spend only as efficiency events: use them when no
-    // other source reported any.
-    if efficiency.seen
+    // other source reported any. They count its side calls apart from its
+    // tries (bug-11e54b), as its cost rows do.
+    let graph_spend = efficiency.seen
         && !saw_inference_usage
         && final_cost.is_none()
         && runner_attempt_costs.is_empty()
-        && cost_usd.abs() < f64::EPSILON
-    {
-        cost_usd = efficiency.cost_usd;
+        && cost_usd.abs() < f64::EPSILON;
+    let side_call_usd = if graph_spend {
+        cost_usd = efficiency.cost_usd + efficiency.side_call_usd.values().sum::<f64>();
+        std::mem::take(&mut efficiency.side_call_usd)
+    } else {
+        BTreeMap::new()
+    };
+    // What the tries that have not settled spent so far (gap-5c3347).
+    let running = live_calls
+        .iter()
+        .filter(|(key, _)| !settled.contains(*key))
+        .collect::<Vec<_>>();
+    let live_cost_usd: f64 = running.iter().map(|(_, cost)| *cost).sum();
+    if final_cost.is_none() {
+        // Less the calls refused before a failover, which count already as
+        // side calls.
+        cost_usd += running
+            .iter()
+            .map(|(key, cost)| {
+                let refused = refused_in_try.get(*key).filter(|_| graph_spend);
+                (*cost - refused.copied().unwrap_or(0.0)).max(0.0)
+            })
+            .sum::<f64>();
     }
     if efficiency.seen && input_tokens == 0 && output_tokens == 0 {
         input_tokens = efficiency.input_tokens;
@@ -2098,6 +2340,8 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             "cache_write_tokens": cache_write_tokens,
             "total_tokens": total_tokens,
             "cost_usd": cost_usd,
+            "side_call_usd": side_call_usd,
+            "live_cost_usd": live_cost_usd,
             "duration_ms": duration_ms,
         }
     })
@@ -2109,24 +2353,33 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
 struct Efficiency {
     seen: bool,
     cost_usd: f64,
+    /// What its side calls cost, by role (bug-11e54b): calls its tries made
+    /// beside their own dispatches, which `cost_usd` leaves out.
+    side_call_usd: BTreeMap<String, f64>,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
 }
 
+/// An `efficiency_event` row's `metric` and its `value`, when the value is a
+/// measurement (finite, not negative).
+fn efficiency_metric(value: &Value) -> Option<(&str, f64)> {
+    let data = event_data(value);
+    let metric = data
+        .get("metric")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let amount = data
+        .get("value")
+        .and_then(Value::as_f64)
+        .filter(|amount| amount.is_finite() && *amount >= 0.0)?;
+    Some((metric, amount))
+}
+
 impl Efficiency {
     fn add(&mut self, value: &Value) {
-        let data = event_data(value);
-        let metric = data
-            .get("metric")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let Some(amount) = data
-            .get("value")
-            .and_then(Value::as_f64)
-            .filter(|amount| amount.is_finite() && *amount >= 0.0)
-        else {
+        let Some((metric, amount)) = efficiency_metric(value) else {
             return;
         };
         self.seen = true;
@@ -2143,7 +2396,11 @@ impl Efficiency {
             "cache_write_tokens" => {
                 self.cache_write_tokens = self.cache_write_tokens.saturating_add(tokens);
             }
-            _ => {}
+            _ => {
+                if let Some(role) = side_call_role(metric) {
+                    *self.side_call_usd.entry(role.to_string()).or_default() += amount;
+                }
+            }
         }
     }
 }
@@ -2205,9 +2462,107 @@ fn run_summary(
     let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
     // What the spec gate refused before any dispatch, `<task>: <rule>: <detail>`.
     let mut gate_refusals = Vec::<String>::new();
+    // The replies roko stopped while they only reasoned (gap-f3f950).
+    let mut reasoning_cuts = Vec::<Value>::new();
+    // The rungs the run said ran slow, as it went (gap-3217a0).
+    let mut rung_slow = Vec::<Value>::new();
+    // The rungs the run skipped at plan start because their model failed its
+    // tool-use probe, the latest event of each plan and rung (gap-20301d).
+    let mut rungs_skipped = BTreeMap::<(String, String), Value>::new();
+    // Why roko refused a task the ladder routes because every rung failed its
+    // probe, from the first try that settled so (gap-b856d3).
+    let mut ladder_refusal = None::<String>;
+    // The providers the run went on without because they refused a call for
+    // want of usage, an account they can't bill included, the latest refusal
+    // of each (bug-390e4b).
+    let mut provider_exhausted = BTreeMap::<String, Value>::new();
+    // What earlier processes of the run spent, by plan, the latest each plan
+    // said as it resumed (bug-b7f6a8).
+    let mut carried = BTreeMap::<String, f64>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if kind == "budget_carried"
+            && let Some(carried_usd) = decimal(value, "carried_usd")
+        {
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            carried.insert(plan_id, carried_usd);
+        }
+        if kind == "provider_exhausted" {
+            let data = event_data(value);
+            let provider = string_field(value, "provider")
+                .unwrap_or_default()
+                .to_string();
+            provider_exhausted.insert(
+                provider.clone(),
+                json!({
+                    "provider": provider,
+                    "model": data.get("model"),
+                    "billing": data.get("billing"),
+                    "reason": data.get("reason"),
+                    "until_ms": data.get("until_ms"),
+                    "detail": data.get("detail"),
+                    "at": event_time(value),
+                }),
+            );
+        }
+        if kind == "rung_slow" {
+            let data = event_data(value);
+            rung_slow.push(json!({
+                "plan_id": event_plan_id(value),
+                "task_id": event_task_id(value),
+                "rung": data.get("rung"),
+                "model": data.get("model"),
+                "reason": data.get("reason"),
+                "bound_secs": data.get("bound_secs"),
+                "secs_per_call": data.get("secs_per_call"),
+                "model_calls": data.get("model_calls"),
+                "detail": data.get("detail"),
+                "at": event_time(value),
+            }));
+        }
+        if kind == "attempt_settled"
+            && string_field(value, "verdict") == Some("all_rungs_skipped")
+            && ladder_refusal.is_none()
+        {
+            let detail = string_field(value, "detail").unwrap_or_default();
+            let reason = detail.strip_prefix("all_rungs_skipped: ").unwrap_or(detail);
+            ladder_refusal = Some(reason.to_string());
+        }
+        if kind == "rung_skipped" {
+            let data = event_data(value);
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            let rung = string_field(value, "rung").unwrap_or_default().to_string();
+            rungs_skipped.insert(
+                (plan_id.clone(), rung.clone()),
+                json!({
+                    "plan_id": plan_id,
+                    "rung": rung,
+                    "model": data.get("model"),
+                    "provider": data.get("provider"),
+                    "reason": data.get("reason"),
+                    "until_ms": data.get("until_ms"),
+                    "billing": data.get("billing"),
+                    "detail": data.get("detail"),
+                    "at": event_time(value),
+                }),
+            );
+        }
+        if kind == "reasoning_cut" {
+            let data = event_data(value);
+            reasoning_cuts.push(json!({
+                "plan_id": event_plan_id(value),
+                "task_id": event_task_id(value),
+                "attempt": data.get("attempt"),
+                "model": data.get("model"),
+                "reasoning_tokens": data.get("reasoning_tokens"),
+                "secs": data.get("secs"),
+                "saved_secs": data.get("saved_secs"),
+                "reask": data.get("reask"),
+                "detail": data.get("detail"),
+                "at": event_time(value),
+            }));
+        }
         if kind == "event_log_entry"
             && string_field(value, "event_type") == Some("spec.gate.refused")
         {
@@ -2271,7 +2626,10 @@ fn run_summary(
                     .or_insert_with(|| (place, milestone("first_task_accepted", text, value)));
             }
         }
+        // Only a task's own gate failure counts: the spec gate's steps fail on
+        // the base by design (bug-b9df52).
         if is_gate_event(kind)
+            && !is_spec_gate_event(kind)
             && bool_field(value, "passed").map_or(kind.contains("failed"), |passed| !passed)
         {
             let gate = string_field(value, "gate")
@@ -2351,6 +2709,22 @@ fn run_summary(
                     "reason": gate_refusals.join("; "),
                 })
             })
+        })
+        .or_else(|| {
+            // Every rung of the ladder failed its probe, so roko refused the
+            // tasks the ladder routes (gap-b856d3). A recharge and a resume
+            // fix it when every rung failed on billing (bug-374384).
+            let reason = ladder_refusal.filter(|_| state == RunState::Failed)?;
+            let billing_only = !rungs_skipped.is_empty()
+                && rungs_skipped
+                    .values()
+                    .all(|rung| rung["billing"] == Value::Bool(true));
+            Some(json!({
+                "stage": "ladder",
+                "kind": "all_rungs_skipped",
+                "reason": reason,
+                "billing_only": billing_only,
+            }))
         });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
@@ -2387,6 +2761,12 @@ fn run_summary(
         "interrupted": interrupted,
         "refused": refused,
         "cost_usd": summary["metrics"]["cost_usd"],
+        // The part of it side calls spent, by role (bug-11e54b).
+        "side_call_usd": summary["metrics"]["side_call_usd"],
+        // What earlier processes of the run spent before a restart, which the
+        // budgets of the plans it resumed count beside `cost_usd`
+        // (bug-b7f6a8).
+        "carried_usd": carried.values().sum::<f64>(),
         "tasks": {
             "total": tasks.len(),
             "passed": passed,
@@ -2398,6 +2778,10 @@ fn run_summary(
         },
         "untrusted_input_boundary": boundaries,
         "milestones": milestones,
+        "reasoning_cuts": reasoning_cuts,
+        "rung_slow": rung_slow,
+        "rungs_skipped": rungs_skipped.into_values().collect::<Vec<_>>(),
+        "provider_exhausted": provider_exhausted.into_values().collect::<Vec<_>>(),
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
         "links": run_links(run_id),
@@ -3116,6 +3500,262 @@ mod tests {
             .collect()
     }
 
+    /// gap-5c3347: a running try's spend counts in the run's summary as its
+    /// model calls return (`call_cost`), beside the settled tries' own
+    /// records, and stops counting once the try settles.
+    #[test]
+    fn a_running_try_s_spend_reaches_the_run_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let efficiency = |metric: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T1","metric":metric,"value":value});
+        let call = |task: &str, attempt: u32, call: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"call":call,"model":"glm-4.7","input_tokens":1000,"output_tokens":100,"cost_usd":0.01,"attempt_cost_usd":so_far});
+        let settled = |task: &str, attempt: u32| json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"verdict":"passed","cost_usd":0.02});
+        let summary = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            summarize_events(&page.events)["metrics"].clone()
+        };
+        let cost = |metrics: &Value, name: &str| metrics[name].as_f64().expect(name);
+
+        // T1 settled at $0.02; T2's try has made two calls, $0.03 so far.
+        let mut rows = vec![
+            call("T1", 1, 1, 0.01),
+            call("T1", 1, 2, 0.02),
+            settled("T1", 1),
+            efficiency("cost_usd", 0.02),
+            call("T2", 1, 1, 0.01),
+            call("T2", 1, 2, 0.03),
+        ];
+        let running = summary(&rows);
+        assert!(
+            (cost(&running, "cost_usd") - 0.05).abs() < 1e-9,
+            "{running}"
+        );
+        assert!(
+            (cost(&running, "live_cost_usd") - 0.03).abs() < 1e-9,
+            "{running}"
+        );
+
+        // T2's try settles: its own records count it, and nothing is live.
+        rows.extend([settled("T2", 1), efficiency("cost_usd", 0.03)]);
+        let ended = summary(&rows);
+        assert!((cost(&ended, "cost_usd") - 0.05).abs() < 1e-9, "{ended}");
+        assert!(cost(&ended, "live_cost_usd").abs() < 1e-9, "{ended}");
+    }
+
+    /// gap-1430ea: a side call's event names the try that made it, and the
+    /// summary takes the try from it. A refused call counts once whichever
+    /// event names it last, and the summary's cost and `side_call_usd` are
+    /// those of bug-11e54b.
+    #[test]
+    fn a_side_call_event_names_its_try_and_the_summary_keeps_its_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let refused = |attempt: u32| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"metric":"side_call_usd.failover_refused","value":0.0068});
+        let call = |attempt: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"call":1,"model":"glm-4.7","cost_usd":0.01,"attempt_cost_usd":so_far});
+        let summary = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            summarize_events(&page.events)["metrics"].clone()
+        };
+        // T2's first try: refused at $0.0068, then its substitute settled at
+        // $0.01. Its second try has spent $0.02 so far.
+        let settled = [
+            json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":1,"verdict":"failed"}),
+            json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","metric":"cost_usd","value":0.01}),
+        ];
+        let in_order = [
+            vec![call(1, 0.0068), refused(1), call(1, 0.0168)],
+            settled.to_vec(),
+            vec![call(2, 0.02)],
+        ]
+        .concat();
+        // The same refused call, its event read after the second try began:
+        // it names the first try, so the second try's figure keeps it all.
+        let late = [
+            vec![call(1, 0.0068), call(1, 0.0168)],
+            settled.to_vec(),
+            vec![call(2, 0.02), refused(1)],
+        ]
+        .concat();
+        for rows in [in_order, late] {
+            let metrics = summary(&rows);
+            let cost = metrics["cost_usd"].as_f64().expect("cost_usd");
+            assert!((cost - 0.0368).abs() < 1e-9, "{metrics}");
+            let refused_usd = metrics["side_call_usd"]["failover_refused"]
+                .as_f64()
+                .expect("failover_refused");
+            assert!((refused_usd - 0.0068).abs() < 1e-9, "{metrics}");
+        }
+    }
+
+    /// gap-cb9044: `?skip=live_text,heartbeats` leaves a run's streamed
+    /// reasoning, its live text and its heartbeats out of the event pages,
+    /// unparsed, and keeps its tool steps, its tool results (one that quotes
+    /// the envelope's words included), its final text, its gate lines and
+    /// its structural events. Paging with `next_cursor` crosses the runs of
+    /// skipped records, and the page says what it skipped.
+    #[tokio::test]
+    async fn a_run_events_page_can_skip_live_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        let output = |kind: &str, live: bool, payload: Value| {
+            let mut envelope = json!({"agent_id":"p1/T1","attempt":1,"kind":kind,"payload":payload,"plan_id":"p1","task_id":"T1"});
+            if live {
+                envelope["live"] = json!(true);
+            }
+            json!({"type":"agent_output","run_id":"g1","agent_id":"p1/T1","plan_id":"p1","task_id":"T1","attempt":1,"content":format!("\u{1e}roko.stream.v1 {envelope}")})
+        };
+        let heartbeat = json!({"type":"agent_heartbeat","run_id":"g1","agent_id":"p1/T1","plan_id":"p1","task_id":"T1","elapsed_ms":1000});
+        let mut rows =
+            vec![json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1})];
+        rows.extend((0..40).map(|_| output("reasoning", true, json!({"text":"Let"}))));
+        rows.push(output(
+            "tool_start",
+            true,
+            json!({"tool":"bash","tool_id":"c1","target":"cmake --build"}),
+        ));
+        rows.extend((0..10).map(|_| heartbeat.clone()));
+        rows.push(output(
+            "tool_result",
+            true,
+            json!({"tool_id":"c1","output":"grep found \"kind\":\"reasoning\",\"live\":true"}),
+        ));
+        rows.extend((0..30).map(|_| output("text", true, json!({"text":"Done"}))));
+        rows.push(output(
+            "text",
+            false,
+            json!({"text":"Done: wrote 3 files."}),
+        ));
+        rows.push(json!({"type":"gate_output_line","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","line":"[ 50%] Building CXX object"}));
+        rows.push(json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true}));
+        rows.push(
+            json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}),
+        );
+        write_rows(&index, &rows);
+
+        let page = |cursor: u64| {
+            let state = Arc::clone(&state);
+            async move {
+                let query = EventQuery {
+                    cursor: Some(cursor),
+                    limit: Some(3),
+                    skip: Some("live_text,heartbeats".to_string()),
+                    ..EventQuery::default()
+                };
+                let response = get_run_events(
+                    State(state),
+                    Path("g1".into()),
+                    HeaderMap::new(),
+                    Query(query),
+                )
+                .await
+                .expect("a page");
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body");
+                serde_json::from_slice::<Value>(&body).expect("json")
+            }
+        };
+        let mut kept = Vec::new();
+        let mut cursor = 0;
+        let mut requests = 0;
+        let mut skipped_rows = 0;
+        loop {
+            let page = page(cursor).await;
+            requests += 1;
+            assert_eq!(
+                page["skipped"],
+                json!(["live_text", "heartbeats"]),
+                "{page}"
+            );
+            skipped_rows += page["skipped_rows"].as_u64().expect("skipped_rows");
+            for event in page["events"].as_array().expect("events") {
+                let event = &event["event"];
+                let kind = event["type"].as_str().expect("type").to_string();
+                let content = event["content"].as_str().unwrap_or_default();
+                let stream_kind = content
+                    .split_once(' ')
+                    .and_then(|(_, envelope)| serde_json::from_str::<Value>(envelope).ok())
+                    .and_then(|envelope| envelope["kind"].as_str().map(str::to_string));
+                kept.push(stream_kind.map_or(kind, |stream| format!("agent_output:{stream}")));
+            }
+            if page["has_more"] != json!(true) {
+                break;
+            }
+            cursor = page["next_cursor"].as_u64().expect("next_cursor");
+        }
+        assert_eq!(
+            kept,
+            [
+                "plan_started",
+                "agent_output:tool_start",
+                "agent_output:tool_result",
+                "agent_output:text",
+                "gate_output_line",
+                "gate_result",
+                "run_completed",
+            ]
+        );
+        assert_eq!(requests, 3, "7 kept rows at 3 a page");
+        // gap-4de4b9: what the pages sent and passed over is the whole index.
+        assert_eq!(
+            skipped_rows, 80,
+            "40 reasoning, 10 heartbeats, 30 live text"
+        );
+        assert_eq!(kept.len() + 80, rows.len());
+
+        // Without `skip`, the same index pages every record, and says nothing
+        // was skipped.
+        let all = read_for_run(
+            &state,
+            "g1",
+            None,
+            0,
+            MAX_PAGE_LIMIT,
+            MAX_PAGE_SCAN_BYTES,
+            &BTreeSet::new(),
+        )
+        .unwrap()
+        .expect("an index");
+        assert_eq!(all.events.len(), rows.len());
+        assert!(Skip::parse(Some("live_text,nope")).is_err());
+        assert_eq!(Skip::parse(None).unwrap(), Skip::default());
+    }
+
     fn write_rows(path: &FsPath, rows: &[Value]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
@@ -3605,6 +4245,666 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-b7f6a8: a run that resumed plans says what earlier processes of
+    /// its run spent, which its plans' budgets count, beside what it spent
+    /// itself: the latest each plan said, summed over its plans. A run that
+    /// resumed nothing carried nothing.
+    #[tokio::test]
+    async fn a_resumed_runs_summary_says_what_its_plans_carried() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let carried = |plan_id: &str, usd: f64| json!({"type":"budget_carried","run_id":"r1","timestamp_ms":2,"plan_id":plan_id,"carried_usd":usd,"settled_usd":0.0});
+        write_rows(
+            &index("r1"),
+            &[
+                json!({"type":"run.started","run_id":"r1","timestamp_ms":1}),
+                carried("p1", 0.5),
+                carried("p2", 0.125),
+                carried("p1", 0.25),
+                json!({"type":"run.completed","run_id":"r1","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.05}),
+            ],
+        );
+        write_rows(
+            &index("r2"),
+            &[
+                json!({"type":"run.started","run_id":"r2","timestamp_ms":1}),
+                json!({"type":"run.completed","run_id":"r2","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.05}),
+            ],
+        );
+        for (run_id, carried_usd) in [("r1", 0.375), ("r2", 0.0)] {
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            assert_eq!(summary["cost_usd"], 0.05, "{summary}");
+            assert_eq!(summary["carried_usd"], carried_usd, "{summary}");
+        }
+    }
+
+    /// bug-b9df52: the spec gate's checks fail on the base by design, so a
+    /// run whose own checks all passed has no `first_gate_failure`, and in a
+    /// run where a task's check failed, the milestone names that task.
+    #[tokio::test]
+    async fn spec_gate_red_on_base_steps_are_not_a_gate_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        // Run c91b63ea's shape: each task's check runs twice on the base and
+        // fails, as it must, before the plan starts.
+        let red_on_base = |run_id: &str| {
+            let step = |task: &str, run: u32| json!({"type":"spec_gate_step","run_id":run_id,"plan_id":"p1","task_id":task,"run":run,"step":1,"passed":false,"cached":false,"ms":80});
+            vec![
+                json!({"type":"spec_gate_started","run_id":run_id,"plan_id":"p1","steps_total":4}),
+                step("T1", 1),
+                step("T1", 2),
+                step("T2", 1),
+                step("T2", 2),
+                json!({"type":"spec_gate_finished","run_id":run_id,"plan_id":"p1","elapsed_ms":400,"tasks_checked":2,"steps_run":4,"cached":0,"blocked":0}),
+                json!({"type":"plan_started","run_id":run_id,"plan_id":"p1"}),
+            ]
+        };
+        let check = |run_id: &str, task: &str, passed: bool| json!({"type":"gate_result","run_id":run_id,"plan_id":"p1","task_id":task,"gate":"verify[0:test]","passed":passed});
+        let passed = |run_id: &str, task: &str| json!({"type":"task_completed","run_id":run_id,"plan_id":"p1","task_id":task,"outcome":"passed"});
+        let ended = |run_id: &str| json!({"type":"run_completed","run_id":run_id,"outcome":"succeeded","duration_ms":10});
+        let milestones = |summary: &Value| {
+            summary["milestones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|milestone| {
+                    (
+                        milestone["kind"].as_str().unwrap().to_string(),
+                        milestone["text"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut rows = red_on_base("g1");
+        rows.extend([
+            check("g1", "T1", true),
+            passed("g1", "T1"),
+            check("g1", "T2", true),
+            passed("g1", "T2"),
+            ended("g1"),
+        ]);
+        write_rows(&index("g1"), &rows);
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g1".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "succeeded", "{summary}");
+        let kinds = milestones(&summary)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            ["started", "first_task_accepted", "completed"],
+            "{summary}"
+        );
+
+        // T2's own check fails once: the milestone names T2, not the task
+        // whose base check failed first.
+        let mut rows = red_on_base("g2");
+        rows.extend([
+            check("g2", "T1", true),
+            passed("g2", "T1"),
+            check("g2", "T2", false),
+            check("g2", "T2", true),
+            passed("g2", "T2"),
+            ended("g2"),
+        ]);
+        write_rows(&index("g2"), &rows);
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g2".into()))
+            .await
+            .unwrap();
+        let failure = milestones(&summary)
+            .into_iter()
+            .find(|(kind, _)| kind == "first_gate_failure");
+        assert_eq!(
+            failure.map(|(_, text)| text).as_deref(),
+            Some("gate verify[0:test] failed on task T2"),
+            "{summary}"
+        );
+    }
+
+    /// bug-11e54b: a run's summary cost counts the calls its tries' provider
+    /// refused before they failed over, which its cost rows bill, and names
+    /// what side calls spent by role. Run 20c780ae's tries cost $0.6915 and
+    /// its four refused glm-4.7 calls $0.027; its summary said $0.6915 where
+    /// the rows billed $0.7185. While a try runs, its `call_cost` figure
+    /// holds its refused calls too, and they count once.
+    #[tokio::test]
+    async fn a_runs_summary_cost_includes_its_failover_refused_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let refused =
+            roko_core::dashboard_snapshot::side_call_usd_metric(FAILOVER_REFUSED_SIDE_CALL);
+        let efficiency = |run_id: &str, task: &str, metric: &str, value: f64| json!({"type":"efficiency_event","run_id":run_id,"plan_id":"p1","task_id":task,"metric":metric,"value":value});
+        let call = |task: &str, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"call":1,"model":"glm-4.7","cost_usd":0.01,"attempt_cost_usd":so_far});
+        let summary = async |run_id: &str, rows: &[Value]| {
+            write_rows(&index(run_id), rows);
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            summary
+        };
+        let usd = |summary: &Value, path: &[&str]| {
+            path.iter()
+                .fold(summary, |value, key| &value[*key])
+                .as_f64()
+                .unwrap_or_else(|| panic!("{path:?} in {summary}"))
+        };
+
+        // T2's try ran on glm-4.7 until a 429 cut it off at $0.0068, then
+        // failed over; its substitute has spent $0.01 so far.
+        let mut rows = vec![
+            call("T2", 0.0068),
+            efficiency("g1", "T2", &refused, 0.0068),
+            call("T2", 0.0168),
+        ];
+        let running = summary("g1", &rows).await;
+        assert!(
+            (usd(&running, &["cost_usd"]) - 0.0168).abs() < 1e-9,
+            "{running}"
+        );
+        assert!(
+            (usd(&running, &["side_call_usd", "failover_refused"]) - 0.0068).abs() < 1e-9,
+            "{running}"
+        );
+        // The try settles: its dispatch's cost and the refused call count.
+        rows.extend([
+            json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":1,"verdict":"passed"}),
+            efficiency("g1", "T2", "cost_usd", 0.01),
+        ]);
+        let settled = summary("g1", &rows).await;
+        assert!(
+            (usd(&settled, &["cost_usd"]) - 0.0168).abs() < 1e-9,
+            "{settled}"
+        );
+
+        // Run 20c780ae's rows: three tries on glm-4.7 ($0.4412), five on
+        // gpt-5.4-mini ($0.2503), four refused glm-4.7 calls ($0.027) and
+        // five helper calls the provider refused with a 402 ($0).
+        let mut rows = Vec::new();
+        for (task, cost) in [
+            ("T1", 0.1471),
+            ("T2", 0.1471),
+            ("T3", 0.147),
+            ("T2", 0.05),
+            ("T2", 0.05),
+            ("T3", 0.05),
+            ("T4", 0.05),
+            ("T4", 0.0503),
+        ] {
+            rows.push(efficiency("g2", task, "cost_usd", cost));
+        }
+        for (task, cost) in [
+            ("T2", 0.0068),
+            ("T2", 0.0067),
+            ("T3", 0.0068),
+            ("T4", 0.0067),
+        ] {
+            rows.push(efficiency("g2", task, &refused, cost));
+        }
+        for task in ["T1", "T2", "T2", "T3", "T4"] {
+            rows.push(efficiency("g2", task, "side_call_usd.helper", 0.0));
+        }
+        rows.push(
+            json!({"type":"run_completed","run_id":"g2","outcome":"succeeded","duration_ms":10}),
+        );
+        let ended = summary("g2", &rows).await;
+        assert!(
+            (usd(&ended, &["cost_usd"]) - 0.7185).abs() < 1e-9,
+            "{ended}"
+        );
+        assert!(
+            (usd(&ended, &["side_call_usd", "failover_refused"]) - 0.027).abs() < 1e-9,
+            "{ended}"
+        );
+        assert_eq!(ended["side_call_usd"]["helper"], 0.0, "{ended}");
+    }
+
+    /// bug-390e4b: a run's summary names the providers it went on without
+    /// because they refused a call for want of usage, an account they can't
+    /// bill included, with the latest refusal of each in plain words.
+    #[tokio::test]
+    async fn a_runs_summary_names_the_providers_it_went_without() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "x1").unwrap();
+        let refused = |task: &str, until: i64| json!({"type":"provider_exhausted","run_id":"x1","plan_id":"p1","task_id":task,"attempt":1,"provider":"zai","model":"glm-4.7","billing":true,"reason":"Insufficient balance or no resource package. Please recharge. (code 1113)","until_ms":until,"detail":"zai: Insufficient balance or no resource package. Please recharge. (code 1113): recharge, or the ladder runs without it until 07:12"});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"x1","timestamp_ms":1,"plan_id":"p1"}),
+                refused("T1", 1_000),
+                refused("T2", 2_000),
+                json!({"type":"run.completed","run_id":"x1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("x1".into()))
+            .await
+            .unwrap();
+        let without = summary["provider_exhausted"]
+            .as_array()
+            .expect("provider_exhausted");
+        assert_eq!(without.len(), 1, "{summary}");
+        assert_eq!(without[0]["provider"], "zai");
+        assert_eq!(without[0]["billing"], true);
+        assert_eq!(without[0]["until_ms"], 2_000, "the latest refusal");
+        assert!(
+            without[0]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("recharge, or the ladder runs without it")),
+            "{summary}"
+        );
+    }
+
+    /// gap-f3f950: a run's summary lists the replies roko stopped while they
+    /// only reasoned, with what each re-ask did.
+    #[tokio::test]
+    async fn a_runs_summary_lists_its_reasoning_cuts() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "c1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"c1","timestamp_ms":1,"plan_id":"p1"}),
+                json!({"type":"reasoning_cut","run_id":"c1","plan_id":"p1","task_id":"T1","attempt":1,"turn":8,"model":"glm-4.7","reasoning_tokens":12288,"limit_tokens":12288,"secs":330.0,"saved_secs":550.0,"reask":"acted","detail":"glm-4.7 reasoned 12288 tokens in 330 s with no tool call"}),
+                json!({"type":"run.completed","run_id":"c1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("c1".into()))
+            .await
+            .unwrap();
+        let cuts = summary["reasoning_cuts"]
+            .as_array()
+            .expect("reasoning_cuts");
+        assert_eq!(cuts.len(), 1, "{summary}");
+        assert_eq!(cuts[0]["task_id"], "T1");
+        assert_eq!(cuts[0]["reasoning_tokens"], 12_288);
+        assert_eq!(cuts[0]["saved_secs"], 550.0);
+        assert_eq!(cuts[0]["reask"], "acted");
+    }
+
+    /// gap-20301d: a run's summary lists the rungs it skipped at plan start
+    /// because their model failed its tool-use probe, the latest event of
+    /// each plan and rung, as a resumed process says it again.
+    #[tokio::test]
+    async fn a_runs_summary_lists_its_skipped_rungs() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "s1").unwrap();
+        let skipped = |until: i64| json!({"type":"rung_skipped","run_id":"s1","plan_id":"p1","rung":"cheap","model":"gpt-oss-120b","provider":"cerebras","reason":"insufficient_credits: cerebras refused the request (HTTP 402): payment required","until_ms":until,"detail":"rung cheap (gpt-oss-120b on cerebras) is skipped until 20:33: its tool-use probe failed"});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"s1","timestamp_ms":1,"plan_id":"p1"}),
+                skipped(1_000),
+                skipped(2_000),
+                json!({"type":"run.completed","run_id":"s1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("s1".into()))
+            .await
+            .unwrap();
+        let rungs = summary["rungs_skipped"].as_array().expect("rungs_skipped");
+        assert_eq!(rungs.len(), 1, "{summary}");
+        assert_eq!(rungs[0]["plan_id"], "p1");
+        assert_eq!(rungs[0]["rung"], "cheap");
+        assert_eq!(rungs[0]["model"], "gpt-oss-120b");
+        assert_eq!(rungs[0]["provider"], "cerebras");
+        assert_eq!(rungs[0]["until_ms"], 2_000, "the latest event");
+        assert!(
+            rungs[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("(HTTP 402)")),
+            "{summary}"
+        );
+    }
+
+    /// bug-b7d9ad: a run's summary names the tries whose checks changed the
+    /// person's own checkout instead of their worktree, with the paths, from
+    /// their verdicts' `checkout_written` findings; a try without one is not
+    /// named.
+    #[tokio::test]
+    async fn a_runs_summary_names_the_checks_that_changed_the_checkout() {
+        use roko_learn::telemetry::records::{
+            AttemptKey, AttemptOutcome, SCOPE_CHECKOUT_WRITTEN, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord, ScopeFinding};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "w1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"w1","timestamp_ms":1,"plan_id":"p4"}),
+                json!({"type":"run.completed","run_id":"w1","timestamp_ms":3,"outcome":"unverified"}),
+            ],
+        );
+        let verdict = |task: &str, outcome, findings: Vec<ScopeFinding>| {
+            let identity = AttemptIdentity::new(&AttemptKey::new("w1", "p4", task, 1));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.set_scope_findings(findings);
+            let mut line = json!({
+                "schema_version": VERDICT_SCHEMA,
+                "record_id": format!("r-{task}"),
+                "seq": 1,
+                "ts": "2026-10-26T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (
+                line.as_object_mut(),
+                serde_json::to_value(&verdict).unwrap(),
+            ) {
+                line.extend(fields);
+            }
+            line
+        };
+        let written = |path: &str| ScopeFinding {
+            path: path.to_string(),
+            kind: SCOPE_CHECKOUT_WRITTEN.to_string(),
+        };
+        write_rows(
+            &state.layout.runs_dir().join("w1").join("attempts.jsonl"),
+            &[
+                verdict("T1", AttemptOutcome::Passed, Vec::new()),
+                verdict(
+                    "T2",
+                    AttemptOutcome::Unverified,
+                    vec![
+                        written("artifacts/ui/editor-idle.png"),
+                        written("artifacts/ui/editor-playing.png"),
+                    ],
+                ),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("w1".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            summary["checkout_written"],
+            json!([{
+                "plan_id": "p4",
+                "task_id": "T2",
+                "attempt": 1,
+                "paths": ["artifacts/ui/editor-idle.png", "artifacts/ui/editor-playing.png"],
+            }]),
+            "{summary}"
+        );
+    }
+
+    /// gap-b856d3: a run whose every rung failed its probe, so roko refused
+    /// the tasks the ladder routes, says so under `refused`: stage `ladder`,
+    /// kind `all_rungs_skipped`, and whether every rung failed on billing,
+    /// which a recharge and a resume fix. A run whose rungs failed otherwise
+    /// says `billing_only: false`.
+    #[tokio::test]
+    async fn a_runs_summary_names_an_all_rungs_skipped_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let refused = |run: &str, cheap_billing: bool| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run).unwrap();
+            let skipped = |rung: &str, model: &str, billing: bool| json!({"type":"rung_skipped","run_id":run,"ts_millis":2,"plan_id":"p1","rung":rung,"model":model,"provider":"p","reason":"refused","billing":billing,"detail":"skipped"});
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"plan_started","run_id":run,"ts_millis":1,"plan_id":"p1"}),
+                    skipped("cheap", "gpt-oss-120b", cheap_billing),
+                    skipped("mid", "gpt-5.4-mini", true),
+                    json!({"type":"attempt_settled","run_id":run,"ts_millis":3,"plan_id":"p1","task_id":"T1","attempt":1,"verdict":"all_rungs_skipped","blame":"harness","detail":"all_rungs_skipped: task `T1` was not run: no rung of the routing ladder can run, as every rung's model failed its tool-use probe at plan start"}),
+                    json!({"type":"task_completed","run_id":run,"ts_millis":4,"plan_id":"p1","task_id":"T1","outcome":"failed"}),
+                    json!({"type":"run_completed","run_id":run,"ts_millis":5,"outcome":"failed","duration_ms":4}),
+                ],
+            );
+        };
+        refused("billed", true);
+        refused("mixed", false);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("billed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        let why = &summary["refused"];
+        assert_eq!(why["stage"], "ladder", "{summary}");
+        assert_eq!(why["kind"], "all_rungs_skipped", "{summary}");
+        assert!(
+            why["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("task `T1` was not run: no rung")),
+            "{summary}"
+        );
+        assert_eq!(why["billing_only"], true, "{summary}");
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("mixed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["refused"]["kind"], "all_rungs_skipped", "{summary}");
+        assert_eq!(summary["refused"]["billing_only"], false, "{summary}");
+    }
+
+    /// gap-3217a0: a run's summary lists each rung's tries from the run's own
+    /// records, with their passes, time and cost, says when a higher rung
+    /// beat a lower one, and names the rungs the run said ran slow. A call
+    /// its provider refused before failover counts on the rung of the model
+    /// that made it, as `refused_usd` (gap-5cfa9c).
+    #[tokio::test]
+    async fn run_summary_lists_its_rungs() {
+        use roko_learn::telemetry::records::{
+            ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptLadder, AttemptOpenRecord, AttemptOutcome,
+            LadderReason, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r3").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"r3","timestamp_ms":1,"plan_id":"p1"}),
+                json!({"type":"rung_slow","run_id":"r3","timestamp_ms":2,"plan_id":"p1","task_id":"T1","attempt":1,"rung":"mid","model":"glm-4.7","reason":"time_bound","bound_secs":900,"detail":"rung mid (glm-4.7) runs slow"}),
+                json!({"type":"run.completed","run_id":"r3","timestamp_ms":3,"outcome":"succeeded","total_cost_usd":0.6}),
+            ],
+        );
+        // Three tasks pass on mid in 10 minutes each, and on strong in under
+        // a minute each, for less.
+        let mut lines = Vec::new();
+        let mut seq = 0;
+        let mut stamp = |schema: &str, record: Value| {
+            seq += 1;
+            let mut line = json!({
+                "schema_version": schema,
+                "record_id": format!("r{seq}"),
+                "seq": seq,
+                "ts": "2026-10-20T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (line.as_object_mut(), record) {
+                line.extend(fields);
+            }
+            lines.push(line);
+        };
+        for (task, rung, index, model, secs, usd) in [
+            ("T1", "mid", 1, "glm-4.7", 600, 0.10),
+            ("T2", "mid", 1, "glm-4.7", 600, 0.12),
+            ("T3", "mid", 1, "glm-4.7", 600, 0.11),
+            ("T4", "strong", 2, "gpt-5.4-mini", 40, 0.04),
+            ("T5", "strong", 2, "gpt-5.4-mini", 50, 0.05),
+            ("T6", "strong", 2, "gpt-5.4-mini", 45, 0.03),
+        ] {
+            let identity = AttemptIdentity::new(&AttemptKey::new("r3", "p1", task, 1));
+            let mut open = AttemptOpenRecord::new(identity.clone(), 1_000);
+            open.role = Some("implementer".to_string());
+            stamp(ATTEMPT_OPEN_SCHEMA, serde_json::to_value(&open).unwrap());
+            let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+            verdict.ladder = Some(AttemptLadder {
+                rung: Some(rung.to_string()),
+                index: Some(index),
+                step: 0,
+                reason: LadderReason::Start,
+                exhausted: false,
+                router_pick: None,
+            });
+            verdict.executed.model_dispatched = Some(model.to_string());
+            verdict.timing.attempt_started_at = Some(1_000);
+            verdict.timing.settled_at = Some(1_000 + secs * 1_000);
+            verdict.cost.billed_usd = Some(usd);
+            stamp(VERDICT_SCHEMA, serde_json::to_value(&verdict).unwrap());
+        }
+        write_rows(
+            &state.layout.runs_dir().join("r3").join("attempts.jsonl"),
+            &lines,
+        );
+        // glm-4.7's calls refused before T4 failed over to strong.
+        let t4 = AttemptKey::new("r3", "p1", "T4", 1).attempt_key();
+        write_rows(
+            &state.layout.learn_dir().join("costs.jsonl"),
+            &[
+                json!({"attempt_key": t4, "role": "failover_refused", "model": "glm-4.7", "cost_usd": 0.2076}),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r3".into()))
+            .await
+            .unwrap();
+        let rungs = summary["rungs"].as_array().expect("rungs");
+        assert_eq!(rungs.len(), 2, "{summary}");
+        assert_eq!(rungs[0]["rung"], "mid", "{summary}");
+        assert_eq!(rungs[0]["model"], "glm-4.7", "{summary}");
+        assert_eq!(rungs[0]["verified_passes"], 3, "{summary}");
+        assert_eq!(rungs[0]["try_s"]["median"], 600.0, "{summary}");
+        assert_eq!(rungs[0]["refused_usd"], 0.2076, "{summary}");
+        assert_eq!(rungs[1]["rung"], "strong", "{summary}");
+        assert_eq!(rungs[1]["pass_s"]["median"], 45.0, "{summary}");
+        assert_eq!(rungs[1]["refused_usd"], 0.0, "{summary}");
+        let misordered = summary["misordered"].as_str().expect("misordered");
+        assert!(
+            misordered.starts_with("strong (gpt-5.4-mini) is cheaper and faster per verified pass"),
+            "{misordered}"
+        );
+        let slow = summary["rung_slow"].as_array().expect("rung_slow");
+        assert_eq!(slow.len(), 1, "{summary}");
+        assert_eq!(slow[0]["rung"], "mid", "{summary}");
+        assert_eq!(slow[0]["reason"], "time_bound", "{summary}");
+        assert_eq!(slow[0]["bound_secs"], 900, "{summary}");
     }
 
     /// bug-74164c: a plan that did not finish delivered only its verified tasks, so
@@ -4266,6 +5566,135 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(too_much.status, StatusCode::BAD_REQUEST);
+    }
+
+    /// gap-0a126f: a binary file counts no lines, so a run's diff gives its
+    /// size instead: the bytes it had at the base and has at the run's tip,
+    /// `null` on the side it is missing from. A text file has no sizes. Round
+    /// v7's Undertow commits review images and demo renders this way.
+    #[tokio::test]
+    async fn a_binary_file_in_a_run_diff_says_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        let binary = |len: usize, seed: u8| -> Vec<u8> {
+            (0..len)
+                .map(|n| {
+                    if n % 7 == 0 {
+                        0
+                    } else {
+                        seed.wrapping_add(n as u8)
+                    }
+                })
+                .collect()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir_all(repo.join("artifacts/audio")).unwrap();
+        std::fs::write(repo.join("artifacts/audio/init.wav"), binary(1_000, 1)).unwrap();
+        std::fs::write(repo.join("artifacts/old.bin"), binary(300, 2)).unwrap();
+        std::fs::write(repo.join("notes.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/r8"]);
+        std::fs::write(repo.join("artifacts/audio/init.wav"), binary(2_000, 3)).unwrap();
+        std::fs::create_dir_all(repo.join("artifacts/ui")).unwrap();
+        std::fs::write(
+            repo.join("artifacts/ui/editor [idle].png"),
+            binary(1_500, 4),
+        )
+        .unwrap();
+        std::fs::remove_file(repo.join("artifacts/old.bin")).unwrap();
+        std::fs::write(repo.join("notes.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "the run's renders"]);
+        git(&["switch", "--quiet", "main"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r8").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"r8","timestamp_ms":1,"plan_id":"r8"}),
+                json!({"type":"task_completed","run_id":"r8","timestamp_ms":2,"plan_id":"r8","task_id":"t1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":"r8","timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ],
+        );
+        let manifest = roko_fs::RokoLayout::for_project(&repo)
+            .run_dir("r8")
+            .join("manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            json!({"run_id":"r8","plan_ids":["r8"],"workspace":{"base_commit":base}}).to_string(),
+        )
+        .unwrap();
+
+        let Json(diff) = get_run_diff(State(state), Path("r8".into()), Query(DiffQuery::default()))
+            .await
+            .unwrap();
+        let file = |path: &str| {
+            diff["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|file| file["path"] == path)
+                .unwrap_or_else(|| panic!("no {path} in {diff}"))
+                .clone()
+        };
+        let sizes = |path: &str| {
+            let file = file(path);
+            assert_eq!(file["binary"], true, "{file}");
+            assert!(file["patch"].is_null(), "{file}");
+            (file["bytes_before"].clone(), file["bytes_after"].clone())
+        };
+        assert_eq!(
+            sizes("artifacts/audio/init.wav"),
+            (json!(1_000), json!(2_000))
+        );
+        assert_eq!(
+            sizes("artifacts/ui/editor [idle].png"),
+            (Value::Null, json!(1_500))
+        );
+        assert_eq!(sizes("artifacts/old.bin"), (json!(300), Value::Null));
+        let notes = file("notes.txt");
+        assert_eq!(notes["binary"], false, "{notes}");
+        assert!(notes.get("bytes_before").is_none(), "{notes}");
     }
 
     #[tokio::test]

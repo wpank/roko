@@ -55,7 +55,7 @@ use tokio::sync::mpsc;
 pub use factory::SharedAgentFactory;
 pub use model_routing::{
     FallbackReason, LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs,
-    RoutingLadder,
+    RoutingLadder, RungDraw,
 };
 pub use outcome::{AgentOutcome, RunnerDispatchError};
 pub use prompt_builder::{
@@ -173,6 +173,11 @@ pub struct DispatchContext {
     /// The other plans running in the same working tree now, each with the
     /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.
     pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The build trees the attempt's own checkout holds, relative to it
+    /// (`build/plugin`): given warm from the person's checkout (gap-6754ab)
+    /// or built there by an earlier try. The prompt tells the agent to build
+    /// in them, not delete them (gap-9d7381). Empty in the shared checkout.
+    pub warm_build_trees: Vec<String>,
     /// The attempt this dispatch is: the unit of its route's exploration
     /// draw (S02.P1-3). `None` outside Graph dispatch, and then the route
     /// never explores.
@@ -197,6 +202,10 @@ pub struct DispatchContext {
     /// whatever the execution policy and the task's `context_weight` say
     /// (bug-19ae56).
     pub skip_enrichment: bool,
+    /// The plan's `[meta] sources`, the documents it is written from
+    /// (bug-60ad88): its prompt shows them first among the declared files,
+    /// and cuts them last (bug-a8a787).
+    pub source_documents: Vec<String>,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -290,6 +299,14 @@ impl Dispatcher {
     #[must_use]
     pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
         self.router = self.router.with_explore_epsilon(epsilon);
+        self
+    }
+
+    /// Let a ladder rung with two or more models that can run draw among
+    /// them at that ε ([`ModelRouter::with_rung_exploration`], gap-51d2ca).
+    #[must_use]
+    pub fn with_rung_exploration(mut self, on: bool) -> Self {
+        self.router = self.router.with_rung_exploration(on);
         self
     }
 
@@ -658,11 +675,13 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             attempt_key: None,
             arm_set: None,
             knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
+            source_documents: Vec::new(),
         }
     }
 

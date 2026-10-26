@@ -196,6 +196,9 @@ impl DreamAgentConfig {
             provider_semaphores: None,
             env: self.env.clone(),
             env_passthrough: Vec::new(),
+            tool_timeout: None,
+            tool_timeout_max: None,
+            essential_tools: Vec::new(),
             extra_args,
             effort: Some(self.effort.clone()),
             bare_mode: self.bare_mode,
@@ -218,6 +221,7 @@ impl DreamAgentConfig {
             thinking: None,
             data_llm: None,
             turn_budget: None,
+            hand_off_check: None,
             max_budget_usd: None,
             pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         }

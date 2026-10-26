@@ -1,0 +1,161 @@
+{
+  "argv": [
+    "vb",
+    "run",
+    "--experiment",
+    "PILOT-A",
+    "--run-id",
+    "fd-api-s1-1",
+    "--stream",
+    "pilot_fd_api",
+    "--arm",
+    "fd_api",
+    "--model",
+    "gpt-5.4",
+    "--seeds",
+    "1",
+    "--line",
+    "BL8",
+    "--allow-network",
+    "--max-cost-usd",
+    "2.6",
+    "--results",
+    "/Users/will/.roko-bench/viability",
+    "--lock",
+    "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-adc02717dbb19b822/benchmarks/viabilitybench/experiments/prereg.lock.json",
+    "--prereg-spec",
+    "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-adc02717dbb19b822/tmp/cybernetic-harness/specs/S09-experiments.md",
+    "--transcripts"
+  ],
+  "arm": "fd_api",
+  "base_url": "https://api.openai.com/v1",
+  "caps": {
+    "command_timeout_s": 60,
+    "identical_calls": 5,
+    "input_tokens_per_attempt": 150000,
+    "input_tokens_per_task": 300000,
+    "max_output_tokens": 8192,
+    "model_calls_per_task": 30,
+    "observation_chars": 10000,
+    "turns_per_attempt": 12,
+    "turns_per_task": 30,
+    "usd_per_task": 1.0,
+    "wallclock_s": 1200
+  },
+  "config": {
+    "arm": {
+      "arm": {
+        "billed": true,
+        "harness": "mini-loop",
+        "id": "fd_api",
+        "label": "billed check",
+        "line": "BL8",
+        "models_allow": [
+          "gpt-5.4"
+        ]
+      },
+      "caps": {
+        "command_timeout_s": 60,
+        "identical_calls": 5,
+        "input_tokens_per_attempt": 150000,
+        "input_tokens_per_task": 300000,
+        "max_output_tokens": 8192,
+        "model_calls_per_task": 30,
+        "observation_chars": 10000,
+        "turns_per_attempt": 12,
+        "turns_per_task": 30,
+        "usd_per_task": 1.0,
+        "wallclock_s": 1200
+      },
+      "providers": {
+        "openai": {
+          "api_key_env": "OPENAI_API_KEY",
+          "base_url": "https://api.openai.com/v1",
+          "max_tokens_param": "max_completion_tokens"
+        }
+      },
+      "schema_version": "vb.arm/1"
+    },
+    "caps": {
+      "command_timeout_s": 60,
+      "identical_calls": 5,
+      "input_tokens_per_attempt": 150000,
+      "input_tokens_per_task": 300000,
+      "max_output_tokens": 8192,
+      "model_calls_per_task": 30,
+      "observation_chars": 10000,
+      "turns_per_attempt": 12,
+      "turns_per_task": 30,
+      "usd_per_task": 1.0,
+      "wallclock_s": 1200
+    },
+    "driver": "vb-driver-1.0.0",
+    "endpoint": {
+      "api_key_env": "OPENAI_API_KEY",
+      "base_url": "https://api.openai.com/v1",
+      "max_tokens_param": "max_completion_tokens",
+      "provider": "openai",
+      "timeout_s": 180.0
+    },
+    "line": "BL8",
+    "model": "gpt-5.4",
+    "price_snapshot_id": "prices-2026-09-28",
+    "prompt": {
+      "sha256": "30b0d6e672a40aed0cc5f0360d9a011e03095602a1e1e2b4418575e339533fce",
+      "version": "mini-loop-2"
+    },
+    "stream": {
+      "id": "pilot_fd_api",
+      "instances": [
+        "F1-l1-0002",
+        "F4-l2-0002",
+        "F1-l3-0001",
+        "F4-l4-0001",
+        "F1-l5-0001"
+      ],
+      "spec_variant": "precise"
+    }
+  },
+  "config_hash": "sha256:f9461a53af105f4b408ddfb4b92c3a9e184fcb0133efead678c853f66cfec865",
+  "dirty": false,
+  "experiment_id": "PILOT-A",
+  "harness_sha": "3220afb56a5bff4654a41cb0186b1b210becbebf",
+  "model": "gpt-5.4",
+  "network": true,
+  "offline": false,
+  "price_snapshot_id": "prices-2026-09-28",
+  "provider": "openai",
+  "proxy": {
+    "log": "proxy.jsonl",
+    "policy": {
+      "allow": {},
+      "models": [
+        "gpt-5.4"
+      ],
+      "paths": [
+        "/chat/completions"
+      ],
+      "server_tools": "refused"
+    },
+    "profile": {
+      "name": "clean"
+    }
+  },
+  "run_id": "fd-api-s1-1",
+  "runs": 5,
+  "schema_version": "vb.run_manifest/1",
+  "secret_file": "/Users/will/.config/viabilitybench/secret",
+  "seeds": [
+    1
+  ],
+  "started_at": "2026-10-19T09:55:49Z",
+  "stream": "pilot_fd_api",
+  "suite": {
+    "hash": "sha256:ebe9c4829ca608402650276e0231d275d61f1c4785675a5fb92ad79fb85d3535",
+    "id": "vb"
+  },
+  "tasks": 5,
+  "work_dir": "/Users/will/workspaces/e349d0301f5935d3",
+  "worst_case_usd": 5.0,
+  "worst_task_usd": 1.0
+}

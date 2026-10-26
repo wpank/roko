@@ -51,7 +51,9 @@ After a `leak_suspected` run, rotate the secret: move the file aside and run `in
 new canary.
 
 **Provider keys** (bug-979a06). An agent under the driver's user can read the environment the driver started with
-(`ps -E -p $PPID` on macOS, `/proc/<ppid>/environ` on Linux); deleting a variable afterwards hides nothing. So no
+(`ps -E -p <pid>` on macOS, or `sysctl(KERN_PROCARGS2)` from inside the sandbox, and `/proc/<pid>/environ` on Linux;
+the direct loop's shell has a neutral trampoline for its parent, bug-0fd744, and the driver one step above it);
+deleting a variable afterwards hides nothing. So no
 provider key lives in the driver's environment. The keys live in a key file under the secret file's rules
 (`--key-file`, else `$VB_KEY_FILE`, else `~/.config/viabilitybench/keys`), with `NAME=value` lines named by the arm
 files' `api_key_env` and `#` lines ignored.

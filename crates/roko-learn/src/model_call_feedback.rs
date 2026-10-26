@@ -320,6 +320,18 @@ pub fn observe_model_call_on_router(
     );
 }
 
+/// A task attempt's settled outcome on the model it ran, as a routing
+/// observation reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TaskOutcome {
+    /// Whether it is a success: its learning label.
+    pub success: bool,
+    /// What it cost, in USD.
+    pub cost_usd: f64,
+    /// How long it took, in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// One outcome [`ModelCallJournal`] journals and applies: its reward, success
 /// and the share of a full observation it carries, and the task category
 /// whose per-category counts it moves too (bug-a6a3cd).
@@ -427,14 +439,12 @@ impl ModelCallJournal {
         cost_usd: f64,
         duration_ms: u64,
     ) {
-        let reward = task_outcome_reward(success, cost_usd, duration_ms);
-        let outcome = JournaledOutcome {
-            reward,
+        let outcome = TaskOutcome {
             success,
-            weight: 1.0,
-            category: Some(ctx.task_category),
+            cost_usd,
+            duration_ms,
         };
-        self.journal_observation(router, model_slug, ctx.to_features(), outcome);
+        self.observe_weighted_task_outcome(router, model_slug, ctx, outcome, 1.0);
     }
 
     /// Journal the settled outcome of a task that ran on an operator's
@@ -451,11 +461,46 @@ impl ModelCallJournal {
         cost_usd: f64,
         duration_ms: u64,
     ) {
+        let outcome = TaskOutcome {
+            success,
+            cost_usd,
+            duration_ms,
+        };
+        self.observe_weighted_task_outcome(
+            router,
+            model_slug,
+            ctx,
+            outcome,
+            OVERRIDE_LEARNING_RATE,
+        );
+    }
+
+    /// Journal a task's settled `outcome` on `model_slug` at `weight` (0.0 to
+    /// 1.0) of a full observation, then apply it to `router` as
+    /// [`CascadeRouter::record_weighted_outcome`] does: the reward of
+    /// [`Self::observe_task_outcome`], a full confidence trial, and a
+    /// `LinUCB` update scaled by `weight`. The category counts move in full,
+    /// as for any outcome. A ladder rung's draw among its models credits its
+    /// outcome so, at the draw's inverse-propensity weight (gap-51d2ca); a
+    /// replay repeats the weight.
+    pub fn observe_weighted_task_outcome(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        ctx: &RoutingContext,
+        outcome: TaskOutcome,
+        weight: f64,
+    ) {
+        let TaskOutcome {
+            success,
+            cost_usd,
+            duration_ms,
+        } = outcome;
         let reward = task_outcome_reward(success, cost_usd, duration_ms);
         let outcome = JournaledOutcome {
             reward,
             success,
-            weight: OVERRIDE_LEARNING_RATE,
+            weight,
             category: Some(ctx.task_category),
         };
         self.journal_observation(router, model_slug, ctx.to_features(), outcome);

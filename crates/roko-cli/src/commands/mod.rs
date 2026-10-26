@@ -33,7 +33,7 @@ pub mod recipe;
 pub mod research;
 pub mod run_cmd;
 pub mod run_index;
-pub mod safety;
+pub use roko_cli::commands::safety;
 pub mod screenshot;
 pub mod server;
 pub mod setup;

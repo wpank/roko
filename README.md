@@ -164,6 +164,8 @@ Roko ran most of the build of its own web portal: 16 plans and 173 tasks.
 
 36 workspace members · ~1.2M lines of Rust · 11,000+ tests · MIT OR Apache-2.0
 
+The design is described in the whitepaper, [Roko: A Cybernetic Harness for Multi-Agent Orchestration](https://github.com/wpank/roko/releases/tag/whitepaper-v1) (PDF; source in [docs/whitepaper](docs/whitepaper/)).
+
 ---
 
 **The guide:** [Quick start](#quick-start) · [How it works](#how-it-works) ·
@@ -466,13 +468,27 @@ roko knowledge dream report
 ### HTTP control plane
 
 ```bash
-roko serve                 # 127.0.0.1:6677
+roko serve                                    # 127.0.0.1:6677, in the foreground
 roko serve --port 9090
+roko serve --detach --workdir ~/code/app      # in the background; returns once it answers
+roko serve --detach --json --idle-exit 3600   # one JSON object; exits after an idle hour
+roko serve status --all                       # every serve on this machine
+roko serve stop --workdir ~/code/app          # --force stops one with runs going
+roko serve restart --all                      # move idle serves to this roko binary
 ```
 
 Besides the portal and the `/api/` routes, it serves SSE and WebSocket streams, `GET /ready`, and
 `GET /health`, the probe that the `Dockerfile` and `fly.toml` use.
 `python3 tools/http_route_inventory.py` lists the routes.
+
+Each project runs its own serve. `--detach` starts it in its own session, so it outlives the
+terminal or app that started it, and writes its output to `.roko/logs/serve.log`. Without `--port`
+it takes the configured port when that is free, else one the OS picks. It is idempotent: a serve
+that runs for the project already is reported, not started again. A serve records who it is in
+`.roko/runtime/serve.json` and in `~/.roko/runtime/serves/`, and on a loopback bind `GET /health`
+answers with the same `instance_id`, so a client can tell it from another project's serve.
+SIGINT, SIGTERM and SIGHUP shut it down gracefully and remove those files. `./dev.sh install`
+puts a release build at `~/.cargo/bin/roko` and runs `roko serve restart --all`.
 
 ### Agents and editors
 

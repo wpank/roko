@@ -17,7 +17,9 @@
 //! (A-DEC, backlog 5125; gap-6f31c3 for the sections): L-know's, L-play's or
 //! L-sec's layer and the chain's draw on it, both proposals on both arms,
 //! and a receipt that binds the included items' rendered digests to the
-//! assembled request ([`content_audit`]).
+//! assembled request ([`content_audit`]). A sections row's proposals also
+//! give the odds the section bandit left each section out at, beside the
+//! floor policy's, which L-sec's influence is measured on (q-beea61).
 //!
 //! [`ModelRouter::decide`]: crate::dispatch::ModelRouter::decide
 
@@ -31,7 +33,7 @@ use roko_learn::routing_log::DecisionState;
 use roko_learn::section_effect::{SECTION_BANDIT_PATH, SectionBandit, SectionDecision};
 use roko_learn::telemetry::records::{
     AuditFields, ContentProposals, DecisionAssignment, DecisionOpportunity, DecisionReceipt,
-    b3_digest,
+    ExclusionProposals, b3_digest,
 };
 use roko_learn::telemetry::{
     AttemptIdentity, AttemptTiming, ContentCandidate, ContentDecisionPoint, ContentDecisionRecord,
@@ -673,11 +675,16 @@ pub(super) fn content_audit(
 /// L-know's or L-play's proposals at its reader's point, and whether the
 /// point was the loop's opportunity: the learned proposal is the ids the
 /// reader would include, on the withheld arm too, under a θ that turns
-/// the knowledge section off (gap-6bb6d8), and when the section bandit
-/// leaves out the section they render into (bug-550909), so that what L-sec
-/// removed counts as proposed and not reached; π⁰ includes none. The point
-/// is an opportunity when it offered an item or its reader `read` had one,
-/// though it loaded nothing to show (gap-a13544).
+/// the knowledge section off (gap-6bb6d8), when the section bandit leaves
+/// out the section they render into (bug-550909), and when the token budget
+/// drops that section or cuts them off it (gap-be6bc5), so that what L-sec
+/// or the budget removed counts as proposed and not reached; π⁰ includes
+/// none. The budget is the composer's, not part of either loop's policy:
+/// the reader ranked a cut item in. The census compares the proposal with
+/// the choice whole, so a prompt the budget cut only some of the items from
+/// is not reached either. The point is an opportunity when it offered an
+/// item or its reader `read` had one, though it loaded nothing to show
+/// (gap-a13544).
 fn reader_proposals(
     items: &[&PromptItemDiagnostic],
     read: Option<&ReaderRead>,
@@ -692,6 +699,7 @@ fn reader_proposals(
                         ExcludedReason::WithheldArm
                             | ExcludedReason::HarnessPolicy
                             | ExcludedReason::BanditExcluded
+                            | ExcludedReason::TokenBudget
                     )
                 )
         })
@@ -709,6 +717,7 @@ fn reader_proposals(
     let proposals = ContentProposals {
         learned: Some(learned),
         default: Some(Vec::new()),
+        exclusion: None,
     };
     let opportunity = DecisionOpportunity {
         eligible: offered,
@@ -725,7 +734,9 @@ fn reader_proposals(
 /// ones the bandit left out; where it only logged them (`bandit.proposed`,
 /// the arm that runs π⁰), its sections are π⁰'s, and the bandit's leave out
 /// the ones it drew out. The token budget's cut is taken to fall alike on
-/// both. The point is an opportunity when the bandit drew a droppable
+/// both. Beside them, on either arm, go the odds each draw left its section
+/// out at and the floor policy's, which L-sec's influence is measured on
+/// (q-beea61). The point is an opportunity when the bandit drew a droppable
 /// section, which it does on every arm outside `maximize` mode, where the
 /// bandit is off.
 fn section_proposals(
@@ -745,20 +756,20 @@ fn section_proposals(
             .map(|draw| draw.section.clone())
             .collect()
     };
-    let (learned, default) = if bandit.applied.is_empty() {
+    let (learned, default, drawn) = if bandit.applied.is_empty() {
         let dropped = left_out(bandit.proposed);
         let learned = included
             .iter()
             .filter(|id| !dropped.contains(id))
             .cloned()
             .collect();
-        (learned, included)
+        (learned, included, bandit.proposed)
     } else {
         let mut default = included.clone();
         default.extend(left_out(bandit.applied));
-        (included, default)
+        (included, default, bandit.applied)
     };
-    let drew = !bandit.applied.is_empty() || !bandit.proposed.is_empty();
+    let drew = !drawn.is_empty();
     let reason = match (drew, maximize) {
         (true, _) => "droppable_sections",
         (false, true) => "maximize",
@@ -767,6 +778,7 @@ fn section_proposals(
     let proposals = ContentProposals {
         learned: Some(learned),
         default: Some(default),
+        exclusion: ExclusionProposals::of_draws(drawn),
     };
     let opportunity = DecisionOpportunity {
         eligible: drew,
@@ -1175,13 +1187,114 @@ mod tests {
         assert_ne!(taught.digest, cold.digest);
     }
 
+    /// q-beea61 (Will's option b): a sections row logs the odds the section
+    /// bandit left each droppable section out at, beside the floor policy's,
+    /// on both arms: the odds of the draws the prompt applied on the learned
+    /// arm, and of the draws it only logged on the arm that runs π⁰. L-sec's
+    /// influence is measured on them. A maximize-mode row, where the bandit
+    /// is off, logs none, and neither does a reader's row.
+    #[test]
+    fn sections_rows_log_the_bandits_exclusion_odds_on_both_arms() {
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode};
+        use roko_learn::section_effect::SECTION_EXCLUSION_FLOOR;
+        use roko_learn::telemetry::AttemptKey;
+
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let draws = ArmDraws::new(0, "2026-10-18");
+        let chain = |mode: &ArmMode, index: usize| {
+            let key = AttemptKey::new("gr-odds", "plan", format!("t{index}"), 1);
+            (ArmSet::assign(&key, &loops, mode, &draws), key)
+        };
+        let on_arm = |learned: bool| {
+            (0..1_000)
+                .map(|index| chain(&ArmMode::Normal, index))
+                .find(|(arms, _)| arms.takes_default("sections") != learned)
+                .expect("a chain on the arm")
+        };
+        let proposals = |(arms, key): &(ArmSet, AttemptKey),
+                         point: ContentDecisionPoint,
+                         items: &[&PromptItemDiagnostic],
+                         bandit: BanditDraws<'_>| {
+            let identity = AttemptIdentity::new(key);
+            let draw = (Some(arms), (1, 2));
+            content_audit(point, items, None, &identity, draw, "b3:request", bandit)
+                .expect("the loop's fields")
+                .0
+        };
+        let draw_at = |section: &str, p_exclude: f64, excluded: bool| SectionDecision {
+            section: section.to_string(),
+            p_exclude,
+            excluded,
+            propensity: if excluded { p_exclude } else { 1.0 - p_exclude },
+        };
+        let odds = |pairs: &[(&str, f64)]| -> BTreeMap<String, f64> {
+            pairs
+                .iter()
+                .map(|(id, p)| ((*id).to_string(), *p))
+                .collect()
+        };
+        let sections = ContentDecisionPoint::Sections;
+        let role = section_item("role_identity", None);
+        let conventions = section_item("conventions", None);
+
+        // The learned arm: the prompt applied a draw at the floor and one at
+        // the early cap, which left `tool_hints` out.
+        let hints = section_item("tool_hints", Some(ExcludedReason::BanditExcluded));
+        let applied = [
+            draw_at("conventions", 0.05, false),
+            draw_at("tool_hints", 0.2, true),
+        ];
+        let bandit = BanditDraws {
+            applied: &applied,
+            proposed: &[],
+        };
+        let items = [&role, &conventions, &hints];
+        let logged = proposals(&on_arm(true), sections, &items, bandit);
+        let exclusion = logged
+            .exclusion
+            .expect("the odds the prompt's draws were made at");
+        let want = odds(&[("conventions", 0.05), ("tool_hints", 0.2)]);
+        assert_eq!(exclusion.learned, want);
+        assert_eq!(exclusion.floor, SECTION_EXCLUSION_FLOOR);
+
+        // The arm that runs π⁰: every section in, the draws only logged.
+        let hints = section_item("tool_hints", None);
+        let proposed = [
+            draw_at("conventions", 0.5, true),
+            draw_at("tool_hints", 0.12, false),
+        ];
+        let bandit = BanditDraws {
+            applied: &[],
+            proposed: &proposed,
+        };
+        let items = [&role, &conventions, &hints];
+        let logged = proposals(&on_arm(false), sections, &items, bandit);
+        let exclusion = logged.exclusion.expect("the odds on the arm that runs π⁰");
+        let want = odds(&[("conventions", 0.5), ("tool_hints", 0.12)]);
+        assert_eq!(exclusion.learned, want);
+        assert_eq!(exclusion.floor, SECTION_EXCLUSION_FLOOR);
+
+        // Maximize mode turns the bandit off, so no odds; nor has a reader.
+        let off = BanditDraws {
+            applied: &[],
+            proposed: &[],
+        };
+        let maximized = chain(&ArmMode::Maximize, 0);
+        assert_eq!(proposals(&maximized, sections, &items, off).exclusion, None);
+        let lesson = knowledge_item("kn-1", 1, true);
+        let knowledge = ContentDecisionPoint::Knowledge;
+        let logged = proposals(&on_arm(true), knowledge, &[&lesson], off);
+        assert_eq!(logged.exclusion, None);
+    }
+
     /// bug-550909: when the section bandit leaves out `domain_context`, the
     /// knowledge and playbook readers' items never reach the prompt, and
     /// their rows still propose them. What L-sec removed is L-know's or
     /// L-play's learned proposal and not its choice, so the census counts
-    /// the opportunity as not reached. An item the token budget cut stays
-    /// out of the proposal, and the receipt names only what the prompt
-    /// included.
+    /// the opportunity as not reached. Since gap-be6bc5 an item the token
+    /// budget cut is in the proposal too, and the receipt names only what
+    /// the prompt included.
     #[test]
     fn reader_rows_propose_what_the_section_bandit_left_out() {
         use roko_learn::loop_audit::Registry;
@@ -1212,7 +1325,8 @@ mod tests {
         let cut = knowledge_item("kn-2", 2, false);
         let (proposals, fields) = audit(ContentDecisionPoint::Knowledge, &[&lesson, &cut]);
         assert_eq!(fields.loop_id.as_deref(), Some("L-know"));
-        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        let proposed = vec!["kn-1".to_string(), "kn-2".to_string()];
+        assert_eq!(proposals.learned, Some(proposed));
         assert_eq!(proposals.default, Some(Vec::new()));
         let receipt = fields.receipt.expect("the receipt");
         assert!(receipt.exposure_hashes.is_empty(), "{receipt:?}");
@@ -1400,7 +1514,11 @@ mod tests {
         assert_eq!(assignment.draw.layer, "knowledge");
         assert!(assignment.assigned_at < audit.decided_at.expect("decided_at"));
         let proposals = knowledge.proposals.as_ref().expect("the proposals");
-        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        // kn-2, which the token budget cut, is proposed and not chosen
+        // (gap-be6bc5).
+        let proposed = vec!["kn-1".to_string(), "kn-2".to_string()];
+        assert_eq!(proposals.learned, Some(proposed));
+        assert_eq!(knowledge.chosen, ["kn-1"]);
         assert_eq!(proposals.default, Some(Vec::new()));
         let receipt = audit.receipt.as_ref().expect("the receipt");
         assert!(receipt.ok);

@@ -91,11 +91,13 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         cached_workspace_map: String::new(),
         cached_workspace_context: String::new(),
         concurrent_plans: Vec::new(),
+        warm_build_trees: Vec::new(),
         attempt_key: None,
         arm_set: None,
         knowledge_section: true,
         self_model_rung: None,
         skip_enrichment: false,
+        source_documents: Vec::new(),
     }
 }
 
@@ -302,6 +304,7 @@ async fn retry_attempt_includes_gate_feedback_in_assembled_prompt() {
         clippy_warnings: vec![],
         raw_output: "...".into(),
         diagnosis: None,
+        kept: None,
     });
 
     let plan = dispatcher.plan(&task, &dctx).expect("plan");

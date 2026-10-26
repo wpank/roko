@@ -149,7 +149,8 @@ def test_every_broken_verifier_turns_ci_red(tmp_path, secret_file):
     (broken["noisy"] / "hidden.py").write_text(NONDETERMINISTIC)
     (broken["writes"] / "hidden.py").write_text(WRITES_TREE)
     (broken["leaks"] / "gen.py").write_text(LEAKING_GEN)
-    (broken["lax"] / "template/tests/visible/run.sh").write_text(LAX_VISIBLE)
+    for check in ("run.sh", "run_thorough.sh"):  # ℓ1–ℓ2 install run_thorough.sh as run.sh (gap-dd670b)
+        (broken["lax"] / "template/tests/visible" / check).write_text(LAX_VISIBLE)
     args = ["--families", ",".join(broken), *ONE_CELL, "--secret-file", str(secret_file)]
     for name, directory in broken.items():
         args += ["--family", f"{name}={directory}"]

@@ -436,9 +436,23 @@ impl TuiBridge {
 
     /// Efficiency metric for a task.
     pub fn efficiency_event(&self, plan_id: &str, task_id: &str, metric: &str, value: f64) {
+        self.try_efficiency_event(plan_id, task_id, None, metric, value);
+    }
+
+    /// Efficiency metric for one try of a task, `attempt` from 1, or for the
+    /// task when `None` (gap-1430ea).
+    pub fn try_efficiency_event(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: Option<u32>,
+        metric: &str,
+        value: f64,
+    ) {
         self.sender.publish(DashboardEvent::EfficiencyEvent {
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
+            attempt,
             metric: metric.to_string(),
             value,
         });
@@ -638,6 +652,37 @@ impl TuiBridge {
         });
     }
 
+    /// A try is judged on the tree its own checks saw at `at`, put back with
+    /// `paths` because the tree it ended with was worse (gap-56f761).
+    pub fn checked_tree_restored(&self, plan_id: &str, task_id: &str, at: &str, paths: &[String]) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: "checked_tree_restored".to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            message: format!(
+                "the try is judged on the tree its own checks saw at {at} ({} files put back)",
+                paths.len()
+            ),
+        });
+    }
+
+    /// The task's next try starts from `from` (`"try 2's files"`), because
+    /// its last try got less far than its best one (gap-fefdf5, gap-54089d)
+    /// or the run resumed it (gap-586507).
+    pub fn best_try_restored(&self, plan_id: &str, task_id: &str, from: &str, paths: &[String]) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: "best_try_restored".to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            message: format!(
+                "the next try starts from {from} ({} files put back)",
+                paths.len()
+            ),
+        });
+    }
+
     /// Extension hook fired.
     pub fn extension_hook(&self, plan_id: &str, task_id: &str, hook: &str, success: bool) {
         self.sender.publish(DashboardEvent::EventLogEntry {
@@ -667,6 +712,28 @@ impl TuiBridge {
         self.sender.publish(DashboardEvent::CriticalPathEtaUpdated {
             plan_id: plan_id.to_string(),
             eta_minutes,
+            eta_p90_minutes: None,
+            computed_at_ms: None,
+            basis: None,
+        });
+    }
+
+    /// Critical-path ETA as a range (gap-c1045f): the median and 90th
+    /// percentile minutes left, when it was computed, and what it rests on.
+    pub fn critical_path_eta_range(
+        &self,
+        plan_id: &str,
+        eta_minutes: u32,
+        eta_p90_minutes: u32,
+        computed_at_ms: u64,
+        basis: roko_core::dashboard_snapshot::EtaBasis,
+    ) {
+        self.sender.publish(DashboardEvent::CriticalPathEtaUpdated {
+            plan_id: plan_id.to_string(),
+            eta_minutes: Some(eta_minutes),
+            eta_p90_minutes: Some(eta_p90_minutes),
+            computed_at_ms: Some(computed_at_ms),
+            basis: Some(basis),
         });
     }
 

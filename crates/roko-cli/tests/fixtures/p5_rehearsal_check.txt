@@ -1,0 +1,287 @@
+Preset CMake variables:
+
+  BUILD_TESTING="ON"
+  CMAKE_BUILD_TYPE="RelWithDebInfo"
+  UNDERTOW_BUILD_PLUGIN="OFF"
+
+-- The C compiler identification is AppleClang 16.0.0.16000026
+-- The CXX compiler identification is AppleClang 16.0.0.16000026
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /Library/Developer/CommandLineTools/usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /Library/Developer/CommandLineTools/usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (0.7s)
+-- Generating done (0.2s)
+-- Build files have been written to: /x/regression-checkout/build/core
+[  1%] Building CXX object tests/spec/CMakeFiles/undertow_spec_support.dir/support/spec_alloc.cpp.o
+[  2%] Building CXX object tests/spec/CMakeFiles/undertow_spec_support.dir/support/spec_main.cpp.o
+[  5%] Building CXX object core/CMakeFiles/undertow_core.dir/src/engine.cpp.o
+[  5%] Building CXX object tests/spec/CMakeFiles/undertow_spec_support.dir/support/spec_analysis.cpp.o
+[  6%] Building CXX object core/CMakeFiles/undertow_core.dir/src/envelope.cpp.o
+[  8%] Building CXX object core/CMakeFiles/undertow_core.dir/src/filter.cpp.o
+[  9%] Building CXX object core/CMakeFiles/undertow_core.dir/src/lfo.cpp.o
+[ 10%] Building CXX object core/CMakeFiles/undertow_core.dir/src/oscillator.cpp.o
+[ 12%] Building CXX object core/CMakeFiles/undertow_core.dir/src/output_stage.cpp.o
+[ 13%] Building CXX object core/CMakeFiles/undertow_core.dir/src/params.cpp.o
+[ 15%] Building CXX object core/CMakeFiles/undertow_core.dir/src/presets.cpp.o
+[ 16%] Building CXX object core/CMakeFiles/undertow_core.dir/src/rumble.cpp.o
+[ 17%] Building CXX object core/CMakeFiles/undertow_core.dir/src/sequencer.cpp.o
+[ 19%] Building CXX object core/CMakeFiles/undertow_core.dir/src/voice.cpp.o
+[ 20%] Linking CXX static library libundertow_core.a
+[ 20%] Built target undertow_core
+[ 21%] Building CXX object tools/render/CMakeFiles/undertow_render.dir/main.cpp.o
+[ 23%] Linking CXX executable undertow_render
+[ 23%] Built target undertow_render
+[ 23%] Built target undertow_spec_support
+[ 26%] Building CXX object tests/spec/CMakeFiles/spec_p1_engine.dir/p1/engine_test.cpp.o
+[ 27%] Building CXX object tests/spec/CMakeFiles/spec_p0_engine.dir/p0/engine_test.cpp.o
+[ 27%] Building CXX object tests/spec/CMakeFiles/spec_p1_envelope.dir/p1/envelope_test.cpp.o
+[ 28%] Building CXX object tests/spec/CMakeFiles/spec_p0_params.dir/p0/params_test.cpp.o
+[ 30%] Linking CXX executable spec_p1_envelope
+[ 30%] Built target spec_p1_envelope
+[ 31%] Building CXX object tests/spec/CMakeFiles/spec_p1_filter.dir/p1/filter_test.cpp.o
+[ 34%] Linking CXX executable spec_p0_engine
+[ 34%] Linking CXX executable spec_p0_params
+[ 35%] Linking CXX executable spec_p1_engine
+[ 35%] Built target spec_p0_params
+[ 35%] Built target spec_p0_engine
+[ 36%] Building CXX object tests/spec/CMakeFiles/spec_p1_oscillator.dir/p1/oscillator_test.cpp.o
+[ 38%] Building CXX object tests/spec/CMakeFiles/spec_p1_voice.dir/p1/voice_test.cpp.o
+[ 38%] Built target spec_p1_engine
+[ 39%] Building CXX object tests/spec/CMakeFiles/spec_p2_engine.dir/p2/engine_test.cpp.o
+[ 41%] Linking CXX executable spec_p1_filter
+[ 41%] Built target spec_p1_filter
+[ 42%] Building CXX object tests/spec/CMakeFiles/spec_p2_lfo.dir/p2/lfo_test.cpp.o
+[ 43%] Linking CXX executable spec_p1_oscillator
+[ 43%] Built target spec_p1_oscillator
+[ 45%] Building CXX object tests/spec/CMakeFiles/spec_p2_output.dir/p2/output_test.cpp.o
+[ 46%] Linking CXX executable spec_p1_voice
+[ 46%] Built target spec_p1_voice
+[ 47%] Linking CXX executable spec_p2_lfo
+[ 49%] Building CXX object tests/spec/CMakeFiles/spec_p2_rumble.dir/p2/rumble_test.cpp.o
+[ 49%] Built target spec_p2_lfo
+[ 50%] Linking CXX executable spec_p2_engine
+[ 52%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_engine.dir/p2_1/engine_test.cpp.o
+[ 52%] Built target spec_p2_engine
+[ 53%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_envelope.dir/p2_1/envelope_test.cpp.o
+[ 54%] Linking CXX executable spec_p2_output
+[ 56%] Linking CXX executable spec_p2_rumble
+[ 57%] Linking CXX executable spec_p2_1_envelope
+[ 58%] Linking CXX executable spec_p2_1_engine
+[ 58%] Built target spec_p2_output
+[ 58%] Built target spec_p2_1_envelope
+[ 58%] Built target spec_p2_rumble
+[ 58%] Built target spec_p2_1_engine
+[ 60%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_filter.dir/p2_1/filter_test.cpp.o
+[ 61%] Building CXX object tests/spec/CMakeFiles/spec_p2_2_filter.dir/p2_2/filter_test.cpp.o
+[ 63%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_oscillator.dir/p2_1/oscillator_test.cpp.o
+[ 64%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_voice.dir/p2_1/voice_test.cpp.o
+[ 65%] Linking CXX executable spec_p2_1_filter
+[ 67%] Linking CXX executable spec_p2_2_filter
+[ 68%] Linking CXX executable spec_p2_1_oscillator
+[ 68%] Built target spec_p2_1_filter
+[ 68%] Built target spec_p2_1_oscillator
+[ 68%] Built target spec_p2_2_filter
+[ 71%] Building CXX object tests/spec/CMakeFiles/spec_p2_2_output.dir/p2_2/output_test.cpp.o
+[ 71%] Building CXX object tests/spec/CMakeFiles/spec_p2_2_rumble.dir/p2_2/rumble_test.cpp.o
+[ 72%] Building CXX object tests/spec/CMakeFiles/spec_p3_engine.dir/p3/engine_test.cpp.o
+[ 73%] Linking CXX executable spec_p2_1_voice
+[ 73%] Built target spec_p2_1_voice
+[ 75%] Building CXX object tests/spec/CMakeFiles/spec_p3_sequencer.dir/p3/sequencer_test.cpp.o
+[ 76%] Linking CXX executable spec_p2_2_output
+[ 76%] Built target spec_p2_2_output
+[ 78%] Linking CXX executable spec_p2_2_rumble
+[ 79%] Building CXX object tests/spec/CMakeFiles/spec_p4_scope.dir/p4/scope_test.cpp.o
+[ 79%] Built target spec_p2_2_rumble
+[ 80%] Building CXX object tests/spec/CMakeFiles/spec_p5_demos.dir/p5/demos_test.cpp.o
+[ 82%] Linking CXX executable spec_p3_engine
+[ 82%] Built target spec_p3_engine
+[ 83%] Building CXX object tests/spec/CMakeFiles/spec_p5_filter.dir/p5/filter_test.cpp.o
+[ 84%] Linking CXX executable spec_p4_scope
+[ 84%] Built target spec_p4_scope
+[ 86%] Building CXX object tests/spec/CMakeFiles/spec_p5_install.dir/p5/install_test.cpp.o
+[ 87%] Linking CXX executable spec_p5_filter
+[ 89%] Linking CXX executable spec_p5_demos
+[ 89%] Built target spec_p5_filter
+[ 90%] Linking CXX executable spec_p3_sequencer
+[ 91%] Building CXX object tests/spec/CMakeFiles/spec_p5_presets.dir/p5/presets_test.cpp.o
+[ 91%] Built target spec_p5_demos
+[ 91%] Built target spec_p3_sequencer
+[ 93%] Building CXX object tests/spec/CMakeFiles/spec_p5_render.dir/p5/render_test.cpp.o
+[ 94%] Building CXX object tests/spec/CMakeFiles/spec_p5_sequencer.dir/p5/sequencer_test.cpp.o
+[ 95%] Linking CXX executable spec_p5_install
+[ 95%] Built target spec_p5_install
+[ 97%] Linking CXX executable spec_p5_sequencer
+[ 97%] Built target spec_p5_sequencer
+[ 98%] Linking CXX executable spec_p5_render
+[100%] Linking CXX executable spec_p5_presets
+[100%] Built target spec_p5_render
+[100%] Built target spec_p5_presets
+Test project /x/regression-checkout/build/core
+      Start  1: spec_p0_engine
+ 1/28 Test  #1: spec_p0_engine ...................   Passed    0.35 sec
+      Start  2: spec_p0_params
+ 2/28 Test  #2: spec_p0_params ...................   Passed    0.33 sec
+      Start  3: spec_p1_engine
+ 3/28 Test  #3: spec_p1_engine ...................   Passed    0.94 sec
+      Start  4: spec_p1_envelope
+ 4/28 Test  #4: spec_p1_envelope .................   Passed    0.25 sec
+      Start  5: spec_p1_filter
+ 5/28 Test  #5: spec_p1_filter ...................   Passed    0.66 sec
+      Start  6: spec_p1_oscillator
+ 6/28 Test  #6: spec_p1_oscillator ...............   Passed    0.30 sec
+      Start  7: spec_p1_voice
+ 7/28 Test  #7: spec_p1_voice ....................   Passed    0.41 sec
+      Start  8: spec_p2_engine
+ 8/28 Test  #8: spec_p2_engine ...................   Passed    1.17 sec
+      Start  9: spec_p2_lfo
+ 9/28 Test  #9: spec_p2_lfo ......................   Passed    0.35 sec
+      Start 10: spec_p2_output
+10/28 Test #10: spec_p2_output ...................   Passed    0.30 sec
+      Start 11: spec_p2_rumble
+11/28 Test #11: spec_p2_rumble ...................   Passed    0.85 sec
+      Start 12: spec_p2_1_engine
+12/28 Test #12: spec_p2_1_engine .................   Passed    0.33 sec
+      Start 13: spec_p2_1_envelope
+13/28 Test #13: spec_p2_1_envelope ...............   Passed    0.25 sec
+      Start 14: spec_p2_1_filter
+14/28 Test #14: spec_p2_1_filter .................   Passed    0.36 sec
+      Start 15: spec_p2_1_oscillator
+15/28 Test #15: spec_p2_1_oscillator .............   Passed    0.25 sec
+      Start 16: spec_p2_1_voice
+16/28 Test #16: spec_p2_1_voice ..................   Passed    0.26 sec
+      Start 17: spec_p2_2_filter
+17/28 Test #17: spec_p2_2_filter .................   Passed    0.28 sec
+      Start 18: spec_p2_2_output
+18/28 Test #18: spec_p2_2_output .................   Passed    0.32 sec
+      Start 19: spec_p2_2_rumble
+19/28 Test #19: spec_p2_2_rumble .................   Passed    0.72 sec
+      Start 20: spec_p3_engine
+20/28 Test #20: spec_p3_engine ...................   Passed    0.68 sec
+      Start 21: spec_p3_sequencer
+21/28 Test #21: spec_p3_sequencer ................   Passed    0.26 sec
+      Start 22: spec_p4_scope
+22/28 Test #22: spec_p4_scope ....................   Passed    0.23 sec
+      Start 23: spec_p5_demos
+23/28 Test #23: spec_p5_demos ....................***Failed    0.29 sec
+[doctest] run with "--help" for options
+===============================================================================
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:14:
+TEST CASE:  P5.06 render-demos.sh wrote the four committed showcase WAVs and a WAV of every preset
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/sub-pure-foundation.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/sub-low-pressure.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/sub-kick-companion.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/bass-hypnotic-roller.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/bass-acid-undertow.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/bass-dub-pulse.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/bass-warehouse-drone.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/rumble-dark-room.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/rumble-tunnel-floor.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/rumble-sidechain-fog.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/seq-evolving-minor.wav is missing: render-demos.sh renders every preset into build/demos/
+
+/x/regression-checkout/tests/spec/p5/demos_test.cpp:32: ERROR: CHECK( spec::readWav(path).ok ) is NOT correct!
+  values: CHECK( false )
+  logged: /x/regression-checkout/build/demos/seq-phrygian-pulse.wav is missing: render-demos.sh renders every preset into build/demos/
+
+===============================================================================
+[doctest] test cases:  1 |  0 passed |  1 failed | 0 skipped
+[doctest] assertions: 48 | 36 passed | 12 failed |
+[doctest] Status: FAILURE!
+
+      Start 24: spec_p5_filter
+24/28 Test #24: spec_p5_filter ...................   Passed    0.25 sec
+      Start 25: spec_p5_install
+25/28 Test #25: spec_p5_install ..................***Failed    0.24 sec
+[doctest] run with "--help" for options
+===============================================================================
+/x/regression-checkout/tests/spec/p5/install_test.cpp:27:
+TEST CASE:  P5.07 install.sh --dest puts the three signed bundles where a DAW and the Finder look
+
+/x/regression-checkout/tests/spec/p5/install_test.cpp:33: FATAL ERROR: REQUIRE( exists(bundle) ) is NOT correct!
+  values: REQUIRE( false )
+  logged: /x/regression-checkout/build/install-test/VST3/Metakosmia Undertow.vst3
+          install.sh --dest /x/regression-checkout/build/install-test must put this bundle here
+
+===============================================================================
+[doctest] test cases: 1 | 0 passed | 1 failed | 0 skipped
+[doctest] assertions: 1 | 0 passed | 1 failed |
+[doctest] Status: FAILURE!
+
+      Start 26: spec_p5_presets
+26/28 Test #26: spec_p5_presets ..................   Passed    0.97 sec
+      Start 27: spec_p5_render
+27/28 Test #27: spec_p5_render ...................   Passed    0.88 sec
+      Start 28: spec_p5_sequencer
+28/28 Test #28: spec_p5_sequencer ................   Passed    0.25 sec
+
+93% tests passed, 2 tests failed out of 28
+
+Total Test time (real) =  12.77 sec
+
+The following tests FAILED:
+	 23 - spec_p5_demos (Failed)
+	 25 - spec_p5_install (Failed)
+heavy.sh: got cpp slot 1 after 0s
+In file included from /x/regression-checkout/core/src/envelope.cpp:1:
+/x/regression-checkout/core/include/undertow/envelope.h:29:12: warning: private field 'sustain_' is not used [-Wunused-private-field]
+   29 |     double sustain_ = 1.0;
+      |            ^
+1 warning generated.
+/x/regression-checkout/core/src/filter.cpp:14:17: warning: unused variable 'kButterK1' [-Wunused-const-variable]
+   14 | constexpr float kButterK1 = 0.7653668647301795f;
+      |                 ^~~~~~~~~
+1 warning generated.
+/x/regression-checkout/core/src/output_stage.cpp:17:15: warning: unused function 'flushDenorm' [-Wunused-function]
+   17 | inline double flushDenorm(double x) {
+      |               ^~~~~~~~~~~
+1 warning generated.
+/x/regression-checkout/core/src/voice.cpp:341:17: warning: unused variable 'filtEnvSample' [-Wunused-variable]
+  341 |     const float filtEnvSample = filtEnv_.process();
+      |                 ^~~~~~~~~~~~~
+/x/regression-checkout/core/src/voice.cpp:10:18: warning: unused variable 'kLog2' [-Wunused-const-variable]
+   10 | constexpr double kLog2 = 0.6931471805599453;
+      |                  ^~~~~
+2 warnings generated.
+Errors while running CTest
+[exit 8 after 24714 ms]
+

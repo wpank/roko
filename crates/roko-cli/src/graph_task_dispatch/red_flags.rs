@@ -21,7 +21,10 @@
 //!   ([`roko_gate::attempt_diff`], S05 check A1): a weakened, deleted or
 //!   skipped test, an edited verify script, `tasks.toml`, pinned acceptance
 //!   test or gate config. Changes outside the task's `files` are logged,
-//!   and rejected only under `[gates] diff_scope = "enforce"`;
+//!   and rejected only under `[gates] diff_scope = "enforce"`. Build output
+//!   is neither (`roko_gate::attempt_diff::BUILD_OUTPUT_DIRS`): acceptance
+//!   leaves the new build output that the task's `files` do not name out of
+//!   the attempt's commit (bug-ba0c40);
 //! - it is an implementer attempt at a task that names `files`, and the task
 //!   has changed nothing, or added only stub lines
 //!   ([`roko_gate::analyze_diff`]): "no changes". Other roles, refactors
@@ -29,7 +32,9 @@
 //!   declared file that git ignores exists on disk, the rejection says so:
 //!   no diff can show a change to it. When the tool policy refused some of
 //!   the attempt's calls, the rejection names them, the rule each broke
-//!   and, where it can tell, what satisfies the rule (gap-2e455d). An
+//!   and, where it can tell, what satisfies the rule (gap-2e455d). When its
+//!   closing reply reached the model's output limit while it was still
+//!   reasoning, the rejection says it stopped before it acted (bug-872885). An
 //!   attempt that changed nothing, at a task with authored verify steps, is
 //!   judged by them first: when they pass on the unchanged tree, the task's
 //!   work was already there, as on a `--fresh` rerun of a finished task, and
@@ -130,9 +135,28 @@ impl GraphTaskDispatcher {
         scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<Screened> {
         let role = task.role.as_deref().unwrap_or("implementer");
+        // The first attempt after a hand-back of the plan's check
+        // (find-5bcba7) starts a new chain: what it changed counts from the
+        // tree it started on, whatever attempt of the task it is.
+        let handed_back = self
+            .handed_back
+            .lock()
+            .remove(&format!("{}/{}", spec.plan_id, task.id));
+        let chain_attempt = if handed_back { 0 } else { attempt_number };
         // First, so the attempt's changed files are kept whatever the screen
         // decides (`take_changed_files`).
         let diff = self.attempt_diff(spec, task, attempt_key, workdir).await;
+        // Whether it changed anything, for a hand-back's retry budget
+        // (`changed_nothing`, bug-fc05a3).
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        if diff
+            .as_ref()
+            .is_some_and(|diff| diff.changes.is_empty() && diff.sibling_paths.is_empty())
+        {
+            self.unchanged_tries.lock().insert(task_key);
+        } else {
+            self.unchanged_tries.lock().remove(&task_key);
+        }
         // DP1 keys a green attempt's audit draw on the tree it left.
         if let (Some(diff), Some(audit)) = (&diff, self.attempts.audit()) {
             audit.note_trees(attempt_key, diff.base(), diff.result());
@@ -159,7 +183,7 @@ impl GraphTaskDispatcher {
             }
             rejection = match diff_rejection {
                 Some(rejection) => Some(rejection),
-                None => no_changes_red_flag(task, role, diff, attempt_number).await,
+                None => no_changes_red_flag(task, role, diff, chain_attempt).await,
             };
         }
         let Some(mut rejection) = rejection else {
@@ -174,6 +198,19 @@ impl GraphTaskDispatcher {
             rejection.message.push_str("\n\n");
             rejection.message.push_str(&note);
             rejection.diagnosis = Some(note);
+        }
+        // An attempt whose closing reply ran out of output while it was
+        // still reasoning changed nothing because it never acted, not
+        // because it was done; the next attempt is told so (bug-872885).
+        if rejection.check == "no_changes"
+            && let Some(note) = output_limit_note(dispatch)
+        {
+            rejection.message.push_str("\n\n");
+            rejection.message.push_str(&note);
+            rejection.diagnosis = Some(match rejection.diagnosis.take() {
+                Some(refusals) => format!("{refusals}\n\n{note}"),
+                None => note,
+            });
         }
         if rejection.unchanged_tree {
             tracing::info!(
@@ -855,6 +892,47 @@ fn refused_calls(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> Vec<Refu
         }
     }
     refused
+}
+
+/// The note a "no changes" rejection carries when the attempt's closing
+/// reply, the last turn roko's tool loop traced (`agent.trace`), reached the
+/// model's output limit with no tool call: the model spent its output
+/// reasoning and never acted (bug-872885). The tool loop asks such a reply
+/// again once, so the attempt ends on one only when the model did it twice
+/// in a row.
+fn output_limit_note(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> Option<String> {
+    let closing = dispatch.result.trace.iter().rev().find_map(|signal| {
+        if signal.kind.as_str() != "agent.trace" {
+            return None;
+        }
+        match &signal.body {
+            Body::Json(turn) => Some(turn),
+            _ => None,
+        }
+    })?;
+    let acted = closing["tool_calls"]
+        .as_array()
+        .is_some_and(|calls| !calls.is_empty());
+    let act = "Keep your reasoning short, make a tool call early, work in small steps, and write \
+               a large file in several smaller edits.";
+    if acted {
+        return None;
+    }
+    // roko stops a reply that only reasons at its reasoning limit
+    // (gap-f3f950).
+    if closing["finish_reason"] == roko_agent::streaming::REASONING_LIMIT_FINISH {
+        return Some(format!(
+            "Its closing reply reasoned past its limit (finish_reason=reasoning_limit) with no \
+             tool call and no text, so it was stopped: the attempt stopped before it acted. {act}"
+        ));
+    }
+    (closing["finish_reason"] == "length").then(|| {
+        format!(
+            "Its closing reply reached the model's output limit (finish_reason=length) while it \
+             was still reasoning, and made no tool call: the attempt stopped before it acted. \
+             {act}"
+        )
+    })
 }
 
 /// The note a "no changes" rejection carries when the tool policy refused
@@ -1648,7 +1726,11 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             tool_call_turn("call-write-again", "write_file", write),
             final_turn("Done."),
         ]);
-        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path()).await;
+        // The screen and its feedback across tries: the agent is not sent
+        // back within its try (bug-cbbaa8).
+        let mut config = api_config(base_url);
+        config.gates.hand_off_continues = 0;
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
         let marker = temp.path().join("verify-ran");
         let check = format!("grep -q 'fn two' src/lib.rs && touch {}", marker.display());
         let task = TaskDef {
@@ -1697,6 +1779,198 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             "the retry's prompt carries the note: {}",
             requests[2]
         );
+    }
+
+    /// A reply that streams only reasoning and reaches the output limit
+    /// after `output_tokens`, with no tool call and no text, as glm-4.7's did
+    /// in round v7's phase 0 run (bug-872885).
+    fn reasoning_cut_turn(output_tokens: u32) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-cut",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "First `two`, then its test. Let me plan each line"
+                },
+                "finish_reason": "length"
+            }],
+            "usage": {
+                "prompt_tokens": 1166,
+                "completion_tokens": output_tokens,
+                "total_tokens": 1166 + output_tokens
+            }
+        })
+    }
+
+    /// A task that adds `two` to `src/lib.rs`, whose verify step creates
+    /// `marker` when it passes.
+    fn add_two_task(marker: &Path) -> TaskDef {
+        let check = format!("grep -q 'fn two' src/lib.rs && touch {}", marker.display());
+        TaskDef {
+            id: "T01".to_string(),
+            title: "Add two".to_string(),
+            description: Some("Add `two` to src/lib.rs".to_string()),
+            model_hint: Some("api-model".to_string()),
+            files: vec!["src/lib.rs".to_string()],
+            verify: vec![verify_step("structural", &check)],
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        }
+    }
+
+    /// bug-872885: in round v7's phase 0 run, T3's first try read its files,
+    /// then glm-4.7 spent one call's whole output limit reasoning, with no
+    /// tool call and no text. The try ended there, changed nothing, and was
+    /// rejected as `no_changes`. Now that call is asked again within the
+    /// try, told what happened, and the try acts and passes.
+    #[tokio::test]
+    async fn a_try_whose_reply_ran_out_of_output_reasoning_goes_on_and_passes() {
+        let temp = tempdir().expect("tempdir");
+        let one = "pub fn one() -> u8 {\n    1\n}\n";
+        let two = format!("{one}\npub fn two() -> u8 {{\n    one() + one()\n}}\n");
+        commit_repo(temp.path(), &[("src/lib.rs", one)]);
+        let read = serde_json::json!({ "path": "src/lib.rs" });
+        let write = serde_json::json!({ "path": "src/lib.rs", "content": two });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("call-read", "read_file", read),
+            reasoning_cut_turn(1_024),
+            tool_call_turn("call-write", "write_file", write),
+            final_turn("Done."),
+        ]);
+        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path()).await;
+        let marker = temp.path().join("verify-ran");
+        let task = add_two_task(&marker);
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the try passes");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        assert!(marker.exists(), "its verify step passed");
+        let requests = requests.lock();
+        assert_eq!(requests.len(), 4, "read, the cut reply, write, done");
+        assert!(
+            requests[2]
+                .to_string()
+                .contains("reached the output limit (1024 tokens)"),
+            "the call after the cut says why: {}",
+            requests[2]
+        );
+    }
+
+    /// bug-872885: when the reply asked again also runs out of output
+    /// reasoning, the attempt ends having changed nothing. Its rejection and
+    /// the next attempt's feedback say it stopped before it acted, not only
+    /// that it made no change.
+    #[tokio::test]
+    async fn no_changes_feedback_names_a_closing_reply_cut_at_the_output_limit() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
+        let read = serde_json::json!({ "path": "src/lib.rs" });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("call-read", "read_file", read),
+            reasoning_cut_turn(1_024),
+            reasoning_cut_turn(1_024),
+        ]);
+        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path()).await;
+        let marker = temp.path().join("verify-ran");
+        let task = add_two_task(&marker);
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:no_changes");
+        let stopped = "Its closing reply reached the model's output limit \
+                       (finish_reason=length) while it was still reasoning";
+        assert!(message.contains(stopped), "{message}");
+        assert_eq!(requests.lock().len(), 3, "read and two cut replies");
+        let next = dispatcher.next_retry_attempt(&make_spec(&task).plan_id, &task.id);
+        let feedback = next.feedback.expect("feedback for the next attempt");
+        assert!(
+            feedback
+                .diagnosis
+                .as_deref()
+                .is_some_and(|lead| lead.contains(stopped)),
+            "{feedback:?}"
+        );
+    }
+
+    /// A reply that streams only reasoning, about 500 tokens of it, past
+    /// roko's reasoning limit for a 1,024-token output limit (384), so roko
+    /// stops it (gap-f3f950).
+    fn long_reasoning_turn() -> serde_json::Value {
+        let mut turn = reasoning_cut_turn(1_024);
+        turn["choices"][0]["message"]["reasoning_content"] =
+            serde_json::json!("Let me plan each line. ".repeat(87));
+        turn
+    }
+
+    /// gap-f3f950: a reply that only reasons is stopped at 3/8 of the
+    /// model's output limit (384 of 1,024 tokens here) and asked again, and a
+    /// second such reply in a row ends the try. The hub hears a
+    /// `reasoning_cut` for each, with what its re-ask did, and the rejection
+    /// says the closing reply was stopped.
+    #[tokio::test]
+    async fn a_reply_stopped_twice_for_its_reasoning_ends_the_try_and_says_so() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
+        let read = serde_json::json!({ "path": "src/lib.rs" });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("call-read", "read_file", read),
+            long_reasoning_turn(),
+            long_reasoning_turn(),
+        ]);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path())
+            .await
+            .with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(hub.sender()));
+        let marker = temp.path().join("verify-ran");
+        let task = add_two_task(&marker);
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:no_changes");
+        assert!(
+            message.contains("finish_reason=reasoning_limit"),
+            "{message}"
+        );
+        let sent = requests.lock();
+        assert_eq!(sent.len(), 3, "read and two stopped replies");
+        assert!(
+            sent[2].to_string().contains("so it was stopped"),
+            "the call after the stop says why: {}",
+            sent[2]
+        );
+        drop(sent);
+        let cuts: Vec<(u64, u64, String)> = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::ReasoningCut {
+                    reasoning_tokens,
+                    limit_tokens,
+                    reask,
+                    ..
+                } => Some((reasoning_tokens, limit_tokens, reask)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cuts.len(), 2, "{cuts:?}");
+        assert!(
+            cuts.iter()
+                .all(|(tokens, limit, _)| *limit == 384 && *tokens >= 384),
+            "{cuts:?}"
+        );
+        let reasks: Vec<&str> = cuts.iter().map(|(_, _, reask)| reask.as_str()).collect();
+        assert_eq!(reasks, ["cut_again", "ended"]);
     }
 
     /// gap-2e455d: a refusal note names each refused call with its file and

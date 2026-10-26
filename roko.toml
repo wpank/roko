@@ -103,8 +103,8 @@ cost_output_per_m = 0.1
 [models.cerebras-gptoss]
 provider = "cerebras"
 slug = "gpt-oss-120b"
-context_window = 128000
-max_output = 8192
+context_window = 98304
+max_output = 32768
 tool_format = "openai_json"
 # Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
 cost_input_per_m = 0.35
@@ -158,7 +158,7 @@ tool_format = "openai_json"
 provider = "zai"
 slug = "glm-4.7"
 context_window = 128000
-max_output = 16384
+max_output = 32768
 tool_format = "openai_json"
 # Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
 cost_input_per_m = 0.6
@@ -200,7 +200,7 @@ cost_output_per_m = 0.6
 provider = "openai"
 slug = "gpt-5.4-mini"
 context_window = 200000
-max_output = 16384
+max_output = 32768
 tool_format = "openai_json"
 # Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
 cost_input_per_m = 0.75
@@ -335,11 +335,15 @@ latency = 0.2
 # no usable provider (API key or CLI on PATH) are skipped, so a workspace with only the Claude CLI
 # runs every task on claude-sonnet, as before. [[routing.ladder.roles]] entries (role = "...")
 # override rungs or start for one role. Planning uses [authoring] planner_model, not a rung.
+# A rung's `alternates` are models it draws among (gap-51d2ca, decision 4111 option B1): with
+# [routing] explore_epsilon at its default 0.05, a try on `mid` runs kimi-k2-5 with P = 0.025 and
+# glm-4-7 otherwise, both logged with their propensity, so the cascade router learns from plan runs.
+# An alternate without a key is left out, and climbs and failover go by rung as before.
 [routing.ladder]
 enabled = true
 rungs = [
   { name = "cheap", model = "cerebras-gptoss" },
-  { name = "mid", model = "glm-4-7" },
+  { name = "mid", model = "glm-4-7", alternates = ["kimi-k2-5"] },
   { name = "strong", model = "gpt-5-4-mini" },
   { name = "top", model = "claude-sonnet" },
 ]
@@ -614,3 +618,8 @@ dense_embedding_enabled = false
 rerank_enabled = false
 
 [retrieval.role_token_budgets]
+
+# Added by hermes roko fix workspace-chat-ready on 2026-10-19: roko's data-model boundary.
+# Before a run's agent reads what it fetched from the web or an MCP tool, this model screens it.
+[agent.data_llm]
+model = "gpt-4o-mini"

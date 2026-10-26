@@ -383,7 +383,7 @@ impl GitDeliveryBackend {
         } else {
             let tree = match git_merge_tree(workdir, &old, &theirs).await {
                 Ok(MergeTree::Clean { tree }) => tree,
-                Ok(MergeTree::Conflicted { paths }) => {
+                Ok(MergeTree::Conflicted { paths, .. }) => {
                     return Err(format!(
                         "merge conflict: branch '{branch}' into '{target}'; conflicted paths: {}",
                         paths.join(", ")
@@ -681,9 +681,9 @@ pub fn regression_target_dir(workdir: &Path) -> PathBuf {
 }
 
 /// Hold `checkout` for one delivery: an exclusive lock on its `.lock` file,
-/// released when the returned file drops. It serializes deliveries within a
+/// released when the returned guard drops. It serializes deliveries within a
 /// process and across processes.
-async fn lock_regression_checkout(checkout: &Path) -> Result<std::fs::File, String> {
+async fn lock_regression_checkout(checkout: &Path) -> Result<RegressionCheckoutLock, String> {
     use fs2::FileExt as _;
     let lock = checkout.with_extension("lock");
     let failed = |e: std::io::Error| format!("failed to lock the regression checkout: {e}");
@@ -696,10 +696,28 @@ async fn lock_regression_checkout(checkout: &Path) -> Result<std::fs::File, Stri
         .write(true)
         .open(&lock)
         .map_err(failed)?;
-    tokio::task::spawn_blocking(move || file.lock_exclusive().map(|()| file))
-        .await
-        .map_err(|e| format!("failed to lock the regression checkout: {e}"))?
-        .map_err(failed)
+    tokio::task::spawn_blocking(move || {
+        file.lock_exclusive().map(|()| RegressionCheckoutLock(file))
+    })
+    .await
+    .map_err(|e| format!("failed to lock the regression checkout: {e}"))?
+    .map_err(failed)
+}
+
+/// The regression checkout's lock, held for one delivery
+/// ([`lock_regression_checkout`]). It lets go of the lock as it drops, before
+/// its file closes: a process forked meanwhile shares the open file until it
+/// execs (a gate that enters its own process group forks first), and closing
+/// the file alone left the lock held until that process let go too, past a
+/// check that the checkout was free (bug-3203c4).
+struct RegressionCheckoutLock(std::fs::File);
+
+impl Drop for RegressionCheckoutLock {
+    fn drop(&mut self) {
+        if let Err(error) = fs2::FileExt::unlock(&self.0) {
+            warn!(%error, "could not unlock the regression checkout");
+        }
+    }
 }
 
 /// The canonical common git directory of the repository `dir` belongs to.
@@ -2574,6 +2592,32 @@ mod tests {
                 "finished 2 false Some(4)",
             ]
         );
+    }
+
+    /// bug-3203c4: the regression checkout comes free as its holder lets go,
+    /// though another process still shares the lock's open file, as one
+    /// forked meanwhile does until it execs. Closing the file alone left the
+    /// lock held until that process let go too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_regression_checkout_comes_free_when_its_holder_lets_go() {
+        use fs2::FileExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let checkout = dir.path().join("regression-checkout");
+        let held = lock_regression_checkout(&checkout).await.expect("the lock");
+        let shared = held.0.try_clone().expect("the lock's open file");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::from(shared))
+            .spawn()
+            .expect("a process sharing the lock's open file");
+        drop(held);
+        let lock = std::fs::File::open(checkout.with_extension("lock")).expect("the lock file");
+        let free = lock.try_lock_exclusive();
+        let _ = child.kill();
+        let _ = child.wait();
+        free.expect("the regression checkout is free");
     }
 
     /// bug-7b62ff: a cancel stops the post-merge regression check at once.

@@ -225,6 +225,27 @@ impl InFlightTasks {
         files.into_iter().collect()
     }
 
+    /// The tasks other than `key`, in any working tree, with an attempt in
+    /// flight at `mark` or started since, ended or not: what any of them did
+    /// meanwhile may have been theirs (bug-b7d9ad).
+    pub(crate) fn sibling_tasks_since(&self, mark: &WriterMark, key: &str) -> Vec<String> {
+        let overlaps = |id: u64, attempt: &InFlightAttempt| {
+            attempt.key != key && (id >= mark.next_id || mark.in_flight.contains(&id))
+        };
+        let mut keys = BTreeSet::new();
+        for (id, attempt) in self.attempts.lock().iter() {
+            if overlaps(*id, attempt) {
+                keys.insert(attempt.key.clone());
+            }
+        }
+        for (id, attempt) in self.ended.lock().iter() {
+            if overlaps(*id, attempt) {
+                keys.insert(attempt.key.clone());
+            }
+        }
+        keys.into_iter().collect()
+    }
+
     /// Settle a verify step that failed while siblings may be editing its
     /// working tree.
     ///
@@ -986,6 +1007,12 @@ mod tests {
         assert_eq!(
             tasks.sibling_files_since(&mark, "plan/OWN", workdir),
             ["brief.rs", "running.rs"]
+        );
+        // bug-b7d9ad: every other task in flight in the window, in any
+        // working tree, ended or not.
+        assert_eq!(
+            tasks.sibling_tasks_since(&mark, "plan/OWN"),
+            ["plan/BRIEF", "plan/OTHER", "plan/RUNNING"]
         );
         drop(own);
     }

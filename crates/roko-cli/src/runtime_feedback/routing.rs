@@ -29,12 +29,22 @@
 //! and bandit. When [`ModelChoiceSource::Override`] tagged a task, the sink
 //! records it via `record_override_outcome` so manual operator overrides do
 //! not pollute the bandit signal that drives router decisions on
-//! non-overridden tasks. A `[routing.ladder]` rung
-//! ([`ModelChoiceSource::Ladder`]), a task hint, a guard's fallback and the
-//! default were not the router's choice, so they update none of its state:
-//! while the ladder routes, the router is a shadow learner. The attempt's
-//! verdict still records its rung and the router's shadow pick
-//! (`AttemptLadder`).
+//! non-overridden tasks. A `[routing.ladder]` rung that runs its own model
+//! ([`ModelChoiceSource::Ladder`] without a draw), a task hint, a guard's
+//! fallback and the default were not the router's choice, so they update
+//! none of its state: the ladder's choice of rung is confounded with the
+//! task's difficulty. The attempt's verdict still records its rung and the
+//! router's shadow pick (`AttemptLadder`).
+//!
+//! ## Credit for a rung's draw
+//!
+//! A rung with two or more models that can run draws among them at ε
+//! (gap-51d2ca, decision 4111 option B1), so within the rung the model is
+//! randomised and every one has a logged propensity below 1. Such an outcome
+//! credits the router at the draw's inverse-propensity weight
+//! ([`RungDraw::weight`](crate::dispatch::RungDraw)): a full confidence
+//! trial and category count, and a bandit update scaled by the weight. An
+//! active self-model's route has no draw and credits nothing.
 //!
 //! ## Durability
 //!
@@ -51,7 +61,7 @@ use roko_core::config::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{BehavioralState, DaimonPolicy};
 use roko_learn::cascade_router::{CascadeRouter, normalized_cost_and_latency};
-use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::model_call_feedback::{ModelCallJournal, TaskOutcome};
 use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -133,8 +143,8 @@ impl FeedbackSink for RoutingObservationSink {
             return Ok(());
         }
 
-        // Decision 4111 (A): a model the router did not choose teaches it
-        // nothing.
+        // Decision 4111: a model neither the router nor a rung's draw chose
+        // teaches it nothing.
         let Some(credit) = router_credit(*model_source) else {
             return Ok(());
         };
@@ -148,35 +158,40 @@ impl FeedbackSink for RoutingObservationSink {
 
         if let Some(journal) = &self.journal {
             // Journaled, then applied, with the reward and weight the paths
-            // below give it (an override's weight is dampened), so a replay
-            // repeats it exactly. The journal moves the category counts under
-            // the same lock, so a save cannot split them from the journaled
+            // below give it (an override's weight is dampened, a rung draw's
+            // is its inverse-propensity weight), so a replay repeats it
+            // exactly. The journal moves the category counts under the same
+            // lock, so a save cannot split them from the journaled
             // observation (bug-a83a6e). The WAL write syncs to disk, so it
             // runs off the reactor.
             let journal = Arc::clone(journal);
             let router = Arc::clone(&self.router);
             let model = outcome.model.clone();
             let (cost_usd, duration_ms) = (outcome.cost_usd, outcome.duration_ms);
-            let overridden = credit == RouterCredit::Override;
-            tokio::task::spawn_blocking(move || {
-                if overridden {
-                    journal.observe_override_outcome(
-                        &router,
-                        &model,
-                        &ctx,
-                        succeeded,
+            tokio::task::spawn_blocking(move || match credit {
+                RouterCredit::Full => journal.observe_task_outcome(
+                    &router,
+                    &model,
+                    &ctx,
+                    succeeded,
+                    cost_usd,
+                    duration_ms,
+                ),
+                RouterCredit::Override => journal.observe_override_outcome(
+                    &router,
+                    &model,
+                    &ctx,
+                    succeeded,
+                    cost_usd,
+                    duration_ms,
+                ),
+                RouterCredit::Weighted(weight) => {
+                    let settled = TaskOutcome {
+                        success: succeeded,
                         cost_usd,
                         duration_ms,
-                    );
-                } else {
-                    journal.observe_task_outcome(
-                        &router,
-                        &model,
-                        &ctx,
-                        succeeded,
-                        cost_usd,
-                        duration_ms,
-                    );
+                    };
+                    journal.observe_weighted_task_outcome(&router, &model, &ctx, settled, weight);
                 }
             })
             .await?;
@@ -188,54 +203,80 @@ impl FeedbackSink for RoutingObservationSink {
         self.router
             .record_category_outcome(&outcome.model, ctx.task_category, succeeded);
 
-        // Audit #90: manual overrides must not pollute the bandit signal.
-        // Route them through the dampened `record_override_outcome` path
-        // instead of the full router-outcome path.
-        if credit == RouterCredit::Override {
-            self.router.record_override_outcome(
+        let (cost_usd, duration_ms) = (outcome.cost_usd, outcome.duration_ms);
+        match credit {
+            // Audit #90: manual overrides must not pollute the bandit
+            // signal. Route them through the dampened
+            // `record_override_outcome` path instead of the full
+            // router-outcome path.
+            RouterCredit::Override => {
+                self.router.record_override_outcome(
+                    &outcome.model,
+                    &ctx,
+                    succeeded,
+                    cost_usd,
+                    duration_ms,
+                    None,
+                );
+            }
+            RouterCredit::Weighted(weight) => {
+                let model = &outcome.model;
+                let recorded = self.router.record_weighted_outcome(
+                    model,
+                    &ctx,
+                    succeeded,
+                    cost_usd,
+                    duration_ms,
+                    weight,
+                );
+                if !recorded {
+                    // Logs and drops a slug the router does not track.
+                    self.router.record_confidence_outcome(model, succeeded);
+                }
+            }
+            RouterCredit::Full => observe_router_outcome(
+                &self.router,
                 &outcome.model,
                 &ctx,
                 succeeded,
-                outcome.cost_usd,
-                outcome.duration_ms,
-                None,
-            );
-            return Ok(());
+                cost_usd,
+                duration_ms,
+            ),
         }
-
-        observe_router_outcome(
-            &self.router,
-            &outcome.model,
-            &ctx,
-            succeeded,
-            outcome.cost_usd,
-            outcome.duration_ms,
-        );
         Ok(())
     }
 }
 
 /// How the routing sink credits an outcome to the router.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum RouterCredit {
     /// The router's learners: category stats, confidence and the bandit.
     Full,
     /// An operator override: dampened, so it does not pollute the bandit
     /// signal (audit #90).
     Override,
+    /// A ladder rung's draw among its models (gap-51d2ca): a full confidence
+    /// trial and category count, and a bandit update at this share of a full
+    /// one, the draw's inverse-propensity weight.
+    Weighted(f64),
 }
 
 /// The credit an outcome earns from the source routing returned for its
-/// model (decision 4111 (A)): full for the router's own pick, its argmax or
-/// its exploration draw, dampened for an operator override, and none for a
-/// ladder rung, a task hint, a guard's fallback or the default, which the
-/// router did not choose.
+/// model (decision 4111): full for the router's own pick, its argmax or its
+/// exploration draw, dampened for an operator override, inverse-propensity
+/// weighted for a ladder rung's draw among its models (option B1,
+/// gap-51d2ca), and none for a rung that ran its own model with certainty,
+/// a self-model's rung, a task hint, a guard's fallback or the default,
+/// which the router did not choose.
 const fn router_credit(source: ModelChoiceSource) -> Option<RouterCredit> {
     match source {
         ModelChoiceSource::Router | ModelChoiceSource::Explore => Some(RouterCredit::Full),
         ModelChoiceSource::Override => Some(RouterCredit::Override),
+        ModelChoiceSource::Ladder {
+            draw: Some(draw), ..
+        } => Some(RouterCredit::Weighted(draw.weight)),
         ModelChoiceSource::TaskHint
-        | ModelChoiceSource::Ladder { .. }
+        | ModelChoiceSource::Ladder { draw: None, .. }
         | ModelChoiceSource::SelfModel { .. }
         | ModelChoiceSource::Fallback { .. }
         | ModelChoiceSource::Default => None,
@@ -555,7 +596,10 @@ mod tests {
             RoutingObservationSink::new(journaled.clone()).with_journal(journal),
         ];
         let not_chosen = [
-            ModelChoiceSource::Ladder { rung: 1 },
+            ModelChoiceSource::Ladder {
+                rung: 1,
+                draw: None,
+            },
             ModelChoiceSource::TaskHint,
             ModelChoiceSource::Fallback {
                 reason: crate::dispatch::FallbackReason::NoToolSupport,
@@ -586,6 +630,89 @@ mod tests {
             "the router's own pick is a full confidence trial"
         );
         assert_eq!(plain.total_observations(), 1);
+    }
+
+    /// How far the sonnet arm's `A` matrix grew past a fresh router's, by its
+    /// trace: a credited outcome at weight w adds w·|x|².
+    fn sonnet_growth(router: &CascadeRouter) -> f64 {
+        let trace = |router: &CascadeRouter| {
+            let arms = router.linucb().arm_stats();
+            let arm = arms
+                .iter()
+                .find(|arm| arm.slug == "claude-sonnet-4-6")
+                .expect("the sonnet arm");
+            (0..arm.a_matrix.len())
+                .map(|i| arm.a_matrix[i][i])
+                .sum::<f64>()
+        };
+        trace(router) - trace(self::router().as_ref())
+    }
+
+    /// gap-51d2ca (decision 4111 option B1): an outcome on a model a ladder
+    /// rung drew among its models credits the router at the draw's
+    /// inverse-propensity weight, on either sink path: a full confidence
+    /// trial and category count, and a bandit update scaled by the weight,
+    /// which the journal replays at that weight.
+    #[tokio::test]
+    async fn a_rung_draw_credits_the_router_at_its_weight() {
+        use roko_learn::model_call_feedback::load_recovered_router;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = temp.path().join("learn").join("cascade-router.json");
+        let journal = Arc::new(ModelCallJournal::for_snapshot(&snapshot));
+        let (plain, journaled, full) = (router(), router(), router());
+        let sinks = [
+            RoutingObservationSink::new(plain.clone()),
+            RoutingObservationSink::new(journaled.clone()).with_journal(Arc::clone(&journal)),
+        ];
+        let weight = 0.25;
+        let draw = crate::dispatch::RungDraw {
+            propensity: 0.1,
+            weight,
+        };
+        let drawn = ModelChoiceSource::Ladder {
+            rung: 1,
+            draw: Some(draw),
+        };
+        let event = completed(settled_as(AttemptOutcome::Passed, false), drawn);
+        assert!(credits_router(drawn));
+        for sink in &sinks {
+            assert!(sink.interested(&event));
+            sink.on_event(&event).await.unwrap();
+        }
+        let picked = completed(
+            settled_as(AttemptOutcome::Passed, false),
+            ModelChoiceSource::Router,
+        );
+        RoutingObservationSink::new(full.clone())
+            .on_event(&picked)
+            .await
+            .unwrap();
+        let unit = sonnet_growth(&full);
+        assert!(unit > 0.0, "a full observation grows the arm");
+        for r in [&plain, &journaled] {
+            let confidence = r.confidence_snapshot();
+            assert_eq!(confidence.get("claude-sonnet-4-6").copied(), Some((1, 1)));
+            assert_eq!(r.category_stats_snapshot().len(), 1, "one category count");
+            assert_eq!(r.total_observations(), 1);
+            let share = sonnet_growth(r) / unit;
+            assert!(
+                (share - weight).abs() < 1e-9,
+                "the arm grew by {share} of one"
+            );
+        }
+
+        // The run dies before it saves the router: the journal replays the
+        // outcome at its weight.
+        drop(sinks);
+        let journal = Arc::try_unwrap(journal).expect("the sink held the only other handle");
+        drop(journal);
+        drop(journaled);
+        let models = vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
+        let recovered = load_recovered_router(&snapshot, models);
+        assert_eq!(recovered.total_observations(), 1);
+        let share = sonnet_growth(&recovered) / unit;
+        assert!((share - weight).abs() < 1e-9, "replayed at {share} of one");
     }
 
     #[tokio::test]

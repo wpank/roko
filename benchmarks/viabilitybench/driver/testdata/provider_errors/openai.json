@@ -1,0 +1,73 @@
+{
+  "schema_version": "vb.provider_error/1",
+  "provider": "openai",
+  "captured_at": "2026-10-18T18:40:36Z",
+  "kind": "unknown_model",
+  "why": "openai documents no way to get a 429 or a 5xx on request (https://developers.openai.com/api/docs/guides/error-codes, read 2026-10-18), and provoking one would abuse the API, so this is its error for a model that does not exist; it shows the error envelope and the headers sent with an error, not the words of a 429 or a 5xx",
+  "request": {
+    "path": "/chat/completions",
+    "model": "nonexistent-model",
+    "max_tokens_param": "max_completion_tokens",
+    "max_tokens": 1,
+    "messages": 1,
+    "user_agent": "vb-driver/1.0"
+  },
+  "status": 404,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\n    \"error\": {\n        \"message\": \"The model `nonexistent-model` does not exist or you do not have access to it.\",\n        \"type\": \"invalid_request_error\",\n        \"param\": null,\n        \"code\": \"model_not_found\"\n    }\n}\n",
+  "format": {
+    "layout": "indent:4",
+    "newline": true
+  },
+  "headers": [
+    [
+      "CF-Ray",
+      "b8a689c9efe5f799-TXL"
+    ],
+    [
+      "CF-Cache-Status",
+      "DYNAMIC"
+    ],
+    [
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains; preload"
+    ],
+    [
+      "Vary",
+      "Origin"
+    ],
+    [
+      "Access-Control-Expose-Headers",
+      "CF-Ray"
+    ],
+    [
+      "Access-Control-Expose-Headers",
+      "CF-Ray"
+    ],
+    [
+      "X-Content-Type-Options",
+      "nosniff"
+    ],
+    [
+      "x-openai-proxy-wasm",
+      "v0.1"
+    ],
+    [
+      "x-request-id",
+      "req_d008dcf06b86efec18310f84b6a23aa2"
+    ],
+    [
+      "set-cookie",
+      "__cf_bm=EO8lUuSJk0us2YtIahM_wKS4Fcr8dF5ZWqEgaxrrhRI-1792348836.4124055-1.0.1.1-aA3NpO5OwYSR8HTxORIBMKiJXyD8YvMif_e9awKNo5b8z7z.E_roYNN4fne6FvrRAUCFTRogmGPpCLIXxB5fY6b2EUh5dweooGiZ9HLZQZHQZGtmEXh2Ng81Ckh9Eg3.; HttpOnly; SameSite=None; Secure; Path=/; Domain=api.openai.com; Expires=Sun, 18 Oct 2026 19:10:36 GMT"
+    ],
+    [
+      "alt-svc",
+      "h3=\":443\"; ma=86400"
+    ]
+  ],
+  "masked": [
+    "cf-ray",
+    "set-cookie",
+    "x-request-id"
+  ]
+}

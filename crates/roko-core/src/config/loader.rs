@@ -1443,6 +1443,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "retrieval.role_token_budgets",
     "routing.ladder.max_turns",
     "routing.ladder.max_usd",
+    "routing.ladder.max_secs",
     "tools.profiles",
 ];
 
@@ -1755,12 +1756,15 @@ fn build_schema_tree() -> toml::Value {
         thinking_level: Some(String::new()),
         max_tools: Some(0),
         max_tool_iterations: Some(0),
+        compact_at_tokens: Some(0),
         tokenizer_ratio: Some(0.0),
         search_context_size: Some(String::new()),
         tier: Some(crate::agent::ModelTier::Standard),
         use_max_completion_tokens: true,
         temperature: Some(0.0),
         seed: Some(0),
+        reasoning_effort: Some(crate::agent::ReasoningEffort::Medium),
+        api: Some(super::provider::OpenAiApi::Responses),
         ..ModelProfile::default()
     };
     config
@@ -1857,11 +1861,19 @@ fn build_schema_tree() -> toml::Value {
     // roko.toml.
     config.routing.disabled_providers = vec![String::new()];
     config.routing.fallback_models = vec![String::new()];
-    // The ladder's try allowances map rung names to turns and USD (dynamic
-    // map sections, gap-3e770b).
+    // The ladder's try allowances map rung names to turns, USD and seconds
+    // (dynamic map sections, gap-3e770b, bug-f0007b).
     let ladder = &mut config.routing.ladder;
     ladder.max_turns.insert("_schema_sentinel".to_string(), 0);
     ladder.max_usd.insert("_schema_sentinel".to_string(), 0.0);
+    ladder.max_secs.insert("_schema_sentinel".to_string(), 0);
+    // A rung's `alternates` skips serializing when empty; the first rung is
+    // the template every rung entry is validated against (gap-51d2ca).
+    if let Some(rung) = ladder.rungs.first_mut() {
+        rung.alternates = vec![String::new()];
+    }
+    ladder.slow_call_secs = Some(0);
+    ladder.rate_limit_wait_secs = Some(0);
     config.gates.env_passthrough = vec![String::new()];
     config.gates.strip_env = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they
@@ -1877,6 +1889,7 @@ fn build_schema_tree() -> toml::Value {
     // tree lacks one.
     config.gates.max_rung = Some(0);
     config.gates.cargo_jobs = Some(0);
+    config.gates.warm_build_dirs = Some(vec![String::new()]);
     // `max_output_tokens` maps roles to output-token caps (a dynamic map
     // section).
     config
@@ -3361,6 +3374,54 @@ seed = 42
         let model = &loaded.config().models["local-model"];
         assert_eq!(model.temperature, Some(0.2));
         assert_eq!(model.seed, Some(42));
+    }
+
+    /// bug-29014c, gap-1ba0ac: a model's own reasoning effort and API are
+    /// known keys, so a load keeps them instead of stripping them as unknown.
+    #[test]
+    fn a_models_reasoning_effort_survives_a_load() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.gpt-5-4]
+provider = "openai"
+slug = "gpt-5.4"
+reasoning_effort = "high"
+api = "chat_completions"
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options).expect("load");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.message.contains("unknown") && diagnostic.key.starts_with("models.")
+            })
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        assert!(unknown.is_empty(), "{unknown:?}");
+        assert_eq!(
+            loaded.config().models["gpt-5-4"].reasoning_effort,
+            Some(crate::agent::ReasoningEffort::High)
+        );
+        // gap-1ba0ac: so is the API the model is called through.
+        assert_eq!(
+            loaded.config().models["gpt-5-4"].api,
+            Some(super::super::provider::OpenAiApi::ChatCompletions)
+        );
     }
 
     #[test]
@@ -5533,5 +5594,48 @@ env_passthrough = ["DATABASE_URL", "PGHOST"]
         assert_eq!(levenshtein_distance("abc", "xyz"), 3);
         assert_eq!(levenshtein_distance("", "abc"), 3);
         assert_eq!(levenshtein_distance("abc", ""), 3);
+    }
+
+    /// gap-b46c16: a model's compaction trigger is a known key, so a load
+    /// keeps it instead of stripping it as unknown.
+    #[test]
+    fn a_models_compact_at_tokens_survives_a_load() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.gpt-5-4]
+provider = "openai"
+slug = "gpt-5.4"
+context_window = 272000
+compact_at_tokens = 40000
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options).expect("load");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.message.contains("unknown") && diagnostic.key.starts_with("models.")
+            })
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        assert!(unknown.is_empty(), "{unknown:?}");
+        assert_eq!(
+            loaded.config().models["gpt-5-4"].compact_at_tokens,
+            Some(40_000)
+        );
     }
 }

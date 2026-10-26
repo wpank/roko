@@ -40,6 +40,14 @@ const PLAN_RUN_KIND: &str = "plan_run";
 /// frozen`, decision 2218).
 pub const LEARNING_FROZEN_FLAG: &str = "learning_frozen";
 
+/// The ablation flag of a run whose audits are off (`[audit] enabled =
+/// false`, `--no-audit`, decision 7103; find-697944).
+pub const AUDIT_OFF_FLAG: &str = "audit_off";
+
+/// The ablation flag of a run in maximize mode, which holds nothing out
+/// (`[experiments] maximize`, `--no-holdout`, decision 4115; find-697944).
+pub const HOLDOUT_OFF_FLAG: &str = "holdout_off";
+
 /// The provenance every run of one plan-run invocation shares, and the runs
 /// it reopened.
 #[derive(Debug)]
@@ -70,6 +78,12 @@ impl RunManifests {
     #[must_use]
     pub fn capture(workdir: &Path, config: &RokoConfig) -> Self {
         let config_frozen = config.learning.frozen;
+        // find-697944: `--no-audit` and `--no-holdout` (`apply_run_switches`)
+        // land in `config.audit.enabled` and `config.experiments.maximize`
+        // before `capture` runs, the same way `--frozen-learning` lands in
+        // `config.learning.frozen` above; a run's manifest should say so too.
+        let audit_off = !config.audit.enabled;
+        let holdout_off = config.experiments.maximize;
         let price_snapshot_id = PriceSnapshot::shared(&config.pricing, workdir)
             .map(|snapshot| snapshot.id().to_string());
         let config = match roko_core::config::fingerprint(config) {
@@ -89,6 +103,12 @@ impl RunManifests {
         let mut ablation_flags = Vec::new();
         if config_frozen {
             ablation_flags.push(LEARNING_FROZEN_FLAG.to_string());
+        }
+        if audit_off {
+            ablation_flags.push(AUDIT_OFF_FLAG.to_string());
+        }
+        if holdout_off {
+            ablation_flags.push(HOLDOUT_OFF_FLAG.to_string());
         }
         Self {
             runs_dir: RokoLayout::for_project(workdir).runs_dir(),
@@ -421,5 +441,63 @@ mod tests {
             Some("prices-2030-01-01"),
             "{loaded:?}"
         );
+    }
+
+    /// find-697944: a `--no-audit` run's manifest lists `audit_off`, and a
+    /// `--no-holdout` (maximize mode) run's lists `holdout_off`, beside
+    /// `learning_frozen`, not only it.
+    #[test]
+    fn ablation_flags_record_audit_and_holdout_switches() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.learning.frozen = true;
+        config.audit.enabled = false;
+        config.experiments.maximize = true;
+        let manifests = RunManifests::capture(workdir.path(), &config);
+        assert!(
+            manifests.open("run-1", "plan-1").is_some(),
+            "the manifest should open"
+        );
+
+        let run_dir = RokoLayout::for_project(workdir.path())
+            .runs_dir()
+            .join("run-1");
+        let loaded = RunProvenanceManifest::load(&run_dir)
+            .expect("read the manifest")
+            .expect("the manifest exists");
+        let flags = &loaded.experiment.ablation_flags;
+        assert!(
+            flags.contains(&LEARNING_FROZEN_FLAG.to_string()),
+            "{flags:?}"
+        );
+        assert!(flags.contains(&AUDIT_OFF_FLAG.to_string()), "{flags:?}");
+        assert!(flags.contains(&HOLDOUT_OFF_FLAG.to_string()), "{flags:?}");
+    }
+
+    /// find-697944: a run with audits and holdout on records neither flag.
+    #[test]
+    fn ablation_flags_omit_audit_and_holdout_when_both_stand() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let config = RokoConfig::default();
+        assert!(config.audit.enabled, "default config audits by default");
+        assert!(
+            !config.experiments.maximize,
+            "default config holds out by default"
+        );
+        let manifests = RunManifests::capture(workdir.path(), &config);
+        assert!(
+            manifests.open("run-1", "plan-1").is_some(),
+            "the manifest should open"
+        );
+
+        let run_dir = RokoLayout::for_project(workdir.path())
+            .runs_dir()
+            .join("run-1");
+        let loaded = RunProvenanceManifest::load(&run_dir)
+            .expect("read the manifest")
+            .expect("the manifest exists");
+        let flags = &loaded.experiment.ablation_flags;
+        assert!(!flags.contains(&AUDIT_OFF_FLAG.to_string()), "{flags:?}");
+        assert!(!flags.contains(&HOLDOUT_OFF_FLAG.to_string()), "{flags:?}");
     }
 }

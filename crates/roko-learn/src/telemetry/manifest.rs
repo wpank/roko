@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, MANIFEST_FILE, RunFile, RunInvocation, RunProvenanceManifest,
-    VERDICT_SCHEMA,
+    ATTEMPT_OPEN_SCHEMA, AttemptOutcome, MANIFEST_FILE, RunFile, RunInvocation,
+    RunProvenanceManifest, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
 
@@ -107,9 +107,10 @@ impl RunProvenanceManifest {
 pub struct AttemptTally {
     /// Distinct attempts with an attempt-open line.
     pub opened: u64,
-    /// Distinct attempts with a verdict.
+    /// Distinct attempts with a verdict other than `abandoned`.
     pub settled: u64,
-    /// Opened attempts with no verdict: the process died, or the attempt
+    /// Opened attempts with no verdict, or with the `abandoned` verdict a
+    /// resume writes for them (bug-b7f6a8): the process died, or the attempt
     /// ended without settling.
     pub abandoned: u64,
 }
@@ -150,6 +151,8 @@ impl AttemptTally {
         struct Line {
             schema_version: String,
             attempt_key: String,
+            #[serde(default)]
+            outcome: Option<AttemptOutcome>,
         }
 
         let path = RunFile::Attempts.path_in(run_dir);
@@ -169,9 +172,13 @@ impl AttemptTally {
                 lines.push(line);
             }
         }
-        Ok(Self::from_lines(lines.iter().map(|line| {
-            (line.schema_version.as_str(), line.attempt_key.as_str())
-        })))
+        // A resume's `abandoned` verdict leaves its attempt abandoned.
+        Ok(Self::from_lines(
+            lines
+                .iter()
+                .filter(|line| line.outcome != Some(AttemptOutcome::Abandoned))
+                .map(|line| (line.schema_version.as_str(), line.attempt_key.as_str())),
+        ))
     }
 }
 

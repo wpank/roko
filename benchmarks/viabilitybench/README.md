@@ -43,17 +43,20 @@ benchmarks/viabilitybench/
   streams/{pilot, pilot_fd_api}.toml
   arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
   experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
-  experiments/{pilot_a, pilot_b}.toml  test_*.py            # experiment manifests (vb campaign) and their rehearsals
+  experiments/{pilot_a, pilot_a_recal, pilot_b}.toml  test_*.py   # experiment manifests (vb campaign), their tests
   experiments/provider_fault.toml                           # Pilot B's provider_fault rows (vb.disturbance/1)
   driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
   driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/run_codex.py                                       # the Codex CLI arm's runner (fd_codex)
+  driver/refine_live.py                                     # vb refine: the spec refiner on a live model, ledgered (3236)
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/error_capture.py  testdata/provider_errors/        # vb capture-errors: each provider's own error (gap-db8dab)
   driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
+  analysis/pilot_page.py                                    # vb report --pilot: the pilot's one page (reports/pilot/)
   analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
   analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
   analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
@@ -84,7 +87,10 @@ families F2, F3 and F5–F8, `external/swebench/`, and the other streams and arm
 - the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
   on the subscription;
 - the Codex CLI arm (`run_codex.py`, harness `codex-cli`) serves `fd_codex`: `codex exec --json` with a fresh Codex
-  home, on the ChatGPT subscription, reusing `run_cli.py`'s session, kill and egress machinery.
+  home, on the ChatGPT subscription, reusing `run_cli.py`'s session, kill and egress machinery;
+- the mini-swe-agent arm (`run_msa.py`, harness `mini-swe-agent`) serves `cheap_direct_msa`: the pinned
+  mini-swe-agent's `mini` CLI as a second direct loop (S08 decision 3), from a venv of its own outside the repository
+  ("mini-swe-agent's venv" below).
 
 Each runner's module docstring has its isolation, caps and costs. The bullets below describe the direct loop, and
 most hold for every arm.
@@ -126,8 +132,11 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   directory deny the results root it lies in. Elsewhere there is no confinement yet, and the run record says so
   (`vs.sandbox`, gap-8c3752). Agents can read the driver's
   own start-up environment (`ps -E`, `/proc`), so once its checks pass, `vb run` starts itself again with an
-  allowlisted environment (`agent_env.exec_scrubbed`). Every other process of your user stays readable (`ps -E -ax`,
-  or `sysctl` from inside the sandbox), so run the benchmark from a session that exports no credential.
+  allowlisted environment (`agent_env.exec_scrubbed`). The direct loop's shell is not the driver's child, since the
+  driver's command line names the experiment, the run and the benchmark's path: it runs under a neutral trampoline,
+  whose command line is the agents' Python and whose environment is the agent's own (`mini_loop`, bug-0fd744). Every
+  other process of your user stays readable (`ps -E -ax`, or `sysctl` from inside the sandbox), the driver one step
+  above the trampoline included, so run the benchmark from a session that exports no credential.
 - **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
   `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
   `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin
@@ -197,8 +206,15 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`). An
   injected fault answers as its upstream does (bug-2224eb): in that provider's error shape and words
   (`faultproxy.UPSTREAM_ERRORS`: Cerebras's flat object, z.ai's business code, Moonshot's types, OpenAI's), with the
-  headers of the upstream's last forwarded answer and fresh ids in their form; gap-db8dab holds the captures that
-  would settle what the providers' documents leave open.
+  headers of the upstream's last forwarded answer and fresh ids in their form. The shapes, their key order, the JSON
+  layout, the Content-Type and the headers a fault carries before the upstream's first answer come from each
+  provider's captured error (gap-db8dab, `driver/testdata/provider_errors/`); the words of a 429 and a 5xx still come
+  from the providers' documents.
+- **Provider error captures** (`vb capture-errors`, `driver/error_capture.py`, gap-db8dab). One chat completion per arm
+  provider naming a model that does not exist, through the metering proxy under `vb run`'s admission and key rules,
+  each booked at $0 on BL0: none of the four documents a way to get a 429 or a 5xx on request, and provoking one
+  would abuse the API. Each answer is masked (ids, cookies and account ids drawn anew in their form) and written as a
+  fixture that `test_the_fault_templates_match_captured_errors` holds the fault templates to.
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve
@@ -209,6 +225,13 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
   `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
   unit. Its module docstring has the rules.
+- **The refiner's cost sample** (`vb refine`, `driver/refine_live.py`, task 3236). `specops/refine.py` on a live
+  model: 20 band C/D tasks under the linter (half from the active plans, half from speclint's fixtures, drawn by a
+  keyed hash), at most two additive rounds each, one chat call a round through the metering proxy, each task held to
+  S07's $0.02 and reserved on budget line BL15 before its first call, under the same admission and key-file rules as
+  `vb run`. It runs no agent, so it needs no workdir, no secret file and no tripwire. `vb refine --dry-run` shows the
+  sample, and `vb refine --summary RUN_DIR --bundle reports/refiner-cost` writes the summary with its verdict
+  `within the $0.02 cap: yes|no`; the module docstring has the rest.
 - **The pre-registration lock** (`analysis/lock.py`, S09 SC1, §5). `lock.py build` writes
   `experiments/prereg.lock.json` from S09, the analysis code, the streams and the price snapshot, and `lock.py
   --check` recomputes every hash. LOG1, every live `E-` experiment and every manifest with `requires_lock` start,
@@ -222,6 +245,14 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
   and the budget (`analysis/report.py` has the rules).
+- **The pilot page** (`vb report --pilot`, `analysis/pilot_page.py`, gap-d9e9fe). Given `reports/pilot_a_recal` and
+  `reports/pilot_b`, with `--superseded reports/pilot_a` and `--bundle reports/pilot` (the page's Provenance section
+  has the exact command), it merges the pilots' bundles on one suite, pairing runs by (task, seed), into
+  `reports/pilot/`: the runs, a `metrics.json` holding every number with its run ids, and `REPORT.md`. Each arm gets its VS rate, pass^3, $/VS (U′, and R beside it), false
+  greens, censoring and spend, overall and by level, and each pair of arms its $/VS ratio and VS and pass^3
+  differences. Every estimate carries a 95% paired bootstrap interval (S09 §4.1, B = 10,000). Arms and seeds that the
+  experiment manifests plan but that have no runs are listed as pending. A bundle on another suite is listed as not
+  merged. Rebuild the page into an empty directory when a pending arm lands.
 
 ## Schemas
 
@@ -320,3 +351,22 @@ uv pip compile requirements-analysis.in --generate-hashes --universal --python-v
 ```
 
 The second line regenerates that lock from this directory after `requirements-analysis.in` changes.
+
+### mini-swe-agent's venv
+
+The `cheap_direct_msa` arm runs mini-swe-agent (`requirements-msa.lock`, pinned with hashes) from a venv of its own,
+never the test venv and never anywhere in this tree: mini-swe-agent runs each of its agent's commands in a shell that
+is its child, and from inside the sandbox that shell reads `mini`'s command line and start-up environment, which name
+the venv and its python. So their path names neither the repository nor the benchmark (bug-e16450), and `vb run`
+refuses an arm whose `mini`, or the interpreter its first line names, lies inside the repository or names the
+benchmark. The arm file's default is `~/.local/share/mini-swe-agent/venv/bin/mini`; from the repository root:
+
+```bash
+python3 -m venv ~/.local/share/mini-swe-agent/venv                       # Python 3.11 or newer
+~/.local/share/mini-swe-agent/venv/bin/python -m pip install --require-hashes \
+    -r benchmarks/viabilitybench/requirements-msa.lock
+```
+
+Elsewhere, point the arm's `[msa] binary` at that venv's `bin/mini`, under a path that names no benchmark. An older
+`benchmarks/viabilitybench/.venv-msa/` is no longer used, and `vb run` refuses it. To change the pin, edit
+`requirements-msa.in` and regenerate its lock as its header says.

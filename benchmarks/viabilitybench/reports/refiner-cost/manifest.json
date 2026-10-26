@@ -1,0 +1,303 @@
+{
+  "argv": [
+    "vb",
+    "refine",
+    "--allow-network",
+    "--max-cost-usd",
+    "0.40",
+    "--run-id",
+    "refine-3236-20261018b"
+  ],
+  "billed": true,
+  "config": {
+    "arm": "cheap_direct",
+    "base_url": "https://api.cerebras.ai/v1",
+    "budget_per_task_usd": 0.02,
+    "driver": "vb-driver-1.0.0",
+    "experiment_id": "REFINE-COST",
+    "line": "BL15",
+    "linter": "sq-3",
+    "max_rounds": 2,
+    "max_tokens": 4096,
+    "model": "gpt-oss-120b",
+    "network": true,
+    "price_snapshot_id": "prices-2026-09-28",
+    "prompt": {
+      "sha256": "b18d64ed9fcd3ef5b2593dd9e01297118ae0b26e64ce69eb5ebb731b713764f4",
+      "version": "refine-live-1"
+    },
+    "provider": "cerebras",
+    "proxy_input_token_cap": 57142,
+    "retries": 2,
+    "runner": "refine_live",
+    "sample": [
+      "sha256:60fef35c52b589fdef6b51f0c4aaa83bddffe62b3b49a08394477f856f067d4c",
+      "sha256:0fd3c88cde7d4f2b67fc0a7814008254d521efd1026dd8e06e52bfca6af99626",
+      "sha256:7bda9fd439cde226a9dd7d14b87ab28bc27b6588205f9afcff1ffea28ac125d3",
+      "sha256:91ed72bc784c5fdb773ce27ae5eaa862c48e93032e0df22168b0edb241f9fffc",
+      "sha256:c56661c40ca875cfcebfd936320eb3b0e57bcf3ce40791ce0d3736c881359dde",
+      "sha256:a187b2251f658f861b6f2744eb9a76cd942fe721b7e6907386b6e636b9b0dd5c",
+      "sha256:2d6adb6606e0c4b746701a9bff7686f0e100b1c56fdb236d28e4ac3bcd96ac83",
+      "sha256:623b64524a9a293385a4cdddd29c406d4e7f520f015fe1fd4027b9b8a5c88e37",
+      "sha256:22a3f4cd817505b750c5fac6b2cc95df7d612bdfbcc805b3afc8d967c3281585",
+      "sha256:8693bcce4b43c75239d6e91a189883f9fe0531daa332c52a0d85ed0c5346edcb",
+      "sha256:0deeaaac24a7f2fba3174062da73c1f49608de2ea20251976fac9e1b3503d63e",
+      "sha256:ff65c6a981de668ee4d130017d015bc28682039af228878c6c74cb989c0368b2",
+      "sha256:c3e7cde8ccae90f273c5de5c22e10c686cc9b254ad6ac0705054b412298082fe",
+      "sha256:9a495f96fd9e3d4a881851dd1e4d6573adb7540805c0bedb67591d6442f07157",
+      "sha256:98cee1c089634479eca1954eb5d5d32420363287d6415f4baaf7f317f649dd6c",
+      "sha256:8f67c764da818befae73f4b53732c35c706c36c9266ac44cf19099c514e25044",
+      "sha256:32623acf4d2fba5a381ca242b9c84134b3cfd7814afc44aca7f6fcebdcd11c3d",
+      "sha256:1559b43ea8bd139eb20dd52ed1319799cdf2a5782434d6db41841da9752232bf",
+      "sha256:d8a6b3f9f273c095d744962131c4185c5fb33dcd4ed6059a5088d599fe71db5a",
+      "sha256:d40739ba1dae2e4d37c0826e897bed995ab7fb9492b529ff18ff7ac341aff661"
+    ],
+    "seed": 3236,
+    "tasks": 20,
+    "worst_case_usd": 0.4
+  },
+  "config_hash": "sha256:43a2e6289a2a0c5278f6adf5d5b4dc08d177bc8a796536a31cadca2f805b255d",
+  "dirty": false,
+  "experiment_id": "REFINE-COST",
+  "harness_sha": "8431b7f6508720f9a9942e1dd6d8105c9c837d63",
+  "offline": false,
+  "proxy": {
+    "input_token_cap": 57142,
+    "log": "proxy.jsonl",
+    "policy": {
+      "allow": {},
+      "models": [
+        "gpt-oss-120b"
+      ],
+      "paths": [
+        "/chat/completions"
+      ],
+      "server_tools": "refused"
+    }
+  },
+  "run_id": "refine-3236-20261018b",
+  "sample": [
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-multistage",
+      "plan_path": "plans/demos/demo-multistage/tasks.toml",
+      "position": 1,
+      "role": "scribe",
+      "score": 49.69,
+      "spec_hash": "sha256:60fef35c52b589fdef6b51f0c4aaa83bddffe62b3b49a08394477f856f067d4c",
+      "task_id": "STAGE-1A"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-parallel-integration",
+      "plan_path": "plans/demos/demo-parallel-integration/tasks.toml",
+      "position": 2,
+      "role": "implementer",
+      "score": 44.69,
+      "spec_hash": "sha256:0fd3c88cde7d4f2b67fc0a7814008254d521efd1026dd8e06e52bfca6af99626",
+      "task_id": "PAR-RIGHT"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "05-portal-foundation",
+      "plan_path": "plans/portal-programme/05-portal-foundation/tasks.toml",
+      "position": 3,
+      "role": "implementer",
+      "score": 53.12,
+      "spec_hash": "sha256:7bda9fd439cde226a9dd7d14b87ab28bc27b6588205f9afcff1ffea28ac125d3",
+      "task_id": "T02"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-incident-tabletop",
+      "plan_path": "plans/demos/demo-incident-tabletop/tasks.toml",
+      "position": 4,
+      "role": "quick-reviewer",
+      "score": 43.44,
+      "spec_hash": "sha256:91ed72bc784c5fdb773ce27ae5eaa862c48e93032e0df22168b0edb241f9fffc",
+      "task_id": "INC-4"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-full-stack",
+      "plan_path": "plans/demos/demo-full-stack/tasks.toml",
+      "position": 5,
+      "role": "scribe",
+      "score": 49.69,
+      "spec_hash": "sha256:c56661c40ca875cfcebfd936320eb3b0e57bcf3ce40791ce0d3736c881359dde",
+      "task_id": "T04"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-full-stack",
+      "plan_path": "plans/demos/demo-full-stack/tasks.toml",
+      "position": 6,
+      "role": "scribe",
+      "score": 49.69,
+      "spec_hash": "sha256:a187b2251f658f861b6f2744eb9a76cd942fe721b7e6907386b6e636b9b0dd5c",
+      "task_id": "T05"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-release-readiness",
+      "plan_path": "plans/demos/demo-release-readiness/tasks.toml",
+      "position": 7,
+      "role": "scribe",
+      "score": 54.69,
+      "spec_hash": "sha256:2d6adb6606e0c4b746701a9bff7686f0e100b1c56fdb236d28e4ac3bcd96ac83",
+      "task_id": "REL-2"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-fibonacci",
+      "plan_path": "plans/demos/demo-fibonacci/tasks.toml",
+      "position": 8,
+      "role": "scribe",
+      "score": 54.69,
+      "spec_hash": "sha256:623b64524a9a293385a4cdddd29c406d4e7f520f015fe1fd4027b9b8a5c88e37",
+      "task_id": "FIB-2"
+    },
+    {
+      "band": "D",
+      "group": "plans",
+      "plan_id": "e2e-smoke-test",
+      "plan_path": "plans/e2e-smoke-test/tasks.toml",
+      "position": 9,
+      "role": "implementer",
+      "score": 38.44,
+      "spec_hash": "sha256:22a3f4cd817505b750c5fac6b2cc95df7d612bdfbcc805b3afc8d967c3281585",
+      "task_id": "T01"
+    },
+    {
+      "band": "C",
+      "group": "plans",
+      "plan_id": "demo-hello",
+      "plan_path": "plans/demos/demo-hello/tasks.toml",
+      "position": 10,
+      "role": "implementer",
+      "score": 44.69,
+      "spec_hash": "sha256:8693bcce4b43c75239d6e91a189883f9fe0531daa332c52a0d85ed0c5346edcb",
+      "task_id": "DEMO-T01"
+    },
+    {
+      "band": "D",
+      "group": "fixtures",
+      "plan_id": "sq10-vagueness",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq10-vagueness/tasks.toml",
+      "position": 11,
+      "role": "implementer",
+      "score": 30.0,
+      "spec_hash": "sha256:0deeaaac24a7f2fba3174062da73c1f49608de2ea20251976fac9e1b3503d63e",
+      "task_id": "T3"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "sq12-hidden-hook",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq12-hidden-hook/tasks.toml",
+      "position": 12,
+      "role": "implementer",
+      "score": 43.53,
+      "spec_hash": "sha256:ff65c6a981de668ee4d130017d015bc28682039af228878c6c74cb989c0368b2",
+      "task_id": "T2"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "hf5-greenfield-claim",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/hf5-greenfield-claim/tasks.toml",
+      "position": 13,
+      "role": "implementer",
+      "score": 46.25,
+      "spec_hash": "sha256:c3e7cde8ccae90f273c5de5c22e10c686cc9b254ad6ac0705054b412298082fe",
+      "task_id": "T1"
+    },
+    {
+      "band": "D",
+      "group": "fixtures",
+      "plan_id": "sq05-specificity",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq05-specificity/tasks.toml",
+      "position": 14,
+      "role": "implementer",
+      "score": 25.94,
+      "spec_hash": "sha256:9a495f96fd9e3d4a881851dd1e4d6573adb7540805c0bedb67591d6442f07157",
+      "task_id": "T4"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "sq09-non-goals",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq09-non-goals/tasks.toml",
+      "position": 15,
+      "role": "implementer",
+      "score": 52.5,
+      "spec_hash": "sha256:98cee1c089634479eca1954eb5d5d32420363287d6415f4baaf7f317f649dd6c",
+      "task_id": "T2"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "sq07-context",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq07-context/tasks.toml",
+      "position": 16,
+      "role": "implementer",
+      "score": 51.25,
+      "spec_hash": "sha256:8f67c764da818befae73f4b53732c35c706c36c9266ac44cf19099c514e25044",
+      "task_id": "T1"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "sq06-red-on-base",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq06-red-on-base/tasks.toml",
+      "position": 17,
+      "role": "implementer",
+      "score": 46.25,
+      "spec_hash": "sha256:32623acf4d2fba5a381ca242b9c84134b3cfd7814afc44aca7f6fcebdcd11c3d",
+      "task_id": "T2"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "sq01-goal",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq01-goal/tasks.toml",
+      "position": 18,
+      "role": "implementer",
+      "score": 58.75,
+      "spec_hash": "sha256:1559b43ea8bd139eb20dd52ed1319799cdf2a5782434d6db41841da9752232bf",
+      "task_id": "T4"
+    },
+    {
+      "band": "D",
+      "group": "fixtures",
+      "plan_id": "dynamic-red-on-base",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/dynamic/red-on-base/tasks.toml",
+      "position": 19,
+      "role": "implementer",
+      "score": 23.44,
+      "spec_hash": "sha256:d8a6b3f9f273c095d744962131c4185c5fb33dcd4ed6059a5088d599fe71db5a",
+      "task_id": "T3"
+    },
+    {
+      "band": "C",
+      "group": "fixtures",
+      "plan_id": "sq11-anchors",
+      "plan_path": "benchmarks/viabilitybench/speclint/fixtures/sq11-anchors/tasks.toml",
+      "position": 20,
+      "role": "implementer",
+      "score": 46.25,
+      "spec_hash": "sha256:d40739ba1dae2e4d37c0826e897bed995ab7fb9492b529ff18ff7ac341aff661",
+      "task_id": "T3"
+    }
+  ],
+  "schema_version": "vb.refine_manifest/1",
+  "started_at": "2026-10-18T18:24:15Z"
+}

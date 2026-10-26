@@ -29,6 +29,12 @@ use super::types::{AgentEvent, RunConfig};
 
 const FAST_AGENT_TURN_LIMIT: u32 = 6;
 
+/// The name prefix of the temporary directory holding a provider config
+/// roko writes for one CLI agent's run (Gemini's system settings). The
+/// variable naming the file marks the agent's processes as roko's, and
+/// `roko safety release` refuses to run under it (find-d05b5e).
+pub(crate) const PROVIDER_CONFIG_DIR_PREFIX: &str = "roko-cli-provider-";
+
 /// Cancellation and absolute deadline applied while a CLI runtime is being
 /// materialized. Once [`AgentHandle`] is returned, ordinary attempt ownership
 /// takes over.
@@ -496,7 +502,7 @@ pub async fn spawn_agent_controlled(
     let mut ephemeral_config_dir = None;
     let ephemeral_config_env = if let Some(config) = &invocation.ephemeral_config {
         let directory = tempfile::Builder::new()
-            .prefix("roko-cli-provider-")
+            .prefix(PROVIDER_CONFIG_DIR_PREFIX)
             .tempdir()
             .context("creating temporary provider config directory")
             .map_err(AgentStartupError::Failed)?;

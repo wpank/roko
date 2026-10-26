@@ -1,0 +1,273 @@
+[meta]
+plan = "p2-undertow-rumble-2"
+title = "P2 · Undertow rumble"
+iteration = 0
+total = 4
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh"
+fail_msg = "SC20: `tools/check.sh` (every present spec test, phases 0 to 2) is the plan's final check, not any one task's. Phases 0"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Add stateless LFO utilities and glob core sources"
+description = "Implement the phase-locked LFO API in core/include/undertow/lfo.h and core/src/lfo.cpp, and switch core/CMakeLists.txt to glob every src/*.cpp so the new source is built automatically. Assumption: the LFO is purely a function of beat position, with no hidden state between calls."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/CMakeLists.txt",
+    "core/include/undertow/lfo.h",
+    "core/src/lfo.cpp",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: SC1: P2.01 | `tools/spec.sh 2 lfo 'P2.01*'` | The 17 rate choices are the right cycle lengths in beats, polyrhythms included",
+    "AC2: SC2: P2.02 | `tools/spec.sh 2 lfo 'P2.02*'` | The six shapes have their values at quarter points; the phase offset shifts them; Sample & Hold holds a seeded value per cycle",
+    "AC3: SC3: P2.03 | `tools/spec.sh 2 lfo 'P2.03*'` | valueAt is a function of the beat position: every rate repeats on its cycle and 5/16 and 3/16 realign with the bar after 5 and 3 bars",
+]
+sequence = 0
+goal = "The core library exports the LFO API and builds it from a globbed source list."
+non_goals = [
+    "Do not add rumble, output-stage, voice-modulation, or engine wiring in this task.",
+    "Do not change any spec tests.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-17"
+why = "Inspect the current core target definition before switching to globbed sources."
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Match existing header style and namespace conventions."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-80"
+why = "See how core headers are included from source files."
+
+[[task.verify]]
+phase = "compile"
+command = "test -f core/include/undertow/lfo.h && test -f core/src/lfo.cpp && grep -q 'file(GLOB' core/CMakeLists.txt && grep -q 'CONFIGURE_DEPENDS' core/CMakeLists.txt && cargo check -p undertow_core"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Implement rumble generation and ducking"
+description = "Implement the rumble stage in core/include/undertow/rumble.h and core/src/rumble.cpp, including the ghost kick, reverb tail, low-pass shaping, saturation, ducking, and silence behavior. Assumption: the stage allocates its delay lines only in prepare and flushes near-zero state to exact zero."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/rumble.h",
+    "core/src/rumble.cpp",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: SC4: P2.04 | `tools/spec.sh 2 rumble 'P2.04*'` | The ghost kick and the duck follow the beat grid: the duck is down within 5 ms of each beat and open again by 3/4 of a beat; no kick while stopped",
+    "AC2: SC5: P2.05 | `tools/spec.sh 2 rumble 'P2.05*'` | Fed by the ghost kick, and separately by a bright send (white noise), at least 90% of the rumble's energy is below 200 Hz at tone 110 Hz, at drive 0.4 and at drive 1",
+    "AC3: SC6: P2.06 | `tools/spec.sh 2 rumble 'P2.06*'` | The tail falls from -10 to -40 dB in half of rumble_decay (within 35%), for 2 s and 6 s",
+    "AC4: SC7: P2.07 | `tools/spec.sh 2 rumble 'P2.07*'` | The ghost kick is never heard dry, the send feeds the reverb, and rumble_level 0 is exact silence",
+    "AC5: SC8: P2.08 | `tools/spec.sh 2 rumble 'P2.08*'` | At full settings with full-scale noise sent in, the rumble stays finite and within 2 and never allocates; after a stop its tail ends in exact zeros, no denormals",
+]
+sequence = 1
+goal = "The core library exposes a working rumble stage with beat-synced ducking and bounded output."
+non_goals = [
+    "Do not modify the LFO or core CMake source glob in this task.",
+    "Do not add output-stage or engine wiring yet.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Match the project's public API organization and namespace conventions."
+
+[[task.context.read_files]]
+path = "core/src/voice.cpp"
+lines = "1-260"
+why = "Reuse existing reset, smoothing, and sample-rate patterns where helpful."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "See how audio stages are called and how meters are tracked."
+
+[[task.verify]]
+phase = "test"
+command = "test -f core/include/undertow/rumble.h && test -f core/src/rumble.cpp && grep -q 'class Rumble' core/include/undertow/rumble.h && cargo test -p undertow_core rumble"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+    "AC4",
+    "AC5",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Implement output stage and clip meter"
+description = "Implement the output stage in core/include/undertow/output_stage.h and core/src/output_stage.cpp, including saturation, master gain, the mono/sub crossover, stereo width, soft clipping, and the clip meter. Assumption: the neutral parameter settings preserve phase-1 behavior when the stage is wired in."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/output_stage.h",
+    "core/src/output_stage.cpp",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: SC9: P2.09 | `tools/spec.sh 2 output 'P2.09*'` | softClip is exactly transparent to 0.5, odd, rising, gives 0.869 at 1.0 and never passes 0.966",
+    "AC2: SC10: P2.10 | `tools/spec.sh 2 output 'P2.10*'` | Saturation is linear at 0, distorts a 0.4 sine by 5% or more at 1 with odd harmonics and no DC, and keeps quiet signals at unity gain",
+    "AC3: SC11: P2.11 | `tools/spec.sh 2 output 'P2.11*'` | Width 0 leaves both channels equal and the bands summing flat; width keeps the band under mono_freq mono and decorrelates the band above",
+    "AC4: SC12: P2.12 | `tools/spec.sh 2 output 'P2.12*'` | The clip meter lights when the signal goes over full scale and goes out 0.5 s later; the output never passes the ceiling",
+]
+sequence = 2
+goal = "The core library exposes a complete output stage with crossover, widening, soft clipping, and clipping state."
+non_goals = [
+    "Do not add LFO, rumble, voice-modulation, or engine wiring in this task.",
+    "Do not modify core/CMakeLists.txt.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Match the project's API style and class layout."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "Confirm existing meter and block-processing patterns."
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-80"
+why = "Keep the new source aligned with the library build structure."
+
+[[task.verify]]
+phase = "test"
+command = "test -f core/include/undertow/output_stage.h && test -f core/src/output_stage.cpp && grep -q 'softClip' core/include/undertow/output_stage.h && cargo test -p undertow_core output_stage"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+    "AC4",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Add voice modulation and wire the engine"
+description = "Add VoiceModulation and MonoVoice::setModulation, then update core/src/engine.cpp so per-sample processing applies the LFOs, rumble send, rumble/output processing, meter updates, and controller 120 resets. Assumption: host transport and internal-clock behavior follow the request exactly, and neutral settings keep phase-1 measurements unchanged."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/voice.h",
+    "core/src/voice.cpp",
+    "core/src/engine.cpp",
+]
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: SC13: P2.13 | `tools/spec.sh 2 engine 'P2.13*'` | LFO 1 moves the cutoff in time with the host's bar (peak at ppq 1 for a 1-bar sine), replays after a host loop, and runs on the internal clock without a host",
+    "AC2: SC14: P2.14 | `tools/spec.sh 2 engine 'P2.14*'` | LFO 2 reaches pitch (+-12 semitones), amp (full to silent), pulse width and cutoff",
+    "AC3: SC15: P2.15 | `tools/spec.sh 2 engine 'P2.15*'` | In the engine the mono rumble pumps on the host's beats, kicks again after a loop to ppq 0, and runs on the internal clock without a host",
+    "AC4: SC16: P2.16 | `tools/spec.sh 2 engine 'P2.16*'` | At width 1 the full mix keeps the side signal 25 dB under the mid below mono_freq / 2, and spreads the band above 500 Hz",
+    "AC5: SC17: P2.17 | `tools/spec.sh 2 engine 'P2.17*'` | A hot patch (no saturation, master +6 dB) never passes 0.966, stays finite, lights meters().clipping, and the meter clears once quiet",
+    "AC6: SC18: P2.18 | `tools/spec.sh 2 engine 'P2.18*'` | With LFOs, rumble, saturation and width on, and their parameters moving, the engine never allocates",
+    "AC7: SC19: P2.19 | `tools/spec.sh 2 engine 'P2.19*'` | 60 s of the full engine renders in at most 4 s of CPU time (15x real time)",
+    "AC8: SC20: `tools/check.sh` (every present spec test, phases 0 to 2) is the plan's final check, not any one task's. Phases 0",
+]
+sequence = 3
+goal = "The voice accepts modulation input and the engine routes LFOs, rumble, and output-stage processing per sample."
+non_goals = [
+    "Do not change phase-3 sequencer code or phase-4 editor code.",
+    "Do not modify core/CMakeLists.txt, lfo.cpp, rumble.cpp, or output_stage.cpp in this task.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Add the modulation struct and method to the existing voice API."
+
+[[task.context.read_files]]
+path = "core/src/voice.cpp"
+lines = "1-260"
+why = "Insert modulation handling into the voice state and signal path."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "Wire the per-sample LFO, rumble, output stage, transport, and meters."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check --workspace"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+    "AC4",
+    "AC5",
+    "AC6",
+    "AC7",
+    "AC8",
+]
+expect = "pass_on_base"

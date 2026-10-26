@@ -32,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
-use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
+use roko_graph::cells::task_executor::{TaskAttempt, TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
 use roko_graph::replay::{
     LoggedRecord, RecordEntry, activity_records, complete_records_len, set_aside_activities_after,
@@ -41,11 +41,18 @@ use roko_graph::{
     ActivityRecorder, ActivityReplayer, AuthoredPlan, EXT_SAFETY_PROVENANCE, Graph,
     legacy_graph_execution_fingerprint, plan_graph_fingerprint,
 };
+use roko_learn::costs_db::CostRecord;
+use roko_learn::efficiency::ExecutedRow;
 use roko_learn::telemetry::report::RunRecords;
-use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
+use roko_learn::telemetry::{
+    AttemptCost, AttemptFailureClass, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+    CostSource, TelemetryWriter, TelemetryWriterConfig,
+};
+use roko_serve::runtime::{names_run, short_run_id};
 use serde::{Deserialize, Serialize};
 
 use crate::graph_execution::delivery::{DELIVERY_CHECKS_EXTENSION, DeliveryCheck};
+use crate::graph_task_dispatch::micro_usd_to_usd;
 use crate::runner::plan_loader::Plan;
 use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
 use crate::task_accept;
@@ -85,7 +92,8 @@ pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
 /// Known extension namespace for what stopped the last run before its tasks
 /// settled (gap-fab2cc): `{"by": "SIGINT" | "SIGTERM" | "SIGHUP" |
-/// "deadline" | "conductor"}`. Absent when nothing stopped it.
+/// "deadline" | "conductor" | "cancel" | "tui-closed" | "time-limit"}`.
+/// Absent when nothing stopped it.
 pub const STOP_EXTENSION: &str = "roko.run.stop@1";
 
 /// Known extension namespace for the plan's delivery into its run's batch
@@ -95,6 +103,11 @@ pub const BATCH_EXTENSION: &str = "roko.batch@1";
 /// Known extension namespace for the plan's whole-plan check (`[meta]
 /// verify`, gap-60233f) when it ran in the shared working tree.
 pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
+
+/// Known extension namespace for the hand-backs of the plan's failed
+/// whole-plan check to its tasks in the last run (find-5bcba7): a list of
+/// [`crate::graph_execution::plan_handback::Handback`]s.
+pub const PLAN_HANDBACKS_EXTENSION: &str = "roko.plan.handbacks@1";
 
 /// Namespace of [`EXT_SAFETY_PROVENANCE`] (gap-ff95f5). This build reads
 /// version 1 only, and fails closed on any other.
@@ -119,9 +132,10 @@ pub enum GraphCheckpointStatus {
     Failed,
     /// An operator cancelled the plan before every node finished.
     Cancelled,
-    /// A stop request (a signal, a closed operator TUI, the FAST deadline or
-    /// the conductor) stopped the run before every node finished; recorded
-    /// Activities remain resumable. [`STOP_EXTENSION`] names the request.
+    /// A stop request (a signal, a closed operator TUI, the FAST deadline,
+    /// the run's time limit or the conductor) stopped the run before every
+    /// node finished; recorded Activities remain resumable.
+    /// [`STOP_EXTENSION`] names the request.
     Interrupted,
 }
 
@@ -137,6 +151,16 @@ impl GraphCheckpointStatus {
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
         }
+    }
+
+    /// Whether a run that stands here stopped part way: it failed, was
+    /// cancelled or interrupted, or stopped while running without saying.
+    #[must_use]
+    pub const fn stopped_part_way(self) -> bool {
+        matches!(
+            self,
+            Self::Running | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
     }
 }
 
@@ -305,6 +329,22 @@ pub struct InterruptedAttempt {
     /// process stopped while it ran.
     #[serde(default)]
     pub cancelled: bool,
+    /// What its finished model calls cost, in millionths of one USD, as the
+    /// resume settled its hold on the plan budget (bug-b7f6a8), less the
+    /// calls `refused_micro_usd` holds; `None` when the ledger did not
+    /// record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_micro_usd: Option<u64>,
+    /// What the model call it had in flight was charged at, an estimate, in
+    /// millionths of one USD; `None` with no call in flight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_micro_usd: Option<u64>,
+    /// What the calls of its dispatches that failover settled as refused
+    /// cost, in millionths of one USD (bug-8bcd98): on the plan's books
+    /// before the stop, so the resume charged them nothing. `None` when it
+    /// had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_micro_usd: Option<u64>,
 }
 
 /// Task nodes whose recorded outputs must carry a passing gate verdict before
@@ -440,26 +480,16 @@ fn recorded_nodes(records: &[RecordEntry]) -> BTreeSet<String> {
     records.iter().map(|entry| entry.node_id.clone()).collect()
 }
 
-/// The tasks of plan `plan_id` whose latest attempt in `run_dir`'s attempt
-/// log a stop cut off: it never settled, or the run cancelled it. A task in
-/// `recorded`, whose output the Activity log holds, is left out: its attempt
-/// finished, even if the process stopped before its verdict line was written.
+/// The tasks of plan `plan_id` whose latest attempt in the run's attempt log
+/// (`records`) a stop cut off: it never settled, or the run cancelled it. A
+/// task in `recorded`, whose output the Activity log holds, is left out: its
+/// attempt finished, even if the process stopped before its verdict line was
+/// written.
 fn interrupted_attempts(
-    run_dir: &Path,
+    records: &RunRecords,
     plan_id: &str,
     recorded: &BTreeSet<String>,
 ) -> Vec<InterruptedAttempt> {
-    let records = match RunRecords::load(run_dir) {
-        Ok(records) => records,
-        Err(error) => {
-            tracing::warn!(
-                run_dir = %run_dir.display(),
-                %error,
-                "resume: the run's attempt log is unreadable; interrupted attempts go unrecorded"
-            );
-            return Vec::new();
-        }
-    };
     let outcomes: BTreeMap<&str, AttemptOutcome> = records
         .verdicts
         .iter()
@@ -500,9 +530,177 @@ fn interrupted_attempts(
                 attempt_key: open.identity.attempt_key.clone(),
                 started_at_ms: open.attempt_started_at,
                 cancelled,
+                spent_micro_usd: None,
+                estimated_micro_usd: None,
+                refused_micro_usd: None,
             })
         })
         .collect()
+}
+
+/// Settle each attempt of `attempts` that a stopped process left without a
+/// verdict (bug-b7f6a8): an `abandoned` verdict in the run's attempt log at
+/// `run_dir`, blamed on the harness, with what the resume charged it when
+/// the ledger recorded that. Its open line in `records` names the attempt,
+/// and its latest route decision its model. The writer skips a verdict the
+/// log already holds, so a resume that stops before its first commit and
+/// runs again writes each one once. Best-effort: a failure is logged, and
+/// the attempt stays abandoned without a verdict.
+///
+/// Returns the `learn/costs.jsonl` lines of the attempts whose cost is
+/// known, for the resume to append once it has committed (so a resume that
+/// stops first writes none, rather than one twice).
+fn settle_abandoned_attempts(
+    run_dir: &Path,
+    records: &RunRecords,
+    attempts: &[InterruptedAttempt],
+) -> Vec<String> {
+    let dead: Vec<&InterruptedAttempt> = attempts
+        .iter()
+        .filter(|attempt| !attempt.cancelled)
+        .collect();
+    if dead.is_empty() {
+        return Vec::new();
+    }
+    let writer = match TelemetryWriter::spawn(run_dir, TelemetryWriterConfig::default()) {
+        Ok(writer) => writer,
+        Err(error) => {
+            tracing::warn!(
+                run_dir = %run_dir.display(),
+                %error,
+                "resume: the run's attempt log cannot be written; its interrupted attempts stay \
+                 without a verdict"
+            );
+            return Vec::new();
+        }
+    };
+    let mut cost_lines = Vec::new();
+    for attempt in dead {
+        let Some(open) = records
+            .opens
+            .iter()
+            .map(|open| &open.record)
+            .find(|open| open.identity.attempt_key == attempt.attempt_key)
+        else {
+            continue;
+        };
+        let outcome = AttemptOutcome::Abandoned;
+        let mut verdict = AttemptVerdictRecord::settle(open.identity.clone(), outcome, false);
+        verdict.task_spec_hash.clone_from(&open.task_spec_hash);
+        verdict.failure_class = Some(AttemptFailureClass {
+            basis: Some("process_stopped".to_string()),
+            ..AttemptFailureClass::new(outcome)
+        });
+        verdict.timing.attempt_started_at = open.attempt_started_at;
+        verdict.timing.settled_at = Some(i64::try_from(unix_ms()).unwrap_or(i64::MAX));
+        if let Some(route) = records.decisions.iter().rev().find(|decision| {
+            decision.record.attempt_key.as_deref() == Some(attempt.attempt_key.as_str())
+        }) {
+            verdict.executed.provider = Some(route.record.selected_provider.clone());
+            verdict.executed.model_requested = Some(route.record.selected_model.clone());
+            verdict.executed.model_dispatched = Some(route.record.selected_model.clone());
+        }
+        verdict.cost = abandoned_cost(attempt);
+        if let Some(line) = abandoned_cost_line(open, &verdict) {
+            cost_lines.push(line);
+        }
+        writer.submit(verdict);
+    }
+    let stats = writer.close();
+    if stats.dropped > 0 || stats.write_errors > 0 {
+        tracing::warn!(
+            run_dir = %run_dir.display(),
+            dropped = stats.dropped,
+            write_errors = stats.write_errors,
+            "resume: some interrupted attempts got no `abandoned` verdict"
+        );
+    }
+    cost_lines
+}
+
+/// The `learn/costs.jsonl` row of an attempt a resume settled `abandoned`
+/// (bug-b7f6a8), in the shape the dispatcher writes a settled attempt's
+/// (`graph_task_dispatch::feedback`'s `SettledCostRow`), so the daily ceiling
+/// and the cost totals count what the dead attempt spent.
+#[derive(Serialize)]
+struct AbandonedCostRow<'a> {
+    attempt_key: &'a str,
+    outcome: AttemptOutcome,
+    learning_label: Option<u8>,
+    #[serde(flatten)]
+    row: ExecutedRow<CostRecord>,
+}
+
+/// The [`AbandonedCostRow`] line of `verdict`, an `abandoned` verdict of the
+/// attempt `open` opened; `None` when its cost is unknown, since a $0 row
+/// would read as a free attempt.
+fn abandoned_cost_line(open: &AttemptOpenRecord, verdict: &AttemptVerdictRecord) -> Option<String> {
+    let cost_usd = verdict.cost.billed_usd?;
+    let duration_ms = verdict
+        .timing
+        .settled_at
+        .zip(open.attempt_started_at)
+        .map_or(0, |(settled, started)| {
+            u64::try_from(settled - started).unwrap_or(0)
+        });
+    let record = CostRecord {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        model: verdict
+            .executed
+            .model_dispatched
+            .clone()
+            .unwrap_or_default(),
+        provider: verdict.executed.provider.clone().unwrap_or_default(),
+        role: open.role.clone().unwrap_or_default(),
+        plan_id: open.identity.plan_id.clone(),
+        task_id: open.identity.task_id.clone(),
+        complexity_band: open.tier.clone().unwrap_or_default(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        cost_usd,
+        duration_ms,
+        success: false,
+        session_id: String::new(),
+        cost_source: verdict.cost.source,
+        priced: Some(true),
+        api_equiv_usd: None,
+        price_snapshot_id: None,
+    };
+    let row = AbandonedCostRow {
+        attempt_key: &verdict.identity.attempt_key,
+        outcome: verdict.outcome,
+        learning_label: verdict.learning_label,
+        row: ExecutedRow::new(record, &verdict.executed),
+    };
+    serde_json::to_string(&row)
+        .map_err(|error| {
+            tracing::warn!(%error, "resume: an abandoned attempt's cost row did not serialize");
+        })
+        .ok()
+}
+
+/// What an `abandoned` attempt is charged (bug-b7f6a8): its finished calls,
+/// plus the call it had in flight at its estimate, with the calls failover
+/// settled as refused beside them, as a live attempt's verdict carries them
+/// (bug-8bcd98). Unknown when the ledger did not record its hold.
+fn abandoned_cost(attempt: &InterruptedAttempt) -> AttemptCost {
+    let Some(spent) = attempt.spent_micro_usd else {
+        return AttemptCost::default();
+    };
+    let estimated = attempt.estimated_micro_usd;
+    let billed = spent.saturating_add(estimated.unwrap_or(0));
+    AttemptCost {
+        billed_usd: Some(micro_usd_to_usd(billed)),
+        source: if estimated.is_some() {
+            CostSource::Estimated
+        } else {
+            CostSource::ProviderUsage
+        },
+        estimated_usd: estimated.map(micro_usd_to_usd),
+        refused_usd: attempt.refused_micro_usd.map(micro_usd_to_usd),
+        ..AttemptCost::default()
+    }
 }
 
 /// Build the [`GATE_VERDICT_EXTENSION`] entry for `summary`.
@@ -727,6 +925,88 @@ pub struct CommittedGeneration {
     /// replay. The log keeps them, and every reader of it skips them.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub refused_records: BTreeSet<u64>,
+    /// The attempts in flight when this generation was committed, and what
+    /// each had spent (bug-b7f6a8): `reserved_micro_usd` is what they hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holds: Vec<CommittedHold>,
+}
+
+/// What a resume settled of the holds a stopped process left in flight
+/// (bug-b7f6a8).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SettledHolds {
+    /// The plan's committed spend before the settlement, in millionths of one
+    /// USD: what the run spent before the restart, the dead attempts left
+    /// out.
+    pub spent_before_micro_usd: u64,
+    /// The reservation the settlement released.
+    pub released_micro_usd: u64,
+    /// What the dead attempts were charged: their finished calls the plan's
+    /// books did not hold yet, and each call in flight at its estimate.
+    pub charged_micro_usd: u64,
+    /// The ledger recorded no holds, as one written before they were kept:
+    /// the dead attempts' spend is unknown, and nothing was charged.
+    pub spend_unknown: bool,
+    /// The holds, as the last generation committed them.
+    pub holds: Vec<CommittedHold>,
+}
+
+/// An attempt's hold on its plan's budget, as a commit recorded it
+/// (bug-b7f6a8): what its finished model calls cost, and the call it had
+/// admitted and not yet recorded. The plan budget commits its holds with each
+/// call an attempt admits or records, so a resume after a crash settles what
+/// the dead attempts spent instead of finding only an unresolved reservation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedHold {
+    /// The attempt, once it opened (`{chain_key}:{attempt}`); `None` for a
+    /// hold taken before its attempt opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_key: Option<String>,
+    /// What its finished model calls cost, in millionths of one USD.
+    #[serde(default)]
+    pub spent_micro_usd: u64,
+    /// Of `spent_micro_usd`, what the plan's books held already: the calls of
+    /// the dispatches failover settled as refused (bug-8bcd98), which a
+    /// settlement does not charge again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub booked_micro_usd: u64,
+    /// It had admitted a model call and not recorded it: the call was in
+    /// flight.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_flight: bool,
+    /// What that call was expected to cost, in millionths of one USD: the
+    /// attempt's last call, else the plan's costliest so far; 0 when nothing
+    /// had a price yet.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub in_flight_micro_usd: u64,
+    /// One of its calls had no price, so what it spent is unknown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unpriced: bool,
+}
+
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// What settling `holds` charges, in millionths of one USD: each hold's
+/// finished calls the plan's books do not hold yet, and its call in flight at
+/// its estimate (bug-b7f6a8).
+fn hold_charge(holds: &[CommittedHold]) -> u64 {
+    holds.iter().fold(0_u64, |total, hold| {
+        total
+            .saturating_add(hold.unbooked_micro_usd())
+            .saturating_add(hold.in_flight_micro_usd)
+    })
+}
+
+impl CommittedHold {
+    /// What its finished calls cost that the plan's books do not hold yet, in
+    /// millionths of one USD: its spend, less the calls of the dispatches
+    /// failover settled as refused.
+    #[must_use]
+    pub const fn unbooked_micro_usd(&self) -> u64 {
+        self.spent_micro_usd.saturating_sub(self.booked_micro_usd)
+    }
 }
 
 /// Versioned metadata that makes an Activity JSONL file safe to resume.
@@ -824,6 +1104,10 @@ struct GraphCostLedgerState {
     /// budget raise`, backlog 2118), which a resume keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     raised_ceiling_micro_usd: Option<u64>,
+    /// The attempts in flight, as [`CommittedGeneration::holds`] commits
+    /// them (bug-b7f6a8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    holds: Vec<CommittedHold>,
 }
 
 /// Durable actual-provider-cost state bound to one Graph checkpoint identity.
@@ -857,29 +1141,77 @@ impl GraphCostLedgerCheckpoint {
         ceiling_micro_usd: u64,
         spent_micro_usd: u64,
         reserved_micro_usd: u64,
+        holds: Vec<CommittedHold>,
     ) -> Result<()> {
         let previous = self
             .identity
             .raised_ceiling_micro_usd
             .replace(ceiling_micro_usd);
-        let persisted = self.persist(spent_micro_usd, reserved_micro_usd);
+        let persisted = self.persist(spent_micro_usd, reserved_micro_usd, holds);
         if persisted.is_err() {
             self.identity.raised_ceiling_micro_usd = previous;
         }
         persisted
     }
 
-    /// Persist the latest actual spend atomically, then commit it as the
+    /// Persist the latest actual spend atomically, with the attempts in
+    /// flight and what each has spent (bug-b7f6a8), then commit it as the
     /// checkpoint's next generation (gap-dc1d16).
-    pub(crate) fn persist(&self, spent_micro_usd: u64, reserved_micro_usd: u64) -> Result<()> {
+    pub(crate) fn persist(
+        &self,
+        spent_micro_usd: u64,
+        reserved_micro_usd: u64,
+        holds: Vec<CommittedHold>,
+    ) -> Result<()> {
         let mut state = self.identity.clone();
         state.spent_micro_usd = spent_micro_usd;
         state.reserved_micro_usd = reserved_micro_usd;
+        state.holds.clone_from(&holds);
         write_cost_ledger_atomic(&self.path, &state)?;
         match &self.commits {
-            Some(commits) => commits.commit_cost(spent_micro_usd, reserved_micro_usd),
+            Some(commits) => commits.commit_cost(spent_micro_usd, reserved_micro_usd, holds),
             None => Ok(()),
         }
+    }
+
+    /// Settle the holds of the attempts a stopped process left in flight
+    /// (bug-b7f6a8). A resume calls this once it holds the runner lock, so
+    /// no other process runs the plan: what each dead attempt's finished
+    /// calls cost, less those the plan's books hold already (a dispatch
+    /// failover settled as refused), and the call it had in flight at the
+    /// estimate it was admitted at, become spent, and nothing stays
+    /// reserved. A ledger that
+    /// recorded no holds (one written before holds were kept) has its
+    /// reservation released with its spend unknown. The settled ledger is
+    /// written here, and committed with the resume's first generation.
+    /// `None` when nothing was held.
+    fn settle_dead_holds(&mut self) -> Result<Option<SettledHolds>> {
+        let state = &mut self.identity;
+        if state.reserved_micro_usd == 0 && state.holds.is_empty() {
+            return Ok(None);
+        }
+        let holds = std::mem::take(&mut state.holds);
+        let charged = hold_charge(&holds);
+        let settled = SettledHolds {
+            spent_before_micro_usd: state.spent_micro_usd,
+            released_micro_usd: state.reserved_micro_usd,
+            charged_micro_usd: charged,
+            spend_unknown: holds.is_empty(),
+            holds,
+        };
+        state.spent_micro_usd = state.spent_micro_usd.saturating_add(charged);
+        state.reserved_micro_usd = 0;
+        write_cost_ledger_atomic(&self.path, state)?;
+        Ok(Some(settled))
+    }
+
+    /// What the plan has spent with the holds the ledger records settled as
+    /// [`Self::settle_dead_holds`] settles them, in millionths of one USD:
+    /// the spend a resume carries (bug-b7f6a8).
+    fn settled_spend_micro_usd(&self) -> u64 {
+        self.identity
+            .spent_micro_usd
+            .saturating_add(hold_charge(&self.identity.holds))
     }
 
     /// Load the ledger at `path` for `manifest`'s checkpoint, with the cost a
@@ -897,6 +1229,7 @@ impl GraphCostLedgerCheckpoint {
         if let Some(committed) = &manifest.committed {
             state.spent_micro_usd = committed.spent_micro_usd;
             state.reserved_micro_usd = committed.reserved_micro_usd;
+            state.holds.clone_from(&committed.holds);
         }
         validate_cost_ledger_state(&state, manifest, graph)
             .with_context(|| format!("validate Graph cost ledger {}", path.display()))?;
@@ -1025,12 +1358,18 @@ impl CheckpointCommits {
         self.write(state)
     }
 
-    /// Commit the cost the cost ledger now holds.
-    fn commit_cost(&self, spent_micro_usd: u64, reserved_micro_usd: u64) -> Result<()> {
+    /// Commit the cost the cost ledger now holds, with its holds.
+    fn commit_cost(
+        &self,
+        spent_micro_usd: u64,
+        reserved_micro_usd: u64,
+        holds: Vec<CommittedHold>,
+    ) -> Result<()> {
         let mut guard = self.state.lock();
         let state = &mut *guard;
         state.committed.spent_micro_usd = spent_micro_usd;
         state.committed.reserved_micro_usd = reserved_micro_usd;
+        state.committed.holds = holds;
         self.write(state)
     }
 
@@ -1087,6 +1426,14 @@ pub struct PreparedGraphCheckpoint {
     /// The run's safety provenance sink, whose summary every manifest write
     /// stores (gap-ff95f5).
     safety_provenance: Option<Arc<GraphProvenanceSink>>,
+    /// The checkpoint this run set aside to start the plan over (bug-cbdb6b).
+    set_aside: Option<SetAsideCheckpoint>,
+    /// What this resume settled of the holds a stopped process left in
+    /// flight (bug-b7f6a8).
+    settled_holds: Option<SettledHolds>,
+    /// The `learn/costs.jsonl` lines of the attempts this resume settled
+    /// `abandoned`, appended once its first generation is committed.
+    abandoned_cost_lines: Vec<String>,
 }
 
 impl std::fmt::Debug for PreparedGraphCheckpoint {
@@ -1115,6 +1462,36 @@ impl PreparedGraphCheckpoint {
     #[must_use]
     pub const fn paths(&self) -> &GraphCheckpointPaths {
         &self.paths
+    }
+
+    /// The checkpoint of an earlier run that this run set aside to start the
+    /// plan over, which the run's events name (bug-cbdb6b).
+    #[must_use]
+    pub const fn set_aside(&self) -> Option<&SetAsideCheckpoint> {
+        self.set_aside.as_ref()
+    }
+
+    /// What this resume settled of the holds a stopped process left in
+    /// flight (bug-b7f6a8); `None` when nothing was held.
+    #[must_use]
+    pub const fn settled_holds(&self) -> Option<&SettledHolds> {
+        self.settled_holds.as_ref()
+    }
+
+    /// The plan's spend this run took over from its earlier processes, in
+    /// millionths of one USD: what it spent before the restart, the dead
+    /// attempts' settled spend included (bug-b7f6a8). 0 for a fresh run.
+    #[must_use]
+    pub fn restored_spend_micro_usd(&self) -> u64 {
+        self.cost_ledger
+            .as_ref()
+            .map_or(0, GraphCostLedgerCheckpoint::spent_micro_usd)
+    }
+
+    /// This checkpoint, saying it set `set_aside` aside.
+    fn setting_aside(mut self, set_aside: Option<SetAsideCheckpoint>) -> Self {
+        self.set_aside = set_aside;
+        self
     }
 
     /// Move the prepared recorder into a Graph Engine.
@@ -1269,6 +1646,22 @@ impl PreparedGraphCheckpoint {
         Ok(())
     }
 
+    /// Record the hand-backs of the plan's failed whole-plan check to its
+    /// tasks in this run (find-5bcba7) under [`PLAN_HANDBACKS_EXTENSION`],
+    /// replacing an earlier run's; an empty list removes them. The next
+    /// terminal write persists it.
+    pub fn record_plan_handbacks(&mut self, value: serde_json::Value) -> Result<()> {
+        if value.as_array().is_some_and(Vec::is_empty) {
+            self.manifest.extensions.remove(PLAN_HANDBACKS_EXTENSION);
+            return Ok(());
+        }
+        self.manifest.extensions.insert(
+            PLAN_HANDBACKS_EXTENSION.to_string(),
+            host_extension(PLAN_HANDBACKS_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
     /// The delivery receipt an earlier process of this checkpoint recorded
     /// with [`Self::record_batch_delivery`], if any.
     #[must_use]
@@ -1339,7 +1732,35 @@ impl PreparedGraphCheckpoint {
         let layout = RokoLayout::for_project(workdir);
         let run_dir = layout.run_dir(&self.manifest.run_id);
         let recorded = recorded_nodes(&self.counted_records()?);
-        let attempts = interrupted_attempts(&run_dir, &self.manifest.plan_id, &recorded);
+        let records = match RunRecords::load(&run_dir) {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::warn!(
+                    run_dir = %run_dir.display(),
+                    %error,
+                    "resume: the run's attempt log is unreadable; interrupted attempts go \
+                     unrecorded"
+                );
+                RunRecords::default()
+            }
+        };
+        let mut attempts = interrupted_attempts(&records, &self.manifest.plan_id, &recorded);
+        // What each dead attempt spent, as its settled hold says (bug-b7f6a8).
+        if let Some(settled) = &self.settled_holds {
+            for attempt in &mut attempts {
+                let hold = settled
+                    .holds
+                    .iter()
+                    .find(|hold| hold.attempt_key.as_deref() == Some(attempt.attempt_key.as_str()));
+                if let Some(hold) = hold {
+                    attempt.spent_micro_usd = Some(hold.unbooked_micro_usd());
+                    attempt.estimated_micro_usd =
+                        hold.in_flight.then_some(hold.in_flight_micro_usd);
+                    attempt.refused_micro_usd =
+                        (hold.booked_micro_usd > 0).then_some(hold.booked_micro_usd);
+                }
+            }
+        }
         if attempts.is_empty() {
             self.manifest
                 .extensions
@@ -1351,10 +1772,13 @@ impl PreparedGraphCheckpoint {
                 task_id = %attempt.task_id,
                 attempt_key = %attempt.attempt_key,
                 cancelled = attempt.cancelled,
+                spent_micro_usd = attempt.spent_micro_usd,
+                estimated_micro_usd = attempt.estimated_micro_usd,
                 "resume: the task's last attempt stopped before it settled; anything it wrote \
                  is still in the task's checkout, and the task runs again on top of it"
             );
         }
+        self.abandoned_cost_lines = settle_abandoned_attempts(&run_dir, &records, &attempts);
         let value = serde_json::to_value(InterruptedAttempts { attempts })
             .context("serialize interrupted attempts")?;
         self.manifest.extensions.insert(
@@ -1362,6 +1786,27 @@ impl PreparedGraphCheckpoint {
             host_extension(INTERRUPTED_ATTEMPT_EXTENSION, value)?,
         );
         Ok(())
+    }
+
+    /// Append the `learn/costs.jsonl` rows of the attempts this resume
+    /// settled `abandoned` (bug-b7f6a8). Best-effort: a failure is logged.
+    fn append_abandoned_cost_lines(&mut self, workdir: &Path) {
+        let lines = std::mem::take(&mut self.abandoned_cost_lines);
+        if lines.is_empty() {
+            return;
+        }
+        let path = RokoLayout::for_project(workdir)
+            .learn_dir()
+            .join("costs.jsonl");
+        for line in lines {
+            if let Err(error) = roko_core::io::append_jsonl_line(&path, &line) {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "resume: an abandoned attempt's cost row was not written"
+                );
+            }
+        }
     }
 
     // ---- Extension registration ----
@@ -1678,8 +2123,20 @@ pub fn prepare_graph_checkpoint_for_run(
     let paths = resolve_checkpoint_paths(workdir, requested_path, plan_id, plan_count)?;
     let identity = GraphIdentity::of(workdir, graph)?;
 
+    // What the run sets aside to start over, read before its files move, so
+    // the run can say whose progress it was (bug-cbdb6b).
+    let mut set_aside = None;
     if fresh {
-        archive_checkpoint_files(&paths)?;
+        let preview = preview_graph_checkpoint(
+            workdir,
+            requested_path,
+            plan_id,
+            plan_count,
+            graph,
+            false,
+            true,
+        );
+        set_aside = set_aside_checkpoint(&paths, preview.ok().as_ref())?;
     }
 
     if !fresh && paths.manifest.exists() {
@@ -1692,7 +2149,7 @@ pub fn prepare_graph_checkpoint_for_run(
                         paths.manifest.display()
                     );
                 }
-                archive_checkpoint_files(&paths)?;
+                set_aside = set_aside_checkpoint(&paths, None)?;
             }
             Ok(matched) => {
                 if (!paths.activities.is_file() || !paths.costs.is_file()) && !force_resume {
@@ -1704,8 +2161,9 @@ pub fn prepare_graph_checkpoint_for_run(
                     );
                 }
                 if !paths.activities.is_file() || !paths.costs.is_file() {
-                    archive_checkpoint_files(&paths)?;
-                    return create_fresh_checkpoint(paths, plan_id, identity.current, run_id);
+                    let set_aside = set_aside_checkpoint(&paths, None)?;
+                    return create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
+                        .map(|prepared| prepared.setting_aside(set_aside));
                 }
                 let mut cost_ledger = match GraphCostLedgerCheckpoint::load(
                     paths.costs.clone(),
@@ -1714,8 +2172,9 @@ pub fn prepare_graph_checkpoint_for_run(
                 ) {
                     Ok(cost_ledger) => cost_ledger,
                     Err(_) if force_resume => {
-                        archive_checkpoint_files(&paths)?;
-                        return create_fresh_checkpoint(paths, plan_id, identity.current, run_id);
+                        let set_aside = set_aside_checkpoint(&paths, None)?;
+                        return create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
+                            .map(|prepared| prepared.setting_aside(set_aside));
                     }
                     Err(error) => return Err(error),
                 };
@@ -1751,10 +2210,11 @@ pub fn prepare_graph_checkpoint_for_run(
                 paths.costs.display(),
             );
         }
-        archive_checkpoint_files(&paths)?;
+        set_aside = set_aside_checkpoint(&paths, None)?;
     }
 
     create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
+        .map(|prepared| prepared.setting_aside(set_aside))
 }
 
 /// The generation a resume of a checkpoint selects, read without changing a
@@ -1852,7 +2312,7 @@ fn resume_checkpoint(
     selected: SelectedGeneration,
 ) -> Result<PreparedGraphCheckpoint> {
     let SelectedGeneration {
-        committed,
+        mut committed,
         replayer,
         invalidated,
         activity_hash,
@@ -1886,6 +2346,32 @@ fn resume_checkpoint(
             "resume: the cost ledger holds spend the checkpoint never committed; \
              set it aside, and the run resumes from the committed spend"
         );
+    }
+    // The attempts a stopped process left in flight hold part of the budget
+    // still: settle what they spent before anything runs (bug-b7f6a8). This
+    // process holds the runner lock, so that process is gone.
+    let settled_holds = cost_ledger.settle_dead_holds()?;
+    if let Some(settled) = &settled_holds {
+        committed.spent_micro_usd = cost_ledger.identity.spent_micro_usd;
+        committed.reserved_micro_usd = 0;
+        committed.holds.clear();
+        if settled.spend_unknown {
+            tracing::warn!(
+                released_micro_usd = settled.released_micro_usd,
+                "resume: roko stopped while a task was in flight, and the checkpoint did not \
+                 record what the task had spent; released its reservation, and its spend stays \
+                 unknown"
+            );
+        } else {
+            tracing::warn!(
+                attempts = settled.holds.len(),
+                charged_micro_usd = settled.charged_micro_usd,
+                released_micro_usd = settled.released_micro_usd,
+                spent_micro_usd = committed.spent_micro_usd,
+                "resume: roko stopped while tasks were in flight; their spend counts against the \
+                 plan's ceiling, the calls cut off at an estimate"
+            );
+        }
     }
     for activity in &invalidated {
         tracing::warn!(
@@ -1921,11 +2407,15 @@ fn resume_checkpoint(
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: invalidated,
         safety_provenance: None,
+        set_aside: None,
+        settled_holds,
+        abandoned_cost_lines: Vec::new(),
     };
     prepared.manifest.status = GraphCheckpointStatus::Running;
     prepared.refresh_gate_verdicts()?;
     prepared.record_interrupted_attempts(workdir)?;
     prepared.commit_manifest()?;
+    prepared.append_abandoned_cost_lines(workdir);
     Ok(prepared)
 }
 
@@ -1994,6 +2484,7 @@ fn create_fresh_checkpoint(
             spent_micro_usd: 0,
             reserved_micro_usd: 0,
             raised_ceiling_micro_usd: None,
+            holds: Vec::new(),
         },
         commits: Some(Arc::clone(&commits)),
     };
@@ -2008,6 +2499,9 @@ fn create_fresh_checkpoint(
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: Vec::new(),
         safety_provenance: None,
+        set_aside: None,
+        settled_holds: None,
+        abandoned_cost_lines: Vec::new(),
     };
     prepared.commit_manifest()?;
     Ok(prepared)
@@ -2173,25 +2667,29 @@ fn validate_cost_ledger_state(
     if state.run_id != manifest.run_id {
         bail!("cost ledger run ID does not match the checkpoint manifest");
     }
-    // The cost a resume takes (see `GraphCostLedgerCheckpoint::load`).
-    if state.reserved_micro_usd > 0 {
-        bail!(
-            "the checkpoint committed {} unresolved reserved micro-USD from an interrupted provider call",
-            state.reserved_micro_usd
-        );
-    }
+    // A reservation left when roko stopped while a task was in flight (a
+    // crash or a restart) is no reason to refuse: the resume settles it
+    // (`GraphCostLedgerCheckpoint::settle_dead_holds`, bug-b7f6a8).
     Ok(())
 }
 
-fn archive_checkpoint_files(paths: &GraphCheckpointPaths) -> Result<()> {
-    let timestamp = unix_ms();
-    for path in [&paths.manifest, &paths.activities, &paths.costs] {
+/// Set `paths`' files aside under a `.bak.<unix ms>` suffix. Returns the
+/// name the manifest went to, or the first file's when there was no
+/// manifest, and `None` when there was nothing to set aside.
+fn archive_checkpoint_files(paths: &GraphCheckpointPaths) -> Result<Option<PathBuf>> {
+    let files = [&paths.manifest, &paths.activities, &paths.costs];
+    // Never over an earlier set-aside checkpoint, even within the same ms.
+    let mut timestamp = unix_ms();
+    while files
+        .iter()
+        .any(|path| set_aside_name(path, timestamp).exists())
+    {
+        timestamp += 1;
+    }
+    let mut first = None;
+    for path in files {
         if path.exists() {
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("state");
-            let backup = path.with_extension(format!("{extension}.bak.{timestamp}"));
+            let backup = set_aside_name(path, timestamp);
             std::fs::rename(path, &backup).with_context(|| {
                 format!(
                     "archive Graph checkpoint {} to {}",
@@ -2199,9 +2697,375 @@ fn archive_checkpoint_files(paths: &GraphCheckpointPaths) -> Result<()> {
                     backup.display()
                 )
             })?;
+            first.get_or_insert(backup);
         }
     }
+    Ok(first)
+}
+
+/// The name checkpoint file `path` is set aside under at `timestamp`:
+/// `checkpoint.json` goes to `checkpoint.json.bak.<timestamp>`.
+fn set_aside_name(path: &Path, timestamp: u128) -> PathBuf {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("state");
+    path.with_extension(format!("{extension}.bak.{timestamp}"))
+}
+
+/// A plan's checkpoint that a run set aside to start the plan over
+/// (bug-cbdb6b): the run it recorded and how that run stood, the tasks it
+/// passed and the ones it left when it could have resumed, and the name its
+/// manifest went to. `roko resume <run>`, or a chat host's `plan_run` with
+/// `from_run`, puts it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetAsideCheckpoint {
+    /// The run the manifest recorded, when it could be read.
+    pub run_id: Option<String>,
+    /// How that run stood.
+    pub status: Option<GraphCheckpointStatus>,
+    /// The tasks a resume would have replayed.
+    pub passed_tasks: Vec<String>,
+    /// The tasks a resume would have run.
+    pub tasks_left: Vec<String>,
+    /// Where the manifest went (`checkpoint.json.bak.<unix ms>`).
+    pub manifest: PathBuf,
+}
+
+impl SetAsideCheckpoint {
+    /// Whose progress went aside, where, and how to bring it back, with
+    /// paths relative to `workdir`.
+    #[must_use]
+    pub fn describe(&self, workdir: &Path) -> String {
+        let manifest = self
+            .manifest
+            .strip_prefix(workdir)
+            .unwrap_or(&self.manifest)
+            .display();
+        let Some(run_id) = &self.run_id else {
+            return format!("set aside an unreadable checkpoint as {manifest}");
+        };
+        let short = short_run_id(run_id);
+        let mut facts: Vec<String> = self
+            .status
+            .map(|status| status.as_str().to_string())
+            .into_iter()
+            .collect();
+        if !self.passed_tasks.is_empty() {
+            facts.push(format!("passed {}", self.passed_tasks.join(", ")));
+        }
+        if !self.tasks_left.is_empty() {
+            facts.push(format!("left {}", self.tasks_left.join(", ")));
+        }
+        let facts = if facts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", facts.join("; "))
+        };
+        format!("set aside run {short}{facts} as {manifest}; `roko resume {short}` puts it back")
+    }
+}
+
+/// The run a checkpoint manifest records and how it stands, read from any
+/// schema version without migrating it.
+#[derive(Deserialize)]
+struct ManifestRun {
+    plan_id: String,
+    run_id: String,
+    status: GraphCheckpointStatus,
+}
+
+/// The run the manifest at `path` records, or `None` when it cannot be read.
+fn manifest_run(path: &Path) -> Option<ManifestRun> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// Set the checkpoint at `paths` aside ([`archive_checkpoint_files`]) and
+/// say what it was: the run its manifest recorded and, from `preview` when it
+/// could have resumed, the tasks it passed and left (bug-cbdb6b).
+fn set_aside_checkpoint(
+    paths: &GraphCheckpointPaths,
+    preview: Option<&ResumePreview>,
+) -> Result<Option<SetAsideCheckpoint>> {
+    let recorded = manifest_run(&paths.manifest);
+    let Some(manifest) = archive_checkpoint_files(paths)? else {
+        return Ok(None);
+    };
+    let resumable = preview.filter(|preview| preview.action == ResumeAction::Resume);
+    let set_aside = SetAsideCheckpoint {
+        run_id: recorded.as_ref().map(|recorded| recorded.run_id.clone()),
+        status: recorded.map(|recorded| recorded.status),
+        passed_tasks: resumable.map_or_else(Vec::new, |preview| preview.restored_tasks.clone()),
+        tasks_left: resumable.map_or_else(Vec::new, |preview| preview.tasks_to_run.clone()),
+        manifest,
+    };
+    tracing::info!(
+        run_id = set_aside.run_id.as_deref().unwrap_or("unknown"),
+        manifest = %set_aside.manifest.display(),
+        "set aside a Graph checkpoint to start the plan over"
+    );
+    Ok(Some(set_aside))
+}
+
+/// What [`restore_set_aside_checkpoint`] did (bug-cbdb6b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredRun {
+    /// What a resume does with the plan's checkpoint, the run's again.
+    pub restored: ResumePreview,
+    /// The checkpoint set aside in its place, if the plan had another one.
+    pub set_aside: Option<SetAsideCheckpoint>,
+}
+
+/// Put back the checkpoint of run `run_id` (its id, or at least its first 8
+/// characters) that a run starting `plan` over set aside, so that the next
+/// resume continues it (bug-cbdb6b). The plan's current checkpoint, another
+/// run's, is set aside in its place. Nothing moves when the current
+/// checkpoint is the run's already. The caller holds the runner lock.
+///
+/// # Errors
+///
+/// When no set-aside checkpoint of the plan records the run, or more than
+/// one run matches; when the run accepted work onto its plan branch and the
+/// branch has moved on to another run's, so a resume could not build on it;
+/// when the checkpoint no longer fits the plan (it stays set aside); or when
+/// its files cannot be moved.
+pub fn restore_set_aside_checkpoint(
+    workdir: &Path,
+    plan: &Plan,
+    run_id: &str,
+) -> Result<RestoredRun> {
+    let run_id = run_id.trim();
+    if run_id.len() < 8 {
+        bail!("name the run by its id or at least its first 8 characters, not '{run_id}'");
+    }
+    let paths = resolve_checkpoint_paths(workdir, None, &plan.id, 1)?;
+    let options = ResumeOptions {
+        force_resume: true,
+        ..ResumeOptions::default()
+    };
+    let current = preview_plan_resume(workdir, plan, 1, &options)?;
+    if current
+        .run_id
+        .as_deref()
+        .is_some_and(|current| names_run(current, run_id))
+    {
+        return Ok(RestoredRun {
+            restored: current,
+            set_aside: None,
+        });
+    }
+    // Oldest first, so the last match is the newest.
+    let set_aside = set_aside_checkpoints(&paths, &plan.id);
+    let matching: Vec<&(u128, ManifestRun)> = set_aside
+        .iter()
+        .filter(|(_, recorded)| names_run(&recorded.run_id, run_id))
+        .collect();
+    let runs: BTreeSet<&str> = matching
+        .iter()
+        .map(|(_, recorded)| recorded.run_id.as_str())
+        .collect();
+    if runs.len() > 1 {
+        bail!(
+            "'{run_id}' names more than one run of plan '{}': {}",
+            plan.id,
+            runs.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    let Some((stamp, recorded)) = matching.last() else {
+        let known: Vec<String> = set_aside
+            .iter()
+            .map(|(_, recorded)| {
+                format!(
+                    "{} ({})",
+                    short_run_id(&recorded.run_id),
+                    recorded.status.as_str()
+                )
+            })
+            .collect();
+        let known = if known.is_empty() {
+            "it has none".to_string()
+        } else {
+            format!("it has {}", known.join(", "))
+        };
+        bail!(
+            "plan '{}' has no set-aside checkpoint of run {run_id}; {known}",
+            plan.id
+        );
+    };
+    refuse_lost_plan_branch(
+        workdir,
+        &set_aside_name(&paths.activities, *stamp),
+        recorded,
+    )?;
+
+    let replaced = set_aside_checkpoint(&paths, Some(&current))?;
+    put_back_checkpoint(&paths, *stamp)?;
+    let restored = preview_plan_resume(workdir, plan, 1, &options)?;
+    if restored.action != ResumeAction::Resume {
+        // Undo the swap: the run's checkpoint goes aside again, and the one
+        // it replaced comes back.
+        archive_checkpoint_files(&paths)?;
+        if let Some(stamp) = replaced
+            .as_ref()
+            .and_then(|replaced| set_aside_stamp(&replaced.manifest))
+        {
+            put_back_checkpoint(&paths, stamp)?;
+        }
+        bail!(
+            "run {}'s checkpoint no longer fits plan '{}'{}, so it stays set aside",
+            short_run_id(&recorded.run_id),
+            plan.id,
+            restored
+                .reason
+                .as_deref()
+                .map(|reason| {
+                    let reason = reason
+                        .strip_prefix("--force-resume archives it, ")
+                        .unwrap_or(reason);
+                    format!(" ({reason})")
+                })
+                .unwrap_or_default()
+        );
+    }
+    Ok(RestoredRun {
+        restored,
+        set_aside: replaced,
+    })
+}
+
+/// The plan whose Graph checkpoint in `workdir`, current or set aside,
+/// records run `run_id` (its id, or at least its first 8 characters), for
+/// `roko resume <run>` (bug-cbdb6b). `None` when no plan's does, or when
+/// the prefix names runs of more than one plan.
+#[must_use]
+pub fn plan_of_run(workdir: &Path, run_id: &str) -> Option<String> {
+    let run_id = run_id.trim();
+    if run_id.len() < 8 {
+        return None;
+    }
+    let root = workdir.join(".roko/state/graph");
+    let plans: BTreeSet<String> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|plan| std::fs::read_dir(plan.path()).ok())
+        .flatten()
+        .flatten()
+        .filter_map(|file| {
+            let path = file.path();
+            let name = path.file_name()?.to_str()?;
+            (name == "checkpoint.json" || name.starts_with("checkpoint.json.bak.")).then_some(())?;
+            manifest_run(&path)
+        })
+        .filter(|recorded| names_run(&recorded.run_id, run_id))
+        .map(|recorded| recorded.plan_id)
+        .collect();
+    let mut plans = plans.into_iter();
+    match (plans.next(), plans.next()) {
+        (Some(plan), None) => Some(plan),
+        _ => None,
+    }
+}
+
+/// The checkpoints of plan `plan_id` set aside beside `paths`' manifest, with
+/// the time each was set aside, oldest first.
+fn set_aside_checkpoints(paths: &GraphCheckpointPaths, plan_id: &str) -> Vec<(u128, ManifestRun)> {
+    let Some(directory) = paths.manifest.parent() else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u128, ManifestRun)> = std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let stamp = set_aside_stamp(&path)?;
+            (set_aside_name(&paths.manifest, stamp) == path).then_some(())?;
+            let recorded = manifest_run(&path)?;
+            (recorded.plan_id == plan_id).then_some((stamp, recorded))
+        })
+        .collect();
+    found.sort_by_key(|(stamp, _)| *stamp);
+    found
+}
+
+/// When a set-aside checkpoint file `path` was set aside: the `<unix ms>`
+/// of its `.bak.<unix ms>` suffix.
+fn set_aside_stamp(path: &Path) -> Option<u128> {
+    let name = path.file_name()?.to_str()?;
+    let (_, stamp) = name.rsplit_once(".bak.")?;
+    stamp.parse().ok()
+}
+
+/// Move the checkpoint files `paths` set aside at `stamp` back to their names.
+fn put_back_checkpoint(paths: &GraphCheckpointPaths, stamp: u128) -> Result<()> {
+    for path in [&paths.manifest, &paths.activities, &paths.costs] {
+        let backup = set_aside_name(path, stamp);
+        if !backup.exists() {
+            continue;
+        }
+        if path.exists() {
+            bail!(
+                "cannot put back {}: {} is in the way",
+                backup.display(),
+                path.display()
+            );
+        }
+        std::fs::rename(&backup, path).with_context(|| {
+            format!(
+                "put back Graph checkpoint {} as {}",
+                backup.display(),
+                path.display()
+            )
+        })?;
+    }
     Ok(())
+}
+
+/// Refuse to put back the checkpoint of `recorded`'s run when the run
+/// accepted work onto its plan branch (its set-aside Activity log at
+/// `activities` names the commits) and the branch's tip is now another
+/// run's: a resume continues a plan branch only from its own run's tip, so
+/// it would replay the passed tasks without the changes they made.
+fn refuse_lost_plan_branch(
+    workdir: &Path,
+    activities: &Path,
+    recorded: &ManifestRun,
+) -> Result<()> {
+    let log = std::fs::read(activities).unwrap_or_default();
+    let branch = activity_records(&log, &recorded.plan_id, &recorded.run_id)
+        .filter_map(std::result::Result::ok)
+        .filter_map(|record| TaskAttempt::from_signals(&record.entry.signals).ok())
+        .find_map(|attempt| attempt.accepted.map(|accepted| accepted.plan_branch));
+    let Some(branch) = branch else {
+        return Ok(());
+    };
+    let tip = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["cat-file", "commit", &format!("refs/heads/{branch}")])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+    let tip_run = tip.as_deref().and_then(|body| {
+        body.lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("Roko-Run: "))
+            .map(str::trim)
+    });
+    if tip_run == Some(recorded.run_id.as_str()) {
+        return Ok(());
+    }
+    let now = tip_run.map_or_else(
+        || "is gone".to_string(),
+        |run| format!("now holds run {}'s work", short_run_id(run)),
+    );
+    bail!(
+        "run {} accepted its passed tasks' work onto {branch}, which {now}, so a resume could \
+         not build on it; start the plan over instead",
+        short_run_id(&recorded.run_id)
+    )
 }
 
 fn write_cost_ledger_atomic(path: &Path, state: &GraphCostLedgerState) -> Result<()> {
@@ -2688,6 +3552,8 @@ pub enum ResumeAction {
 pub struct ResumePreview {
     /// Checkpoint manifest the run would use.
     pub manifest: PathBuf,
+    /// Run recorded in the manifest.
+    pub run_id: Option<String>,
     /// Status recorded in the manifest.
     pub status: Option<GraphCheckpointStatus>,
     /// How the recorded fingerprint relates to the plan.
@@ -2700,6 +3566,18 @@ pub struct ResumePreview {
     pub restored_tasks: Vec<String>,
     /// Tasks that would run.
     pub tasks_to_run: Vec<String>,
+    /// Why the checkpoint cannot resume, without the flags that would change
+    /// what a run does with it (bug-b7f6a8); `None` when it resumes.
+    pub cause: Option<String>,
+    /// Tasks the checkpoint's committed records hold outputs for: the ones a
+    /// resume replays, or, when it cannot resume, the ones a run that starts
+    /// over runs again (bug-b7f6a8). Empty when its records cannot be read.
+    pub recorded_tasks: Vec<String>,
+    /// What the checkpoint's run spent, in millionths of one USD, with the
+    /// attempts a stopped process left at what a resume settles them at
+    /// (bug-b7f6a8): what a resume carries into the plan's budget. `None`
+    /// when its cost ledger cannot be read.
+    pub spent_micro_usd: Option<u64>,
 }
 
 impl ResumePreview {
@@ -2757,6 +3635,7 @@ impl ResumePreview {
     /// The checkpoint cannot resume: `--force-resume` archives it, otherwise
     /// the run stops.
     fn unusable(mut self, force_resume: bool, reason: impl std::fmt::Display) -> Self {
+        self.cause = Some(reason.to_string());
         (self.action, self.reason) = if force_resume {
             (
                 ResumeAction::Archive,
@@ -2773,10 +3652,54 @@ impl ResumePreview {
 
     /// The run stops even with `--force-resume`.
     fn refused(mut self, reason: impl std::fmt::Display) -> Self {
+        self.cause = Some(reason.to_string());
         self.action = ResumeAction::Refuse;
         self.reason = Some(format!("{reason}; use --fresh"));
         self
     }
+
+    /// This preview, with the tasks the committed records of `manifest`'s
+    /// checkpoint at `paths` hold outputs for, read without matching them to
+    /// the plan's graph: what a run that starts over runs again
+    /// (bug-b7f6a8).
+    fn recording(
+        mut self,
+        paths: &GraphCheckpointPaths,
+        manifest: &GraphCheckpointManifest,
+    ) -> Self {
+        if let Some(replayer) = committed_replayer(paths, manifest) {
+            self.recorded_tasks = self
+                .tasks_to_run
+                .iter()
+                .filter(|task| replayer.lookup(task, 0).is_some())
+                .cloned()
+                .collect();
+        }
+        self
+    }
+}
+
+/// The records `manifest`'s generation committed to the Activity log at
+/// `paths`, less the ones it refused, without checking them against a graph;
+/// `None` when they cannot be read.
+fn committed_replayer(
+    paths: &GraphCheckpointPaths,
+    manifest: &GraphCheckpointManifest,
+) -> Option<ActivityReplayer> {
+    let log = std::fs::read(&paths.activities).ok()?;
+    let committed = manifest.committed.as_ref();
+    let len = committed.map_or_else(
+        || complete_records_len(&log),
+        |committed| committed.activity_bytes,
+    );
+    let prefix = log.get(..usize::try_from(len).ok()?)?;
+    let records = activity_records(prefix, &manifest.plan_id, &manifest.run_id)
+        .collect::<std::io::Result<Vec<_>>>()
+        .ok()?;
+    let refused = committed
+        .map(|committed| committed.refused_records.clone())
+        .unwrap_or_default();
+    ActivityReplayer::from_records(records, &refused).ok()
 }
 
 /// Report what `plan run` would do with `plan`'s Graph checkpoint, without
@@ -2815,7 +3738,11 @@ pub fn preview_plan_resume(
         .enumerate()
         .map(|(index, task)| (task.id.as_str(), index))
         .collect();
-    for tasks in [&mut preview.restored_tasks, &mut preview.tasks_to_run] {
+    for tasks in [
+        &mut preview.restored_tasks,
+        &mut preview.tasks_to_run,
+        &mut preview.recorded_tasks,
+    ] {
         tasks.sort_by_key(|task| position.get(task.as_str()).copied());
     }
     Ok(preview)
@@ -2896,17 +3823,22 @@ fn preview_graph_checkpoint(
     task_nodes.sort();
     let mut preview = ResumePreview {
         manifest: paths.manifest.clone(),
+        run_id: None,
         status: None,
         fingerprint_match: None,
         action: ResumeAction::Start,
         reason: None,
         restored_tasks: Vec::new(),
         tasks_to_run: task_nodes.clone(),
+        cause: None,
+        recorded_tasks: Vec::new(),
+        spent_micro_usd: None,
     };
 
     let manifest = if paths.manifest.exists() {
         match read_manifest(&paths.manifest) {
             Ok(manifest) => {
+                preview.run_id = Some(manifest.run_id.clone());
                 preview.status = Some(manifest.status);
                 preview.fingerprint_match = Some(identity.matching(&manifest.graph_fingerprint));
                 Some(manifest)
@@ -2935,28 +3867,41 @@ fn preview_graph_checkpoint(
     };
     let matched = match checkpoint_match(&manifest, plan_id, &identity, &paths) {
         Ok(matched) => matched,
-        Err(reason) => return Ok(preview.unusable(force_resume, reason)),
+        Err(reason) => {
+            return Ok(preview
+                .unusable(force_resume, reason)
+                .recording(&paths, &manifest));
+        }
     };
     if !paths.activities.is_file() || !paths.costs.is_file() {
-        return Ok(preview.unusable(
-            force_resume,
-            "the manifest references a missing Activity log or cost ledger",
-        ));
+        return Ok(preview
+            .unusable(
+                force_resume,
+                "the manifest references a missing Activity log or cost ledger",
+            )
+            .recording(&paths, &manifest));
     }
     let ledger = match GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
         Ok(ledger) => ledger,
-        Err(error) => return Ok(preview.unusable(force_resume, format!("{error:#}"))),
+        Err(error) => {
+            return Ok(preview
+                .unusable(force_resume, format!("{error:#}"))
+                .recording(&paths, &manifest));
+        }
     };
+    preview.spent_micro_usd = Some(ledger.settled_spend_micro_usd());
     // A resume selects the generation the manifest names, so only its
-    // committed records count here, less the ones the resume refuses.
+    // committed records count here, less the ones the resume refuses. Records
+    // it cannot select are not trusted to name passed tasks either.
     let selected = match select_generation(&paths, &manifest, &ledger.identity, graph) {
         Ok(selected) => selected,
         Err(error) => return Ok(preview.refused(format!("{error:#}"))),
     };
-    let (restored, to_run) = task_nodes
+    let (restored, to_run): (Vec<String>, Vec<String>) = task_nodes
         .into_iter()
         .partition(|node| selected.replayer.lookup(node, 0).is_some());
     preview.action = ResumeAction::Resume;
+    preview.recorded_tasks.clone_from(&restored);
     preview.restored_tasks = restored;
     preview.tasks_to_run = to_run;
     if matched == FingerprintMatch::Legacy {
@@ -3455,6 +4400,8 @@ depends_on = ["T1"]
         assert_eq!(preview.status, Some(GraphCheckpointStatus::Failed));
         assert_eq!(preview.restored_tasks, ["T1"]);
         assert_eq!(preview.tasks_to_run, ["T2"]);
+        assert_eq!(preview.recorded_tasks, ["T1"]);
+        assert_eq!((preview.cause, preview.spent_micro_usd), (None, Some(0)));
         assert_eq!(files(), before);
 
         let fresh = ResumeOptions {
@@ -3464,6 +4411,228 @@ depends_on = ["T1"]
         let preview = preview_plan_resume(dir.path(), &plan, 1, &fresh).expect("preview");
         assert_eq!(preview.action, ResumeAction::Archive);
         assert_eq!(preview.tasks_to_run, ["T1", "T2"]);
+    }
+
+    /// Run `run_id` of plan `p`: T1 passes, its attempt accepted onto plan
+    /// branch `roko/plan/p` when `accepted`, and the run stops failed with
+    /// T2 left. Starts over (`fresh`) when the plan has a checkpoint.
+    fn failed_run(
+        workdir: &Path,
+        graph: &Graph,
+        run_id: &str,
+        accepted: bool,
+    ) -> PreparedGraphCheckpoint {
+        let fresh = workdir.join(".roko/state/graph/p/checkpoint.json").exists();
+        let mut checkpoint = prepare_graph_checkpoint_for_run(
+            workdir,
+            None,
+            "p",
+            1,
+            graph,
+            fresh,
+            false,
+            Some(run_id),
+        )
+        .expect("checkpoint");
+        let mut signals = vec![
+            roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+                .body(roko_core::Body::text("T1 done"))
+                .build(),
+        ];
+        TaskAttempt {
+            plan_id: "p".to_string(),
+            task_id: "T1".to_string(),
+            run_id: Some(run_id.to_string()),
+            attempt: 1,
+            accepted: accepted.then(|| roko_graph::workspace::WorkspaceAcceptance {
+                attempt_commit: "a".repeat(40),
+                plan_branch: "roko/plan/p".to_string(),
+                accepted_commit: "a".repeat(40),
+            }),
+            ..TaskAttempt::default()
+        }
+        .stamp(&mut signals);
+        checkpoint
+            .take_recorder()
+            .record("p", "T1", 0, signals)
+            .expect("record");
+        checkpoint.finish(false).expect("finish");
+        checkpoint
+    }
+
+    const RUN_A: &str = "aaaaaaaa-1111-4111-8111-111111111111";
+    const RUN_B: &str = "bbbbbbbb-2222-4222-8222-222222222222";
+
+    /// bug-cbdb6b: a run that starts the plan over says whose progress it set
+    /// aside and where, `roko resume <run>` finds the plan by the run's id,
+    /// and putting the run's checkpoint back sets the newer one aside in its
+    /// place and resumes where the run stopped.
+    #[test]
+    fn a_run_that_starts_over_says_what_it_set_aside_and_the_run_comes_back_by_id() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let first = failed_run(dir.path(), &graph, RUN_A, false);
+        assert_eq!(first.set_aside(), None, "nothing to set aside");
+        drop(first);
+
+        let set_aside = failed_run(dir.path(), &graph, RUN_B, false)
+            .set_aside()
+            .cloned()
+            .expect("run A set aside");
+        assert_eq!(set_aside.run_id.as_deref(), Some(RUN_A));
+        assert_eq!(set_aside.status, Some(GraphCheckpointStatus::Failed));
+        assert_eq!(set_aside.passed_tasks, ["T1"]);
+        assert_eq!(set_aside.tasks_left, ["T2"]);
+        let stamp = set_aside_stamp(&set_aside.manifest).expect("a .bak stamp");
+        assert_eq!(
+            set_aside.manifest,
+            dir.path()
+                .join(format!(".roko/state/graph/p/checkpoint.json.bak.{stamp}"))
+        );
+        assert_eq!(
+            set_aside.describe(dir.path()),
+            format!(
+                "set aside run aaaaaaaa (failed; passed T1; left T2) as \
+                 .roko/state/graph/p/checkpoint.json.bak.{stamp}; `roko resume aaaaaaaa` puts \
+                 it back"
+            )
+        );
+
+        assert_eq!(plan_of_run(dir.path(), "aaaaaaaa").as_deref(), Some("p"));
+        assert_eq!(plan_of_run(dir.path(), RUN_B).as_deref(), Some("p"));
+        assert_eq!(plan_of_run(dir.path(), "aaaa"), None, "too short");
+        assert_eq!(plan_of_run(dir.path(), "cccccccc"), None);
+
+        let error =
+            restore_set_aside_checkpoint(dir.path(), &plan, "cccccccc").expect_err("no such run");
+        assert_eq!(
+            error.to_string(),
+            "plan 'p' has no set-aside checkpoint of run cccccccc; it has aaaaaaaa (failed)"
+        );
+
+        let restored =
+            restore_set_aside_checkpoint(dir.path(), &plan, "aaaaaaaa").expect("restore");
+        assert_eq!(restored.restored.run_id.as_deref(), Some(RUN_A));
+        assert_eq!(restored.restored.action, ResumeAction::Resume);
+        assert_eq!(restored.restored.restored_tasks, ["T1"]);
+        assert_eq!(restored.restored.tasks_to_run, ["T2"]);
+        let replaced = restored.set_aside.expect("run B set aside");
+        assert_eq!(replaced.run_id.as_deref(), Some(RUN_B));
+        assert_eq!(replaced.passed_tasks, ["T1"]);
+
+        // The plan's checkpoint is run A's again, and a resume continues it.
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume");
+        assert_eq!(resumed.run_id(), RUN_A);
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(resumed.set_aside(), None);
+        drop(resumed);
+
+        // Run B comes back the same way; asking for the current run moves nothing.
+        let again = restore_set_aside_checkpoint(dir.path(), &plan, RUN_B).expect("restore B");
+        assert_eq!(again.restored.run_id.as_deref(), Some(RUN_B));
+        assert_eq!(
+            again
+                .set_aside
+                .and_then(|set_aside| set_aside.run_id)
+                .as_deref(),
+            Some(RUN_A)
+        );
+        let current = restore_set_aside_checkpoint(dir.path(), &plan, RUN_B).expect("current");
+        assert_eq!(current.set_aside, None);
+    }
+
+    /// bug-cbdb6b: a run whose passed tasks were accepted onto the plan
+    /// branch comes back only while the branch's tip is still its own: once
+    /// another run's work replaced it, a resume would replay T1 without its
+    /// changes, so the checkpoint stays set aside and nothing moves.
+    #[test]
+    fn a_run_whose_plan_branch_moved_on_stays_set_aside() {
+        let dir = tempdir().expect("tempdir");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        let commit_for = |run: &str| {
+            git(&[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!("roko: p/T1\n\nRoko-Run: {run}"),
+            ]);
+            git(&["branch", "-f", "roko/plan/p"]);
+        };
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        failed_run(dir.path(), &graph, RUN_A, true);
+        failed_run(dir.path(), &graph, RUN_B, true);
+        let current = || {
+            manifest_run(&dir.path().join(".roko/state/graph/p/checkpoint.json"))
+                .expect("a checkpoint")
+                .run_id
+        };
+
+        commit_for(RUN_B);
+        let error = restore_set_aside_checkpoint(dir.path(), &plan, "aaaaaaaa")
+            .expect_err("the plan branch holds run B's work");
+        assert_eq!(
+            error.to_string(),
+            "run aaaaaaaa accepted its passed tasks' work onto roko/plan/p, which now holds run \
+             bbbbbbbb's work, so a resume could not build on it; start the plan over instead"
+        );
+        assert_eq!(current(), RUN_B, "nothing moved");
+
+        commit_for(RUN_A);
+        let restored =
+            restore_set_aside_checkpoint(dir.path(), &plan, "aaaaaaaa").expect("restore");
+        assert_eq!(restored.restored.run_id.as_deref(), Some(RUN_A));
+        assert_eq!(current(), RUN_A);
+    }
+
+    /// bug-cbdb6b: a set-aside checkpoint of an edited plan no longer fits
+    /// it: putting it back is refused, it stays set aside, and the plan's
+    /// current checkpoint stays where it was.
+    #[test]
+    fn a_set_aside_run_that_no_longer_fits_the_plan_stays_set_aside() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        failed_run(dir.path(), &graph, RUN_A, false);
+        let edited = write_plan(dir.path(), &PLAN_TOML.replace("Second", "Edited"));
+        let edited_graph = plan_graph(&edited, &ResumeOptions::default());
+        failed_run(dir.path(), &edited_graph, RUN_B, false);
+
+        let error = restore_set_aside_checkpoint(dir.path(), &edited, RUN_A)
+            .expect_err("run A's checkpoint is of the plan before the edit");
+        assert_eq!(
+            error.to_string(),
+            "run aaaaaaaa's checkpoint no longer fits plan 'p' (the converted plan graph has \
+             changed), so it stays set aside"
+        );
+        let current = manifest_run(&dir.path().join(".roko/state/graph/p/checkpoint.json"))
+            .expect("a checkpoint");
+        assert_eq!(current.run_id, RUN_B);
+        let paths = resolve_checkpoint_paths(dir.path(), None, "p", 1).expect("paths");
+        let set_aside: Vec<String> = set_aside_checkpoints(&paths, "p")
+            .into_iter()
+            .map(|(_, recorded)| recorded.run_id)
+            .collect();
+        assert_eq!(set_aside, [RUN_A]);
     }
 
     #[test]
@@ -3483,6 +4652,14 @@ depends_on = ["T1"]
                 .as_deref()
                 .is_some_and(|reason| reason.contains("graph has changed"))
         );
+        // It says why without the flags, and names the task its run passed,
+        // which a run that starts over runs again (bug-b7f6a8).
+        assert_eq!(
+            preview.cause.as_deref(),
+            Some("the converted plan graph has changed")
+        );
+        assert_eq!(preview.recorded_tasks, ["T1"]);
+        assert!(preview.restored_tasks.is_empty());
         let forced = ResumeOptions {
             force_resume: true,
             ..ResumeOptions::default()
@@ -3584,7 +4761,9 @@ depends_on = ["T1"]
         let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
             .expect("fresh checkpoint");
         let ledger = fresh.take_cost_ledger();
-        ledger.persist(375_000, 0).expect("persist cost");
+        ledger
+            .persist(375_000, 0, Vec::new())
+            .expect("persist cost");
         fresh.finish(false).expect("finish");
 
         let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
@@ -3604,9 +4783,11 @@ depends_on = ["T1"]
         let mut ledger = fresh.take_cost_ledger();
         assert_eq!(ledger.raised_ceiling_micro_usd(), None);
         ledger
-            .persist_raised_ceiling(200_000, 150_000, 0)
+            .persist_raised_ceiling(200_000, 150_000, 0, Vec::new())
             .expect("persist the raise");
-        ledger.persist(175_000, 0).expect("persist cost");
+        ledger
+            .persist(175_000, 0, Vec::new())
+            .expect("persist cost");
         fresh.finish(false).expect("finish");
 
         let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
@@ -3658,8 +4839,11 @@ depends_on = ["T1"]
         assert!(error.to_string().contains("validate Graph cost ledger"));
     }
 
+    /// bug-b7f6a8: a ledger written before holds were kept names no attempt
+    /// for its reservation. A resume releases it, keeps the spend, and says
+    /// the dead attempt's spend is unknown, instead of refusing.
     #[test]
-    fn unresolved_crash_reservation_is_rejected_without_force() {
+    fn a_reservation_without_holds_is_released_on_resume() {
         let dir = tempdir().expect("tempdir");
         let graph = graph("p", 1);
         let mut checkpoint =
@@ -3667,15 +4851,163 @@ depends_on = ["T1"]
                 .expect("fresh checkpoint");
         checkpoint
             .take_cost_ledger()
-            .persist(100_000, 250_000)
+            .persist(100_000, 250_000, Vec::new())
             .expect("persist unresolved reservation");
         drop(checkpoint);
 
-        let error = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
-            .err()
-            .expect("unresolved reservation must fail closed");
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("a reservation left by a stopped process resumes");
 
-        assert!(format!("{error:#}").contains("unresolved reserved micro-USD"));
+        let settled = resumed
+            .settled_holds()
+            .expect("the reservation is settled")
+            .clone();
+        assert!(settled.spend_unknown);
+        assert_eq!(settled.released_micro_usd, 250_000);
+        assert_eq!(settled.charged_micro_usd, 0);
+        assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 100_000);
+        let committed = read_manifest(&resumed.paths().manifest)
+            .expect("manifest")
+            .committed
+            .expect("committed");
+        assert_eq!(
+            (committed.spent_micro_usd, committed.reserved_micro_usd),
+            (100_000, 0)
+        );
+    }
+
+    /// bug-b7f6a8: a process that stops while an attempt is in flight leaves
+    /// the attempt's hold committed: what its finished calls cost and the
+    /// call it had in flight. A resume charges both, the call at its
+    /// estimate, releases the reservation, and settles the attempt
+    /// `abandoned` in the run's records; a second resume charges nothing more.
+    #[test]
+    fn resume_settles_a_dead_attempts_budget_hold() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptTally, TelemetryWriter, TelemetryWriterConfig,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let run_id = checkpoint.run_id().to_string();
+        let identity = AttemptIdentity::new(&AttemptKey::new(run_id.as_str(), "p", "task-1", 1));
+        let run_dir = RokoLayout::for_project(dir.path()).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(AttemptOpenRecord::new(identity.clone(), 1_000)));
+        assert_eq!(writer.close().written, 1);
+        // The attempt finished two calls ($0.08) and had a third in flight,
+        // expected at $0.041, under a $0.25 hold; the plan had spent $0.10.
+        let hold = CommittedHold {
+            attempt_key: Some(identity.attempt_key.clone()),
+            spent_micro_usd: 80_000,
+            booked_micro_usd: 0,
+            in_flight: true,
+            in_flight_micro_usd: 41_000,
+            unpriced: false,
+        };
+        checkpoint
+            .take_cost_ledger()
+            .persist(100_000, 250_000, vec![hold.clone()])
+            .expect("persist the hold");
+        // The process stops: nothing settles the hold.
+        drop(checkpoint);
+        // A preview says what a resume carries, and settles nothing.
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.action, ResumeAction::Resume);
+        assert_eq!(preview.spent_micro_usd, Some(221_000));
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("an attempt left in flight resumes");
+
+        let settled = resumed
+            .settled_holds()
+            .expect("the hold is settled")
+            .clone();
+        assert!(!settled.spend_unknown);
+        assert_eq!(settled.spent_before_micro_usd, 100_000);
+        assert_eq!(settled.released_micro_usd, 250_000);
+        assert_eq!(settled.charged_micro_usd, 121_000);
+        assert_eq!(settled.holds, [hold]);
+        let committed = read_manifest(&resumed.paths().manifest)
+            .expect("manifest")
+            .committed
+            .expect("committed");
+        assert_eq!(
+            (committed.spent_micro_usd, committed.reserved_micro_usd),
+            (221_000, 0)
+        );
+        assert!(committed.holds.is_empty());
+        let recorded: InterruptedAttempts = serde_json::from_value(
+            resumed
+                .extension(INTERRUPTED_ATTEMPT_EXTENSION)
+                .expect("the interrupted attempt is recorded")
+                .value
+                .clone(),
+        )
+        .expect("attempts");
+        let [attempt] = recorded.attempts.as_slice() else {
+            panic!("one interrupted attempt: {recorded:?}");
+        };
+        assert_eq!(
+            (attempt.spent_micro_usd, attempt.estimated_micro_usd),
+            (Some(80_000), Some(41_000))
+        );
+        assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 221_000);
+        // The attempt is settled `abandoned`, charged its spend and the
+        // estimate, and still counts as abandoned.
+        let records = RunRecords::load(&run_dir).expect("records");
+        let [verdict] = records.verdicts.as_slice() else {
+            panic!("one verdict: {:?}", records.verdicts);
+        };
+        let verdict = &verdict.record;
+        assert_eq!(verdict.outcome, AttemptOutcome::Abandoned);
+        assert_eq!(verdict.identity.attempt_key, identity.attempt_key);
+        let usd = |value: Option<f64>| value.map(|usd| (usd * 1_000_000.0).round() as u64);
+        assert_eq!(usd(verdict.cost.billed_usd), Some(121_000));
+        assert_eq!(usd(verdict.cost.estimated_usd), Some(41_000));
+        assert_eq!(verdict.cost.source, CostSource::Estimated);
+        let tally = AttemptTally::read(&run_dir).expect("tally");
+        assert_eq!((tally.opened, tally.settled, tally.abandoned), (1, 0, 1));
+        // The daily cost log counts it.
+        let costs_log = dir.path().join(".roko/learn/costs.jsonl");
+        let cost_rows = || -> Vec<serde_json::Value> {
+            std::fs::read_to_string(&costs_log)
+                .expect("costs log")
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("cost row"))
+                .collect()
+        };
+        let rows = cost_rows();
+        let [row] = rows.as_slice() else {
+            panic!("one cost row: {rows:?}");
+        };
+        assert_eq!(row["attempt_key"], identity.attempt_key.as_str());
+        assert_eq!(row["outcome"], "abandoned");
+        assert_eq!(row["cost_source"], "estimated");
+        assert_eq!(usd(row["cost_usd"].as_f64()), Some(121_000));
+        resumed.finish(false).expect("finish");
+
+        // A second resume finds nothing held: it charges nothing more and
+        // writes no second verdict.
+        let resumed_again =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("second resume");
+        assert!(resumed_again.settled_holds().is_none());
+        assert!(
+            resumed_again
+                .extension(INTERRUPTED_ATTEMPT_EXTENSION)
+                .is_none()
+        );
+        assert_eq!(
+            RunRecords::load(&run_dir).expect("records").verdicts.len(),
+            1
+        );
+        assert_eq!(cost_rows().len(), 1);
     }
 
     #[test]
@@ -4233,6 +5565,9 @@ depends_on = ["T1"]
             attempt_key: identity("p", task, attempt).attempt_key,
             started_at_ms: Some(1_000 * i64::from(attempt)),
             cancelled,
+            spent_micro_usd: None,
+            estimated_micro_usd: None,
+            refused_micro_usd: None,
         };
         assert_eq!(
             recorded.attempts,
@@ -4244,16 +5579,36 @@ depends_on = ["T1"]
                 .extensions
                 .contains_key(INTERRUPTED_ATTEMPT_EXTENSION)
         );
+        // The attempt the stop cut off is settled `abandoned`, with no cost:
+        // this ledger held no hold for it (bug-b7f6a8). The cancelled one
+        // kept its own verdict.
+        let records = RunRecords::load(&run_dir).expect("records");
+        let abandoned: Vec<&str> = records
+            .verdicts
+            .iter()
+            .filter(|verdict| verdict.record.outcome == AttemptOutcome::Abandoned)
+            .map(|verdict| verdict.record.identity.attempt_key.as_str())
+            .collect();
+        assert_eq!(abandoned, [identity("p", "task-2", 2).attempt_key]);
+        assert_eq!(
+            records
+                .verdicts
+                .last()
+                .expect("verdict")
+                .record
+                .cost
+                .billed_usd,
+            None
+        );
 
         // Once every task's latest attempt has settled, the next resume drops
         // the record.
         resumed.finish(false).expect("finish");
-        let writer = TelemetryWriter::spawn(run_dir, TelemetryWriterConfig::default())
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
             .expect("spawn writer");
         assert!(writer.submit(open("p", "task-3", 2)));
-        assert!(writer.submit(settle("task-2", 2, AttemptOutcome::GateFailed)));
         assert!(writer.submit(settle("task-3", 2, AttemptOutcome::GateFailed)));
-        assert_eq!(writer.close().written, 3);
+        assert_eq!(writer.close().written, 2);
         let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
             .expect("second resume");
         assert!(resumed.extension(INTERRUPTED_ATTEMPT_EXTENSION).is_none());
@@ -4352,7 +5707,7 @@ depends_on = ["T1"]
             .expect("record node A");
         fresh
             .take_cost_ledger()
-            .persist(125_000, 0)
+            .persist(125_000, 0, Vec::new())
             .expect("persist the spend");
         let committed = std::fs::read(&paths.activities).expect("committed log");
         let generation = read_manifest(&paths.manifest).expect("manifest").generation;
@@ -4427,7 +5782,7 @@ depends_on = ["T1"]
         drop(recorder);
         fresh
             .take_cost_ledger()
-            .persist(40_000, 0)
+            .persist(40_000, 0, Vec::new())
             .expect("persist the spend");
         fresh.finish(false).expect("finish");
         let log = std::fs::read(&fresh.paths().activities).expect("log");
@@ -4473,7 +5828,7 @@ depends_on = ["T1"]
             .expect("record");
         fresh
             .take_cost_ledger()
-            .persist(70_000, 0)
+            .persist(70_000, 0, Vec::new())
             .expect("persist the spend");
         fresh.finish(false).expect("finish");
         let paths = fresh.paths().clone();

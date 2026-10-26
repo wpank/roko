@@ -17,8 +17,11 @@ use crate::streaming::{SseError, SseLine, UNKNOWN_FINISH_REASON, parse_sse_frame
 use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind};
 use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
 use roko_core::agent::ProviderKind;
+use roko_core::config::schema::OpenAiApi;
 use roko_core::defaults::{DEFAULT_PROVIDER_RPM, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::sse::extract_sse_data;
+
+use crate::openai_responses::{ReasoningLedger, ResponsesRequest, ResponsesTurn};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -29,7 +32,32 @@ struct StreamResponseMetadata {
     thread_id: Option<String>,
 }
 
-fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
+/// How long a call the rate limiter holds back waits for a slot at its
+/// provider before it fails as rate-limited, without calling the provider
+/// (bug-33a61f). The limit a refusal taught lapses
+/// [`LEARNED_LIMIT_HOLDS_FOR`](crate::rate_limit::LEARNED_LIMIT_HOLDS_FOR)
+/// after the provider's last refusal, so a hold rarely lasts this long.
+pub const HELD_CALL_WAIT: Duration = Duration::from_secs(300);
+
+/// How often a held call looks for its slot (bug-33a61f).
+const HELD_CALL_POLL: Duration = Duration::from_millis(250);
+
+/// How often a streamed Responses call that is reasoning says it is alive,
+/// as an empty reasoning delta the stall watchdog counts as progress: the
+/// model sends nothing until its reasoning ends (gap-1ba0ac).
+pub const REASONING_HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// How long a streamed Responses call may stay silent while its model
+/// reasons, against the provider's wait for each next chunk otherwise
+/// (gap-1ba0ac). The stream's own ceiling still holds.
+pub const REASONING_SILENCE: Duration = Duration::from_secs(10 * 60);
+
+/// The process-wide rate limiter every OpenAI-compatible backend shares,
+/// unless given its own ([`OpenAiCompatLlmBackend::with_rate_limiter`]): it
+/// learns per endpoint ([`chat_endpoint`]) how many calls at once a provider
+/// takes, so parallel tasks share a provider's rate limit (bug-4b6844).
+#[must_use]
+pub fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
     static SHARED_RATE_LIMITER: OnceLock<Arc<ProviderRateLimiter>> = OnceLock::new();
     Arc::clone(
         SHARED_RATE_LIMITER
@@ -37,16 +65,22 @@ fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
     )
 }
 
-/// Classify an [`HttpPostError`] into the appropriate [`LlmError`] variant.
+/// Classify an [`HttpPostError`] from `provider` into the appropriate
+/// [`LlmError`] variant.
 ///
 /// Status codes are mapped as follows:
 /// - 429 / 529 -> `LlmError::Provider(ProviderError::RateLimit { .. })`, or
-///   `InsufficientCredits` / `ProviderExhausted` when the body names a billing
-///   or usage-window problem or `Retry-After` spans a usage window
+///   `ProviderExhausted` when the body names a billing or usage-window problem
+///   or `Retry-After` spans a usage window
 /// - 500..=599 -> `LlmError::Provider(ProviderError::ServerError(status))`
 /// - 401       -> `LlmError::Provider(ProviderError::AuthFailure)`
-/// - Everything else (including transport errors with no status) -> `LlmError::Network`
-fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
+/// - any other 4xx -> the provider refused the request, in its own words
+///   ([`classify_http_refusal`](crate::provider::error_classify::classify_http_refusal)):
+///   `ProviderExhausted` for a 402 or a can't-pay answer (bug-390e4b),
+///   `ContextOverflow`, `Timeout` for a 408, else `RequestRefused`
+///   (bug-35b190)
+/// - Everything else (transport errors with no status) -> `LlmError::Network`
+fn classify_http_error(e: crate::http::HttpPostError, provider: &str) -> LlmError {
     use crate::provider::ProviderError;
     match e.status {
         Some(429 | 529) => {
@@ -57,18 +91,22 @@ fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
         }
         Some(s @ 500..=599) => LlmError::Provider(ProviderError::ServerError(s)),
         Some(401) => LlmError::Provider(ProviderError::AuthFailure),
+        Some(status @ 400..=499) => LlmError::Provider(
+            crate::provider::error_classify::classify_http_refusal(provider, status, &e.message),
+        ),
         _ => LlmError::Network(e.to_string()),
     }
 }
 
-/// The turn error a provider `error` object in the stream becomes: classified
-/// like an HTTP error when its code is a status (rate limit, auth, server),
-/// otherwise a backend error that names it (backlog 1111).
-fn sse_error_to_llm_error(error: &SseError) -> LlmError {
+/// The turn error a provider `error` object in `provider`'s stream becomes:
+/// classified like an HTTP error when its code is a status (rate limit, auth,
+/// server, refusal), otherwise a backend error that names it (backlog 1111).
+fn sse_error_to_llm_error(error: &SseError, provider: &str) -> LlmError {
     match error.status() {
-        Some(status) => {
-            classify_http_error(crate::http::HttpPostError::http(status, error.to_string()))
-        }
+        Some(status) => classify_http_error(
+            crate::http::HttpPostError::http(status, error.to_string()),
+            provider,
+        ),
         None => LlmError::Backend(error.to_string()),
     }
 }
@@ -107,7 +145,7 @@ impl SseTurn {
             // `[DONE]` after a real finish reason adds nothing.
             SseLine::Done if self.finish_seen => Vec::new(),
             SseLine::Done => vec![Ok(self.unknown_finish(provider, model, "[DONE]"))],
-            SseLine::Error(error) => vec![Err(sse_error_to_llm_error(&error))],
+            SseLine::Error(error) => vec![Err(sse_error_to_llm_error(&error, provider))],
         }
     }
 
@@ -127,6 +165,97 @@ impl SseTurn {
         StreamEvent::now(StreamEventKind::Done {
             finish_reason: UNKNOWN_FINISH_REASON.to_string(),
         })
+    }
+}
+
+/// What a streamed turn's SSE lines are read as: chat-completions chunks, or
+/// Responses events (gap-1ba0ac).
+enum TurnLines {
+    Chat(SseTurn),
+    Responses(ResponsesTurn),
+}
+
+impl TurnLines {
+    /// The items to send for one SSE line.
+    fn line(
+        &mut self,
+        line: &str,
+        provider: &str,
+        model: &str,
+    ) -> Vec<Result<StreamEvent, LlmError>> {
+        match self {
+            Self::Chat(turn) => turn.line(line, provider, model),
+            Self::Responses(turn) => turn
+                .line(line)
+                .into_iter()
+                .map(|item| item.map_err(|error| sse_error_to_llm_error(&error, provider)))
+                .collect(),
+        }
+    }
+
+    /// The `Done` to send when the stream ended, unless one was sent.
+    fn end(&mut self, provider: &str, model: &str) -> Option<StreamEvent> {
+        match self {
+            Self::Chat(turn) => turn.end(provider, model),
+            Self::Responses(turn) => turn.end(),
+        }
+    }
+
+    /// Whether the model is reasoning, and sends nothing until it is done.
+    fn reasoning(&self) -> bool {
+        matches!(self, Self::Responses(turn) if turn.reasoning_open())
+    }
+}
+
+/// How a streamed call waits for its next chunk while its model reasons and
+/// sends nothing until its reasoning ends (gap-1ba0ac).
+#[derive(Debug, Clone, Copy)]
+struct ReasoningWait {
+    /// How often to say the call is alive ([`REASONING_HEARTBEAT`]).
+    heartbeat: Duration,
+    /// How long to wait in all ([`REASONING_SILENCE`], or the provider's
+    /// wait for a chunk when longer).
+    limit: Duration,
+    /// When the call started: the stream still ends at its ceiling.
+    request_start: std::time::Instant,
+}
+
+impl ReasoningWait {
+    /// Wait for `chunk`, saying on `tx` every heartbeat that the call is
+    /// alive, as an empty reasoning delta the stall watchdog counts as
+    /// progress. `None` when the wait ran out, its error sent on `tx`, or
+    /// `tx` closed.
+    async fn chunk<T>(
+        self,
+        chunk: impl std::future::Future<Output = T>,
+        tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
+        endpoint: &str,
+    ) -> Option<T> {
+        let deadline = tokio::time::Instant::now()
+            + crate::streaming::chunk_wait(self.limit, self.request_start);
+        tokio::pin!(chunk);
+        loop {
+            let beat = (tokio::time::Instant::now() + self.heartbeat).min(deadline);
+            tokio::select! {
+                chunk = &mut chunk => return Some(chunk),
+                () = tokio::time::sleep_until(beat) => {
+                    if beat >= deadline {
+                        let error = crate::streaming::chunk_timeout(self.limit, self.request_start);
+                        tracing::warn!(
+                            endpoint = %endpoint,
+                            %error,
+                            "streamed call cut while its model reasoned"
+                        );
+                        let _ = tx.send(Err(error)).await;
+                        return None;
+                    }
+                    let alive = StreamEvent::now(StreamEventKind::ReasoningDelta(String::new()));
+                    if tx.send(Ok(alive)).await.is_err() {
+                        return None;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -188,6 +317,18 @@ pub struct OpenAiCompatLlmBackend {
     supports_vision: bool,
     /// Optional circuit-breaker outcome recorder.
     outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
+    /// Where a call that waits for a slot at its provider says it is queued
+    /// (bug-33a61f).
+    live_output: Option<crate::live_output::LiveOutput>,
+    /// How long a held call waits for its slot ([`HELD_CALL_WAIT`]).
+    held_call_wait: Duration,
+    /// The OpenAI API the backend calls (gap-1ba0ac).
+    wire: OpenAiApi,
+    /// The run's Responses turns, whose reasoning each next request replays.
+    ledger: Arc<ReasoningLedger>,
+    /// [`REASONING_HEARTBEAT`] and [`REASONING_SILENCE`].
+    reasoning_heartbeat: Duration,
+    reasoning_silence: Duration,
 }
 
 impl OpenAiCompatLlmBackend {
@@ -220,6 +361,12 @@ impl OpenAiCompatLlmBackend {
             metrics: None,
             supports_vision: false,
             outcome_recorder: None,
+            live_output: None,
+            held_call_wait: HELD_CALL_WAIT,
+            wire: OpenAiApi::ChatCompletions,
+            ledger: Arc::default(),
+            reasoning_heartbeat: REASONING_HEARTBEAT,
+            reasoning_silence: REASONING_SILENCE,
         }
     }
 
@@ -289,6 +436,42 @@ impl OpenAiCompatLlmBackend {
     #[must_use]
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<ProviderRateLimiter>) -> Self {
         self.rate_limiter = rate_limiter;
+        self
+    }
+
+    /// Say on `live_output`, as queued, while a call waits for a slot at its
+    /// provider, so the stall watchdog and the try's time bound skip the wait
+    /// (bug-33a61f).
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: Option<crate::live_output::LiveOutput>) -> Self {
+        self.live_output = live_output;
+        self
+    }
+
+    /// How long a held call waits for its slot before it fails as
+    /// rate-limited ([`HELD_CALL_WAIT`] by default).
+    #[must_use]
+    pub const fn with_held_call_wait(mut self, wait: Duration) -> Self {
+        self.held_call_wait = wait;
+        self
+    }
+
+    /// Call the model through `wire`: chat completions, or OpenAI's
+    /// Responses API, where a reasoning model takes a reasoning effort
+    /// beside function tools (gap-1ba0ac).
+    #[must_use]
+    pub const fn with_wire(mut self, wire: OpenAiApi) -> Self {
+        self.wire = wire;
+        self
+    }
+
+    /// While a streamed Responses call reasons, say it is alive every
+    /// `heartbeat` and wait up to `silence` for its next chunk
+    /// ([`REASONING_HEARTBEAT`], [`REASONING_SILENCE`]).
+    #[must_use]
+    pub const fn with_reasoning_waits(mut self, heartbeat: Duration, silence: Duration) -> Self {
+        self.reasoning_heartbeat = heartbeat;
+        self.reasoning_silence = silence;
         self
     }
 
@@ -396,6 +579,12 @@ impl OpenAiCompatLlmBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::RequestRefused {
+                status, message, ..
+            }) => crate::provider::error_classify::refusal_class(
+                *status,
+                &message.to_ascii_lowercase(),
+            ),
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -416,7 +605,97 @@ impl OpenAiCompatLlmBackend {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+        match self.wire {
+            OpenAiApi::ChatCompletions => chat_endpoint(&self.base_url),
+            OpenAiApi::Responses => crate::openai_responses::responses_endpoint(&self.base_url),
+        }
+    }
+
+    /// The key the rate limiter learns the provider's calls at once by: its
+    /// chat endpoint, whichever API a call goes to (bug-4b6844).
+    fn limiter_key(&self) -> String {
+        chat_endpoint(&self.base_url)
+    }
+
+    /// Admit a call to the endpoint. While the provider is at the calls at
+    /// once it showed it takes, parallel tasks do not all call a provider that
+    /// refuses them (bug-4b6844): the call waits for a slot, without calling,
+    /// until one of the calls in flight ends, and then goes out in the same
+    /// run, its conversation intact (bug-33a61f). The wait is said on the live
+    /// output as queued, so the stall watchdog and the try's time bound skip
+    /// it. A call held [`Self::with_held_call_wait`] long fails as a rate
+    /// limit, still without calling, and the tool loop and dispatch take it
+    /// from there as they do a 429.
+    async fn admit(&self) -> Result<crate::rate_limit::AdmittedCall, LlmError> {
+        let endpoint = self.limiter_key();
+        let mut held_since: Option<std::time::Instant> = None;
+        let admitted = loop {
+            let held = match self.rate_limiter.admit(&endpoint) {
+                Ok(call) => break Ok(call),
+                Err(held) => held,
+            };
+            let since = match held_since {
+                Some(since) => since,
+                None => {
+                    tracing::info!(
+                        provider = %self.provider_id,
+                        in_flight = held.in_flight,
+                        limit = held.limit,
+                        "holding a call back: its provider rate-limited one with this many calls \
+                         in flight, so it waits for one of them to end without calling the \
+                         provider"
+                    );
+                    *held_since.insert(std::time::Instant::now())
+                }
+            };
+            if since.elapsed() >= self.held_call_wait {
+                tracing::warn!(
+                    provider = %self.provider_id,
+                    waited_secs = since.elapsed().as_secs(),
+                    "a held call waited its longest for a slot; failing it as rate-limited \
+                     without calling the provider"
+                );
+                break Err(LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: None,
+                }));
+            }
+            // Said on every look: the run's own last events, its tool's
+            // result among them, reach the live output through the immune
+            // boundary's buffer, and one that lands after this would end the
+            // queue.
+            self.say_queued(true);
+            tokio::time::sleep(HELD_CALL_POLL).await;
+        };
+        if let Some(since) = held_since {
+            self.say_queued(false);
+            if admitted.is_ok() {
+                tracing::info!(
+                    provider = %self.provider_id,
+                    waited_ms = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    "a held call got its slot"
+                );
+            }
+        }
+        admitted
+    }
+
+    /// Say on the live output whether a call is `waiting` for a slot at its
+    /// provider. The output's channel is never waited on: an event that does
+    /// not fit is dropped.
+    fn say_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .try_send(crate::live_output::LiveAgentEvent::Queued { waiting });
+        }
+    }
+
+    /// Note a refusal `error` that is a rate limit with the run's limiter,
+    /// which learns from it how many calls at once the provider takes.
+    fn note_refusal(&self, error: &LlmError) {
+        if matches!(error, LlmError::Provider(ProviderError::RateLimit { .. })) {
+            self.rate_limiter.note_rate_limited(&self.limiter_key());
+        }
     }
 
     /// Return a clone of the cached request headers.
@@ -490,6 +769,22 @@ impl OpenAiCompatLlmBackend {
         // An empty `tools` array is omitted: some endpoints reject it.
         let tools = tools.filter(|tools| tools.as_array().is_none_or(|tools| !tools.is_empty()));
 
+        if self.wire == OpenAiApi::Responses {
+            let request = ResponsesRequest {
+                model: &self.model,
+                messages: &messages,
+                tools,
+                max_output_tokens: self.max_tokens,
+                extra: &self.extra_body_params,
+                parallel_tool_calls: (self.disable_parallel_tool_calls && tools.is_some())
+                    .then_some(false),
+                stream,
+            };
+            let body = crate::openai_responses::request_body(&request, &self.ledger);
+            return serde_json::to_vec(&body)
+                .map_err(|e| LlmError::Backend(format!("serialize: {e}")));
+        }
+
         let mut body = serde_json::json!({
             "model": self.model,
             "messages": *messages,
@@ -536,6 +831,12 @@ impl OpenAiCompatLlmBackend {
                 }
             }
             for (key, value) in &self.extra_body_params {
+                // Chat completions refuses a reasoning effort beside function
+                // tools for the GPT-5.4 family: it reasons with tools only on
+                // the Responses API (bug-29014c).
+                if key == crate::provider::openai_compat::REASONING_EFFORT && tools.is_some() {
+                    continue;
+                }
                 body_obj.insert(key.clone(), value.clone());
             }
         }
@@ -655,6 +956,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
     ) -> Result<BackendResponse, LlmError> {
         let body_bytes = self.build_body(messages, tools, session, false)?;
         self.rate_limiter.acquire(&self.provider_id).await;
+        let _admitted = self.admit().await?;
 
         let raw = match self
             .poster
@@ -668,7 +970,8 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         {
             Ok(raw) => raw,
             Err(err) => {
-                let mapped = classify_http_error(err);
+                let mapped = classify_http_error(err, &self.provider_id);
+                self.note_refusal(&mapped);
                 self.record_failure(&mapped);
                 return Err(mapped);
             }
@@ -681,6 +984,22 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 self.record_failure(&mapped);
                 return Err(mapped);
             }
+        };
+        // A Responses answer reads as chat completions, and the ledger keeps
+        // its reasoning for the next request (gap-1ba0ac).
+        let json = if self.wire == OpenAiApi::Responses {
+            if let Some(output) = json.get("output").and_then(Value::as_array) {
+                self.ledger.record(output);
+            }
+            match crate::openai_responses::chat_json(&json) {
+                Ok(chat) => chat,
+                Err(error) => {
+                    self.record_failure(&error);
+                    return Err(error);
+                }
+            }
+        } else {
+            json
         };
 
         if let Some(recorder) = &self.outcome_recorder {
@@ -701,6 +1020,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
     > {
         let body_bytes = self.build_body(messages, tools, session, true)?;
         self.rate_limiter.acquire(&self.provider_id).await;
+        let admitted = self.admit().await?;
 
         let mut req = crate::provider::shared_http_client().post(self.endpoint());
         for (key, value) in &self.computed_headers {
@@ -747,7 +1067,9 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
-            return Err(classify_http_error(raw_err));
+            let error = classify_http_error(raw_err, &self.provider_id);
+            self.note_refusal(&error);
+            return Err(error);
         }
 
         // Build the stream: spawn a task that reads HTTP chunks, parses SSE
@@ -760,12 +1082,21 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         let metrics_registry = self.metrics.clone();
         let metrics_provider = self.provider_id.clone();
         let metrics_model = self.model.clone();
+        let mut sse_turn = match self.wire {
+            OpenAiApi::ChatCompletions => TurnLines::Chat(SseTurn::default()),
+            OpenAiApi::Responses => {
+                TurnLines::Responses(ResponsesTurn::new(Arc::clone(&self.ledger)))
+            }
+        };
+        let heartbeat = self.reasoning_heartbeat;
+        let reasoning_silence = self.reasoning_silence;
 
         tokio::spawn(async move {
+            // The call is in flight until its stream ends.
+            let _admitted = admitted;
             let mut response = response;
             let mut pending = Vec::new();
             let mut first_chunk = true;
-            let mut sse_turn = SseTurn::default();
             let mut ttft_recorded = false;
 
             loop {
@@ -807,6 +1138,16 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                             let _ = tx.send(Err(LlmError::Timeout(message))).await;
                             return;
                         }
+                    }
+                } else if sse_turn.reasoning() {
+                    let reasoning = ReasoningWait {
+                        heartbeat,
+                        limit: reasoning_silence.max(wait),
+                        request_start,
+                    };
+                    match reasoning.chunk(chunk_fut, &tx, &endpoint).await {
+                        Some(chunk) => chunk,
+                        None => return,
                     }
                 } else {
                     let next = crate::streaming::chunk_wait(wait, request_start);
@@ -851,12 +1192,13 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                         };
                         // Record TTFT on the first non-error content/tool/reasoning chunk.
                         if !ttft_recorded {
-                            let is_content_chunk = matches!(
-                                event.kind,
+                            let is_content_chunk = match &event.kind {
                                 StreamEventKind::TextDelta(_)
-                                    | StreamEventKind::ReasoningDelta { .. }
-                                    | StreamEventKind::ToolCallDelta { .. }
-                            );
+                                | StreamEventKind::ToolCallDelta { .. } => true,
+                                // An empty one only says the call is alive.
+                                StreamEventKind::ReasoningDelta(text) => !text.is_empty(),
+                                _ => false,
+                            };
                             if is_content_chunk {
                                 ttft_recorded = true;
                                 if let Some(ref registry) = metrics_registry {
@@ -960,6 +1302,14 @@ impl std::fmt::Debug for OpenAiCompatLlmBackend {
             .field("max_tokens", &self.max_tokens)
             .finish_non_exhaustive()
     }
+}
+
+/// The chat endpoint of the OpenAI-compatible provider at `base_url`: the key
+/// [`shared_rate_limiter`] learns that provider's calls at once by
+/// (bug-4b6844, bug-62ae1e).
+#[must_use]
+pub fn chat_endpoint(base_url: &str) -> String {
+    format!("{}/chat/completions", base_url.trim_end_matches('/'))
 }
 
 #[cfg(test)]
@@ -1253,6 +1603,42 @@ mod tests {
         let opted_out = body(&opted_out.with_stream_usage(false), true);
         assert_eq!(opted_out["stream"], true);
         assert!(opted_out.get("stream_options").is_none(), "{opted_out}");
+    }
+
+    /// bug-29014c: chat completions refuses `reasoning_effort` beside function
+    /// tools for the GPT-5.4 family ("Function tools with reasoning_effort
+    /// are not supported"), so a request with tools leaves it out, streamed
+    /// or not, and a request without them carries it.
+    #[test]
+    fn reasoning_effort_goes_only_on_requests_without_function_tools() {
+        let backend =
+            OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini").with_extra_body_params(
+                Map::from_iter([("reasoning_effort".to_string(), Value::from("medium"))]),
+            );
+        let body = |tools: Value, stream: bool| -> Value {
+            let body = backend
+                .build_body(
+                    &[serde_json::json!({"role": "user", "content": "hello"})],
+                    &RenderedTools::JsonArray(tools),
+                    &SessionState::default(),
+                    stream,
+                )
+                .expect("build body");
+            serde_json::from_slice(&body).expect("request body json")
+        };
+        let echo = serde_json::json!([{
+            "type": "function",
+            "function": {"name": "echo", "parameters": {"type": "object"}}
+        }]);
+
+        for stream in [false, true] {
+            let with_tools = body(echo.clone(), stream);
+            assert!(with_tools.get("tools").is_some(), "{with_tools}");
+            assert!(with_tools.get("reasoning_effort").is_none(), "{with_tools}");
+            let without_tools = body(serde_json::json!([]), stream);
+            assert!(without_tools.get("tools").is_none(), "{without_tools}");
+            assert_eq!(without_tools["reasoning_effort"], "medium");
+        }
     }
 
     /// bug-d0b8b8: a text tool format's block joins the system message, or
@@ -2235,11 +2621,14 @@ mod tests {
         assert!(finish_reasons(&items).is_empty(), "{items:?}");
 
         // An error code that is an HTTP status is classified like one.
-        let rate_limited = sse_error_to_llm_error(&SseError {
-            code: Some("429".to_string()),
-            error_type: Some("rate_limit_error".to_string()),
-            message: "Rate limit reached".to_string(),
-        });
+        let rate_limited = sse_error_to_llm_error(
+            &SseError {
+                code: Some("429".to_string()),
+                error_type: Some("rate_limit_error".to_string()),
+                message: "Rate limit reached".to_string(),
+            },
+            "zai",
+        );
         assert!(
             matches!(
                 rate_limited,
@@ -2334,6 +2723,479 @@ mod tests {
         server.join().expect("server thread");
     }
 
+    /// The empty reasoning deltas among `items`: the call saying it is alive.
+    fn alive_beats(items: &[Result<StreamEvent, LlmError>]) -> usize {
+        items
+            .iter()
+            .filter(|item| {
+                matches!(item, Ok(StreamEvent {
+                    kind: StreamEventKind::ReasoningDelta(text),
+                    ..
+                }) if text.is_empty())
+            })
+            .count()
+    }
+
+    /// gap-1ba0ac: a model silent for 200 s while it reasons, past the
+    /// provider's 120 s wait for a chunk, keeps its call: the call says every
+    /// 30 s that it is alive, and waits up to 10 minutes for its model. A
+    /// model silent past that is cut as stalled.
+    #[tokio::test(start_paused = true)]
+    async fn a_200_second_silent_reasoning_turn_is_not_cut() {
+        let provider_wait = TurnConfig::default().request_timeout;
+        assert!(provider_wait < StdDuration::from_secs(200));
+        let reasoning = ReasoningWait {
+            heartbeat: REASONING_HEARTBEAT,
+            limit: REASONING_SILENCE.max(provider_wait),
+            request_start: Instant::now(),
+        };
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let answer = async {
+            tokio::time::sleep(StdDuration::from_secs(200)).await;
+            "the answer"
+        };
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            reasoning.chunk(answer, &tx, "test").await,
+            Some("the answer")
+        );
+        assert_eq!(started.elapsed(), StdDuration::from_secs(200));
+        drop(tx);
+        let mut items = Vec::new();
+        while let Some(item) = rx.recv().await {
+            items.push(item);
+        }
+        assert_eq!(alive_beats(&items), 6, "one each 30 s: {items:?}");
+        assert_eq!(items.len(), 6, "{items:?}");
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let started = tokio::time::Instant::now();
+        let never = std::future::pending::<()>();
+        assert_eq!(reasoning.chunk(never, &tx, "test").await, None);
+        assert_eq!(started.elapsed(), REASONING_SILENCE);
+        drop(tx);
+        let mut items = Vec::new();
+        while let Some(item) = rx.recv().await {
+            items.push(item);
+        }
+        let Some(Err(error)) = items.pop() else {
+            panic!("the call is cut: {items:?}");
+        };
+        assert!(matches!(error, LlmError::Timeout(_)), "{error:?}");
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert_eq!(alive_beats(&items), items.len(), "{items:?}");
+        assert_eq!(items.len(), 19, "a beat each 30 s before the cut");
+    }
+
+    /// Serve one streamed Responses answer whose model reasons, sends
+    /// nothing for `silence`, then answers "ok"; the server hands back the
+    /// request it got.
+    fn serve_silent_reasoning(silence: StdDuration) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let request = read_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write response headers");
+            let reasoning = serde_json::json!({
+                "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc",
+            });
+            let message = serde_json::json!({
+                "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                "content": [{ "type": "output_text", "text": "ok" }],
+            });
+            for event in [
+                serde_json::json!({ "type": "response.created",
+                                    "response": { "model": "gpt-5.4-mini" } }),
+                serde_json::json!({ "type": "response.in_progress", "response": {} }),
+                serde_json::json!({ "type": "response.output_item.added",
+                                    "item": { "type": "reasoning", "id": "rs_1" } }),
+            ] {
+                stream
+                    .write_all(sse_json_line(event).as_bytes())
+                    .expect("write the opening events");
+            }
+            stream.flush().expect("flush the opening events");
+            thread::sleep(silence);
+            // The client may have cut the call by now.
+            for event in [
+                serde_json::json!({ "type": "response.output_item.done", "item": reasoning }),
+                serde_json::json!({ "type": "response.output_text.delta", "delta": "ok" }),
+                serde_json::json!({ "type": "response.completed", "response": {
+                    "model": "gpt-5.4-mini", "status": "completed",
+                    "output": [reasoning, message],
+                    "usage": { "input_tokens": 50, "output_tokens": 70,
+                               "output_tokens_details": { "reasoning_tokens": 64 } },
+                }}),
+            ] {
+                if stream.write_all(sse_json_line(event).as_bytes()).is_err() {
+                    break;
+                }
+            }
+            let _ = stream.flush();
+            request
+        });
+        (format!("http://{addr}/v1/"), server)
+    }
+
+    /// Every item one streamed Responses turn against `base_url` yields,
+    /// when the provider waits 600 ms for a chunk and the call says every
+    /// 150 ms that its reasoning model is alive, for up to `silence`.
+    async fn silent_reasoning_turn(
+        base_url: &str,
+        silence: StdDuration,
+    ) -> Vec<Result<StreamEvent, LlmError>> {
+        use futures::StreamExt;
+
+        let config = TurnConfig {
+            request_timeout: StdDuration::from_millis(600),
+            ..TurnConfig::default()
+        };
+        OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini")
+            .with_base_url(base_url)
+            .with_wire(OpenAiApi::Responses)
+            .with_reasoning_waits(StdDuration::from_millis(150), silence)
+            .stream_turn(
+                &[serde_json::json!({ "role": "user", "content": "hello" })],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+                &config,
+            )
+            .await
+            .expect("the request is sent")
+            .collect()
+            .await
+    }
+
+    /// gap-1ba0ac: a streamed Responses call whose model reasons in silence
+    /// past the provider's wait for a chunk is not cut. From its first
+    /// events on it says it is alive, and it streams the answer that
+    /// follows. Silent past its reasoning wait, it is cut as stalled.
+    #[tokio::test]
+    async fn a_reasoning_responses_stream_outlasts_the_providers_chunk_wait() {
+        let (base_url, server) = serve_silent_reasoning(StdDuration::from_millis(1500));
+        let items = silent_reasoning_turn(&base_url, StdDuration::from_secs(5)).await;
+        let request = server.join().expect("server thread");
+
+        assert!(
+            request.starts_with("POST /v1/responses "),
+            "{}",
+            request.lines().next().unwrap_or_default()
+        );
+        assert!(items.iter().all(Result::is_ok), "{items:?}");
+        assert_eq!(streamed_text(&items), "ok");
+        assert_eq!(finish_reasons(&items), vec!["stop".to_string()]);
+        // in_progress and the reasoning item's start, then the beats.
+        assert!(alive_beats(&items) >= 2 + 4, "{items:?}");
+
+        let (base_url, server) = serve_silent_reasoning(StdDuration::from_millis(2500));
+        let started = Instant::now();
+        let items = silent_reasoning_turn(&base_url, StdDuration::from_millis(900)).await;
+        let elapsed = started.elapsed();
+        server.join().expect("server thread");
+        let error = items
+            .iter()
+            .find_map(|item| item.as_ref().err())
+            .expect("the silent call is cut");
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert!(finish_reasons(&items).is_empty(), "{items:?}");
+        assert!(
+            elapsed < StdDuration::from_millis(2300),
+            "the silence was cut after {elapsed:?}"
+        );
+    }
+
+    /// Two Responses answers: the model reasons, then calls `echo` with
+    /// `{"value":1}`; then it answers "final answer".
+    fn responses_answers() -> [Value; 2] {
+        let reasoning = serde_json::json!({
+            "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc-1",
+        });
+        let call = serde_json::json!({
+            "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "echo",
+            "arguments": "{\"value\":1}", "status": "completed",
+        });
+        let message = serde_json::json!({
+            "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+            "content": [{ "type": "output_text", "text": "final answer", "annotations": [] }],
+        });
+        [
+            serde_json::json!({
+                "id": "resp_1", "object": "response", "status": "completed",
+                "model": "gpt-5.4-mini-2026-03-17", "output": [reasoning, call],
+                "usage": {
+                    "input_tokens": 11, "input_tokens_details": { "cached_tokens": 3 },
+                    "output_tokens": 7, "output_tokens_details": { "reasoning_tokens": 5 },
+                },
+            }),
+            serde_json::json!({
+                "id": "resp_2", "object": "response", "status": "completed",
+                "model": "gpt-5.4-mini-2026-03-17", "output": [message],
+                "usage": { "input_tokens": 9, "output_tokens": 4 },
+            }),
+        ]
+    }
+
+    /// A tool loop's two Responses requests: stateless, with the system
+    /// prompt as instructions, flat tools that are not strict, and the
+    /// effort as `reasoning.effort`; the second replays the first answer's
+    /// encrypted reasoning before its function call, then the call's output.
+    fn assert_the_second_request_replays_the_first(first: &Value, second: &Value) {
+        for body in [first, second] {
+            assert_eq!(body["model"], "gpt-5.4-mini", "{body}");
+            assert_eq!(body["store"], false, "{body}");
+            assert_eq!(
+                body["include"],
+                serde_json::json!(["reasoning.encrypted_content"])
+            );
+            assert_eq!(body["instructions"], "system prompt", "{body}");
+            assert_eq!(body["reasoning"], serde_json::json!({ "effort": "medium" }));
+            assert_eq!(body["tools"][0]["type"], "function", "{body}");
+            assert_eq!(body["tools"][0]["name"], "echo", "{body}");
+            assert_eq!(body["tools"][0]["strict"], false, "{body}");
+            for chat_only in ["messages", "reasoning_effort", "stream_options"] {
+                assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+            }
+        }
+        let kinds = |body: &Value| -> Vec<String> {
+            body["input"]
+                .as_array()
+                .expect("input items")
+                .iter()
+                .map(|item| item["type"].as_str().unwrap_or("message").to_string())
+                .collect()
+        };
+        assert_eq!(kinds(first), ["message"], "{first}");
+        assert_eq!(
+            kinds(second),
+            [
+                "message",
+                "reasoning",
+                "function_call",
+                "function_call_output"
+            ],
+            "{second}"
+        );
+        let input = &second["input"];
+        assert_eq!(input[1]["encrypted_content"], "enc-1");
+        assert_eq!(input[2]["call_id"], "call_1");
+        assert_eq!(input[3]["call_id"], "call_1");
+        assert_eq!(input[3]["output"], "{\"value\":1}");
+    }
+
+    fn medium_effort() -> Map<String, Value> {
+        Map::from_iter([(
+            crate::provider::openai_compat::REASONING_EFFORT.to_string(),
+            serde_json::json!("medium"),
+        )])
+    }
+
+    /// gap-1ba0ac: on the Responses API a tool loop's model reasons beside
+    /// its tools, and each answer reads as chat completions: the call, the
+    /// final text, and usage with its cached input and reasoning tokens.
+    #[tokio::test]
+    async fn a_responses_tool_loop_replays_its_reasoning() {
+        let [first, second] = responses_answers();
+        let (poster, requests) =
+            MockPoster::new(vec![Ok(first.to_string()), Ok(second.to_string())]);
+        let backend = OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini")
+            .with_wire(OpenAiApi::Responses)
+            .with_extra_body_params(medium_effort())
+            .with_poster(Box::new(poster));
+        let result = make_tool_loop(backend)
+            .run(
+                "system prompt",
+                "call the tool, then finish",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
+            .await;
+
+        assert_eq!(result.stop_reason, StopReason::Stop);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "call_1");
+        assert_eq!(result.tool_calls[0].name, "echo");
+        assert_eq!(result.final_text, "final answer");
+        let usage = result.total_usage;
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens
+            ),
+            (8 + 9, 3, 7 + 4, 5)
+        );
+
+        let requests = requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert_eq!(request.url, "https://api.openai.com/v1/responses");
+        }
+        assert_the_second_request_replays_the_first(&requests[0].body, &requests[1].body);
+    }
+
+    /// The SSE lines of `answer` streamed as Responses events, the way
+    /// OpenAI streams them: its items as they start and finish, with text
+    /// and arguments in deltas, then the completed response.
+    fn responses_events(answer: &Value) -> Vec<String> {
+        let mut events = vec![
+            serde_json::json!({ "type": "response.created",
+                                "response": { "id": answer["id"], "status": "in_progress" } }),
+            serde_json::json!({ "type": "response.in_progress",
+                                "response": { "id": answer["id"], "status": "in_progress" } }),
+        ];
+        for item in answer["output"].as_array().expect("output items") {
+            let id = &item["id"];
+            match item["type"].as_str() {
+                Some("function_call") => {
+                    let mut started = item.clone();
+                    started["arguments"] = serde_json::json!("");
+                    events.push(serde_json::json!({
+                        "type": "response.output_item.added", "item": started }));
+                    let arguments = item["arguments"].as_str().expect("arguments");
+                    let (head, tail) = arguments.split_at(arguments.len() / 2);
+                    for delta in [head, tail] {
+                        events.push(serde_json::json!({
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": id, "delta": delta }));
+                    }
+                }
+                Some("message") => {
+                    events.push(serde_json::json!({ "type": "response.output_item.added",
+                        "item": { "type": "message", "id": id, "role": "assistant",
+                                  "content": [] } }));
+                    let text = item["content"][0]["text"].as_str().expect("text");
+                    for delta in text.split_inclusive(' ') {
+                        events.push(serde_json::json!({
+                            "type": "response.output_text.delta",
+                            "item_id": id, "delta": delta }));
+                    }
+                }
+                _ => events.push(serde_json::json!({ "type": "response.output_item.added",
+                    "item": { "type": item["type"], "id": id, "summary": [] } })),
+            }
+            events.push(serde_json::json!({ "type": "response.output_item.done", "item": item }));
+        }
+        events.push(serde_json::json!({ "type": "response.completed", "response": answer }));
+        events
+            .into_iter()
+            .map(|event| {
+                let kind = event["type"].as_str().unwrap_or_default().to_string();
+                format!("event: {kind}\n{}", sse_json_line(event))
+            })
+            .collect()
+    }
+
+    /// gap-1ba0ac: a streamed tool loop on the Responses API: its calls go to
+    /// `/responses` and stream, the reasoning each streamed answer carries is
+    /// replayed with the next request, and the events and the result match
+    /// the answered loop's.
+    #[tokio::test]
+    async fn a_streamed_responses_tool_loop_replays_its_reasoning() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_server = Arc::clone(&requests);
+        let server = thread::spawn(move || {
+            for answer in responses_answers() {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let request = read_http_request(&mut stream);
+                requests_for_server
+                    .lock()
+                    .expect("requests lock")
+                    .push(request);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                )
+                .expect("write response headers");
+                for event in responses_events(&answer) {
+                    stream.write_all(event.as_bytes()).expect("write event");
+                    stream.flush().expect("flush event");
+                    thread::sleep(StdDuration::from_millis(5));
+                }
+            }
+        });
+
+        let backend = OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini")
+            .with_base_url(format!("http://{addr}/v1"))
+            .with_wire(OpenAiApi::Responses)
+            .with_extra_body_params(medium_effort())
+            .with_timeout_ms(5_000);
+        let tool_loop = make_tool_loop(backend);
+        let tools = test_tools();
+        let (event_tx, mut event_rx) = mpsc::channel(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
+        let run = tokio::spawn(async move {
+            let ctx = ToolContext::testing("/tmp");
+            tool_loop
+                .run_streaming(
+                    "system prompt",
+                    "call the tool, then finish",
+                    &tools,
+                    &ctx,
+                    event_tx,
+                )
+                .await
+        });
+        let result = run.await.expect("tool loop task");
+        let mut events = Vec::new();
+        while let Some(event) = event_rx.recv().await {
+            events.push(event.kind);
+        }
+        server.join().expect("server thread");
+
+        assert_eq!(result.stop_reason, StopReason::Stop);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "call_1");
+        assert_eq!(
+            result.tool_calls[0].arguments,
+            serde_json::json!({ "value": 1 })
+        );
+        assert_eq!(result.final_text, "final answer");
+        let usage = result.total_usage;
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens
+            ),
+            (8 + 9, 3, 7 + 4, 5)
+        );
+        assert!(
+            events.iter().any(|kind| matches!(kind,
+                StreamEventKind::ToolCallStart { id, name } if id == "call_1" && name == "echo")),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|kind| matches!(kind, StreamEventKind::TextDelta(text) if text == "final ")),
+            "{events:?}"
+        );
+
+        let requests = requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2);
+        let bodies: Vec<Value> = requests
+            .iter()
+            .map(|request| {
+                assert!(request.starts_with("POST /v1/responses "), "{request}");
+                let (_, body) = request.split_once("\r\n\r\n").expect("a request body");
+                serde_json::from_str(body).expect("a JSON body")
+            })
+            .collect();
+        for body in &bodies {
+            assert_eq!(body["stream"], true, "{body}");
+        }
+        assert_the_second_request_replays_the_first(&bodies[0], &bodies[1]);
+    }
+
     #[tokio::test]
     async fn retry_after_header_429_maps_to_provider_rate_limit() {
         let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http_with_retry_after(
@@ -2359,6 +3221,144 @@ mod tests {
                 })
             ),
             "expected Provider(RateLimit {{ 30_000ms }}), got {err:?}"
+        );
+    }
+
+    /// A poster that answers `answer` once `gate` opens, so its call stays in
+    /// flight until then.
+    struct GatedPoster {
+        gate: Arc<tokio::sync::Notify>,
+        answer: String,
+    }
+
+    #[async_trait]
+    impl HttpPoster for GatedPoster {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _headers: &[(String, String)],
+            _body: &[u8],
+            _timeout_ms: u64,
+        ) -> Result<String, HttpPostError> {
+            self.gate.notified().await;
+            Ok(self.answer.clone())
+        }
+    }
+
+    /// bug-4b6844, bug-33a61f: parallel calls to one provider share what its
+    /// rate limits taught. With one call in flight the provider refused a
+    /// second (HTTP 429), so it takes one at a time. A call held past its
+    /// wait fails as rate-limited without reaching the provider. The second
+    /// caller's next call waits for its slot, said on its live output as
+    /// queued, and goes out once the first call has ended.
+    #[tokio::test]
+    async fn parallel_calls_share_a_providers_rate_limit() {
+        let answer = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}]
+        })
+        .to_string();
+        let limiter = Arc::new(ProviderRateLimiter::new(6_000));
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let first = OpenAiCompatLlmBackend::new("test-key", "model")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_poster(Box::new(GatedPoster {
+                gate: Arc::clone(&gate),
+                answer: answer.clone(),
+            }));
+        let (poster, requests) = MockPoster::new(vec![
+            Err(HttpPostError::http_with_retry_after(
+                429,
+                "rate limited",
+                Some(1),
+            )),
+            Ok(answer),
+        ]);
+        let (sink, mut events) = tokio::sync::mpsc::channel(64);
+        let second = OpenAiCompatLlmBackend::new("test-key", "model")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_poster(Box::new(poster))
+            .with_live_output(Some(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            }));
+        let impatient = OpenAiCompatLlmBackend::new("test-key", "model")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_poster(Box::new(MockPoster::new(Vec::new()).0))
+            .with_held_call_wait(Duration::from_millis(300));
+        let messages = [serde_json::json!({"role": "user", "content": "hi"})];
+        let tools = RenderedTools::JsonArray(serde_json::json!([]));
+        let session = SessionState::default();
+
+        let in_flight = tokio::spawn(async move {
+            let messages = [serde_json::json!({"role": "user", "content": "hi"})];
+            first
+                .send_turn(
+                    &messages,
+                    &RenderedTools::JsonArray(serde_json::json!([])),
+                    &SessionState::default(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let refused = second.send_turn(&messages, &tools, &session).await;
+        assert!(
+            matches!(
+                refused,
+                Err(LlmError::Provider(ProviderError::RateLimit { .. }))
+            ),
+            "{refused:?}"
+        );
+        let held = impatient.send_turn(&messages, &tools, &session).await;
+        assert!(
+            matches!(
+                held,
+                Err(LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: None
+                }))
+            ),
+            "{held:?}"
+        );
+
+        let waiting = tokio::spawn(async move {
+            let messages = [serde_json::json!({"role": "user", "content": "hi"})];
+            second
+                .send_turn(
+                    &messages,
+                    &RenderedTools::JsonArray(serde_json::json!([])),
+                    &SessionState::default(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            requests.lock().expect("requests lock").len(),
+            1,
+            "the held calls never reached the provider"
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
+
+        gate.notify_one();
+        in_flight
+            .await
+            .expect("the first call's task")
+            .expect("the first call is served");
+        waiting
+            .await
+            .expect("the held call's task")
+            .expect("with the first call ended, the held call goes out");
+        assert_eq!(requests.lock().expect("requests lock").len(), 2);
+        let mut said = Vec::new();
+        while let Ok(crate::live_output::LiveAgentEvent::Queued { waiting }) = events.try_recv() {
+            said.push(waiting);
+        }
+        assert_eq!(said.last(), Some(&false), "{said:?}");
+        assert!(
+            said[..said.len() - 1].iter().all(|waiting| *waiting),
+            "{said:?}"
         );
     }
 
@@ -2421,20 +3421,40 @@ mod tests {
 
     #[test]
     fn classify_http_error_429_maps_to_rate_limit() {
-        let err = classify_http_error(HttpPostError::http(429, "rate limited"));
+        let err = classify_http_error(HttpPostError::http(429, "rate limited"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
             "expected Provider(RateLimit), got {err:?}"
         );
     }
 
+    /// bug-390e4b: a 402 is the provider's refusal to bill the account, an
+    /// exhaustion with its own words and code, as Cerebras sends it.
+    #[test]
+    fn classify_http_error_402_is_a_billing_refusal() {
+        let body = r#"{"message":"Payment required to access this resource. Visit your billing tab.","type":"payment_required_error","param":"quota","code":"payment_required"}"#;
+        let err = classify_http_error(HttpPostError::http(402, body), "test");
+        let LlmError::Provider(ProviderError::ProviderExhausted {
+            resets_at_ms,
+            message,
+        }) = &err
+        else {
+            panic!("expected a billing refusal for 402, got {err:?}");
+        };
+        assert_eq!(*resets_at_ms, None);
+        assert_eq!(
+            message,
+            "Payment required to access this resource. Visit your billing tab. (code \
+             payment_required)"
+        );
+    }
+
     #[test]
     fn classify_http_error_429_with_retry_after() {
-        let err = classify_http_error(HttpPostError::http_with_retry_after(
-            429,
-            "rate limited",
-            Some(30),
-        ));
+        let err = classify_http_error(
+            HttpPostError::http_with_retry_after(429, "rate limited", Some(30)),
+            "test",
+        );
         assert!(
             matches!(
                 err,
@@ -2448,7 +3468,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_529_maps_to_rate_limit() {
-        let err = classify_http_error(HttpPostError::http(529, "overloaded"));
+        let err = classify_http_error(HttpPostError::http(529, "overloaded"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
             "expected Provider(RateLimit), got {err:?}"
@@ -2457,7 +3477,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_500_maps_to_server_error() {
-        let err = classify_http_error(HttpPostError::http(500, "internal server error"));
+        let err = classify_http_error(HttpPostError::http(500, "internal server error"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::ServerError(500))),
             "expected Provider(ServerError(500)), got {err:?}"
@@ -2466,7 +3486,7 @@ mod tests {
 
     #[test]
     fn classify_http_error_503_maps_to_server_error() {
-        let err = classify_http_error(HttpPostError::http(503, "service unavailable"));
+        let err = classify_http_error(HttpPostError::http(503, "service unavailable"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::ServerError(503))),
             "expected Provider(ServerError(503)), got {err:?}"
@@ -2475,25 +3495,105 @@ mod tests {
 
     #[test]
     fn classify_http_error_401_maps_to_auth_failure() {
-        let err = classify_http_error(HttpPostError::http(401, "unauthorized"));
+        let err = classify_http_error(HttpPostError::http(401, "unauthorized"), "test");
         assert!(
             matches!(err, LlmError::Provider(ProviderError::AuthFailure)),
             "expected Provider(AuthFailure), got {err:?}"
         );
     }
 
+    /// bug-35b190: a provider's HTTP 4xx refusal reads as a refusal, in the
+    /// provider's own words, and not as a network error. OpenAI's 400 on
+    /// reasoning_effort in phase 4's run 16fc88ae came out as "network error:
+    /// http 400: {…}", class `provider_error:unknown`. A 401 stays an auth
+    /// failure, a 404 is an unknown model, a 400 about the context a context
+    /// overflow, and a transport error or a timeout stays what it was.
     #[test]
-    fn classify_http_error_404_maps_to_network() {
-        let err = classify_http_error(HttpPostError::http(404, "not found"));
+    fn a_providers_4xx_refusal_reads_as_a_refusal_not_a_network_error() {
+        use crate::provider::error_classify::classify_failure_text;
+        // The class of the error as an attempt's failure text carries it.
+        let class = |err: &LlmError| {
+            classify_failure_text(&format!("agent error (openai): {err}").to_ascii_lowercase())
+        };
+
+        let body = r#"{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions.","type":"invalid_request_error","param":"reasoning_effort","code":null}}"#;
+        let err = classify_http_error(HttpPostError::http(400, body), "openai");
+        let LlmError::Provider(ProviderError::RequestRefused {
+            provider,
+            status,
+            message,
+        }) = &err
+        else {
+            panic!("expected a refused request, got {err:?}");
+        };
+        assert_eq!((provider.as_str(), *status), ("openai", 400));
+        assert_eq!(
+            message,
+            "Function tools with reasoning_effort are not supported for gpt-5.4-mini in \
+             /v1/chat/completions. (param reasoning_effort)"
+        );
+        assert_eq!(
+            err.to_string(),
+            "provider error: openai refused the request (HTTP 400): Function tools with \
+             reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions. \
+             (param reasoning_effort)"
+        );
+        assert_eq!(class(&err), "request_refused");
+
+        let bad_key =
+            r#"{"error":{"message":"Incorrect API key provided.","code":"invalid_api_key"}}"#;
+        let err = classify_http_error(HttpPostError::http(401, bad_key), "openai");
         assert!(
-            matches!(err, LlmError::Network(_)),
-            "expected Network, got {err:?}"
+            matches!(err, LlmError::Provider(ProviderError::AuthFailure)),
+            "{err:?}"
+        );
+        assert_eq!(class(&err), "auth_failure");
+
+        // A 403 is "you may not do this", most often scoped to the model: a
+        // refusal, unless its words say the credential itself is bad
+        // (bug-80f0d0).
+        let no_access = r#"{"error":{"message":"Project `proj_1` does not have access to model `gpt-5.4`","code":"model_not_found"}}"#;
+        let err = classify_http_error(HttpPostError::http(403, no_access), "openai");
+        assert_eq!(class(&err), "request_refused", "{err}");
+        assert!(
+            err.to_string()
+                .contains("does not have access to model `gpt-5.4`"),
+            "{err}"
+        );
+        let revoked = r#"{"error":{"message":"Invalid API key: this key has been revoked.","code":"invalid_api_key"}}"#;
+        let err = classify_http_error(HttpPostError::http(403, revoked), "openai");
+        assert_eq!(class(&err), "auth_failure", "{err}");
+        assert!(err.to_string().contains("has been revoked"), "{err}");
+
+        let no_model = r#"{"error":{"message":"The model `gpt-5.4-minii` does not exist or you do not have access to it.","code":"model_not_found"}}"#;
+        let err = classify_http_error(HttpPostError::http(404, no_model), "openai");
+        assert_eq!(class(&err), "model_not_found", "{err}");
+
+        let too_long = r#"{"error":{"message":"This model's maximum context length is 128000 tokens.","code":"context_length_exceeded"}}"#;
+        let err = classify_http_error(HttpPostError::http(400, too_long), "openai");
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::ContextOverflow)),
+            "{err:?}"
+        );
+
+        let err = classify_http_error(
+            HttpPostError::transport("tcp connect error: Connection refused"),
+            "openai",
+        );
+        assert!(matches!(err, LlmError::Network(_)), "{err:?}");
+        let err = classify_http_error(HttpPostError::transport("operation timed out"), "openai");
+        assert!(matches!(err, LlmError::Network(_)), "{err:?}");
+        assert_eq!(class(&err), "timeout");
+        let err = classify_http_error(HttpPostError::http(408, "Request Timeout"), "openai");
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::Timeout)),
+            "{err:?}"
         );
     }
 
     #[test]
     fn classify_http_error_transport_maps_to_network() {
-        let err = classify_http_error(HttpPostError::transport("dns failed"));
+        let err = classify_http_error(HttpPostError::transport("dns failed"), "test");
         assert!(
             matches!(err, LlmError::Network(_)),
             "expected Network, got {err:?}"

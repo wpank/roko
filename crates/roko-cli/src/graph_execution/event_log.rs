@@ -1280,6 +1280,7 @@ mod tests {
         let efficiency = DashboardEvent::EfficiencyEvent {
             plan_id: "p1".to_string(),
             task_id: "T1".to_string(),
+            attempt: None,
             metric: "cost_usd".to_string(),
             value: 0.01,
         };

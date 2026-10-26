@@ -17,10 +17,10 @@ anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::CheapFac
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "cargo test -p roko-cli --test worktree_task_diff worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing"
+command = "grep -qw 'fn a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone' crates/roko-cli/tests/worktree_task_diff.rs && cargo test -p roko-cli --test worktree_task_diff -- --include-ignored"
 
 [[verify]]
-command = "grep -rqw 'fn cheap_agent_runs_its_provider_outside_the_operators_checkout' crates/roko-cli/src/ && cargo test -p roko-cli --lib cheap_agent_runs_its_provider_outside_the_operators_checkout"
+command = "! grep -q 'ignore = \"bug-ee2752' crates/roko-cli/tests/worktree_task_diff.rs && grep -rqw 'fn cheap_agent_runs_its_provider_outside_the_operators_checkout' crates/roko-cli/src/ && cargo test -p roko-cli --lib cheap_agent_runs_its_provider_outside_the_operators_checkout"
 +++
 
 ## Problem
@@ -48,19 +48,20 @@ between it and the person's files.
 - `crates/roko-cli/src/graph_task_dispatch.rs::cheap_agent`.
 - Every helper call goes through `CheapFactoryAgent`: the error diagnosis after a failed verify step
   (`verification.rs`), the LLM-judge step (`judge_step.rs`), the evidence judge of a pack rung (`pack_rungs.rs`,
-  through `helper_agent`) and the audit's B3 reviewers (`audit_select.rs::audit_phase_b`). Each prompt carries the
+  through `helper_agent`) and the audit's B3 reviewers (`audit_select.rs::audit_reviewers`). Each prompt carries the
   text the helper reads (failure output, diff, artefacts), so none needs a checkout.
 
 ## Current state
 
-Re-checked 2026-10-26 with the prebuilt binary of main (built 10-21): the fixture of the test above, run by hand,
-logs its provider's working directories as the attempt worktree and then the repo root, and leaves `?? feature.txt`
-in the repo root.
+Re-checked 2026-10-26 with a binary of main built 10-21: the original fixture (the task's provider as the only
+model), run by hand, logs its provider's working directories as the attempt worktree and then the repo root, and
+leaves `?? feature.txt` in the repo root.
 
 ## Plan
 
 Run helper calls in a scratch directory (or the attempt's checkout), never in the operator's checkout; or refuse
-CLI providers as helper models. Then the test passes as written.
+CLI providers as helper models. Then remove the `#[ignore]` from
+`a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone`, which passes as written.
 
 Chosen: a scratch directory per call (`tempfile`, prefix `roko-helper-`, removed when the call ends), as the
 audit's B1 suite author already does. The attempt's checkout is no answer: without `--worktree-per-task` it is the
@@ -72,12 +73,21 @@ the checkout.
 
 ## Done when
 
-`cargo test -p roko-cli --test worktree_task_diff` passes with a scratch `HOME`, and the unit test
+`cargo test -p roko-cli --test worktree_task_diff -- --include-ignored` passes with a scratch `HOME`, and
+`a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone` is no longer ignored. The unit test
 `cheap_agent_runs_its_provider_outside_the_operators_checkout` shows a fake Claude CLI helper running outside the
 checkout, its scratch directory removed and the workspace still holding the call's efficiency row (both
 `[[verify]]` commands).
 
 ## Notes
 
+- 2026-10-26 (bug-c63cca): `worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing` no longer shows
+  this bug. To check gap-415c54's behaviour on any machine, its helper calls and `default_model` now go to a second
+  model on the tests' mock agent, which writes nothing, and its task names its own model (`model_hint = "fake"`). This
+  bug's check moved to the new `a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone`: the original
+  fixture, with the task's provider as the only model. It is `#[ignore]`d until this is fixed, and the verify runs it
+  with `--include-ignored`. Reproduced by hand on 15335e2f9 with no keys and no `claude`. With the original fixture,
+  the provider's second call runs in the repository root and leaves `?? feature.txt`. With the mock helper, that call
+  goes to the mock (model `claude-haiku-4-5`), still with the operator's checkout as its working directory.
 - A helper in a scratch directory no longer picks up the checkout's `.mcp.json` (Claude Code reads the working
   directory's), which matches "no tools, no MCP" in the adapter's doc.

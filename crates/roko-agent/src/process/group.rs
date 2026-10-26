@@ -102,6 +102,34 @@ pub fn set_process_group(cmd: &mut Command) {
 #[cfg(not(unix))]
 pub fn set_process_group(_cmd: &mut Command) {}
 
+/// Configure a [`std::process::Command`] to start its child in a new session
+/// (`setsid`), with no controlling terminal and its own process group, so the
+/// child outlives the process that started it: neither that process's exit
+/// nor a closed terminal stops it. The one detach of roko's long-lived
+/// children (`roko serve --detach`, `roko daemon start`, the openclaw
+/// gateway); a `tokio::process::Command` passes `as_std_mut()`.
+///
+/// On other platforms this is a no-op.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub fn detach_into_new_session(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt as _;
+    // SAFETY: `setsid()` is async-signal-safe and only changes the child's own
+    // session before `exec`. No shared state is accessed.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// No-op on non-Unix platforms.
+#[cfg(not(unix))]
+pub fn detach_into_new_session(_cmd: &mut std::process::Command) {}
+
 /// Breadth-first collection of all descendant PIDs rooted at `root_pid`.
 ///
 /// Uses `pgrep -P <pid>` at each level. Returns PIDs in breadth-first order

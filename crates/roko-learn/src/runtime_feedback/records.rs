@@ -1157,6 +1157,10 @@ pub struct GenerationOutcome {
     /// What the generation's agent calls cost together, in USD (bug-a0432b).
     #[serde(default)]
     pub cost_usd: f64,
+    /// What roko changed in the planner's draft before it validated it, one
+    /// line each (gap-0fb7d9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repairs: Vec<String>,
 }
 
 /// The spec-quality scores of a generated plan (S07.10, backlog 3218), by
@@ -1196,6 +1200,11 @@ pub struct GenerationSourceChecks {
     pub regenerated: bool,
     /// Each check, in source order.
     pub checks: Vec<GenerationSourceCheck>,
+    /// The workspace documents the checks come from, when the request states
+    /// none itself and names them (round v7: a chat host's summary of a
+    /// spec).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<String>,
 }
 
 /// One check a generated plan's source states (gap-dc5d7c).

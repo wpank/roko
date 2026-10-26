@@ -903,6 +903,7 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
             events.push(DashboardEvent::EfficiencyEvent {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
+                attempt: None,
                 metric: "input_tokens".into(),
                 value: 0.0,
             });
@@ -968,18 +969,21 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
             events.push(DashboardEvent::EfficiencyEvent {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
+                attempt: None,
                 metric: "input_tokens".into(),
                 value: 4200.0,
             });
             events.push(DashboardEvent::EfficiencyEvent {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
+                attempt: None,
                 metric: "output_tokens".into(),
                 value: 1800.0,
             });
             events.push(DashboardEvent::EfficiencyEvent {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
+                attempt: None,
                 metric: "cost_usd".into(),
                 value: 0.042,
             });
@@ -1063,6 +1067,7 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
             events.push(DashboardEvent::EfficiencyEvent {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
+                attempt: None,
                 metric: "cost_usd".into(),
                 value: 0.003,
             });

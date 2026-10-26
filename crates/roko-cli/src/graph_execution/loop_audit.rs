@@ -22,6 +22,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use roko_core::DashboardEvent;
 use roko_core::config::learning::{LearningAuditConfig, LearningConfig};
+use roko_core::dashboard_snapshot::LoopHealthDetail;
 use roko_learn::loop_audit::ledger::{LoopAuditRecord, LoopAuditRow};
 use roko_learn::loop_audit::{LoopAuditor, Qualifier};
 
@@ -92,7 +93,9 @@ fn tick(
 
 /// The StateHub event of ledger row `record`: `LoopHealth` for a health
 /// row, with its evaluation's `qualifiers`, and `LoopTransition` for a
-/// transition; `None` for the other kinds.
+/// transition; `None` for the other kinds. A health event carries the
+/// row's β whole, its estimate with its interval or why it is not judged,
+/// and the opportunities on each arm (gap-1ee8c4).
 fn loop_event(record: &LoopAuditRecord, qualifiers: &[Qualifier]) -> Option<DashboardEvent> {
     let loop_id = record.loop_id.clone();
     let ts = record.ts.clone().unwrap_or_default();
@@ -106,6 +109,13 @@ fn loop_event(record: &LoopAuditRecord, qualifiers: &[Qualifier]) -> Option<Dash
             eps: Some(health.eps.est),
             iota_net: Some(health.iota.net),
             beta: health.beta.est,
+            detail: Box::new(LoopHealthDetail {
+                beta_lcb: health.beta.lcb,
+                beta_ucb: health.beta.ucb,
+                beta_reason: health.beta.reason.clone(),
+                n_learned: Some(health.n_learned),
+                n_default: Some(health.n_default),
+            }),
             ts,
         }),
         LoopAuditRow::Transition(transition) => Some(DashboardEvent::LoopTransition {
@@ -128,7 +138,8 @@ mod tests {
     use roko_learn::loop_audit::ledger::Ledger;
     use roko_learn::routing_log::DecisionState;
     use roko_learn::telemetry::records::{
-        AuditFields, ContentProposals, DECISION_SCHEMA, DecisionAssignment, DecisionReceipt,
+        AttemptOutcome, AttemptVerdictRecord, AuditFields, ContentProposals, DECISION_SCHEMA,
+        DecisionAssignment, DecisionReceipt, VERDICT_SCHEMA,
     };
     use roko_learn::telemetry::{
         Arm, Assignment, AssignmentUnit, AttemptIdentity, AttemptKey, ContentCandidate,
@@ -211,6 +222,7 @@ mod tests {
             proposals: Some(ContentProposals {
                 learned: Some(vec![item.to_string()]),
                 default: Some(Vec::new()),
+                exclusion: None,
             }),
             audit: AuditFields {
                 layer: Some(layer.to_string()),
@@ -255,6 +267,38 @@ mod tests {
         }
         std::fs::write(RunFile::Decisions.path_in(&run_dir), lines)
             .expect("write the decision rows");
+    }
+
+    /// Settle the `chains` chains [`write_run`] wrote for run `run_id` of
+    /// the workspace `dir`, from `seq` on: most learned-arm chains pass, and
+    /// every other default-arm one does.
+    fn write_verdicts(dir: &Path, run_id: &str, chains: usize, seq: u64) {
+        let mut lines = String::new();
+        for chain in 0..chains {
+            let key = AttemptKey::new(run_id, "plan", format!("t{chain}"), 1);
+            let passed = if chain % 5 == 0 {
+                chain % 10 == 0
+            } else {
+                chain % 7 != 0
+            };
+            let outcome = if passed {
+                AttemptOutcome::Passed
+            } else {
+                AttemptOutcome::GateFailed
+            };
+            let stamped = Stamped {
+                schema_version: VERDICT_SCHEMA.to_string(),
+                record_id: format!("b3:{run_id}:verdict:{chain}"),
+                seq: seq + chain as u64,
+                ts: "2026-10-03T09:30:00Z".to_string(),
+                record: AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true),
+            };
+            let line = serde_json::to_string(&stamped).expect("serialize a verdict");
+            lines.push_str(&line);
+            lines.push('\n');
+        }
+        let run_dir = dir.join(".roko/runs").join(run_id);
+        std::fs::write(RunFile::Attempts.path_in(&run_dir), lines).expect("write the verdicts");
     }
 
     /// Ledger row `record` in a few words: its loop, and its state and
@@ -367,6 +411,80 @@ mod tests {
         let third = [KNOW_ON_PROBATION, PLAY_ON_PROBATION, PLAY_READMITTED];
         assert_eq!(summaries(&rows[5..]), third);
         assert_eq!(loop_events(&hub).len(), 8);
+    }
+
+    /// gap-1ee8c4: a `loop_health` event carries its ledger row's β whole,
+    /// with the opportunities on each arm. Over 150 settled chains, every
+    /// fifth on the default arm, and with `n_beta = 100`, L-know's β is
+    /// judged: its event has β̂, the interval and the arm counts its health
+    /// row has. L-play's rows carry no receipt, so its β is not judged, and
+    /// its event says why.
+    #[test]
+    fn loop_health_event_carries_beta_interval() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), "gr-beta", 150);
+        write_verdicts(dir.path(), "gr-beta", 150, 301);
+        let hub = crate::state_hub::shared_state_hub();
+        let bridge = GraphTuiBridge::new(TuiBridge::new(hub.sender()));
+        let config = LearningAuditConfig {
+            n_beta: 100,
+            ..LearningAuditConfig::default()
+        };
+        let t0 = Utc
+            .with_ymd_and_hms(2026, 10, 16, 10, 0, 0)
+            .single()
+            .expect("a valid time");
+        tick(dir.path(), &config, "gr-beta", t0, &bridge);
+
+        let learn = dir.path().join(".roko/learn");
+        let rows = Ledger::in_learn_dir(&learn)
+            .read()
+            .expect("read the ledger");
+        let health = |loop_id: &str| {
+            rows.iter()
+                .find_map(|record| match &record.row {
+                    LoopAuditRow::Health(health) if record.loop_id == loop_id => Some(health),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{loop_id}'s health row: {rows:?}"))
+        };
+        let replay = hub.subscribe_events_from(0).replay;
+        let event = |loop_id: &str| {
+            replay
+                .iter()
+                .find_map(|envelope| match &envelope.payload {
+                    DashboardEvent::LoopHealth {
+                        loop_id: id,
+                        beta,
+                        detail,
+                        ..
+                    } if id == loop_id => {
+                        let interval = (*beta, detail.beta_lcb, detail.beta_ucb);
+                        let arms = (detail.n_learned, detail.n_default);
+                        Some((interval, detail.beta_reason.clone(), arms))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{loop_id}'s loop_health event"))
+        };
+
+        let know = health("L-know");
+        assert_eq!((know.n_learned, know.n_default), (120, 30));
+        let est = know.beta.est.expect("L-know's β is judged");
+        let (lcb, ucb) = know.beta.lcb.zip(know.beta.ucb).expect("its interval");
+        assert!(lcb <= est && est <= ucb, "{est} outside [{lcb}, {ucb}]");
+        let judged = (
+            (Some(est), Some(lcb), Some(ucb)),
+            None,
+            (Some(120), Some(30)),
+        );
+        assert_eq!(event("L-know"), judged);
+
+        let play = health("L-play");
+        let why = play.beta.reason.clone();
+        assert_eq!(why.as_deref(), Some("eps_below_min"));
+        let unjudged = ((None, None, None), why, (Some(120), Some(30)));
+        assert_eq!(event("L-play"), unjudged);
     }
 
     /// Decision 2218 since gap-addf2a: a frozen run has no audit tick, so it

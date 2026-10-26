@@ -1,7 +1,9 @@
 # Arm cheap_direct_msa (S08 §4.9, decision 3; 3317): the same task as cheap_direct, gpt-oss-120b billed through the
 # API, but run by the pinned mini-swe-agent (MIT, github.com/SWE-agent/mini-swe-agent) instead of our own bash-only
 # loop (mini_loop.py). The runner is driver/run_msa.py, which runs mini-swe-agent's `mini` CLI as a subprocess (it is
-# never imported) from its own venv (.venv-msa/, requirements-msa.lock) and points it at the metering proxy. Records
+# never imported) from its own venv outside the repository (requirements-msa.lock; README, "mini-swe-agent's venv"),
+# whose path its agent's shell can read and which so names no benchmark (bug-e16450), and points it at the metering
+# proxy. Records
 # keep [arm] id = "cheap_direct", the same arm as the bash-only loop's, with `provenance.network_policy.harness`
 # naming "mini-swe-agent" so analysis/metrics.py's check_unique never treats the two loops' runs as one cell's
 # duplicate, and cells()/arm_metrics() report them as two distinct cells rather than pooling their numbers together
@@ -31,7 +33,7 @@ command_timeout_s = 60
 observation_chars = 10000
 
 [msa]
-binary = ".venv-msa/bin/mini"         # relative to the benchmark tree; driver/run_msa.py's own default
+binary = "~/.local/share/mini-swe-agent/venv/bin/mini"  # outside the repository; driver/run_msa.py's own default
 
 [providers.cerebras]
 base_url = "https://api.cerebras.ai/v1"

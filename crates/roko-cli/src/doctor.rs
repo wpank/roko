@@ -83,17 +83,16 @@ pub struct ServeHolder {
 
 /// The roko serve that holds this workspace's lock, when the lock's holder
 /// is one: the PID the exclusive holder wrote is the PID serve advertises in
-/// `.roko/runtime/serve.json` (bug-1f5406). Call it after a lock attempt
-/// failed; `None` when the holder is not this workspace's serve.
+/// `.roko/runtime/serve.json` (bug-1f5406), and that serve answers `/health`
+/// as itself ([`crate::serve_lifecycle::running_workspace_serve`],
+/// bug-06ac5f). Call it after a lock attempt failed; `None` when the holder is
+/// not this workspace's serve.
 #[must_use]
 pub fn serve_holding_workspace(workdir: &Path) -> Option<ServeHolder> {
-    let holder = crate::workspace_lock::workspace_lock_owner_pid(&workdir.join(".roko"))?;
-    roko_serve::endpoint::read_endpoint(workdir)
-        .filter(|endpoint| endpoint.pid == holder)
-        .map(|endpoint| ServeHolder {
-            pid: endpoint.pid,
-            url: endpoint.url,
-        })
+    crate::serve_lifecycle::running_workspace_serve(workdir).map(|endpoint| ServeHolder {
+        pid: endpoint.pid,
+        url: endpoint.url,
+    })
 }
 
 /// The `workspace_lock` line of a doctor run that read the workspace beside
@@ -1027,8 +1026,14 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
         ));
     }
     let report = ladder_report(&config);
-    let (runs, skipped): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) =
-        report.iter().partition(|rung| rung.dispatch.is_ok());
+    // A rung's alternates are not rungs (gap-51d2ca): the rung draws among
+    // the ones that can run, and goes without the others.
+    let (rungs, alternates): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) =
+        report.iter().partition(|rung| !rung.alternate);
+    let (runs, skipped): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) = rungs
+        .iter()
+        .copied()
+        .partition(|rung| rung.dispatch.is_ok());
     let names = |rungs: &[&LadderRungReport]| {
         rungs
             .iter()
@@ -1036,7 +1041,36 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
             .collect::<Vec<_>>()
             .join(", ")
     };
-    if report.is_empty() {
+    let reasons_of = |rungs: &[&LadderRungReport]| {
+        rungs
+            .iter()
+            .map(|rung| {
+                let reason = rung.dispatch.as_ref().err().map_or("", String::as_str);
+                format!("{} ({}): {reason}", rung.rung, rung.model)
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let (drawn, idle): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) = alternates
+        .iter()
+        .copied()
+        .partition(|rung| rung.dispatch.is_ok());
+    let mut notes = Vec::new();
+    if !drawn.is_empty() {
+        notes.push(format!(
+            "rungs that also draw an alternate at [routing] explore_epsilon, so the router learns \
+             from plan runs: {}",
+            names(&drawn)
+        ));
+    }
+    if !idle.is_empty() {
+        notes.push(format!(
+            "alternates that cannot run here, so their rung goes without them: {}",
+            reasons_of(&idle)
+        ));
+    }
+    let alternates_note = (!notes.is_empty()).then(|| notes.join("; "));
+    if rungs.is_empty() {
         return Some(check(
             DoctorStatus::Warn,
             "routing.ladder has no rung: the router picks each task's model".to_string(),
@@ -1051,18 +1085,11 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
         return Some(check(
             DoctorStatus::Ok,
             format!("routing.ladder: every rung can run here: {}", names(&runs)),
-            None,
+            alternates_note,
             None,
         ));
     }
-    let reasons = skipped
-        .iter()
-        .map(|rung| {
-            let reason = rung.dispatch.as_ref().err().map_or("", String::as_str);
-            format!("{} ({}): {reason}", rung.rung, rung.model)
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
+    let reasons = reasons_of(&skipped);
     let message = if runs.is_empty() {
         format!(
             "routing.ladder: no rung can run here, so the router picks each task's model; \
@@ -1073,7 +1100,7 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
             "routing.ladder: {} of {} rungs cannot run here, so a task that would start on one \
              starts on the next rung up that can; {reasons}",
             skipped.len(),
-            report.len()
+            rungs.len()
         )
     };
     let runnable = if runs.is_empty() {
@@ -1081,10 +1108,14 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
     } else {
         names(&runs)
     };
+    let detail = match alternates_note {
+        Some(note) => format!("rungs that run here: {runnable}; {note}"),
+        None => format!("rungs that run here: {runnable}"),
+    };
     Some(check(
         DoctorStatus::Warn,
         message,
-        Some(format!("rungs that run here: {runnable}")),
+        Some(detail),
         Some(
             "give each skipped rung's model a [models.*] entry and its [providers.*] table, and \
              set the provider's key; or remove the rung from [routing.ladder]",
@@ -3925,7 +3956,8 @@ mod tests {
 
     /// bug-1f5406: a roko serve holds its workspace's lock exclusively for its
     /// life. Doctor recognizes it by the PID the lock file and serve.json
-    /// share; no other process counts.
+    /// share, and by `/health` answering as that serve (bug-06ac5f); no other
+    /// process counts.
     #[test]
     fn doctor_recognizes_the_serve_that_holds_the_workspace() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3939,11 +3971,14 @@ mod tests {
             "without serve.json the holder is unknown"
         );
 
+        let health = crate::serve_lifecycle::test_support::FakeHealth::answering("serve-1");
         let mut endpoint = roko_serve::endpoint::ServeEndpoint {
             pid: std::process::id().wrapping_add(1),
-            url: "http://127.0.0.1:6791".to_string(),
+            url: health.url(),
             workdir: dir.path().to_path_buf(),
             started_at: "2026-10-16T10:00:00Z".to_string(),
+            instance_id: "serve-1".to_string(),
+            ..Default::default()
         };
         roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
         assert_eq!(
@@ -3952,12 +3987,20 @@ mod tests {
             "a serve.json of another process is not the holder"
         );
         endpoint.pid = std::process::id();
+        endpoint.instance_id = "serve-2".to_string();
+        roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            None,
+            "a serve whose /health names another instance is not the holder"
+        );
+        endpoint.instance_id = "serve-1".to_string();
         roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
         assert_eq!(
             serve_holding_workspace(dir.path()),
             Some(ServeHolder {
                 pid: std::process::id(),
-                url: "http://127.0.0.1:6791".to_string(),
+                url: health.url(),
             })
         );
         drop(serve_lock);

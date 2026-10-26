@@ -100,6 +100,16 @@ pub struct SharedAgentFactory {
     /// What the run's prompt-cache snapshot holds, when the factory's
     /// prompts are built from one (backlog 4214).
     prompt_snapshot: Option<crate::dispatch::prompt_cache::PromptCacheDigest>,
+    /// The models that failed their tool-use probe this run, with why
+    /// (backlog 1121): helper calls pass over them too (bug-f9ca2f).
+    failed_probes: std::collections::BTreeMap<String, String>,
+    /// The routing ladder as bound before its probes, when every rung of it
+    /// failed one: the tasks it routes are refused rather than routed
+    /// outside it (gap-20301d).
+    lost_ladder: Option<RoutingLadder>,
+    /// The providers a rung's probe found refusing for want of pay this run:
+    /// helper calls pass over all their models (bug-e33b7e).
+    unpaid_providers: std::collections::BTreeSet<String>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -262,7 +272,12 @@ impl SharedAgentFactory {
         } else {
             config.routing.effective_explore_epsilon()
         };
-        let dispatcher = dispatcher.with_explore_epsilon(epsilon);
+        // A rung that names alternates draws among its models that can run at
+        // the same ε, so the router learns from plan runs (gap-51d2ca); a run
+        // with learning frozen learns nothing from a draw and makes none.
+        let dispatcher = dispatcher
+            .with_explore_epsilon(epsilon)
+            .with_rung_exploration(!config.learning.frozen);
         // `[agent] default_model`, a `[models.*]` key or a slug resolved as
         // failover resolves it, is what the router falls back to when nothing
         // else decides a route (backlog 3107); `MODEL_FOCUSED` without one.
@@ -291,7 +306,33 @@ impl SharedAgentFactory {
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
             prompt_snapshot,
+            failed_probes: std::collections::BTreeMap::new(),
+            lost_ladder: None,
+            unpaid_providers: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Why `model`, a model name dispatch runs (a `[models.*]` key or slug),
+    /// failed its tool-use probe this run, when it did (backlog 1121).
+    pub fn failed_probe(&self, model: &str) -> Option<&str> {
+        self.failed_probes.get(model).map(String::as_str)
+    }
+
+    /// Whether a rung's probe found `provider` refusing for want of pay this
+    /// run, on its billing or usage window (bug-e33b7e).
+    pub fn unpaid_provider(&self, provider: &str) -> bool {
+        self.unpaid_providers.contains(provider)
+    }
+
+    /// The routing ladder as bound before its probes, with why each of its
+    /// models failed one, when every rung failed (gap-20301d): the tasks it
+    /// routes are refused rather than routed outside it.
+    pub fn lost_ladder(
+        &self,
+    ) -> Option<(&RoutingLadder, &std::collections::BTreeMap<String, String>)> {
+        self.lost_ladder
+            .as_ref()
+            .map(|ladder| (ladder, &self.failed_probes))
     }
 
     /// What the run's prompt-cache snapshot holds, when this factory's
@@ -316,8 +357,11 @@ impl SharedAgentFactory {
     }
 
     /// Skip the ladder rungs whose models `failed` their tool-use probe, by
-    /// model with the reason (backlog 1121); with no rung left the router
-    /// picks.
+    /// model with the reason (backlog 1121). With no rung left, the tasks the
+    /// ladder routes are refused rather than routed outside it, and a pinned
+    /// task still runs (gap-20301d). Helper calls pass over those models too
+    /// (bug-f9ca2f), and over every model of a provider whose probe was
+    /// refused for want of pay (bug-e33b7e).
     #[must_use]
     pub fn skip_failed_rungs(
         mut self,
@@ -326,9 +370,29 @@ impl SharedAgentFactory {
         if failed.is_empty() {
             return self;
         }
+        self.failed_probes.extend(
+            failed
+                .iter()
+                .map(|(model, reason)| (model.clone(), reason.clone())),
+        );
+        // A probe refused for want of pay speaks for its provider's every
+        // model (bug-e33b7e).
+        for (model, reason) in failed {
+            if super::rung_probe::billing_refusal(reason) {
+                self.unpaid_providers
+                    .insert(self.resolver.resolve(model).provider_id);
+            }
+        }
         if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
-            self.dispatcher
-                .replace_routing_ladder(ladder.without_models(failed));
+            let kept = ladder.clone().without_models(failed);
+            if kept.is_none() {
+                tracing::warn!(
+                    "routing ladder: every rung failed its probe, so the tasks it routes are \
+                     refused; a pinned task still runs"
+                );
+                self.lost_ladder = Some(ladder);
+            }
+            self.dispatcher.replace_routing_ladder(kept);
         }
         self
     }

@@ -21,9 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions,
-    ProgressReporter, RepoInfo, RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo,
-    TriggerExecutionScope,
+    CheckpointRun, CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationOptions,
+    PlanGenerationResult, PlanRunOptions, ProgressReporter, RepoInfo, RestoredCheckpoint,
+    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -263,7 +263,15 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, false, None).await
+        self.generate_plan(
+            workdir,
+            slug,
+            prompt,
+            false,
+            PlanGenerationOptions::default(),
+            None,
+        )
+        .await
     }
 
     async fn generate_plan_for_chat_host(
@@ -272,7 +280,15 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, true, None).await
+        self.generate_plan(
+            workdir,
+            slug,
+            prompt,
+            true,
+            PlanGenerationOptions::default(),
+            None,
+        )
+        .await
     }
 
     async fn generate_plan_reporting(
@@ -281,6 +297,7 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        options: PlanGenerationOptions,
         progress: ProgressReporter,
     ) -> anyhow::Result<PlanGenerationResult> {
         // gap-11d870: each stage the generator reports, as the JSON object
@@ -291,8 +308,15 @@ impl CliRuntime for RokoCliRuntime {
                     progress(stage);
                 }
             });
-        self.generate_plan(workdir, slug, prompt, for_chat_host, Some(progress))
-            .await
+        self.generate_plan(
+            workdir,
+            slug,
+            prompt,
+            for_chat_host,
+            options,
+            Some(progress),
+        )
+        .await
     }
 
     async fn run_plan(
@@ -410,6 +434,48 @@ impl CliRuntime for RokoCliRuntime {
             skippable.extend(preview.restored_tasks);
         }
         Ok(Some(skippable))
+    }
+
+    async fn checkpoint_run(
+        &self,
+        workdir: &Path,
+        plan_dir: &Path,
+    ) -> anyhow::Result<Option<CheckpointRun>> {
+        let plans = crate::runner::plan_loader::load_plans(plan_dir)?;
+        let [plan] = plans.as_slice() else {
+            return Ok(None);
+        };
+        let options = crate::graph_checkpoint::ResumeOptions {
+            force_resume: true,
+            ..crate::graph_checkpoint::ResumeOptions::default()
+        };
+        let preview = crate::graph_checkpoint::preview_plan_resume(workdir, plan, 1, &options)?;
+        // A checkpoint still `running` while a run holds the workspace is
+        // that run's, not one that stopped.
+        let live = crate::workspace_lock::runner_lock_holder(&workdir.join(".roko")).is_some();
+        Ok(checkpoint_run_of(&preview, live))
+    }
+
+    async fn restore_checkpoint_run(
+        &self,
+        workdir: &Path,
+        plan_dir: &Path,
+        run_id: &str,
+    ) -> anyhow::Result<RestoredCheckpoint> {
+        let plans = crate::runner::plan_loader::load_plans(plan_dir)?;
+        let [plan] = plans.as_slice() else {
+            anyhow::bail!("a set-aside checkpoint is put back for one plan, not a plan set");
+        };
+        // No run may hold the workspace while its checkpoint files move.
+        let _runner = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+        let restored =
+            crate::graph_checkpoint::restore_set_aside_checkpoint(workdir, plan, run_id)?;
+        let run = checkpoint_run_of(&restored.restored, false)
+            .with_context(|| format!("run {run_id}'s checkpoint names no run"))?;
+        Ok(RestoredCheckpoint {
+            restored: run,
+            set_aside: restored.set_aside.as_ref().and_then(set_aside_run),
+        })
     }
 
     async fn run_trigger_graph(
@@ -881,13 +947,17 @@ impl RokoCliRuntime {
     /// questions, so the planner decides them (bug-7a08a8), and only a model
     /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
     /// run is an error that names why and what it cost, so the operation
-    /// fails. Each stage goes to `progress` as it starts (gap-11d870).
+    /// fails. Each stage goes to `progress` as it starts (gap-11d870). The
+    /// planner calls may cost `options.max_usd` together (gap-33d458; `None`
+    /// is `[authoring] max_generation_usd`), and every task reads the file
+    /// `options.spec_path` the prompt is, when it is one (bug-60ad88).
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        options: PlanGenerationOptions,
         progress: Option<plan_generate::PlanProgressSink>,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
@@ -897,6 +967,8 @@ impl RokoCliRuntime {
             unattended: for_chat_host,
             for_chat_host,
             progress,
+            max_usd: options.max_usd,
+            source_path: options.spec_path.as_deref(),
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,
@@ -934,6 +1006,7 @@ impl RokoCliRuntime {
                 .source_checks
                 .as_ref()
                 .and_then(|checks| serde_json::to_value(checks).ok()),
+            repairs: outcome.repairs,
         })
     }
 
@@ -1036,6 +1109,59 @@ fn config_live_output_to_dispatcher(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The run checkpoint `preview` records, as `roko serve` reports it
+/// (bug-cbdb6b): resumable when the run stopped part way, with tasks passed
+/// and tasks left, and its checkpoint resumes. A `running` checkpoint counts
+/// as stopped only while no run is `live` in the workspace. A checkpoint a
+/// resume cannot continue says why, and still names the tasks it recorded
+/// as passed, which a run that starts over runs again (bug-b7f6a8).
+fn checkpoint_run_of(
+    preview: &crate::graph_checkpoint::ResumePreview,
+    live: bool,
+) -> Option<CheckpointRun> {
+    let run_id = preview.run_id.clone()?;
+    let status = preview.status?;
+    let continues = preview.action == crate::graph_checkpoint::ResumeAction::Resume;
+    let tasks_left = if continues {
+        preview.tasks_to_run.clone()
+    } else {
+        Vec::new()
+    };
+    let passed_tasks = preview.recorded_tasks.clone();
+    let stopped = status.stopped_part_way()
+        && !(live && status == crate::graph_checkpoint::GraphCheckpointStatus::Running);
+    Some(CheckpointRun {
+        run_id,
+        status: status.as_str().to_string(),
+        resumable: continues && stopped && !passed_tasks.is_empty() && !tasks_left.is_empty(),
+        passed_tasks,
+        tasks_left,
+        continues,
+        reason: preview.cause.clone().filter(|_| !continues),
+        spent_usd: preview
+            .spent_micro_usd
+            .map(crate::graph_task_dispatch::micro_usd_to_usd),
+    })
+}
+
+/// The run a checkpoint `set_aside` records, as `roko serve` reports it. A
+/// resume would have continued it when it named the tasks it passed or left.
+fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Option<CheckpointRun> {
+    let status = set_aside.status?;
+    Some(CheckpointRun {
+        run_id: set_aside.run_id.clone()?,
+        status: status.as_str().to_string(),
+        resumable: status.stopped_part_way()
+            && !set_aside.passed_tasks.is_empty()
+            && !set_aside.tasks_left.is_empty(),
+        passed_tasks: set_aside.passed_tasks.clone(),
+        tasks_left: set_aside.tasks_left.clone(),
+        continues: !set_aside.passed_tasks.is_empty() || !set_aside.tasks_left.is_empty(),
+        reason: None,
+        spent_usd: None,
+    })
+}
+
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
     plan_target: PathBuf,
@@ -1146,6 +1272,7 @@ fn run_plan_on_local_runtime(
                 no_cascade: false,
                 frozen_learning: false,
                 no_holdout: false,
+                no_audit: false,
                 metrics,
                 // A chat host's run stages outbound effects whatever its
                 // plans say (decision 9107, gap-1a4563).
@@ -1231,6 +1358,7 @@ fn run_prompt_plan_on_local_runtime(
             max_usd: options.max_usd,
             origin: options.origin,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: config_live_output_to_dispatcher(options.live_agent_output),
             title: options.title.clone(),
         })
@@ -2644,6 +2772,11 @@ context_window = 200000
 # spec-quality gate would ask again for this minimal plan (3218).
 [spec_quality]
 mode = "off"
+
+# Audits are on by default (decision 7103): a fixture runs none, so no test
+# writes to the operator's ~/.roko/audit.
+[audit]
+enabled = false
 "#,
                 script = script.display().to_string()
             ),
@@ -2669,6 +2802,7 @@ mode = "off"
                     task_id,
                     metric,
                     value,
+                    ..
                 } if metric == "cost_usd" => Some((plan_id, task_id, value)),
                 _ => None,
             })

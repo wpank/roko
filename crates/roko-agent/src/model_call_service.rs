@@ -2188,6 +2188,10 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
     if crate::provider::error_classify::is_billing_message(&lower) {
         return "insufficient_credits";
     }
+    // A request the provider refused, by its status (bug-35b190).
+    if let Some(status) = crate::provider::error_classify::refused_request_status(&lower) {
+        return crate::provider::error_classify::refusal_class(status, &lower);
+    }
     if is_rate_limit_message(&lower) {
         "rate_limit"
     } else if lower.contains("timeout") || lower.contains("timed out") {

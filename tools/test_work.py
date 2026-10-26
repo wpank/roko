@@ -5,13 +5,17 @@ event log.
 Run: python3 tools/test_work.py
 """
 
+import contextlib
 import datetime as dt
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -285,6 +289,42 @@ class TestWorktreeBusy(RepoTest):
         (self.root / "src" / "c.rs").write_text("fn dirty() {}\n")
         work.set_repo(self.add_worktree("work/worker"))
         self.assertEqual(work.worktree_changes(), {"src/c.rs": f"{self.root.name} (main)"})
+
+    def test_a_worktree_whose_git_status_hangs_is_checked_as_unknown(self):
+        # bug-54880c: a worktree whose git status blocks (a stale fsmonitor socket after a reboot) costs at most the
+        # timeout, still counts its commits, and is reported unknown, not clean; a claim says it couldn't check it.
+        one = self.add_worktree("work/one")
+        (one / "src" / "c.rs").write_text("fn changed() {}\n")
+        subprocess.run(["git", "commit", "-qam", "change c"], cwd=one, check=True, capture_output=True)
+        (one / "src" / "a.rs").write_text("fn edited() {}\n")  # uncommitted, so only git status would see it
+        bindir = tempfile.TemporaryDirectory()
+        self.addCleanup(bindir.cleanup)
+        fake = Path(bindir.name) / "git"
+        fake.write_text("#!/bin/sh\nfor arg in \"$@\"; do [ \"$arg\" = status ] && exec sleep 30; done\n"
+                        f"exec {shutil.which('git')} \"$@\"\n")
+        fake.chmod(0o755)
+        path, timeout = os.environ["PATH"], work.WORKTREE_STATUS_TIMEOUT_S
+        os.environ["PATH"] = f"{bindir.name}{os.pathsep}{path}"
+        work.WORKTREE_STATUS_TIMEOUT_S = 0.5
+        try:
+            unknown, err = [], io.StringIO()
+            start = time.monotonic()
+            with contextlib.redirect_stderr(err):
+                busy = work.worktree_changes(unknown)
+            self.assertLess(time.monotonic() - start, 10)
+            self.assertEqual(busy, {"src/c.rs": "wt (work/one)"})
+            self.assertEqual(unknown, ["wt (work/one)"])
+            self.assertIn("wt (work/one)", err.getvalue())
+            self.assertIn("unknown (git status timed out after 0.5s)", err.getvalue())
+            os.environ["WORK_GIT_STATUS_TIMEOUT_S"] = "0.5"
+            claimed = self.run_work("claim", "bug-aaaaaa", "--by", "t", "--branch", "work/x")
+        finally:
+            os.environ["PATH"] = path
+            os.environ.pop("WORK_GIT_STATUS_TIMEOUT_S", None)
+            work.WORKTREE_STATUS_TIMEOUT_S = timeout
+        self.assertIn("claimed bug-aaaaaa", claimed.stdout)
+        self.assertIn("bug-aaaaaa: its files were not checked against 1 worktree(s) whose git status timed out: "
+                      "wt (work/one)", claimed.stderr)
 
 
 LANES = """milestones = ["MS0", "MS1"]

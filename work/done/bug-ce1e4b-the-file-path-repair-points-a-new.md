@@ -2,7 +2,7 @@
 id = "bug-ce1e4b"
 kind = "bug"
 title = "The file-path repair points a new file the source names at a same-named file its task reads: phase 5's T3 `tools/render/CMakeLists.txt` became the top-level `CMakeLists.txt`, in its files and its text"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "f9ba45559"
 source = "round-v7-roko-planner#phase-5-replay"
 discovered_from = "agent:roko-planner (round v7, phase 5 $0 replay, replay-p5/ideal.toml on roko 4d22b94e8)"
 anchors = ["crates/roko-cli/src/plan_generate/file_paths.rs::repair_file_paths", "crates/roko-cli/src/plan_generate/pipeline.rs"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-7c6f1b"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_new_file_the_source_names_keeps_its_path' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_new_file_the_source_names_keeps_its_path"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T14:31:51Z"
+commit = "e90161ec4"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged e90161ec4 (branch 278e624d3, main merged in at 977ce9bdb). Post-merge verify in main at e90161ec4: the grep finds the test and a_new_file_the_source_names_keeps_its_path passes (phase 5's spec and the ideal draft as a fixture: written after one call, no file-path repair, T3's files tools/render/main.cpp, tools/render/CMakeLists.txt, CMakeLists.txt and its text as planned, 13 of 13 checks kept). Branch suites at 278e624d3: roko-cli lib 4002 passed, 0 failed, 7 ignored (share test skipped); plan_generate 173/173; nightly fmt; clippy -p roko-cli -D warnings clean. The repair now runs only under 'No new files' and never rewrites a path the source names; phase 2.1's case still repairs (bug-7c6f1b's test). $0 replay of phase 5's plan write on the branch's binary (tmp/hermes-roko-v7/roko-planner/replay-p5, tag ideal-ce1e4b): 1 call, 13 of 13 kept, no file-path repair, plan validate --strict 0."
 +++
 
 ## Problem

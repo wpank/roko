@@ -210,6 +210,38 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// A task that depends on `task_id` of plan `plan_id` can warm its build
+    /// trees from `checkout`, the checkout of its attempt just accepted onto
+    /// the plan branch, which built that work (gap-b6b7a1).
+    fn note_accepted_checkout(&self, plan_id: &str, task_id: &str, checkout: &Path) {
+        let mut accepted = self.accepted_checkouts.lock();
+        let order = accepted
+            .values()
+            .map(|(order, _)| order + 1)
+            .max()
+            .unwrap_or(0);
+        accepted.insert(
+            format!("{plan_id}/{task_id}"),
+            (order, checkout.to_path_buf()),
+        );
+    }
+
+    /// The checkout to warm `task`'s new checkout from: of the tasks of plan
+    /// `plan_id` it depends on, the one accepted last whose checkout is still
+    /// there, holding that work built (gap-b6b7a1); `None` without one, when
+    /// the repository checkout serves. With several, the last one's work
+    /// builds on the others' or beside them: what it lacks still rebuilds,
+    /// as from the repository checkout.
+    pub(super) fn dependency_checkout(&self, plan_id: &str, task: &TaskDef) -> Option<PathBuf> {
+        let accepted = self.accepted_checkouts.lock();
+        task.depends_on
+            .iter()
+            .filter_map(|dependency| accepted.get(&format!("{plan_id}/{dependency}")))
+            .filter(|(_, checkout)| checkout.join(".git").exists())
+            .max_by_key(|(order, _)| *order)
+            .map(|(_, checkout)| checkout.clone())
+    }
+
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
@@ -323,6 +355,9 @@ impl GraphTaskDispatcher {
         } else {
             None
         };
+        if matches!(&accepted, Some(Ok(_))) {
+            self.note_accepted_checkout(&spec.plan_id, &task.id, &lease.path);
+        }
         if let Err(error) = provider
             .release(lease, WorkspaceReleasePolicy::RetainForReview)
             .await
@@ -1132,6 +1167,236 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         .await;
         task.verify = vec![verify_step("structural", "test -f feature.txt")];
         (dispatcher, task)
+    }
+
+    /// Provider that changes nothing in the directory it runs in.
+    const CHANGES_NOTHING_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"nothing to change"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-n","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// gap-b6b7a1: in phase 4, T3, T4 and T6 each rebuilt T1's and T2's work
+    /// in their first build (200-214 s), since every checkout warmed its build
+    /// trees from the person's checkout at the run's base. A task that depends
+    /// on another now warms them from that task's accepted checkout, which
+    /// built its work: the dependent's check finds what the dependency's
+    /// check built there, in a tree relocated to its own checkout.
+    #[tokio::test]
+    async fn a_dependent_attempt_starts_from_its_dependency_s_build_trees() {
+        let (repo, worktrees) = repo_with_worktrees();
+        if !crate::orchestrator::worktree::clones_on(repo.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
+        // The person's checkout has a CMake build tree in an ignored build/.
+        std::fs::write(repo.path().join(".gitignore"), "build/\n").expect("gitignore");
+        git(repo.path(), &["add", ".gitignore"]);
+        git(repo.path(), &["commit", "-m", "ignore the build tree"]);
+        let root = repo.path().canonicalize().expect("canonical repo");
+        std::fs::create_dir_all(root.join("build")).expect("build");
+        std::fs::write(
+            root.join("build/CMakeCache.txt"),
+            format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", root.display()),
+        )
+        .expect("cache");
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, task) = make_test_dispatcher_with(
+            &repo,
+            WRITES_FEATURE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        // The dependency's check builds: its build tree gains a target.
+        let mut built = task.clone();
+        built.id = "A".to_string();
+        built.files = vec!["feature.txt".to_string()];
+        built.verify = vec![verify_step("build", "touch build/built-by-A")];
+        // The dependent's check needs that target.
+        let mut dependent = built.clone();
+        dependent.id = "B".to_string();
+        dependent.depends_on = vec!["A".to_string()];
+        dependent.verify = vec![verify_step("build", "test -f build/built-by-A")];
+
+        dispatcher
+            .dispatch(&make_spec(&built), Vec::new(), &ctx)
+            .await
+            .expect("A builds and passes");
+        let outputs = dispatcher
+            .dispatch(&make_spec(&dependent), Vec::new(), &ctx)
+            .await
+            .expect("B's checkout holds what A built");
+
+        assert!(TaskGateVerdict::from_signals(&outputs).is_some());
+        let warm: Vec<PathBuf> = std::fs::read_dir(worktrees.path())
+            .expect("the worktrees")
+            .map(|entry| entry.expect("a worktree").path())
+            .filter(|dir| dir.join("build/built-by-A").exists())
+            .collect();
+        assert_eq!(warm.len(), 2, "A's checkout and B's: {warm:?}");
+        for checkout in warm {
+            let checkout = checkout.canonicalize().expect("canonical checkout");
+            let cache = std::fs::read_to_string(checkout.join("build/CMakeCache.txt"))
+                .expect("the tree's cache");
+            assert_eq!(
+                cache,
+                format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", checkout.display()),
+                "relocated to its own checkout"
+            );
+        }
+    }
+
+    /// bug-b7d9ad: in round v7's rehearsal p41 a check wrote the review PNGs
+    /// through a path compiled in from the person's checkout, so they landed
+    /// there, not in the attempt's worktree; the attempt changed nothing,
+    /// settled `already_satisfied`, and its delivery had no PNGs. Checks that
+    /// change the person's checkout now say so: the hub hears a warning
+    /// diagnosis naming the file, the verdict lists it as a
+    /// `checkout_written` scope finding, and an attempt that changed nothing
+    /// settles `unverified`. A check that writes only inside its worktree
+    /// leaves the attempt `already_satisfied`, with no diagnosis.
+    #[tokio::test]
+    async fn checks_that_write_into_the_persons_checkout_say_so() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let head = git(repo.path(), &["rev-parse", "HEAD"]);
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let runs_dir = repo.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let sender = hub.sender();
+        let (dispatcher, task) = make_test_dispatcher_with(
+            &repo,
+            CHANGES_NOTHING_PROVIDER,
+            no_auto_fix,
+            feedback,
+            |dispatcher| {
+                dispatcher
+                    .with_workspace_provider(provider)
+                    .with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(sender))
+            },
+        )
+        .await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        // As a check of a build whose path names the person's checkout does.
+        let shot = repo.path().join("artifacts/shot.png");
+        // Each names a file to change and changes none, so its checks decide
+        // whether it was already done.
+        let mut task = task;
+        task.files = vec!["README.md".to_string()];
+        let mut through_checkout = task.clone();
+        through_checkout.id = "T-OUT".to_string();
+        through_checkout.verify = vec![verify_step(
+            "structural",
+            &format!(
+                "mkdir -p '{}' && printf png > '{}'",
+                repo.path().join("artifacts").display(),
+                shot.display()
+            ),
+        )];
+        let mut inside = task.clone();
+        inside.id = "T-IN".to_string();
+        inside.verify = vec![verify_step(
+            "structural",
+            "mkdir -p artifacts && printf png > artifacts/shot.png",
+        )];
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&through_checkout), Vec::new(), &ctx)
+            .await
+            .expect("the checks pass");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Unverified)
+        );
+        assert!(shot.exists(), "the check wrote into the person's checkout");
+        let outputs = dispatcher
+            .dispatch(&make_spec(&inside), Vec::new(), &ctx)
+            .await
+            .expect("the checks pass");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::AlreadySatisfied)
+        );
+
+        let diagnoses: Vec<roko_core::dashboard_snapshot::DiagnosisSummary> = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::Diagnosis { summary }
+                    if summary.id.starts_with("checkout_written:") =>
+                {
+                    Some(summary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(diagnoses.len(), 1, "{diagnoses:?}");
+        let summary = &diagnoses[0];
+        assert!(summary.id.ends_with("/T-OUT"), "{}", summary.id);
+        assert_eq!(
+            summary.subject,
+            "The run changed your checkout while T-OUT's checks ran"
+        );
+        assert!(
+            summary.detail.contains("(added: `artifacts/shot.png`)"),
+            "{}",
+            summary.detail
+        );
+        assert!(
+            summary.detail.contains("The task is unverified"),
+            "{}",
+            summary.detail
+        );
+        assert!(
+            !summary.detail.contains("Other tasks ran"),
+            "{}",
+            summary.detail
+        );
+        let action = summary.suggested_action.as_deref().unwrap_or_default();
+        assert!(
+            action.contains("clean -f -- artifacts/shot.png"),
+            "{action}"
+        );
+        assert_eq!(
+            dispatcher.checkout_writes(&make_spec(&through_checkout).plan_id),
+            [("T-OUT".to_string(), vec!["artifacts/shot.png".to_string()])]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>()
+        );
+
+        // Closing the run's writer flushes its lines.
+        drop(dispatcher);
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &runs_dir.join(RUN).join("attempts.jsonl"),
+            2,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let of = |task: &str| {
+            verdicts
+                .iter()
+                .find(|verdict| verdict["task_id"] == task)
+                .unwrap_or_else(|| panic!("{task}'s verdict: {verdicts:?}"))
+        };
+        assert_eq!(of("T-OUT")["outcome"], "unverified");
+        assert_eq!(
+            of("T-OUT")["scope_findings"],
+            serde_json::json!([{ "path": "artifacts/shot.png", "kind": "checkout_written" }])
+        );
+        assert_eq!(of("T-IN")["outcome"], "already_satisfied");
+        assert!(
+            of("T-IN")["scope_findings"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+        );
+        assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), head);
     }
 
     /// The operator's checkout is where it was: on `main` at `head`, with no

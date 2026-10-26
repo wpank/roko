@@ -334,6 +334,7 @@ mod tests {
             provider: "gemini".to_string(),
             slug: "gemini-2.5-flash-lite".to_string(),
             context_window: 1_048_576,
+            compact_at_tokens: None,
             max_output: Some(65_536),
             supports_tools: true,
             supports_thinking: false,
@@ -367,6 +368,7 @@ mod tests {
             temperature: None,
             seed: None,
             reasoning_effort: None,
+            api: None,
         }
     }
 

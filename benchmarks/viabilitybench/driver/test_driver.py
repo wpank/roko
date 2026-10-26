@@ -1017,6 +1017,27 @@ def test_a_model_without_a_price_row_costs_null(places):
     assert validate.validate("run-record", record) == [] and validate.validate("ledger", row) == []
 
 
+def test_an_attempt_of_http_errors_books_a_known_zero_cost(places, monkeypatch):
+    # bug-2a5566: every call of the attempt meets an HTTP error (billed_unknown=False), so its usage is known at
+    # zero tokens, but no completion ever reported a model. The row must price at the requested model's rates
+    # ($0 for zero usage), not fall back to "unknown" and so charge the full reservation.
+    monkeypatch.setattr(mini_loop.time, "sleep", lambda seconds: None)
+
+    def broken(body):
+        raise RuntimeError("the provider is down")
+
+    with StubServer(broken) as stub:
+        assert run_vb(places, stub.url, "--limit", "1") == 0
+        calls = len(stub.requests)
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    [row] = read_jsonl(run_dir(places) / "ledger.jsonl")
+    assert calls == 1 + mini_loop.RETRIES and record["execution"]["status"] == "infra_error"
+    assert record["costs"]["api_equiv_usd"] == 0.0 and record["costs"]["source"] == "provider_usage"
+    assert row["api_equiv_usd"] == 0.0 and row["source"] == "provider_usage" and row["billed_usd"] == 0.0
+    assert row["model_reported"] is None  # the requested model's row priced it, not a reported one
+    assert validate.validate("run-record", record) == [] and validate.validate("ledger", row) == []
+
+
 def test_vb_run_refuses_network_without_both_flags(places, monkeypatch):
     attempts = []
 

@@ -32,6 +32,7 @@ use roko_core::tool::ToolDef;
 
 pub mod apply_patch;
 pub mod bash;
+pub mod checkout_state;
 pub mod checkout_tree;
 mod child_group;
 pub mod edit_file;

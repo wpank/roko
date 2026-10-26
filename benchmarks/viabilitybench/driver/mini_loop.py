@@ -352,12 +352,17 @@ def _run_attempt(ctx: harness.TaskContext, governor: caps.Governor, attempt: har
 
 
 def _settle(ctx: harness.TaskContext, attempt: harness.Attempt) -> None:
-    """Price the attempt by its reported model, note its tree, and append its ledger row."""
+    """Price the attempt by its reported model; an attempt that never reported one (bug-2a5566: every call ended in
+    an HTTP error, so no completion ever named a model) is priced by the model it requested instead, so its known
+    zero usage books a known $0 rather than falling back to an unknown cost. A reported model with no price row
+    stays unknown (never a fallback rate, S08 D6 §4.12): only its absence is substituted. Note its tree, and append
+    its ledger row."""
     try:
         attempt.tree = repo.tree_hash(ctx.workdir)
     except (OSError, repo.RepoError):
         attempt.tree = None
-    attempt.cost = ledger.price(attempt.reported_usage(), ctx.snapshot.row(attempt.model_reported))
+    model = attempt.model_reported or attempt.model_requested
+    attempt.cost = ledger.price(attempt.reported_usage(), ctx.snapshot.row(model))
     ctx.ledger.append(attempt_key=attempt.attempt_key, provider=attempt.provider, model_reported=attempt.model_reported,
                       usage=attempt.reported_usage(), cost=attempt.cost, billed=ctx.billed,
                       reserved_usd=attempt.reserved_usd)

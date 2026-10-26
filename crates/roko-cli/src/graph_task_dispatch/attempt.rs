@@ -439,12 +439,14 @@ impl AttemptBook {
                 ..AttemptTiming::default()
             },
             failover: FailoverChain::default(),
+            refused_usd: 0.0,
             helpers: None,
             ladder: None,
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
             verify_steps: Vec::new(),
             scope_findings: Vec::new(),
+            checkout_findings: Vec::new(),
             exposures: None,
             pricing: None,
             arm_set: None,
@@ -471,6 +473,8 @@ pub(super) struct AttemptContext {
     timing: AttemptTiming,
     /// The models provider failover passed over.
     failover: FailoverChain,
+    /// What the calls a provider refused part-way cost, in USD (bug-8bcd98).
+    refused_usd: f64,
     /// The attempt's helper model calls, once they settled.
     helpers: Option<HelperCallsUsage>,
     /// Where the attempt stands on the model ladder, and whether it is the
@@ -485,6 +489,9 @@ pub(super) struct AttemptContext {
     /// The paths the attempt changed outside its task's `files`, as the
     /// pre-verify screen found them (backlog 1125).
     scope_findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    /// The paths of the person's checkout the try changed before its gate,
+    /// which the verdict lists beside the screen's (reg-d2deba).
+    checkout_findings: Vec<roko_learn::telemetry::ScopeFinding>,
     /// How many content items the attempt's prompt retrieved and included,
     /// once it was planned (S01 P0-9).
     exposures: Option<ExposureCounts>,
@@ -611,6 +618,16 @@ impl AttemptContext {
         self.scope_findings = findings;
     }
 
+    /// The try changed the person's checkout at `findings`' paths before its
+    /// gate (reg-d2deba): its verdict lists them as `checkout_written`
+    /// findings, whether or not it reaches the gate.
+    pub(super) fn record_checkout_findings(
+        &mut self,
+        findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    ) {
+        self.checkout_findings = findings;
+    }
+
     /// Provider failover passed over `failover`'s models before the one
     /// that ran (bug-35379d). An attempt the ladder routed then records the
     /// rung that ran, as a failover, which never exhausts the ladder
@@ -623,6 +640,12 @@ impl AttemptContext {
             *last_chance = false;
         }
         self.failover = failover;
+    }
+
+    /// The calls a provider refused part-way, before failover moved the try
+    /// on or it called the same model again, cost `usd` (bug-8bcd98).
+    pub(super) fn record_refused_spend(&mut self, usd: f64) {
+        self.refused_usd = usd;
     }
 
     /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
@@ -804,7 +827,13 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.steps = self.verify_steps;
-        verdict.set_scope_findings(self.scope_findings);
+        let mut findings = self.scope_findings;
+        for finding in self.checkout_findings {
+            if !findings.contains(&finding) {
+                findings.push(finding);
+            }
+        }
+        verdict.set_scope_findings(findings);
         verdict.timing = self.timing;
         // The call's time to first token, measured from its start
         // (gap-7a8474), places the first token. A call that streamed no
@@ -843,6 +872,8 @@ impl AttemptContext {
         // What the attempt's tokens cost at the run's price snapshot, the
         // figure cost per verified task reads (backlog 2115, 6105).
         price_at_snapshot(&mut verdict, dispatch, self.pricing.as_deref());
+        // Beside the call that ran, what its refused calls cost (bug-8bcd98).
+        verdict.cost.refused_usd = (self.refused_usd > 0.0).then_some(self.refused_usd);
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
@@ -1019,13 +1050,20 @@ impl Settlement {
     }
 
     /// The harness failed the attempt outside its provider call and verify
-    /// steps: prompt assembly, or recording its spend in the cost ledger.
+    /// steps: prompt assembly, or recording its spend in the cost ledger. A
+    /// task refused because every rung of the ladder failed its probe settles
+    /// as that (gap-b856d3).
     pub(super) fn harness_failure(error: &RokoError) -> Self {
+        let (outcome, class) = if super::ladder::refused_for_no_rung(error) {
+            (AttemptOutcome::AllRungsSkipped, "all_rungs_skipped")
+        } else {
+            (AttemptOutcome::HarnessError, "harness")
+        };
         Self {
-            outcome: AttemptOutcome::HarnessError,
+            outcome,
             gate_verdict: None,
             first_token_seen: false,
-            failure_reason: Some(format!("harness: {error}")),
+            failure_reason: Some(format!("{class}: {error}")),
             rung: None,
         }
     }
@@ -2343,6 +2381,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// gap-5c3347: a try's spend reaches the hub as each model call returns,
     /// not only when the try settles: one `call_cost` per call, priced at its
     /// model's rates, with the attempt's spend so far growing with each.
+    /// gap-1ba0ac: each also says what its reasoning cost, why it ended and
+    /// how long it took.
     #[tokio::test]
     async fn a_running_try_reports_its_spend_per_model_call() {
         use roko_core::DashboardEvent;
@@ -2361,7 +2401,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             turn["usage"] = serde_json::json!({
                 "prompt_tokens": 1_000 * call,
                 "completion_tokens": 100,
-                "total_tokens": 1_000 * call + 100
+                "total_tokens": 1_000 * call + 100,
+                "completion_tokens_details": { "reasoning_tokens": 10 * call }
             });
         }
         let (base_url, _requests) = spawn_openai_mock(turns);
@@ -2385,6 +2426,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         // The calls' costs, in the order the hub published them, and where
         // the attempt's settlement came.
         let mut calls = Vec::new();
+        let mut reasoning = Vec::new();
         let mut settled_after = None;
         while let Ok(envelope) = events.try_recv() {
             match envelope.payload {
@@ -2397,10 +2439,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                     output_tokens,
                     cost_usd,
                     attempt_cost_usd,
+                    reasoning_tokens,
+                    finish_reason,
+                    wall_ms,
                     ..
                 } => {
                     assert_eq!((task_id.as_str(), attempt), (task.id.as_str(), 1));
                     assert_eq!(model, "api-model-1");
+                    assert!(wall_ms.is_some(), "call {call} says how long it took");
                     calls.push((
                         call,
                         input_tokens,
@@ -2408,6 +2454,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                         cost_usd,
                         attempt_cost_usd,
                     ));
+                    reasoning.push((reasoning_tokens, finish_reason));
                 }
                 DashboardEvent::AttemptSettled { .. } => settled_after = Some(calls.len()),
                 _ => {}
@@ -2418,6 +2465,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             settled_after,
             Some(3),
             "every call's cost came before the try settled"
+        );
+        assert_eq!(
+            reasoning,
+            [
+                (10, Some("tool_calls".to_string())),
+                (20, Some("tool_calls".to_string())),
+                (30, Some("stop".to_string())),
+            ]
         );
         let mut total = 0.0;
         for (n, (call, input, output, cost, so_far)) in (1_u32..).zip(&calls) {

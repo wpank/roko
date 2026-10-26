@@ -319,24 +319,27 @@ async fn get_run_summary(
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
     let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
     // gap-3217a0: how each rung did, from the run's own records, and whether
-    // a higher rung beat a lower one.
+    // a higher rung beat a lower one; bug-b7d9ad: the tries whose checks
+    // changed the person's own checkout instead of their worktree.
     let workdir = state.workdir.clone();
     let io_run_id = run_id.to_string();
-    let rungs = blocking_io(move || {
+    let (rungs, checkout_written) = blocking_io(move || {
         let layout = roko_fs::RokoLayout::for_project(&workdir);
         let dir = layout.runs_dir().join(&io_run_id);
         let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
         // A rung's refused calls count on it (gap-5cfa9c).
-        Ok(
+        Ok((
             roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
                 std::slice::from_ref(&records),
                 &layout.learn_dir().join("costs.jsonl"),
             ),
-        )
+            records.checkout_writes(),
+        ))
     })
     .await?;
     summary["rungs"] = json!(rungs.rows);
     summary["misordered"] = json!(rungs.misordered.map(|misorder| misorder.line));
+    summary["checkout_written"] = json!(checkout_written);
     // gap-8409d0: an ended run's summary says where its verified work is, so a
     // chat host can tell its person what changed and how to take it.
     if summary["active"] == Value::Bool(false) {
@@ -2466,6 +2469,9 @@ fn run_summary(
     // The rungs the run skipped at plan start because their model failed its
     // tool-use probe, the latest event of each plan and rung (gap-20301d).
     let mut rungs_skipped = BTreeMap::<(String, String), Value>::new();
+    // Why roko refused a task the ladder routes because every rung failed its
+    // probe, from the first try that settled so (gap-b856d3).
+    let mut ladder_refusal = None::<String>;
     // The providers the run went on without because they refused a call for
     // want of usage, an account they can't bill included, the latest refusal
     // of each (bug-390e4b).
@@ -2506,6 +2512,14 @@ fn run_summary(
                 "at": event_time(value),
             }));
         }
+        if kind == "attempt_settled"
+            && string_field(value, "verdict") == Some("all_rungs_skipped")
+            && ladder_refusal.is_none()
+        {
+            let detail = string_field(value, "detail").unwrap_or_default();
+            let reason = detail.strip_prefix("all_rungs_skipped: ").unwrap_or(detail);
+            ladder_refusal = Some(reason.to_string());
+        }
         if kind == "rung_skipped" {
             let data = event_data(value);
             let plan_id = event_plan_id(value).unwrap_or_default().to_string();
@@ -2519,6 +2533,7 @@ fn run_summary(
                     "provider": data.get("provider"),
                     "reason": data.get("reason"),
                     "until_ms": data.get("until_ms"),
+                    "billing": data.get("billing"),
                     "detail": data.get("detail"),
                     "at": event_time(value),
                 }),
@@ -2685,6 +2700,22 @@ fn run_summary(
                     "reason": gate_refusals.join("; "),
                 })
             })
+        })
+        .or_else(|| {
+            // Every rung of the ladder failed its probe, so roko refused the
+            // tasks the ladder routes (gap-b856d3). A recharge and a resume
+            // fix it when every rung failed on billing (bug-374384).
+            let reason = ladder_refusal.filter(|_| state == RunState::Failed)?;
+            let billing_only = !rungs_skipped.is_empty()
+                && rungs_skipped
+                    .values()
+                    .all(|rung| rung["billing"] == Value::Bool(true));
+            Some(json!({
+                "stage": "ladder",
+                "kind": "all_rungs_skipped",
+                "reason": reason,
+                "billing_only": billing_only,
+            }))
         });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
@@ -4548,6 +4579,152 @@ mod tests {
                 .is_some_and(|reason| reason.contains("(HTTP 402)")),
             "{summary}"
         );
+    }
+
+    /// bug-b7d9ad: a run's summary names the tries whose checks changed the
+    /// person's own checkout instead of their worktree, with the paths, from
+    /// their verdicts' `checkout_written` findings; a try without one is not
+    /// named.
+    #[tokio::test]
+    async fn a_runs_summary_names_the_checks_that_changed_the_checkout() {
+        use roko_learn::telemetry::records::{
+            AttemptKey, AttemptOutcome, SCOPE_CHECKOUT_WRITTEN, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord, ScopeFinding};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "w1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"w1","timestamp_ms":1,"plan_id":"p4"}),
+                json!({"type":"run.completed","run_id":"w1","timestamp_ms":3,"outcome":"unverified"}),
+            ],
+        );
+        let verdict = |task: &str, outcome, findings: Vec<ScopeFinding>| {
+            let identity = AttemptIdentity::new(&AttemptKey::new("w1", "p4", task, 1));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.set_scope_findings(findings);
+            let mut line = json!({
+                "schema_version": VERDICT_SCHEMA,
+                "record_id": format!("r-{task}"),
+                "seq": 1,
+                "ts": "2026-10-26T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (
+                line.as_object_mut(),
+                serde_json::to_value(&verdict).unwrap(),
+            ) {
+                line.extend(fields);
+            }
+            line
+        };
+        let written = |path: &str| ScopeFinding {
+            path: path.to_string(),
+            kind: SCOPE_CHECKOUT_WRITTEN.to_string(),
+        };
+        write_rows(
+            &state.layout.runs_dir().join("w1").join("attempts.jsonl"),
+            &[
+                verdict("T1", AttemptOutcome::Passed, Vec::new()),
+                verdict(
+                    "T2",
+                    AttemptOutcome::Unverified,
+                    vec![
+                        written("artifacts/ui/editor-idle.png"),
+                        written("artifacts/ui/editor-playing.png"),
+                    ],
+                ),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("w1".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            summary["checkout_written"],
+            json!([{
+                "plan_id": "p4",
+                "task_id": "T2",
+                "attempt": 1,
+                "paths": ["artifacts/ui/editor-idle.png", "artifacts/ui/editor-playing.png"],
+            }]),
+            "{summary}"
+        );
+    }
+
+    /// gap-b856d3: a run whose every rung failed its probe, so roko refused
+    /// the tasks the ladder routes, says so under `refused`: stage `ladder`,
+    /// kind `all_rungs_skipped`, and whether every rung failed on billing,
+    /// which a recharge and a resume fix. A run whose rungs failed otherwise
+    /// says `billing_only: false`.
+    #[tokio::test]
+    async fn a_runs_summary_names_an_all_rungs_skipped_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let refused = |run: &str, cheap_billing: bool| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run).unwrap();
+            let skipped = |rung: &str, model: &str, billing: bool| json!({"type":"rung_skipped","run_id":run,"ts_millis":2,"plan_id":"p1","rung":rung,"model":model,"provider":"p","reason":"refused","billing":billing,"detail":"skipped"});
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"plan_started","run_id":run,"ts_millis":1,"plan_id":"p1"}),
+                    skipped("cheap", "gpt-oss-120b", cheap_billing),
+                    skipped("mid", "gpt-5.4-mini", true),
+                    json!({"type":"attempt_settled","run_id":run,"ts_millis":3,"plan_id":"p1","task_id":"T1","attempt":1,"verdict":"all_rungs_skipped","blame":"harness","detail":"all_rungs_skipped: task `T1` was not run: no rung of the routing ladder can run, as every rung's model failed its tool-use probe at plan start"}),
+                    json!({"type":"task_completed","run_id":run,"ts_millis":4,"plan_id":"p1","task_id":"T1","outcome":"failed"}),
+                    json!({"type":"run_completed","run_id":run,"ts_millis":5,"outcome":"failed","duration_ms":4}),
+                ],
+            );
+        };
+        refused("billed", true);
+        refused("mixed", false);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("billed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        let why = &summary["refused"];
+        assert_eq!(why["stage"], "ladder", "{summary}");
+        assert_eq!(why["kind"], "all_rungs_skipped", "{summary}");
+        assert!(
+            why["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("task `T1` was not run: no rung")),
+            "{summary}"
+        );
+        assert_eq!(why["billing_only"], true, "{summary}");
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("mixed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["refused"]["kind"], "all_rungs_skipped", "{summary}");
+        assert_eq!(summary["refused"]["billing_only"], false, "{summary}");
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

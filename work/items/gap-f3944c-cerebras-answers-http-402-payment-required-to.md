@@ -9,8 +9,9 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-10-21
-updated = 2026-10-21
-last_verified = 2026-10-21
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "15335e2f9"
 source = "gap-327242 worker (claude-agent), 2026-10-20/21: Pilot B"
 discovered_from = "gap-327242"
 anchors = ["benchmarks/viabilitybench/experiments/pilot_b.toml"]
@@ -73,3 +74,16 @@ redo `roko-fixed-s1`, `-s2` and `-s3` in its order (gap-7ce3ca).
 
 - Found by gap-327242's worker on 2026-10-20 during Pilot B.
 - No key was read or printed. The 402 bodies come from the metering proxy's log, which never holds a key.
+- Checked 2026-10-26 (gap-f3944c worker, claude-agent): `vb capture-errors --provider cerebras --allow-network
+  --max-cost-usd 0.01` (driver/error_capture.py, gap-db8dab), one `nonexistent-model` probe through the metering
+  proxy, fixture written outside the repo so `driver/testdata/provider_errors/cerebras.json` is untouched. Cerebras
+  answered HTTP 404 `application/json` at 2026-10-26T10:34:22Z: `{"message":"Model does not exist or you do not
+  have access to it.","type":"not_found_error","param":"model","code":"model_not_found"}` — not 402. Ledger:
+  `billed_usd: 0.0`, `cost_source: not_billed`; spend $0.00.
+- That 404 is not evidence the block has lifted: the body is byte-for-byte identical to the pre-block capture of
+  2026-10-18 (`driver/testdata/provider_errors/cerebras.json`, `captured_at` 2026-10-18T18:40:35Z), and this item's
+  own Problem section already recorded the same 404 `model_not_found` during the confirmed-402 window on
+  2026-10-21. Cerebras validates the model name before, or independently of, the account's billing state, so a
+  nonexistent-model probe reads the same whether the account is blocked or has credit; it cannot show whether a
+  real (valid-model) call still gets 402, which is what this item needs to close. Left open. No key was read,
+  printed or copied, and no header or request/response body beyond what is quoted above was examined.

@@ -95,6 +95,7 @@ pub mod observer;
 pub mod ollama;
 pub mod openai_agent;
 pub mod openai_compat_backend;
+mod openai_responses;
 pub mod openclaw;
 pub mod parity_matrix;
 pub mod perplexity;
@@ -148,8 +149,8 @@ pub use immune_boundary::{
     detect_provider_output_anomaly, quarantine_store_path,
 };
 pub use immune_evidence::{
-    AgentControlEntry, ReleasedControl, agent_control_releases_path, isolate_agent,
-    list_agent_controls, release_agent_control,
+    AgentControlEntry, PrincipalSource, ReleaseChannel, ReleaseOrigin, ReleasedControl,
+    agent_control_releases_path, isolate_agent, list_agent_controls, release_agent_control,
 };
 pub use introspection::{AgentIdentity, Intervention, MetacognitiveMonitor, Turn};
 pub use lifecycle::*;

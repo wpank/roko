@@ -10,7 +10,7 @@
 //! idempotent for the same exact attempt ID and fingerprint; a different
 //! active attempt never receives the same path or branch.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -313,6 +313,21 @@ pub trait ExecutionWorkspaceProvider: Send + Sync {
         &self,
         attempt_id: &WorkspaceAttemptId,
     ) -> Result<WorkspaceLease, WorkspaceError>;
+
+    /// [`Self::acquire`], for an attempt whose task depends on work that
+    /// `seed`, the checkout of an accepted attempt, already built: a new
+    /// checkout warms its build trees from there instead of from the
+    /// repository checkout, so its first build compiles only what changed
+    /// since (gap-b6b7a1). An existing lease is returned as it is. The
+    /// default ignores `seed`.
+    async fn acquire_seeded(
+        &self,
+        attempt_id: &WorkspaceAttemptId,
+        seed: Option<&Path>,
+    ) -> Result<WorkspaceLease, WorkspaceError> {
+        let _ = seed;
+        self.acquire(attempt_id).await
+    }
 
     /// Reconcile a previously checkpointed lease against the live workspace
     /// state.

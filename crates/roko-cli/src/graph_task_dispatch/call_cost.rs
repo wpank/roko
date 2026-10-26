@@ -4,8 +4,9 @@
 //! try the run read $0.000, so nobody saw it near its cap. [`MeteredCalls`]
 //! wraps the attempt's [`CallAllowance`]. roko's tool loop tells it each model
 //! call's usage and cost as the call returns, and it publishes them as a
-//! `call_cost` event before passing them on. The attempt's `attempt_settled`
-//! stays the record of what it spent.
+//! `call_cost` event before passing them on, with the call's reasoning
+//! tokens, finish reason and duration (gap-1ba0ac). The attempt's
+//! `attempt_settled` stays the record of what it spent.
 
 use super::*;
 use crate::dispatch_v2::CallAllowance;
@@ -46,8 +47,23 @@ impl CallAllowance for MeteredCalls {
     }
 
     fn record_model_call(&self, model: &str, usage: &roko_core::Usage, priced: bool) {
+        self.record_finished_call(
+            model,
+            usage,
+            priced,
+            roko_agent::tool_loop::CallFacts::default(),
+        );
+    }
+
+    fn record_finished_call(
+        &self,
+        model: &str,
+        usage: &roko_core::Usage,
+        priced: bool,
+        facts: roko_agent::tool_loop::CallFacts<'_>,
+    ) {
         if let Some(allowance) = &self.allowance {
-            allowance.record_model_call(model, usage, priced);
+            allowance.record_finished_call(model, usage, priced, facts);
         }
         let cost_usd = Some(f64::from(usage.cost_usd))
             .filter(|cost| priced && cost.is_finite() && *cost >= 0.0);
@@ -68,6 +84,11 @@ impl CallAllowance for MeteredCalls {
             cache_read_tokens: u64::from(usage.cache_read_tokens),
             cost_usd,
             attempt_cost_usd,
+            // What reasoning cost, why the call ended and how long it took
+            // (gap-1ba0ac).
+            reasoning_tokens: u64::from(usage.reasoning_tokens),
+            finish_reason: facts.finish_reason.map(str::to_string),
+            wall_ms: facts.wall_ms,
         });
     }
 

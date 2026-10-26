@@ -397,6 +397,11 @@ pub enum AttemptOutcome {
     /// steps: prompt assembly, or recording its spend in the plan's cost
     /// ledger.
     HarnessError,
+    /// Every rung of the routing ladder failed its tool-use probe at plan
+    /// start, so roko refused the task the ladder routes before any model
+    /// call, rather than send it to a model outside the ladder (gap-20301d,
+    /// gap-b856d3).
+    AllRungsSkipped,
     /// An attempt-open line with no verdict. It is derived offline; dispatch
     /// never writes it.
     Abandoned,
@@ -420,6 +425,7 @@ impl AttemptOutcome {
             | Self::WorkspaceError
             | Self::PromiseTerminated
             | Self::HarnessError
+            | Self::AllRungsSkipped
             | Self::Abandoned => Blame::Harness,
         }
     }
@@ -536,16 +542,23 @@ pub struct VerifyStepVerdict {
 /// ([`AttemptVerdictRecord::scope_findings_omitted`]).
 pub const SCOPE_FINDINGS_LISTED: usize = 50;
 
+/// [`ScopeFinding::kind`] of a path of the person's own checkout that an
+/// attempt's checks, run in its worktree, changed (bug-b7d9ad).
+pub const SCOPE_CHECKOUT_WRITTEN: &str = "checkout_written";
+
 /// A path a settled attempt changed outside its task's `files`, as the
 /// pre-verify screen found it (`scope_findings[]`, backlog 1125). Under
 /// `[gates] diff_scope = "record"` it is recorded and does not fail the
-/// attempt.
+/// attempt. Kind [`SCOPE_CHECKOUT_WRITTEN`] is a path of the person's own
+/// checkout that the attempt's checks, run in its worktree, changed
+/// (bug-b7d9ad).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScopeFinding {
-    /// The path, relative to the attempt's working tree.
+    /// The path, relative to the attempt's working tree, or to the person's
+    /// checkout for a `checkout_written` finding.
     pub path: String,
-    /// The finding's kind, e.g. `outside_scope`.
+    /// The finding's kind, e.g. `outside_scope` or `checkout_written`.
     pub kind: String,
 }
 
@@ -824,6 +837,26 @@ pub struct AttemptCost {
     /// Price snapshot behind the API-equivalent figures, e.g.
     /// `prices-2026-09-28`.
     pub price_snapshot_id: Option<String>,
+    /// What the try's calls cost that a provider refused part-way, with a
+    /// rate limit or an out-of-usage answer, before failover moved the try
+    /// to another model or it called the same one again (bug-8bcd98). The
+    /// figures above are the call that ran; the try's spend is that plus
+    /// this. `None` when no call was refused; older rows lack it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused_usd: Option<f64>,
+}
+
+impl AttemptCost {
+    /// `usd`, what a reader takes the call that ran to cost, plus what the
+    /// try's refused calls cost ([`Self::refused_usd`]): the try's spend
+    /// (bug-8bcd98). `None` when neither is known.
+    #[must_use]
+    pub fn plus_refused(&self, usd: Option<f64>) -> Option<f64> {
+        match (usd, self.refused_usd) {
+            (Some(usd), Some(refused)) => Some(usd + refused),
+            (usd, refused) => usd.or(refused),
+        }
+    }
 }
 
 /// How many content items were retrieved and included for the attempt
@@ -2447,8 +2480,42 @@ mod tests {
         assert_eq!(json["usage"]["tokens_cache_write_5m"], 1_024);
         assert!(json["usage"]["tokens_cache_write_1h"].is_null());
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
+        assert!(json["cost"].get("refused_usd").is_none(), "{json}");
         let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);
+    }
+
+    /// bug-8bcd98: a try that failed over records what its refused calls
+    /// cost beside the call that ran, and its spend is the two together.
+    #[test]
+    fn a_try_s_spend_counts_its_refused_calls() {
+        let mut record =
+            AttemptVerdictRecord::settle(identity("T2", 1), AttemptOutcome::Passed, true);
+        record.cost = AttemptCost {
+            billed_usd: Some(0.0354),
+            refused_usd: Some(0.2076),
+            source: CostSource::ProviderUsage,
+            ..AttemptCost::default()
+        };
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["cost"]["refused_usd"], 0.2076);
+        let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        let spend = record.cost.plus_refused(record.cost.billed_usd);
+        assert!((spend.expect("a spend") - 0.2430).abs() < 1e-9, "{spend:?}");
+        // A try whose own call cost nothing known still spent its refused
+        // calls; one with no refused call spent what it billed.
+        assert_eq!(record.cost.plus_refused(None), Some(0.2076));
+        let billed_only = AttemptCost {
+            billed_usd: Some(0.0354),
+            ..AttemptCost::default()
+        };
+        assert_eq!(
+            billed_only.plus_refused(billed_only.billed_usd),
+            Some(0.0354)
+        );
+        assert_eq!(AttemptCost::default().plus_refused(None), None);
     }
 
     /// backlog 1125: a verdict lists at most `SCOPE_FINDINGS_LISTED` scope
@@ -2507,6 +2574,7 @@ mod tests {
             (O::WorkspaceError, false, Blame::Harness, None),
             (O::PromiseTerminated, false, Blame::Harness, None),
             (O::HarnessError, true, Blame::Harness, None),
+            (O::AllRungsSkipped, false, Blame::Harness, None),
             (O::Abandoned, false, Blame::Harness, None),
         ];
         for (outcome, first_token_seen, blame, label) in cases {

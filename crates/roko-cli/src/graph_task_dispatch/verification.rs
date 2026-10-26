@@ -5,6 +5,7 @@ use roko_core::config::harness_params::HarnessParams;
 use roko_learn::telemetry::records::VerifyDepthRecord;
 use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
+use super::checkout_writes::CheckoutWritten;
 use super::retry_feedback::RetryNotice;
 use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
@@ -72,6 +73,10 @@ impl GraphTaskDispatcher {
     /// record (backlog 2104). `theta`, the θ the attempt runs, sets the
     /// promise thresholds of its verify run (M1's B6, 8125), which failing
     /// fast leaves with nothing to end ([`promise_tracker_for`]).
+    ///
+    /// `try_written` is what the person's checkout changed over the try, up
+    /// to its gate (reg-d2deba), which a change during the gate's steps adds
+    /// to.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn settle_task_verification(
         &self,
@@ -84,6 +89,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         theta: Option<&HarnessParams>,
+        try_written: &CheckoutWritten,
     ) -> VerificationReport {
         let mut steps = Vec::new();
         let mut scope_findings = Vec::new();
@@ -98,6 +104,7 @@ impl GraphTaskDispatcher {
                 attempt_key,
                 progress_tx,
                 theta,
+                try_written,
                 &mut steps,
                 &mut scope_findings,
             )
@@ -134,6 +141,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         theta: Option<&HarnessParams>,
+        try_written: &CheckoutWritten,
         steps: &mut Vec<VerifyStepVerdict>,
         scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<TaskGateVerdict> {
@@ -150,6 +158,9 @@ impl GraphTaskDispatcher {
             )
             .await?;
         let unchanged_tree = matches!(screened, red_flags::Screened::UnchangedTree(_));
+        // What the checks write into the person's checkout, when the attempt
+        // runs outside it (bug-b7d9ad).
+        let checkout_before = self.watch_checkout(spec, effective_workdir).await;
         let verified = self
             .run_verify_steps(
                 spec,
@@ -165,8 +176,46 @@ impl GraphTaskDispatcher {
                 steps,
             )
             .await;
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        let written = self.checkout_written(checkout_before, &task_key).await;
+        // Checks that pass on a tree the attempt left unchanged while the
+        // person's checkout changes may have tested that checkout: the task
+        // is not shown to be satisfied.
+        let unverified = !written.is_empty()
+            && unchanged_tree
+            && matches!(
+                verified,
+                Ok(TaskGateVerdict::Passed | TaskGateVerdict::PassedWithPreexistingFailures)
+            );
+        if !written.is_empty() {
+            // With what changed earlier in the try, which the hub heard of
+            // then (reg-d2deba).
+            self.report_checkout_written(
+                spec,
+                task,
+                attempt_number,
+                effective_workdir,
+                &try_written.merged(&written),
+                unverified,
+                scope_findings,
+            );
+        }
         match screened {
             red_flags::Screened::Clear => verified,
+            red_flags::Screened::UnchangedTree(_) if unverified => {
+                if let Some(progress_tx) = progress_tx {
+                    let message = "unverified: the verify steps pass on the unchanged tree, but \
+                                   the person's checkout changed while they ran";
+                    let _ = progress_tx
+                        .send(GraphTaskEvent::Progress {
+                            message: message.to_string(),
+                            completed: None,
+                            total: None,
+                        })
+                        .await;
+                }
+                Ok(TaskGateVerdict::Unverified)
+            }
             red_flags::Screened::UnchangedTree(unchanged) => {
                 self.settle_unchanged_tree(
                     spec,
@@ -1649,9 +1698,20 @@ fn hidden_output_note(command: &str) -> Option<String> {
     })
 }
 
+/// The most characters of a failed step's output that its entry in the
+/// retry's feedback keeps ([`step_failure`]).
+const STEP_FAILURE_CHARS: usize = 2_400;
+
 /// A failed step's entry in the retry's feedback: its label and command, its
-/// authored `fail_msg` (else how it ended), the last 30 lines it printed, and
+/// authored `fail_msg` (else how it ended), what it printed, and
 /// [`hidden_output_note`] when its runner's output was hidden.
+///
+/// What it printed is cut failure first (bug-3e3d08): each failing test case
+/// with its first failure and why, one line for each further failure, then
+/// the runner's summary ([`roko_learn::failure_text::failure_excerpt`]). Its
+/// last 30 lines kept whichever case a C++ runner printed last: phase 4.2's
+/// T1#1 was told about one of its 2 failing cases. Output with no failure
+/// line still gives its last 30 lines.
 pub(super) fn step_failure(
     step_label: &str,
     shown: &str,
@@ -1663,9 +1723,14 @@ pub(super) fn step_failure(
         .detail
         .as_deref()
         .map(|detail| {
-            let lines: Vec<&str> = detail.lines().collect();
-            let start = lines.len().saturating_sub(30);
-            lines[start..].join("\n")
+            roko_learn::failure_text::failure_excerpt(detail, STEP_FAILURE_CHARS).map_or_else(
+                || {
+                    let lines: Vec<&str> = detail.lines().collect();
+                    let start = lines.len().saturating_sub(30);
+                    lines[start..].join("\n")
+                },
+                |excerpt| excerpt.trim_end().to_string(),
+            )
         })
         .unwrap_or_default();
     let mut entry = format!("{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}");
@@ -1680,18 +1745,22 @@ pub(super) fn step_failure(
 /// bug-2f30e1), whatever form the output takes:
 /// - its first error line (`error[E0425]: …`, `Error: …`), past cargo's closing
 ///   `error: test failed`;
+/// - else its first failed assertion of a C++ test runner: doctest's
+///   `x.cpp:219: ERROR: CHECK( … ) is NOT correct!`, Catch2's `x.cpp:15:
+///   FAILED:`, GoogleTest's `x.cc:42: Failure` (bug-3e3d08);
 /// - else its last assertion line: Rust's ``assertion `left == right` failed``,
 ///   Python's `AssertionError: …`, pytest's `FAILED … - AssertionError: …`;
 /// - else its last exception line (`ModuleNotFoundError: …`);
 /// - else its first panic or failure line (`test t ... FAILED`);
 /// - else the last line it printed.
 ///
-/// `None` when it printed nothing.
+/// A runner's summary of counts (`[doctest] assertions: …`, `test result:
+/// …`) is never the key line. `None` when it printed nothing.
 pub(super) fn key_line(output: &str) -> Option<&str> {
     let lines: Vec<&str> = output
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !roko_learn::failure_text::is_summary_line(line))
         .collect();
     let lower = |line: &&str| line.to_ascii_lowercase();
     lines
@@ -1700,6 +1769,13 @@ pub(super) fn key_line(output: &str) -> Option<&str> {
             let lower = lower(line);
             (lower.starts_with("error:") || lower.starts_with("error["))
                 && !lower.starts_with("error: test failed")
+        })
+        .or_else(|| {
+            lines.iter().find(|line| {
+                [": ERROR: ", ": FATAL ERROR: ", ": FAILED:", ": Failure"]
+                    .iter()
+                    .any(|marker| line.contains(marker))
+            })
         })
         .or_else(|| {
             lines
@@ -1982,6 +2058,7 @@ mod tests {
             commands: vec![command.to_string()],
             ms: vec![1_500],
             failed: None,
+            checkout_written: Vec::new(),
         };
         let record = |run: CheckRun| {
             let line = serde_json::to_string(&run).expect("a run record");
@@ -2435,6 +2512,72 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
     /// bug-1e272c, bug-2f30e1: the key line of a failed check's output, for
     /// the forms checks fail in, and of a failing step's entry.
+    /// bug-3e3d08: Undertow phase 4.2's T1#1 failed 2 doctest cases, and its
+    /// retry was told about one in full and the other by half a line. The
+    /// failed step's entry kept its last 30 lines, "## Failing tests" held
+    /// only doctest's summary, and the diagnosis repeated a fragment. Now the
+    /// entry keeps both cases, P4.2.01 with the control it names and P4.2.04
+    /// with its 4 labels, and the failing tests are the cases and their
+    /// checks, each once. Its key line is the first failed check.
+    #[test]
+    fn retry_feedback_names_every_failing_doctest_case() {
+        let output = include_str!("../../../roko-learn/tests/fixtures/phase_4_2_layout.txt");
+        let step = verify_step("test", "tools/spec.sh 4_2 layout");
+        let verdict =
+            roko_core::Verdict::fail("verify[0:test]", "exit code: 1").with_detail(output);
+
+        let entry = step_failure(
+            "verify[0:test]",
+            "tools/spec.sh 4_2 layout",
+            &step,
+            &verdict,
+        );
+        let feedback = GateFeedback::from_raw(&entry).expect("feedback");
+        let rendered = crate::dispatch::prompt_builder::render_gate_feedback_sections(&feedback);
+
+        for needed in [
+            "TEST CASE:  P4.2.01 every control sits in its own panel",
+            "CHECK( !b.intersects(otherBounds) ) is NOT correct!",
+            "`lfo2_phase` (MOD/05)",
+            "its bounds 992 468 32 32 overlap `lfo2_shape`'s 988 444 40 40",
+            "TEST CASE:  P4.2.04 every control has the design's short label",
+            "`osc_fine`, label \"FINE\"",
+            "`sub_level`, label \"SUB\"",
+            "`sub_octave`, label \"SUB OCT\"",
+            "`filter_track`, label \"TRACK\"",
+        ] {
+            assert!(rendered.contains(needed), "{needed} in:\n{rendered}");
+        }
+        assert!(feedback.compile_errors.is_empty(), "{feedback:?}");
+        assert_eq!(
+            feedback.test_failures.len(),
+            4,
+            "{:?}",
+            feedback.test_failures
+        );
+        assert!(
+            feedback.test_failures[0].starts_with("TEST CASE:  P4.2.01")
+                && feedback.test_failures[2].starts_with("TEST CASE:  P4.2.04"),
+            "{:?}",
+            feedback.test_failures
+        );
+        assert!(
+            feedback
+                .test_failures
+                .iter()
+                .all(|failure| !failure.contains("[doctest]")),
+            "{:?}",
+            feedback.test_failures
+        );
+        assert!(
+            key_line(output).is_some_and(|line| line.ends_with(
+                "layout_test.cpp:109: ERROR: CHECK( !b.intersects(otherBounds) ) is NOT correct!"
+            )),
+            "{:?}",
+            key_line(output)
+        );
+    }
+
     #[test]
     fn key_line_picks_the_line_that_says_why() {
         let cargo_test = "running 2 tests\ntest tests::adds ... ok\ntest tests::subtracts ... \

@@ -177,6 +177,9 @@ struct ProgressState {
     /// The watchdog, the conductor or a stopping plan run cancelled the
     /// call.
     interrupted: bool,
+    /// What the attempt's calls a provider refused part-way cost, in USD
+    /// (bug-8bcd98).
+    refused_usd: f64,
 }
 
 impl ProgressState {
@@ -360,6 +363,21 @@ impl AttemptProgress {
         state.call = Some(CallInFlight { target, failover });
         state.calls += 1;
         state.usage = StreamedUsage::default();
+    }
+
+    /// A provider refused the attempt's call part-way, with a rate limit or
+    /// an out-of-usage answer, after it spent `usd`: failover moves the try
+    /// on, or it calls the same model again. Its verdict counts the spend
+    /// beside the call that ran (bug-8bcd98).
+    pub(super) fn call_refused(&self, usd: f64) {
+        if usd.is_finite() && usd > 0.0 {
+            self.inner.lock().refused_usd += usd;
+        }
+    }
+
+    /// What the attempt's refused calls cost, in USD ([`Self::call_refused`]).
+    pub(super) fn refused_usd(&self) -> f64 {
+        self.inner.lock().refused_usd
     }
 
     /// Whether the attempt reported anything yet: after it did, a timeout is
@@ -1306,6 +1324,54 @@ mod tests {
         watch.progress().observe_at(&text("working"), t0);
         assert_eq!(watch.check(t0 + secs(9)), StallCheck::Healthy);
         assert_eq!(watch.check(t0 + secs(10)), StallCheck::Stalled(secs(10)));
+    }
+
+    /// An empty reasoning delta: a reasoning model's call saying it is alive.
+    fn alive() -> LiveAgentEvent {
+        LiveAgentEvent::Unscreened(StreamEventKind::ReasoningDelta(String::new()))
+    }
+
+    /// gap-1ba0ac: an OpenAI model reasoning on the Responses API says its
+    /// response is in progress and its reasoning started, then nothing until
+    /// its reasoning ends. Its call says every 30 s that it is alive, so under
+    /// the default thresholds a turn silent for 200 s, or for 400 s, is never
+    /// warned about or cancelled. Without those beats the watchdog warns at
+    /// 180 s and cancels at 300 s.
+    #[test]
+    fn a_silent_reasoning_turn_that_says_it_is_alive_is_no_stall() {
+        let heartbeat = roko_agent::openai_compat_backend::REASONING_HEARTBEAT;
+        let defaults = StallThresholds::from_config(&ConductorConfig::default());
+        assert!(defaults.warn_after.is_some_and(|warn| heartbeat < warn));
+
+        for turn in [200, 400] {
+            let mut watch = StallWatch::new(defaults);
+            let t0 = Instant::now();
+            watch.progress().observe_at(&alive(), t0);
+            watch.progress().observe_at(&alive(), t0);
+            for second in 1..=turn {
+                let now = t0 + secs(second);
+                if second % heartbeat.as_secs() == 0 {
+                    watch.progress().observe_at(&alive(), now);
+                }
+                assert_eq!(
+                    watch.check(now),
+                    StallCheck::Healthy,
+                    "{second} s into a {turn} s turn"
+                );
+            }
+            watch
+                .progress()
+                .observe_at(&text("the answer"), t0 + secs(turn));
+            assert_eq!(watch.check(t0 + secs(turn)), StallCheck::Healthy);
+        }
+
+        let mut watch = StallWatch::new(defaults);
+        let t0 = Instant::now();
+        watch.progress().observe_at(&alive(), t0);
+        assert_eq!(watch.check(t0 + secs(179)), StallCheck::Healthy);
+        assert_eq!(watch.check(t0 + secs(180)), StallCheck::Silent(secs(180)));
+        assert_eq!(watch.check(t0 + secs(200)), StallCheck::Healthy);
+        assert_eq!(watch.check(t0 + secs(300)), StallCheck::Stalled(secs(300)));
     }
 
     #[test]

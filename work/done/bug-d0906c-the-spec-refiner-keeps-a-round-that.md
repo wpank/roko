@@ -2,15 +2,16 @@
 id = "bug-d0906c"
 kind = "bug"
 title = "The spec refiner keeps a round that adds a hard fail: refine.py compares scores only, so a live round's vacuous verify step (HF2) or missing read file (HF4) is kept when the score rises"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/specops"]
 created = 2026-10-18
-updated = 2026-10-18
-last_verified = 2026-10-18
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "489af393c"
 source = "gap-942f88 worker (claude-agent), 2026-10-18: live vb refine run refine-3236-20261018b at 8431b7f65, hard fails 2 -> 11 tasks (HF4 added on 10, HF2 on 1) while every round was kept"
 discovered_from = "gap-942f88"
 anchors = ["benchmarks/viabilitybench/specops/refine.py::refine", "benchmarks/viabilitybench/driver/refine_live.py::SYSTEM_PROMPT"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-942f88", "gap-4a5109"], 
 
 [[verify]]
 command = "grep -qw 'def test_a_round_that_adds_a_hard_fail_is_rejected' benchmarks/viabilitybench/specops/tests/test_refine.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_refine.py -k test_a_round_that_adds_a_hard_fail_is_rejected -q"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T10:48:41Z"
+commit = "489af393c"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T10:26:22Z"
+forced = false
+evidence = "489af393c: refine.refine now keeps score_task's full record for before/after (not just [\"score\"]) and, right after the monotonicity check, rejects a round whose candidate's hard_fail list gained a code the input lacked, stopped = f\"adds a hard fail: {', '.join(gained)}\". Also fixed refine_live.SYSTEM_PROMPT: \"context.read_files\" now says a read file must already exist in the repository, never one only named in the task's own \"files\" (the HF4 contributor); added a rule against a verify step ending in \"|| true\"/\"|| exit 0\" (the HF2 pattern seen live); PROMPT_VERSION bumped to refine-live-2. New test test_a_round_that_adds_a_hard_fail_is_rejected: a hand-built, hard-fail-free spec (the NAMES fixtures all carry a baseline HF4 against the real repo root, so adding more missing files under it is not \"added\"); a round adding a vacuous verify step is rejected \"adds a hard fail: HF2\", one adding a read_files entry for a nonexistent path is rejected \"adds a hard fail: HF4\", both times with result.spec == spec (unchanged). Reproduced pre-fix with a throwaway script: both rounds were kept (after_score >= before_score) before this change. benchmarks/viabilitybench/specops/ (58 tests) and driver/test_refine_live.py (12 tests): 70 passed, 0 failed."
 +++
 
 ## Problem

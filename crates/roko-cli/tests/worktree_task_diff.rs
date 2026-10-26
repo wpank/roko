@@ -20,10 +20,12 @@ use assert_cmd::cargo::cargo_bin;
 use serde_json::Value;
 
 /// A provider that writes `feature.txt` in its working directory, the
-/// attempt's worktree, and reports success.
+/// attempt's worktree, and reports success. It notes each working directory
+/// in `provider-cwds`, beside itself.
 const WRITES_FEATURE: &str = r#"#!/bin/sh
 set -eu
 cat >/dev/null
+pwd -P >> "$(dirname -- "$0")/provider-cwds"
 printf 'feature\n' > feature.txt
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
 printf '%s\n' '{"type":"result","session_id":"proof","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
@@ -364,13 +366,12 @@ fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
     assert_eq!(operator_state(&repo), before);
 }
 
-/// bug-ee2752: the helper calls after a failed verify step run with the
-/// operator's checkout as their working directory. Served by the task's
-/// provider, which writes `feature.txt` wherever it runs, as a CLI agent with
-/// its own tools may, a helper call leaves that file in the operator's
-/// checkout. The run must not change that checkout.
+/// bug-ee2752: the helper calls after a failed verify step are served here by
+/// the task's provider, which writes `feature.txt` wherever it runs, as a CLI
+/// agent with its own tools may. A helper call runs in a scratch directory of
+/// its own, outside the repository, so the run leaves the operator's checkout
+/// as it was.
 #[test]
-#[ignore = "bug-ee2752: a helper call runs in the operator's checkout"]
 fn a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
@@ -391,4 +392,21 @@ fn a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone() {
     );
     assert_eq!(output.status.code(), Some(1), "{log}");
     assert_eq!(operator_state(&repo), before, "{}", roko_logs(&repo));
+
+    // Not vacuous: the provider served the attempt in its worktree, and a
+    // helper call outside the repository.
+    let cwds = fs::read_to_string(temp.path().join("provider-cwds")).expect("the provider ran");
+    let repo = repo.canonicalize().expect("canonical repo");
+    let worktrees = repo.join(".roko/worktrees");
+    let cwds: Vec<&Path> = cwds.lines().map(Path::new).collect();
+    assert!(
+        cwds.iter().any(|cwd| cwd.starts_with(&worktrees)),
+        "{cwds:?}"
+    );
+    assert!(cwds.iter().any(|cwd| !cwd.starts_with(&repo)), "{cwds:?}");
+    assert!(
+        cwds.iter()
+            .all(|cwd| !cwd.starts_with(&repo) || cwd.starts_with(&worktrees)),
+        "a call ran in the operator's checkout: {cwds:?}"
+    );
 }

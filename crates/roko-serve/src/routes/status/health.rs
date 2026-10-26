@@ -331,6 +331,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::ReasoningCut { .. } => "reasoning_cut",
         DashboardEvent::RungSlow { .. } => "rung_slow",
         DashboardEvent::RungSkipped { .. } => "rung_skipped",
+        DashboardEvent::BudgetCarried { .. } => "budget_carried",
         DashboardEvent::ProviderExhausted { .. } => "provider_exhausted",
         DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
         DashboardEvent::PlaybookWritten { .. } => "playbook_written",
@@ -365,6 +366,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::ReasoningCut { plan_id, .. }
         | DashboardEvent::RungSlow { plan_id, .. }
         | DashboardEvent::RungSkipped { plan_id, .. }
+        | DashboardEvent::BudgetCarried { plan_id, .. }
         | DashboardEvent::ProviderExhausted { plan_id, .. }
         | DashboardEvent::KnowledgeWritten { plan_id, .. }
         | DashboardEvent::PlaybookWritten { plan_id, .. }

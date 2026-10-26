@@ -2384,6 +2384,8 @@ async fn run_graph_plan_body(
             serde_json::json!({
                 "plan_id": plan.id,
                 "spent_usd": budget.spent_usd,
+                // Of it, what earlier processes of the run spent (bug-b7f6a8).
+                "carried_usd": budget.carried_usd,
                 "reserved_usd": budget.reserved_usd,
                 "ceiling_usd": budget.ceiling_usd,
                 "exhausted": budget.exhausted,
@@ -3278,6 +3280,46 @@ async fn close_plan(
         }
     }
     ctx.graph_tui_bridge.plan_completed(plan_id, succeeded);
+}
+
+/// The `budget_carried` event of plan `plan_id`, which resumed with
+/// `carried_micro_usd` that earlier processes of its run spent, `settled`
+/// saying what of it the attempts a stopped process left were charged
+/// (bug-b7f6a8), under `budget`, its budget once it took that spend over.
+fn budget_carried(
+    plan_id: &str,
+    carried_micro_usd: u64,
+    settled: Option<&crate::graph_checkpoint::SettledHolds>,
+    budget: &crate::graph_task_dispatch::GraphPlanBudgetSnapshot,
+) -> roko_core::DashboardEvent {
+    use crate::graph_task_dispatch::micro_usd_to_usd;
+    let carried_usd = micro_usd_to_usd(carried_micro_usd);
+    let settled_usd = settled.map_or(0.0, |settled| micro_usd_to_usd(settled.charged_micro_usd));
+    let of_it = settled
+        .filter(|settled| !settled.holds.is_empty())
+        .map(|settled| {
+            let attempts = settled.holds.len();
+            let plural = if attempts == 1 { "" } else { "s" };
+            format!(
+                " (${settled_usd:.4} of it by {attempts} attempt{plural} a stopped process \
+                 left)"
+            )
+        })
+        .unwrap_or_default();
+    let left = budget.ceiling_usd.map_or_else(
+        || "the plan has no budget ceiling".to_string(),
+        |ceiling| {
+            let left = (ceiling - budget.spent_usd).max(0.0);
+            format!("${left:.4} of its ${ceiling:.4} budget is left")
+        },
+    );
+    roko_core::DashboardEvent::BudgetCarried {
+        plan_id: plan_id.to_string(),
+        carried_usd,
+        settled_usd,
+        ceiling_usd: budget.ceiling_usd,
+        detail: format!("Resumed with ${carried_usd:.4} spent before the restart{of_it}; {left}"),
+    }
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -4229,8 +4271,21 @@ async fn run_one_plan(
         }
     }
     let replayed_entries = checkpoint.replayed_entries();
+    // What earlier processes of the run spent, which the plan's budget counts
+    // (bug-b7f6a8), read before its ledger moves to the budget.
+    let carried_micro_usd = checkpoint.restored_spend_micro_usd();
+    let settled = checkpoint.settled_holds().cloned();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
+    if carried_micro_usd > 0 {
+        let budget = ctx.graph_task_dispatcher.plan_budget_snapshot(&plan.id);
+        ctx.graph_tui_bridge.publish_event(budget_carried(
+            &plan.id,
+            carried_micro_usd,
+            settled.as_ref(),
+            &budget,
+        ));
+    }
     // By default a failed task blocks only its own dependants: the tasks that
     // do not depend on it keep running, and the plan reports failure once
     // every task has settled. `fail_fast` (from `[meta] failure_policy`, else
@@ -5464,10 +5519,11 @@ enum HandbackStep {
 
 /// Hand plan `plan`'s failed whole-plan check `failure` back to its tasks
 /// (find-5bcba7): one attempt, from the plan's accepted work, with the
-/// failure as its feedback. The tasks it goes back to own the files its
-/// output names, or are every task that changed a file when it names none
-/// ([`super::plan_handback::implicated_tasks`]); a file belongs to the task
-/// that changed it last ([`super::plan_handback::file_owners`]).
+/// failure as its feedback. The tasks it goes back to run a test that failed
+/// in their own checks or own the files the failure's own lines name, or are
+/// every task that changed a file when neither names one
+/// ([`super::plan_handback::implicate`]); a file belongs to the task that
+/// changed it last ([`super::plan_handback::file_owners`]).
 ///
 /// The attempt is one, not one per task, since fixing the failure can take
 /// more than one task's files (bug-fc05a3): one of them runs it, a task whose
@@ -5495,8 +5551,7 @@ async fn hand_back_plan_check(
     use roko_graph::engine::NodeStatus;
 
     use super::plan_handback::{
-        Handback, MAX_HANDBACKS, file_owners, handback_feedback, implicated_tasks, lead_task,
-        named_files,
+        Handback, MAX_HANDBACKS, file_owners, handback_feedback, implicate, lead_task,
     };
 
     let not_handed_back = |why: &str| -> anyhow::Result<HandbackStep> {
@@ -5521,17 +5576,18 @@ async fn hand_back_plan_check(
     }
     let repo = ctx.batch.map(super::batch::BatchIntegration::repo);
     let owners = file_owners(repo, plan, rerun.run_id).await;
-    let files = named_files(&failure.output, &owners);
-    let tasks = implicated_tasks(plan, &owners, &files);
-    let Some(lead) = lead_task(plan, &tasks, failure) else {
+    let implicated = implicate(plan, &owners, failure);
+    let Some(lead) = lead_task(plan, &implicated) else {
         return not_handed_back("no task of the plan changed a file");
     };
     let checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
-    let Some(try_task) = handback_try(plan, rerun, &lead, &tasks, checks, failure, &owners) else {
+    let Some(try_task) = handback_try(plan, rerun, &lead, &implicated, checks, failure, &owners)
+    else {
         return not_handed_back(&format!("task {lead}'s definition could not be read"));
     };
+    let (files, tasks) = (implicated.files.clone(), implicated.tasks.clone());
     let round = handbacks.len() + 1;
-    if let Some(feedback) = handback_feedback(failure, &files, &tasks) {
+    if let Some(feedback) = handback_feedback(failure, &implicated) {
         ctx.graph_task_dispatcher
             .hand_back(&plan.id, &lead, &failure.command, feedback);
     }
@@ -5540,10 +5596,15 @@ async fn hand_back_plan_check(
     } else {
         files.keys().cloned().collect::<Vec<_>>().join(", ")
     };
+    let runners = match implicated.runners.as_slice() {
+        [] => String::new(),
+        runners => format!(" in a test that task(s) {} run", runners.join(", ")),
+    };
     tracing::info!(
         plan_id = %plan.id,
         check = %failure.command,
         files = %named_list,
+        runners = %implicated.runners.join(", "),
         tasks = %tasks.join(", "),
         lead = %lead,
         round,
@@ -5552,9 +5613,9 @@ async fn hand_back_plan_check(
     ctx.graph_tui_bridge.log_event(
         "graph.plan_check_handback",
         &format!(
-            "plan '{}': its whole-plan check `{}` failed, naming {named_list}; handing it back \
-             to task {lead}, which may change the files of task(s) {} (hand-back {round} of at \
-             most {MAX_HANDBACKS})",
+            "plan '{}': its whole-plan check `{}` failed{runners}, naming {named_list}; handing \
+             it back to task {lead}, which may change the files of task(s) {} (hand-back \
+             {round} of at most {MAX_HANDBACKS})",
             plan.id,
             failure.command,
             tasks.join(", ")
@@ -5626,14 +5687,15 @@ async fn hand_back_plan_check(
 
 /// Task `lead` of `plan` as a hand-back's try runs it, as the graph converter
 /// takes it (bug-fc05a3): its task as [`super::plan_handback::handback_task`]
-/// makes it, with the files of `tasks` (by `owners`), their verify steps and
-/// the plan's check `checks`, and without its dependencies, which passed.
-/// `None` when its definition cannot be read.
+/// makes it for what the failure points at, `implicated`, of the files the
+/// plan's tasks changed, `owners`, with the verify steps of the tasks it goes
+/// back to and the plan's check `checks`, and without its dependencies, which
+/// passed. `None` when its definition cannot be read.
 fn handback_try(
     plan: &crate::runner::plan_loader::Plan,
     rerun: &HandbackRerun<'_>,
     lead: &str,
-    tasks: &[String],
+    implicated: &super::plan_handback::Implicated,
     checks: &[crate::task_parser::VerifyStep],
     failure: &super::plan_handback::FailedPlanCheck,
     owners: &BTreeMap<String, String>,
@@ -5645,14 +5707,10 @@ fn handback_try(
         .tasks
         .tasks
         .iter()
-        .filter(|other| other.id != lead && tasks.contains(&other.id))
+        .filter(|other| other.id != lead && implicated.tasks.contains(&other.id))
         .collect();
-    let scope: BTreeMap<String, String> = owners
-        .iter()
-        .filter(|(_, owner)| tasks.contains(owner))
-        .map(|(path, owner)| (path.clone(), owner.clone()))
-        .collect();
-    let task = super::plan_handback::handback_task(&task, &others, checks, failure, &scope);
+    let task =
+        super::plan_handback::handback_task(&task, &others, checks, failure, implicated, owners);
     let mut info = info.clone();
     info.depends_on.clear();
     info.files.clone_from(&task.files);

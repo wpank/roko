@@ -87,6 +87,26 @@ Undertow's `.roko/roko.log.2026-10-26`, 15:08:02–15:09:03Z.
 - **Coverage:** every draft kept all 21 source checks, so this case cost money only, unlike phase 4.3's above.
 - **Generation:** 60.4 s (`total_ms=60401`), about 20 s of it on each rejected draft.
 
+## Evidence: phase 5.1, a second coverage loss (2026-10-26, hermes-pilot)
+
+Undertow phase 5.1's plan was written from a chat: op `42c4f74d`, roko 74c3594bc, planner gpt-5.4-mini. The log is
+Undertow's `.roko/roko.log.2026-10-26`, 16:43:58–16:44:20Z.
+
+1. **The draft dropped 7 of the spec's 17 commands** ($0.0329). It left out T1's three filter regressions (`tools/spec.sh
+   5 filter`, `2_2 filter`, `2_1 filter`) and T3's four (`5 number`, `4_2 head`, `4_2 layout`, `4_3 finish`). It
+   validated.
+2. **The source-check coverage re-ask restored them** ($0.0340).
+3. **roko threw the re-ask away:** "regeneration not kept … PLAN_TIER_SIZE [T1]: mechanical task is over its tier's
+   size limits: 4 verify steps (limit 3); split it into smaller tasks, or raise its tier to focused". It wrote the
+   draft, and the chat's card read "11 of 18 kept · 7 missing · asked again".
+
+A person restored coverage by hand: T1 raised to focused with its three steps, and T3's four steps added (6 steps,
+integrative). hermes-pilot's plancheck went from 1 finding to 0. The edits are in Undertow
+`plans/p5-1-the-renders-as-they-play/plan.md`, "Review edits (person)".
+
+**That's two coverage losses (4.3 and 5.1) in three plan writes,** plus phase 5's two cost-only regenerations, all for
+the raise the validator's own message names.
+
 ## Where
 
 - `plan_generate/pipeline.rs::validate_and_fix_generated_plan`: the text-level fix-ups before

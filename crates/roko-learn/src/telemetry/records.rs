@@ -402,8 +402,9 @@ pub enum AttemptOutcome {
     /// call, rather than send it to a model outside the ladder (gap-20301d,
     /// gap-b856d3).
     AllRungsSkipped,
-    /// An attempt-open line with no verdict. It is derived offline; dispatch
-    /// never writes it.
+    /// An attempt-open line with no verdict, derived offline, or the verdict
+    /// a resume writes for an attempt a stopped process left in flight
+    /// (bug-b7f6a8). Dispatch never writes it.
     Abandoned,
 }
 
@@ -837,6 +838,12 @@ pub struct AttemptCost {
     /// Price snapshot behind the API-equivalent figures, e.g.
     /// `prices-2026-09-28`.
     pub price_snapshot_id: Option<String>,
+    /// The part of `billed_usd` roko estimated rather than read from a
+    /// provider: the model call a crash cut off, which an `abandoned`
+    /// attempt is charged at its costliest call so far (bug-b7f6a8). `None`
+    /// when nothing in it is estimated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_usd: Option<f64>,
     /// What the try's calls cost that a provider refused part-way, with a
     /// rate limit or an out-of-usage answer, before failover moved the try
     /// to another model or it called the same one again (bug-8bcd98). The

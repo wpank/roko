@@ -25,7 +25,7 @@ use super::assign::{Arm, Assignment};
 use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptPredictionRecord,
     AttemptVerdictRecord, ContentDecisionPoint, ContentDecisionRecord, DECISION_SCHEMA,
     DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, HARNESS_POLICY_DECISION_POINT,
     HarnessPolicyDecisionRecord, PLACEBO_DECISION_POINT, PREDICTION_SCHEMA, PlaceboDecisionRecord,
@@ -213,10 +213,16 @@ impl RunRecords {
             let key = line.record.identity.attempt_key.as_str();
             (ATTEMPT_OPEN_SCHEMA, key)
         });
-        let verdicts = self.verdicts.iter().map(|line| {
-            let key = line.record.identity.attempt_key.as_str();
-            (VERDICT_SCHEMA, key)
-        });
+        // A resume's `abandoned` verdict leaves its attempt abandoned
+        // (bug-b7f6a8).
+        let verdicts = self
+            .verdicts
+            .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
+            .map(|line| {
+                let key = line.record.identity.attempt_key.as_str();
+                (VERDICT_SCHEMA, key)
+            });
         AttemptTally::from_lines(opens.chain(verdicts))
     }
 }

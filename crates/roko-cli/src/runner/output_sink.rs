@@ -1539,6 +1539,11 @@ pub fn format_dashboard_event(
         DashboardEvent::RungSkipped {
             plan_id, detail, ..
         } => (format!("[{plan_id}]"), "!", detail.clone()),
+        // A resumed plan says what earlier processes of its run spent, which
+        // its budget counts (bug-b7f6a8).
+        DashboardEvent::BudgetCarried {
+            plan_id, detail, ..
+        } => (format!("[{plan_id}]"), ">", detail.clone()),
         // A provider out of usage or unable to bill says why (bug-390e4b).
         DashboardEvent::ProviderExhausted {
             plan_id,

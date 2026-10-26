@@ -103,6 +103,7 @@ mod watchdog;
 mod wiring;
 
 pub use attempt_workspace::{AWAITING_APPROVAL_PHASE, record_review};
+pub(crate) use budget::micro_usd_to_usd;
 pub use budget::{
     GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
     plan_ceiling_micro_usd,
@@ -1446,8 +1447,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let retry_key = format!("{}/{}", spec.plan_id, task.id);
         // The attempt opens before prompt assembly (S01 §4.2): if the process
         // dies from here on, the attempt keeps its key and counts as
-        // abandoned.
+        // abandoned, and a resume settles it with what its hold on the plan
+        // budget says it spent (bug-b7f6a8).
         let mut attempt = self.open_attempt(spec, &task, ctx);
+        budget_reservation.bind_attempt(&attempt.key.attempt_key());
         attempt.record_setup(setup);
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).

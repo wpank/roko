@@ -258,7 +258,9 @@ fn tools() -> Vec<(Value, &'static str)> {
                  and whether it is running or queued; follow it with run_status. When the \
                  plan's last run stopped part way, say resume=true to continue it or \
                  fresh=true to start over: with neither, the call is refused and names that \
-                 run.",
+                 run. A resume roko cannot continue is refused with the reason; only \
+                 fresh=true starts over. max_usd caps the whole run: what it spent before it \
+                 stopped counts, and the answer's resumes says so (spent_usd, left_usd).",
                 json!({
                     "type": "object",
                     "properties": {
@@ -1044,7 +1046,9 @@ async fn start_prompt_run(
 /// data-model boundary ([`refuse_unscreened_run`]), and while the plan's last
 /// run stopped part way unless `start` says to resume or start over
 /// (bug-cbdb6b). The answer names the run a resume continues (`resumes`) and
-/// the one whose progress the run set aside (`set_aside`).
+/// the one whose progress the run set aside (`set_aside`). `max_usd` caps the
+/// whole run: a resume's `resumes` says what the run spent before it stopped
+/// (`spent_usd`) and what of `max_usd` is left (`left_usd`) (bug-b7f6a8).
 async fn start_plan(
     state: &Arc<AppState>,
     plan_id: String,
@@ -1071,12 +1075,26 @@ async fn start_plan(
         },
     });
     if let Some(run) = started.resumes {
+        let left_usd = run
+            .spent_usd
+            .filter(|_| run.continues)
+            .map(|spent_usd| left_of(max_usd, spent_usd));
         answer["resumes"] = json!(run);
+        if let Some(left_usd) = left_usd {
+            answer["resumes"]["left_usd"] = json!(left_usd);
+        }
     }
     if let Some(run) = started.set_aside {
         answer["set_aside"] = json!(run);
     }
     Ok(answer)
+}
+
+/// What is left of `max_usd` once `spent_usd` counts, never below 0, to the
+/// millionth of one USD a plan's budget counts in.
+fn left_of(max_usd: f64, spent_usd: f64) -> f64 {
+    let micro_usd = |usd: f64| (usd * 1_000_000.0).round();
+    (micro_usd(max_usd) - micro_usd(spent_usd)).max(0.0) / 1_000_000.0
 }
 
 /// The `plan_generate` tool: have the planner write a plan for `prompt`, as
@@ -1878,6 +1896,9 @@ mod tests {
             passed_tasks: passed.iter().map(ToString::to_string).collect(),
             tasks_left: left.iter().map(ToString::to_string).collect(),
             resumable: status != "succeeded" && !passed.is_empty() && !left.is_empty(),
+            continues: true,
+            reason: None,
+            spent_usd: None,
         }
     }
 
@@ -2078,6 +2099,120 @@ mod tests {
         let options = &runtime.plan_options()[0];
         assert!(options.force_resume && !options.fresh, "{options:?}");
         runtime.gate.add_permits(1);
+    }
+
+    /// The status and JSON body of `POST {uri}` with `body` on `router`.
+    async fn post_json(router: &Router, uri: &str, body: &'static str) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("a request");
+        let response = router.clone().oneshot(request).await.expect("a response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// bug-b7f6a8: a resume of a plan whose checkpoint roko cannot continue,
+    /// here because the plan changed after its run stopped, is refused before
+    /// anything runs, by `plan_run` and both HTTP routes. The refusal says
+    /// why, which tasks the run passed, which a run that starts over runs
+    /// again, and what it spent; only `fresh` starts over. A resume that
+    /// continues says what the run spent before it stopped and what is left
+    /// of `max_usd`, and the HTTP resume says it resumed only then.
+    #[tokio::test]
+    async fn a_resume_that_cannot_continue_is_refused_with_its_reason() {
+        let stuck = crate::runtime::CheckpointRun {
+            continues: false,
+            reason: Some("the converted plan graph has changed".to_string()),
+            spent_usd: Some(0.205),
+            ..checkpoint_of(FAILED_RUN, "interrupted", &["T1", "T2"], &[])
+        };
+        let runtime = Arc::new(HeldPlans::with_checkpoints(stuck.clone(), Vec::new()));
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+
+        let resume = call(
+            1,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "resume": true }),
+        );
+        let (_, body) = post_mcp(&open, &resume, &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "conflict", "{body}");
+        let data = &error["data"];
+        assert_eq!(data["refusal"], "cannot_resume", "{body}");
+        assert_eq!(data["refusals"], json!(["cannot_resume"]), "{body}");
+        assert_eq!(data["run_id"], FAILED_RUN, "{body}");
+        assert_eq!(data["status"], "interrupted", "{body}");
+        assert_eq!(
+            data["reason"], "the converted plan graph has changed",
+            "{body}"
+        );
+        assert_eq!(data["passed_tasks"], json!(["T1", "T2"]), "{body}");
+        assert_eq!(data["spent_usd"], 0.205, "{body}");
+        assert_eq!(
+            error["message"],
+            "Plan 'alpha' cannot resume run 6988f0b8 (interrupted): the converted plan graph \
+             has changed. Pass fresh=true to start over and set its progress aside: T1 and T2 \
+             run again, though they passed.",
+            "{body}"
+        );
+        for (uri, request) in [
+            ("/api/plans/alpha/resume", ""),
+            ("/api/plans/alpha/execute", r#"{"resume":true}"#),
+        ] {
+            let (status, body) = post_json(&open, uri, request).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{uri}: {body}");
+            assert_eq!(body["details"]["refusal"], "cannot_resume", "{uri}: {body}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(runtime.run_ids().is_empty(), "nothing ran");
+
+        let fresh = call(
+            2,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "fresh": true }),
+        );
+        let (_, body) = post_mcp(&open, &fresh, &[]).await;
+        let started = &body["result"]["structuredContent"];
+        assert_eq!(started["state"], "running", "{body}");
+        assert_eq!(started["set_aside"], json!(stuck), "{body}");
+        plan_runs_started(&runtime, 1).await;
+        assert!(runtime.plan_options()[0].fresh);
+        runtime.gate.add_permits(1);
+
+        let stopped = crate::runtime::CheckpointRun {
+            spent_usd: Some(0.022),
+            ..checkpoint_of(FAILED_RUN, "interrupted", &["T1"], &["T2"])
+        };
+        let runtime = Arc::new(HeldPlans::with_checkpoints(stopped.clone(), Vec::new()));
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+        let (_, body) = post_mcp(&open, &resume, &[]).await;
+        let resumes = &body["result"]["structuredContent"]["resumes"];
+        assert_eq!(resumes["continues"], true, "{body}");
+        assert_eq!(resumes["spent_usd"], 0.022, "{body}");
+        assert_eq!(resumes["left_usd"], 0.978, "{body}");
+        plan_runs_started(&runtime, 1).await;
+        runtime.gate.add_permits(1);
+
+        for (checkpoint, resumed) in [(Some(stopped), true), (None, false)] {
+            let runtime = Arc::new(HeldPlans::new());
+            *runtime.checkpoint.lock().expect("lock the checkpoint") = checkpoint;
+            let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+            let (status, body) = post_json(&open, "/api/plans/alpha/resume", "").await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            assert_eq!(body["resumed"], resumed, "{body}");
+            plan_runs_started(&runtime, 1).await;
+            runtime.gate.add_permits(1);
+        }
     }
 
     /// A runtime whose prompt runs record their options, then wait for a

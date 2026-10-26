@@ -2,7 +2,7 @@
 id = "bug-417c4a"
 kind = "bug"
 title = "A generated task may declare 3 read files with its spec counted, and an anchored symbol in a file it doesn't read sends the whole draft back: phase 4.2's write paid two gpt-5.4 regenerations ($0.29) for Look::drawStaticLayer and UndertowEditor::initialiseControls, both in the repo"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "23d12be5f"
 source = "round-v7-team-lead#plan-context-symbol-repair"
 discovered_from = "agent:hermes-pilot and run-analyst (round v7, phase 4.2 plan write op 1b0a97ed), the lead's ask"
 anchors = ["crates/roko-cli/src/plan_policy.rs::PlanExecutionPolicy::generated", "crates/roko-cli/src/plan_generate.rs::render_generated_plan_limits", "crates/roko-cli/src/plan_generate/pipeline.rs::repair_generated_draft"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-60ad88", "gap-4dd77d"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_symbol_in_a_file_the_task_does_not_read_is_repaired_not_regenerated' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_symbol_in_a_file_the_task_does_not_read_is_repaired_not_regenerated"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:24:13Z"
+commit = "4f2c57f0e"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 4f2c57f0e (branch d21a41d2d; main merged in at 85f7822b9). Post-merge verify in main at 4f2c57f0e: the grep finds the test and a_symbol_in_a_file_the_task_does_not_read_is_repaired_not_regenerated passes (fixtures tests/fixtures/p4_2_symbols: phase 4.2's spec at Undertow 4db168c and its two rejected drafts; each written after one call with the file that holds the symbol among T1's reads, 19 of 19 checks kept). Branch suites at d21a41d2d: roko-cli lib 4011 passed, 0 failed, 7 ignored; plan_generate and plan_policy 189/189; nightly fmt; clippy -p roko-cli -D warnings clean. $0 replay on Undertow 4db168c with a fake planner answering drafts 1, 2 and the as-written plan: before (bug-ce1e4b's binary) 3 planner calls, after 1 call, 19 of 19. A generated task may now read max(3, the files it owns) besides the plan's sources (prompt, PLAN_BUDGET_READ_FILES and the truncation agree); FAST keeps 3."
 +++
 
 ## Problem

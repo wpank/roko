@@ -2495,6 +2495,88 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         }
     }
 
+    /// bug-8bcd98: a model call that failed left no call_cost row, so the
+    /// per-call book lost the call, its time and how it ended: in run
+    /// bdc4461e, T1's two tries lost 4 min of model time to two 120 s
+    /// response waits. A call that times out now writes its row: no tokens,
+    /// no cost, `timeout`, and how long it waited.
+    #[tokio::test]
+    async fn a_call_that_fails_writes_its_call_cost_row() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        // A provider that starts its answer and then never sends a byte.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the provider");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("its address"));
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = crate::graph_task_dispatch::tests::read_mock_request(&mut stream);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                );
+                held.push(stream);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        let mut config = priced_api_config(base_url);
+        config
+            .providers
+            .get_mut("mock_api")
+            .expect("the provider")
+            .ttft_timeout_ms = Some(300);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the call times out");
+
+        let mut rows = Vec::new();
+        while let Ok(envelope) = events.try_recv() {
+            if let DashboardEvent::CallCost {
+                model,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                outcome,
+                wall_ms,
+                ..
+            } = envelope.payload
+            {
+                rows.push((
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    outcome,
+                    wall_ms,
+                ));
+            }
+        }
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let (model, input, output, cost, outcome, wall_ms) = &rows[0];
+        assert_eq!(model, "api-model-1");
+        assert_eq!((*input, *output), (0, 0));
+        assert_eq!(*cost, Some(0.0));
+        assert_eq!(outcome.as_deref(), Some("timeout"));
+        assert!(wall_ms.is_some_and(|ms| ms >= 300), "{wall_ms:?}");
+    }
+
     /// gap-770cb5: an agent in a C++ task runs its task's own checks mid-try
     /// with `run_tests` and `build: "checks"`. It sees the compiler's error,
     /// fixes the file, sees the checks pass, and the try passes first time.

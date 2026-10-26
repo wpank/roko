@@ -14,7 +14,7 @@ last_verified = 2026-10-26
 source = "round-v7 run-analyst from the pilot's phase 5 evidence (tmp/hermes-roko-v7/findings/hermes-pilot.md section R; Undertow run 1f677933), the lead's ask"
 discovered_from = "agent:hermes-pilot (round v7)"
 anchors = ["crates/roko-compose/src/templates/implementer.rs::IMPLEMENTER_ROLE_IDENTITY", "crates/roko-cli/src/dispatch/prompt_builder.rs::LESSON_NOTE", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::stated_lesson", "crates/roko-cli/src/graph_execution/plan_handback.rs::handback_task"]
-links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-7ecea3", "gap-744bd0", "bug-cbbaa8", "bug-2ad4fa"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-7ecea3", "gap-744bd0", "bug-cbbaa8", "bug-2ad4fa", "bug-32f73a", "bug-5e361a", "bug-8b9468"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn implementer_never_changes_what_a_check_measures' crates/roko-compose/src && cargo test -p roko-compose implementer_never_changes_what_a_check_measures"
@@ -164,5 +164,5 @@ showcase audio":
   implementer-prompt fix from round v7.
 - **Related:**
   - bug-fc05a3, the plan-check hand-back this reuses;
-  - roko-exact's two hand-back p2s, filed 2026-10-26: add them to `related` when they land;
+  - roko-exact's three hand-back p2s, filed 2026-10-26: bug-32f73a, bug-5e361a and bug-8b9468;
   - bug-cbbaa8, send back on a red hand-off.

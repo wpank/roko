@@ -2,7 +2,7 @@
 id = "gap-1ba0ac"
 kind = "gap"
 title = "roko's OpenAI tool loop speaks only chat completions, where the GPT-5.4 family refuses reasoning_effort beside function tools (HTTP 400, run 16fc88ae), so no agentic gpt-5.x call reasons: it needs the Responses API (/v1/responses)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -10,7 +10,8 @@ size = "L"
 subsystem = ["roko-agent/provider"]
 created = 2026-10-21
 updated = 2026-10-26
-last_verified = 2026-10-21
+last_verified = 2026-10-26
+last_verified_rev = "f4bb837da"
 source = "round-v7 phase 4 run 16fc88ae (Undertow, 2026-10-21 08:06Z), the lead's decision on bug-29014c"
 discovered_from = "agent:roko-effort (round v7, bug-29014c's first fix; the 400 seen by hermes-pilot and the lead)"
 anchors = ["crates/roko-agent/src/openai_compat_backend.rs::OpenAiCompatLlmBackend", "crates/roko-agent/src/openai_responses.rs::ReasoningLedger", "crates/roko-agent/src/openai_responses.rs::ResponsesTurn", "crates/roko-agent/src/provider/openai_compat.rs::openai_wire", "crates/roko-agent/src/tool_loop/backends/mod.rs::create_observed_openai_compat_backend", "crates/roko-agent/src/translate/openai.rs", "crates/roko-agent/src/provider/openai_compat.rs::build_extra_body_params"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-29014c", "bug-35b190", "
 
 [[verify]]
 command = "grep -rqw 'fn a_gpt5_tool_loop_reasons_on_the_responses_api' crates/roko-agent/src && cargo test -p roko-agent --lib -- a_gpt5_tool_loop_reasons_on_the_responses_api"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:25:39Z"
+commit = "7f8e0648a"
+executor = "claude-agent"
+via = "manual"
+size = "L"
+claimed_at = "2026-10-26T11:30:46Z"
+forced = false
+evidence = "Merged into local main as 7f8e0648a (round v7 roko-effort). Post-merge verify on main's tree at 7f8e0648a: nightly fmt; the 17 targeted tests, among them the [[verify]] test a_gpt5_tool_loop_reasons_on_the_responses_api (factory to /v1/responses, answered and streamed, store false, reasoning.effort medium, flat non-strict tools, 8 reasoning tokens read back); cargo build; clippy -D warnings on roko-core, -agent, -learn, -cli, -serve and -acp; check --tests (roko-agent, roko-acp). Lib suites: roko-acp 237, roko-agent 2414, roko-core 2049, roko-learn 1404 and roko-serve 1084 pass. roko-cli has 4026 passed and 2 failed: frozen_learning_switch_reaches_config_and_manifest and frozen_learning_run_writes_no_learned_state, which are reg-1bf684, failing on main since 754f45ebd and not touched by this change. Proofs (records in tmp/hermes-roko-v7/roko-effort/): (1) unit; (2) a $0 rehearsal through roko run against a stand-in /v1/responses: every request well formed, the probes replayed reasoning, call and output, and a streamed turn that reasoned silently for 200 s was neither cut nor warned; (3) a fenced live check, $0.0041: 5 calls all 200, OpenAI accepted the replayed encrypted reasoning, reasoning tokens 20 (gpt-5.4), 69 (gpt-5.4-mini) and 27 (streamed) at medium, the cost record priced and the verdict medium; (4) an A/B on c4fa953f T4 from base 23e4b6e: reasoning on (Responses, medium) passed in 12 turns for $0.178, and reasoning off (ROKO_OPENAI_RESPONSES=0) failed at its 45-turn bound for $0.215, with the kill switch holding over api = responses."
 +++
 
 ## Problem

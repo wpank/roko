@@ -361,6 +361,12 @@ pub enum DashboardEvent {
         /// How long the call took, in ms; `None` when the loop did not say.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wall_ms: Option<u64>,
+        /// How the call ended (bug-8bcd98): `ok` when it returned a response;
+        /// for one that failed past the loop's retries, `timeout`,
+        /// `rate_limited`, `refused` or `error`, its usage what it streamed,
+        /// else nothing. `None` on a row from before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
     },
     /// The plan-load spec gate started (gap-6a319c): before any task runs,
     /// it scores the plans' tasks and, with `[spec_quality] red_on_base`,
@@ -519,6 +525,27 @@ pub enum DashboardEvent {
         #[serde(default)]
         billing: bool,
         /// The finding in words, with how to probe the rung again now.
+        #[serde(default)]
+        detail: String,
+    },
+    /// A plan the run resumed carried over what earlier processes of its
+    /// run spent (bug-b7f6a8): its budget counts it, so its ceiling caps the
+    /// whole run, not each process. One per plan that resumed with spend.
+    BudgetCarried {
+        /// The plan.
+        plan_id: String,
+        /// What earlier processes of its run spent, in USD, the attempts a
+        /// stopped process left included.
+        carried_usd: f64,
+        /// Of it, what this resume charged the attempts a stopped process
+        /// left in flight: their finished model calls, and each call in
+        /// flight at its estimate.
+        #[serde(default)]
+        settled_usd: f64,
+        /// The plan's budget ceiling, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ceiling_usd: Option<f64>,
+        /// The finding in words.
         #[serde(default)]
         detail: String,
     },
@@ -3708,6 +3735,17 @@ impl DashboardSnapshot {
                 self.push_event_log(
                     ts,
                     "rung_skipped".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::BudgetCarried {
+                plan_id, detail, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "budget_carried".to_string(),
                     plan_id.clone(),
                     String::new(),
                     detail.clone(),

@@ -289,7 +289,8 @@ fn is_http_status_word(word: &str) -> bool {
 /// The order matters: a usage-window refusal mentions limits and quotas, and
 /// a billing message can mention a quota, so both come before the
 /// rate-limit wording (gap-28ceb9); a request the provider refused is named
-/// by its status ([`refusal_class`]), whatever its words say (bug-35b190); a
+/// by its status ([`refusal_class`]) before its words can say a rate limit or a
+/// timeout (bug-35b190); a
 /// login failure comes before the rest, so a CLI that is not logged in is
 /// never retried as a transient error (backlog 1113).
 #[must_use]
@@ -299,7 +300,7 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
     } else if is_billing_message(lower) {
         "insufficient_credits"
     } else if let Some(status) = refused_request_status(lower) {
-        refusal_class(status)
+        refusal_class(status, lower)
     } else if lower.contains("model not found") {
         "model_not_found"
     } else if is_auth_failure_text(lower) {
@@ -506,16 +507,31 @@ pub fn classify_http_refusal(provider: &str, status: u16, body: &str) -> Provide
     }
 }
 
-/// The failure class of a request a provider refused with HTTP `status`
-/// (bug-35b190): `auth_failure` for a 401 or 403 (a bad key, or a key that may
-/// not use the model), `model_not_found` for a 404, else `request_refused`.
+/// The failure class of a request a provider refused with HTTP `status` and
+/// the lowercase words `lower` (bug-35b190): `auth_failure` for a 401, which
+/// asks who the caller is, and for a 403 whose words say the credential
+/// itself is invalid or revoked; `model_not_found` for a 404; else
+/// `request_refused`. A 403 is most often "you may not do this": no access to
+/// this model for the project, a region block or an org policy, scoped to the
+/// model or the request, not the provider (bug-80f0d0).
 #[must_use]
-pub const fn refusal_class(status: u16) -> &'static str {
+pub fn refusal_class(status: u16, lower: &str) -> &'static str {
     match status {
-        401 | 403 => "auth_failure",
+        401 => "auth_failure",
+        403 if is_invalid_credential_text(lower) => "auth_failure",
         404 => "model_not_found",
         _ => "request_refused",
     }
+}
+
+/// Whether lowercase words say the credential itself is invalid or revoked,
+/// not that it may not do this one thing.
+fn is_invalid_credential_text(lower: &str) -> bool {
+    lower.contains("invalid api key")
+        || lower.contains("invalid_api_key")
+        || lower.contains("incorrect api key")
+        || lower.contains("revoked")
+        || lower.contains("unauthenticated")
 }
 
 /// The HTTP status of the refused request lowercase failure text reports, as

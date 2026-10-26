@@ -2819,6 +2819,82 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert_eq!(invocations(&calls), 0, "nothing failed over");
     }
 
+    /// bug-80f0d0: in phase 4's run 16fc88ae three HTTP 400 refusals of
+    /// gpt-5.4-mini's request opened the openai circuit, so routing skipped
+    /// gpt-5.4 as well. A refused request is the request's fault or its
+    /// model's: three refusals of api-model's request, a 403 that refuses
+    /// the model among them, leave the provider's circuit closed, and the
+    /// next try, on another model of the same provider, is dispatched and
+    /// completes the task.
+    #[tokio::test]
+    async fn refused_requests_leave_the_providers_circuit_closed() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let refused = refused_turn(
+            400,
+            serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for \
+                            gpt-5.4-mini in /v1/chat/completions.",
+                "type": "invalid_request_error",
+                "param": "reasoning_effort",
+                "code": null
+            } }),
+        );
+        let no_access = refused_turn(
+            403,
+            serde_json::json!({ "error": {
+                "message": "Project `proj_1` does not have access to model `api-model-1`",
+                "type": "invalid_request_error",
+                "code": "model_not_found"
+            } }),
+        );
+        let (base_url, requests) = spawn_openai_mock(vec![
+            refused.clone(),
+            no_access,
+            refused,
+            tool_call_turn(
+                "call-write",
+                "write_file",
+                serde_json::json!({ "path": "hello.txt", "content": "hi from the other model" }),
+            ),
+            final_turn("wrote hello.txt"),
+        ]);
+        let mut config = rate_limited_config(&claude, &base_url);
+        // The provider's other model, as gpt-5.4 is beside gpt-5.4-mini.
+        let mut other = config.models["api-model"].clone();
+        other.slug = "api-model-2".to_string();
+        config.models.insert("api-model-full".to_string(), other);
+        let dispatcher = rate_limited_dispatcher(config, &temp, &workdir).await;
+        let ctx = CellContext::new().with_cell_id("T08".to_string());
+
+        for _ in 0..3 {
+            let cell = failover_cell_with_retries(Arc::clone(&dispatcher), "api-model", 0);
+            cell.execute(Vec::new(), &ctx)
+                .await
+                .expect_err("the provider refuses the request");
+        }
+        assert_eq!(requests.lock().len(), 3, "each refused request once");
+        let health = &dispatcher.factory.health_registry;
+        assert!(
+            health.is_available("mock_api"),
+            "{:?}",
+            health.get("mock_api")
+        );
+
+        let cell = failover_cell_with_retries(Arc::clone(&dispatcher), "api-model-full", 0);
+        let output = cell
+            .execute(Vec::new(), &ctx)
+            .await
+            .expect("the provider's other model runs the task");
+        assert_eq!(output[0].body.as_text().expect("text"), "wrote hello.txt");
+        assert_eq!(requests.lock().len(), 5);
+        assert_eq!(invocations(&calls), 0, "nothing failed over");
+    }
+
     /// A stand-in provider that serves `capacity` calls at once, each after
     /// `hold`, with `answer`, and refuses any call beyond them with HTTP 429
     /// and a `Retry-After` of one second, as z.ai refuses calls past an

@@ -1850,6 +1850,17 @@ pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
             out,
             "  {completed} of {total} tasks completed, {failed} failed"
         );
+        // Calls whose cost is unknown, which the spend leaves out
+        // (gap-2bec05).
+        let unpriced = run_state.unpriced_calls;
+        if unpriced > 0 {
+            let calls = run_state.total_agent_calls.max(unpriced);
+            let suffix = plural(calls);
+            let _ = writeln!(
+                out,
+                "  {unpriced} of {calls} agent call{suffix} unpriced: cost unknown, not in the spend"
+            );
+        }
     }
 
     let shown: Vec<&TaskDiagnosis> = report
@@ -2901,6 +2912,54 @@ title = "Tidy the changelog"
         let verbose = render_text(&report, true);
         let completed = "T1 [completed] Write the parser";
         assert!(verbose.contains(completed), "{verbose}");
+    }
+
+    /// gap-2bec05: the report counts the run's agent calls whose cost is
+    /// unknown, which its spend leaves out, in its JSON and in its text. An
+    /// earlier run's unpriced call is not the run's, and a call priced at $0
+    /// is free, not unpriced.
+    #[test]
+    fn diagnose_reports_unpriced_call_count() {
+        let workspace = failed_run();
+        let costs = workspace.path().join(".roko/learn/costs.jsonl");
+        let earlier = CostRecord {
+            priced: Some(false),
+            ..attempt("T2", "2026-09-28T09:10:00+00:00", false, 0.0)
+        };
+        roko_core::io::append_jsonl(&costs, &earlier).expect("append");
+
+        // T2's first attempt in the run recorded $0 for its tokens.
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        let run_state = report.run_state.as_ref().expect("run state");
+        assert_eq!(run_state.unpriced_calls, 1);
+        assert_eq!(run_state.total_agent_calls, 3);
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(json["run_state"]["unpriced_calls"], 1);
+        let text = render_text(&report, false);
+        let line = "\n  1 of 3 agent calls unpriced: cost unknown, not in the spend\n";
+        assert!(text.contains(line), "{text}");
+
+        let free = CostRecord {
+            priced: Some(true),
+            ..attempt("T2", "2026-09-29T07:20:00.100+00:00", false, 0.0)
+        };
+        write_jsonl(
+            &costs,
+            &[
+                earlier,
+                attempt("T1", "2026-09-29T07:10:00.000+00:00", true, 0.25),
+                free,
+            ],
+        );
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        assert_eq!(
+            report.run_state.as_ref().expect("run state").unpriced_calls,
+            0
+        );
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(json["run_state"]["unpriced_calls"], 0);
+        let text = render_text(&report, false);
+        assert!(!text.contains("unpriced"), "{text}");
     }
 
     /// gap-baab0a: an attempt's tool policy, recorded in its verdict in the

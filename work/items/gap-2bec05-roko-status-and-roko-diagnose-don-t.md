@@ -54,6 +54,14 @@ The counter is tracked and used internally for budget-ceiling logic (see the sep
 (`crates/roko-cli/src/runtime_feedback/episodes.rs:309-312`, key `"helper_unpriced_calls"`), but never read back by
 `status` or `diagnose`.
 
+2026-10-26: the source report described gap-f548c1's branch, which merged after this item was written.
+`3eed76595` (backlog 2109) made `roko status`'s text print `Unpriced: N calls` in its cost summary
+(`CostsLog::unpriced_calls` over `.roko/learn/costs.jsonl`) and gave `roko diagnose`'s JSON
+`run_state.unpriced_calls` (the run's `costs.jsonl` rows, counted with `roko_learn::costs_log::is_unpriced`). Still
+missing then: `roko status --json` had no count, `roko diagnose`'s text had no line, and no test covered either
+command. The budget ledger's counters live only in the running process, so `costs.jsonl` stays the one source both
+commands read.
+
 ## Plan
 
 1. Pick one existing source of truth for "how many of this plan's calls were unpriced" (the budget ledger's live

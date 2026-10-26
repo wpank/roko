@@ -1,7 +1,7 @@
 //! util command handlers.
 
 use crate::*;
-use roko_cli::status::{StatusDiagnostic, collect_session_status};
+use roko_cli::status::{StatusDiagnostic, collect_session_status, unpriced_calls_summary};
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
@@ -803,7 +803,12 @@ pub(crate) async fn cmd_status(
         None
     };
     // Calls whose cost is unknown, which the total leaves out (backlog 2109).
-    let unpriced_calls = costs_log.unpriced_calls().await.unwrap_or(0);
+    // Text and JSON both report them (gap-2bec05).
+    let unpriced_calls = if total_cost_usd.is_some() {
+        costs_log.unpriced_calls().await.ok()
+    } else {
+        None
+    };
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -936,6 +941,7 @@ pub(crate) async fn cmd_status(
         status.cfactor = cfactor_snapshot;
         status.total_cost_usd = total_cost_usd;
         status.estimated_cost_usd = estimated_cost_usd;
+        status.unpriced_calls = unpriced_calls;
         status.today_cost_usd = today_cost_usd;
         status.diagnostics.extend(cost_diagnostics.iter().cloned());
 
@@ -1194,10 +1200,8 @@ pub(crate) async fn cmd_status(
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
         }
-        if unpriced_calls > 0 {
-            println!(
-                "  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total"
-            );
+        if let Some(calls) = unpriced_calls.filter(|calls| *calls > 0) {
+            println!("  Unpriced: {}", unpriced_calls_summary(calls));
         }
         if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
             println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");

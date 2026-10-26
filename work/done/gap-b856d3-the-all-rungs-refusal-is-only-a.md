@@ -2,7 +2,7 @@
 id = "gap-b856d3"
 kind = "gap"
 title = "The all-rungs refusal is only a RokoError string: give the refused try a typed outcome, all_rungs_skipped, in its verdict and the run summary, so a host can show it and offer a resume only when a recharge can fix it (gap-20301d's follow-up)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch", "roko-serve/routes"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "db3fd4363"
 source = "round-v7-lead#all-rungs-skipped-kind"
 discovered_from = "agent:team-lead (round v7, 2026-10-26: gap-20301d's approval, item 2)"
 anchors = ["crates/roko-learn/src/telemetry/records.rs::AttemptOutcome", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::unroutable", "crates/roko-serve/src/routes/runs.rs::run_summary"]
@@ -21,6 +22,13 @@ command = "grep -rqw 'fn a_task_the_ladder_routes_is_refused_when_every_rung_fai
 
 [[verify]]
 command = "grep -rqw 'fn a_runs_summary_names_an_all_rungs_skipped_refusal' crates/roko-serve/src && cargo test -p roko-serve --lib -- a_runs_summary_names_an_all_rungs_skipped_refusal"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:33:10Z"
+commit = "b4eaedd4f"
+forced = false
+evidence = "b4eaedd4f: AttemptOutcome::AllRungsSkipped (all_rungs_skipped, blame harness, no learning label); Settlement::harness_failure recognises gap-20301d's refusal by ladder::NO_RUNG_CAN_RUN, so the refused try's verdict, failure_class.kind and attempt_settled carry it; the run summary's refused is {stage: ladder, kind: all_rungs_skipped, reason, billing_only} for a failed run, billing_only when every skipped rung failed on its provider's billing (a recharge and a resume fix it, bug-374384). Tests: a_task_the_ladder_routes_is_refused_when_every_rung_failed_its_probe now checks the verdict rows (all_rungs_skipped/harness, and the pinned task's gate_failed/agent); a_runs_summary_names_an_all_rungs_skipped_refusal (billing_only true, then false with a non-billing rung). Red not run (by construction). Checked together on work/ladder-stack-test with main merged in (e7a860dc0, 2026-10-26): the four items' tests and their neighbours pass (18), roko-cli lib 4022/0 (share_run_scrubs_output_text_and_prompt skipped), roko-core 2049/0, roko-learn 1404/0, roko-serve 1084/0; clippy -D warnings (roko-core, roko-learn, roko-serve, roko-cli) and nightly fmt clean; CARGO_INCREMENTAL=0."
 +++
 
 ## Problem

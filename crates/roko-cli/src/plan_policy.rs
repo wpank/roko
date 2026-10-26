@@ -856,10 +856,11 @@ pub fn validate_plan_context(
 /// changes to those files as `workspace_root` holds them, once that task has
 /// run (bug-7ff055). The planner wrote the ranges before the files changed: a
 /// range that runs past the end of its file is cut at the file's last line,
-/// and one that starts past it becomes an unranged entry, which shows the file
-/// within the context budget. A range in a file no earlier task changes, or a
-/// malformed one, is left for [`render_declared_context`] to refuse. Returns
-/// one line per range it changed, for the log.
+/// and one that covers the whole file or starts past its end becomes an
+/// unranged entry, which shows the file within the context budget
+/// ([`fit_range`]). A range in a file no earlier task changes, or a malformed
+/// one, is left for [`render_declared_context`] to refuse. Returns one line
+/// per range it changed, for the log.
 pub(crate) fn fit_ranges_to_earlier_changes(
     task: &mut TaskDef,
     plan: &TasksFile,
@@ -915,11 +916,14 @@ pub(crate) fn fit_ranges_to_files(plan: &mut TasksFile, workspace_root: &Path) -
     fitted
 }
 
-/// Fit `read_file`'s line range to its file as `workspace_root` holds it: a
-/// range that runs past the end of the file is cut at its last line, and one
-/// that starts past it becomes an unranged entry, which shows the file within
-/// the context budget. A range inside the file, or a malformed one, is left
-/// alone. Returns what changed, for the log.
+/// Fit `read_file`'s line range to its file as `workspace_root` holds it. A
+/// range that covers the whole file, from its first line to its end or past
+/// it, and one that starts past the end, become an unranged entry: the whole
+/// file as it is when the prompt is built, within the context budget, so a
+/// try on a tree where the file has grown sees its new lines (bug-c5f406).
+/// Any other range that runs past the end is cut at the file's last line. A
+/// range inside the file, or a malformed one, is left alone. Returns what
+/// changed, for the log.
 fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> {
     let range = read_file.lines.clone()?;
     let relative = validate_repo_relative_path(&read_file.path).ok()?;
@@ -929,7 +933,8 @@ fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> 
     }
     let content = std::fs::read_to_string(workspace_root.join(relative)).ok()?;
     let line_count = content.lines().count();
-    let lines = if start > line_count {
+    let whole = start == 1 && end.is_none_or(|end| end >= line_count);
+    let lines = if whole || start > line_count {
         None
     } else if end.is_some_and(|end| end > line_count) {
         Some(format!("{start}-{line_count}"))
@@ -1086,7 +1091,8 @@ pub fn render_declared_context(
 /// out, is followed by a line naming the lines not shown, for the agent to
 /// read itself: `[docs/specs/phase-4-ui.md lines 212-264 not shown: read_file
 /// them]`. A file declared without a range shows up to the policy's line
-/// limit.
+/// limit, and one whose range starts at its first line names the lines it has
+/// past that range (bug-c5f406).
 pub fn render_declared_files(
     task: &TaskDef,
     workspace_root: &Path,
@@ -1111,9 +1117,19 @@ pub fn render_declared_files(
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
         let mut ranges = Vec::new();
+        // A range from the first line reads the file from its top, and the
+        // lines a file has grown past it, on a try's kept tree or by an
+        // earlier task, are named rather than left out without a word
+        // (bug-c5f406). A range that starts further in is a part the planner
+        // chose.
+        let mut past_range = None;
         if let Some(range) = read_file.lines.as_deref() {
             let (start, end) = parse_line_range(range, total)?;
-            ranges.push((start, end.unwrap_or(total)));
+            let end = end.unwrap_or(total);
+            ranges.push((start, end));
+            if start == 1 && end < total {
+                past_range = Some((end + 1, total));
+            }
         }
         for anchor in &anchors {
             if let Some(line) = find_anchor_line(&content, anchor) {
@@ -1129,7 +1145,11 @@ pub fn render_declared_files(
                 hidden.push((policy.max_range_lines + 1, total));
             }
         }
-        let blocks = merge_ranges(ranges)
+        let ranges = merge_ranges(ranges);
+        if let Some((from, to)) = past_range {
+            hidden.extend(lines_not_in(from, to, &ranges));
+        }
+        let blocks = ranges
             .into_iter()
             .filter(|(start, end)| start <= end)
             .map(|(start, end)| {
@@ -1549,6 +1569,26 @@ fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     merged
 }
 
+/// The parts of lines `from..=to` that none of `ranges`, sorted and merged,
+/// covers.
+fn lines_not_in(from: usize, to: usize, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut parts = Vec::new();
+    let mut next = from;
+    for &(start, end) in ranges {
+        if start > to {
+            break;
+        }
+        if start > next {
+            parts.push((next, start - 1));
+        }
+        next = next.max(end.saturating_add(1));
+    }
+    if next <= to {
+        parts.push((next, to));
+    }
+    parts
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| {
         matches!(
@@ -1914,6 +1954,116 @@ mod tests {
         assert!(
             error.contains("is outside `src/other.py` (17 lines)"),
             "{error}"
+        );
+    }
+
+    /// bug-c5f406: phase 4.3's T2 declared `plugin/ui/Displays.cpp` as
+    /// `1-254`, the planner's `1-260` cut to the file's length when the plan
+    /// was written. Its third try ran on a kept tree where the file had 290
+    /// lines, and its prompt showed lines 1-247 and named 248-254 only. A
+    /// range that covers its whole file when the plan is written now becomes
+    /// the whole file, shown as it is when the prompt is built; a plan
+    /// written with such a range names the lines past it, with any cut's; a
+    /// part the planner chose stays as it is.
+    #[test]
+    fn a_grown_file_shows_or_names_the_lines_past_its_planned_range() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+            write_lines(root.path(), path, 10, 12);
+        }
+        let planned = |path: &str, lines: &str| ReadFile {
+            path: path.into(),
+            lines: Some(lines.into()),
+            why: "planned".into(),
+        };
+        let mut reader = unranged_task(&[]);
+        reader.context.as_mut().expect("context").read_files = vec![
+            planned("src/a.rs", "1-10"),
+            planned("src/b.rs", "1-12"),
+            planned("src/c.rs", "3-6"),
+        ];
+        let mut plan = tasks(reader);
+        assert_eq!(
+            fit_ranges_to_files(&mut plan, root.path()),
+            [
+                "T1: `1-10` of `src/a.rs` (10 lines) became the whole file",
+                "T1: `1-12` of `src/b.rs` (10 lines) became the whole file",
+            ]
+        );
+
+        // A try's tree, where each file has grown to 15 lines.
+        for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+            write_lines(root.path(), path, 15, 12);
+        }
+        let policy = PlanExecutionPolicy::normal();
+        let room = policy.max_declared_context_bytes;
+        let shown = render_declared_files(&plan.tasks[0], root.path(), policy, room, &[])
+            .expect("the fitted plan renders");
+        for whole in ["src/a.rs", "src/b.rs"] {
+            assert!(
+                shown.contains(&format!("path=\"{whole}\" lines=\"1-15\" total=\"15\"")),
+                "{shown}"
+            );
+        }
+        assert!(
+            shown.contains("path=\"src/c.rs\" lines=\"3-6\" total=\"15\""),
+            "{shown}"
+        );
+        assert!(!shown.contains("not shown: read_file them]"), "{shown}");
+
+        // A plan written with the file's own range names the lines past it.
+        let mut written = plan.tasks[0].clone();
+        written.context.as_mut().expect("context").read_files =
+            vec![planned("src/a.rs", "1-10"), planned("src/c.rs", "3-6")];
+        let shown = render_declared_files(&written, root.path(), policy, room, &[])
+            .expect("the written plan renders");
+        assert!(shown.contains("lines=\"1-10\" total=\"15\""), "{shown}");
+        assert!(
+            shown.contains("[src/a.rs lines 11-15 not shown: read_file them]\n"),
+            "{shown}"
+        );
+        assert!(!shown.contains("[src/c.rs"), "{shown}");
+
+        // Lines an anchor shows past the range are not named.
+        let text = (1..=30)
+            .map(|n| match n {
+                25 => "struct Grown;\n".to_string(),
+                _ => format!("// line {n}\n"),
+            })
+            .collect::<String>();
+        std::fs::write(root.path().join("src/a.rs"), text).expect("write source");
+        let mut anchored = written.clone();
+        let context = anchored.context.as_mut().expect("context");
+        context.read_files = vec![planned("src/a.rs", "1-10")];
+        context.symbols = vec!["exact:Grown".into()];
+        let shown = render_declared_files(&anchored, root.path(), policy, room, &[])
+            .expect("the anchored plan renders");
+        assert!(shown.contains("lines=\"17-30\" total=\"30\""), "{shown}");
+        assert!(
+            shown.contains("[src/a.rs lines 11-16 not shown: read_file them]\n"),
+            "{shown}"
+        );
+
+        // T2#3's cut: the note names the lines past the range with its own.
+        write_lines(root.path(), "src/a.rs", 290, 12);
+        written.context.as_mut().expect("context").read_files = vec![planned("src/a.rs", "1-254")];
+        let short = render_declared_files(&written, root.path(), policy, 4_000, &[])
+            .expect("the cut renders");
+        let tag = "path=\"src/a.rs\" lines=\"1-";
+        let at = short.find(tag).expect("the cut block") + tag.len();
+        let last: usize = short[at..]
+            .split('"')
+            .next()
+            .and_then(|end| end.parse().ok())
+            .expect("its last line");
+        assert!(last < 254, "{short}");
+        assert!(
+            short.contains(&format!(
+                "[src/a.rs lines {}-290 not shown: read_file them]\n",
+                last + 1
+            )),
+            "{short}"
         );
     }
 

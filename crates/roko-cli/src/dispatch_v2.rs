@@ -1624,6 +1624,14 @@ impl AgentDispatcherV2 {
         let forwarder_tx = event_tx.clone();
         let forwarder = tokio::spawn(async move {
             while let Some(stream_event) = chunk_rx.recv().await {
+                // An empty reasoning delta only says a reasoning model's call
+                // is alive (gap-1ba0ac): there is nothing in it to show.
+                if matches!(
+                    &stream_event.kind,
+                    roko_agent::tool_loop::StreamEventKind::ReasoningDelta(text) if text.is_empty()
+                ) {
+                    continue;
+                }
                 let chunk = stream_chunk_from_event(stream_event);
                 let event = agent_event_from_chunk(chunk);
                 if forwarder_tx.send(event).await.is_err() {
@@ -2313,6 +2321,19 @@ pub trait CallAllowance: Send + Sync + fmt::Debug {
         self.record_call(f64::from(usage.cost_usd), priced);
     }
 
+    /// [`Self::record_model_call`], with the call's finish reason and how
+    /// long it took (gap-1ba0ac), for an allowance that reports each call.
+    fn record_finished_call(
+        &self,
+        model: &str,
+        usage: &roko_core::Usage,
+        priced: bool,
+        facts: roko_agent::tool_loop::CallFacts<'_>,
+    ) {
+        let _ = facts;
+        self.record_model_call(model, usage, priced);
+    }
+
     /// The most the attempt can still spend, in USD, for an agent that runs
     /// its own loop and keeps a spend limit of its own, as the Claude CLI
     /// does (gap-e14344); `None` without one.
@@ -2344,12 +2365,16 @@ impl roko_agent::tool_loop::TurnBudget for PricedCalls {
     }
 
     fn record_turn(&self, usage: &roko_core::Usage) {
+        self.record_call(usage, roko_agent::tool_loop::CallFacts::default());
+    }
+
+    fn record_call(&self, usage: &roko_core::Usage, facts: roko_agent::tool_loop::CallFacts<'_>) {
         let mut usage = *usage;
         let pricing = price_target_usage(&mut usage, &self.target, self.snapshot.as_deref());
         // A call that used no tokens cost nothing, priced or not.
         let priced = pricing != CallPricing::Unpriced || usage.has_known_cost();
         self.allowance
-            .record_model_call(&self.target.model_slug, &usage, priced);
+            .record_finished_call(&self.target.model_slug, &usage, priced, facts);
     }
 }
 

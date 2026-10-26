@@ -56,7 +56,8 @@ impl roko_agent::Agent for CheapFactoryAgent {
             mcp_config: None,
             env: vec![],
             extra_args: vec![],
-            effort: None,
+            // A short answer needs little reasoning (gap-1ba0ac).
+            effort: Some(crate::learning_helpers::HELPER_EFFORT.to_string()),
             tools: None,
             agent_contract: None,
             bare_mode: false,

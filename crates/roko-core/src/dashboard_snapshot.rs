@@ -351,6 +351,16 @@ pub enum DashboardEvent {
         /// included.
         #[serde(default)]
         attempt_cost_usd: f64,
+        /// The reasoning tokens inside `output_tokens` (gap-1ba0ac).
+        #[serde(default)]
+        reasoning_tokens: u64,
+        /// Why the call ended, as its provider named it; `None` when the
+        /// loop did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+        /// How long the call took, in ms; `None` when the loop did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_ms: Option<u64>,
     },
     /// The plan-load spec gate started (gap-6a319c): before any task runs,
     /// it scores the plans' tasks and, with `[spec_quality] red_on_base`,

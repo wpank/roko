@@ -12,8 +12,8 @@ use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use crate::http::{HttpPostError, HttpPoster};
 use crate::live_output::LiveOutput;
 use crate::provider::openai_compat::{
-    base_url_for_tool_loop, build_extra_body_params, max_tokens_for_model, resolve_api_key,
-    should_use_max_completion_tokens,
+    base_url_for_tool_loop, build_extra_body_params, max_tokens_for_model, openai_wire,
+    resolve_api_key, should_use_max_completion_tokens,
 };
 use crate::provider::{AgentCreationError, current_safety_layer};
 use crate::rate_limit::ProviderRateLimiter;
@@ -86,7 +86,10 @@ pub fn create_observed_openai_compat_backend(
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind)
-                .with_live_output(live_output);
+                .with_live_output(live_output)
+                // OpenAI's reasoning models reason beside tools only on the
+                // Responses API (gap-1ba0ac).
+                .with_wire(openai_wire(provider, model));
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }
@@ -213,7 +216,8 @@ pub fn create_openai_compat_backend_with_limiter(
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind)
-                .with_rate_limiter(rate_limiter);
+                .with_rate_limiter(rate_limiter)
+                .with_wire(openai_wire(provider, model));
             Ok(Arc::new(backend))
         }
         ProviderKind::CerebrasApi => {
@@ -682,6 +686,7 @@ mod tests {
             temperature: None,
             seed: None,
             reasoning_effort: None,
+            api: None,
         };
         let backend = create_tool_loop_backend(
             &provider,

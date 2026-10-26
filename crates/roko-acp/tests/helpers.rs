@@ -338,6 +338,7 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
             temperature: None,
             seed: None,
             reasoning_effort: None,
+            api: None,
         },
     );
     config

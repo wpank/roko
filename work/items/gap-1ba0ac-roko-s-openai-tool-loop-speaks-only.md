@@ -4,16 +4,16 @@ kind = "gap"
 title = "roko's OpenAI tool loop speaks only chat completions, where the GPT-5.4 family refuses reasoning_effort beside function tools (HTTP 400, run 16fc88ae), so no agentic gpt-5.x call reasons: it needs the Responses API (/v1/responses)"
 status = "open"
 triage = "verified"
-severity = "p2"
+severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-agent/provider"]
 created = 2026-10-21
-updated = 2026-10-21
+updated = 2026-10-26
 last_verified = 2026-10-21
 source = "round-v7 phase 4 run 16fc88ae (Undertow, 2026-10-21 08:06Z), the lead's decision on bug-29014c"
 discovered_from = "agent:roko-effort (round v7, bug-29014c's first fix; the 400 seen by hermes-pilot and the lead)"
-anchors = ["crates/roko-agent/src/openai_compat_backend.rs::OpenAiCompatLlmBackend", "crates/roko-agent/src/tool_loop/backends/mod.rs::create_observed_openai_compat_backend", "crates/roko-agent/src/translate/openai.rs", "crates/roko-agent/src/provider/openai_compat.rs::build_extra_body_params"]
+anchors = ["crates/roko-agent/src/openai_compat_backend.rs::OpenAiCompatLlmBackend", "crates/roko-agent/src/openai_responses.rs::ReasoningLedger", "crates/roko-agent/src/openai_responses.rs::ResponsesTurn", "crates/roko-agent/src/provider/openai_compat.rs::openai_wire", "crates/roko-agent/src/tool_loop/backends/mod.rs::create_observed_openai_compat_backend", "crates/roko-agent/src/translate/openai.rs", "crates/roko-agent/src/provider/openai_compat.rs::build_extra_body_params"]
 links = { depends_on = [], blocks = [], related = ["bug-29014c", "bug-35b190", "bug-cbbaa8"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -96,6 +96,32 @@ each point against the live API first.
 - **Tool turns:** each next request has to carry the previous turn's output items, its reasoning items (with
   `encrypted_content` when `store` is false) and the `function_call_output` items. Otherwise the model loses its
   reasoning between tool calls. `previous_response_id` is the stored alternative.
+
+### Built (2026-10-26, round v7 roko-effort, the lead's approved design)
+
+- **Choice:** `[models.*] api = "chat_completions" | "responses"` (`OpenAiApi` in roko-core's config, also in
+  roko-cli's `ModelProfileLayer`). Unset, `openai_wire` picks Responses for an OpenAI reasoning slug on OpenAI's own
+  endpoint (no base_url, or host `api.openai.com`) and chat completions for everything else. A proxy or tee in front
+  of OpenAI needs `api = "responses"`. `ROKO_OPENAI_RESPONSES=0` sends every model through chat completions
+  (`roko config env`).
+- **Backend:** `OpenAiCompatLlmBackend::with_wire`, set by both tool-loop factories. The translation is in
+  `crates/roko-agent/src/openai_responses.rs`:
+  - history → stateless request (`store: false`, `include: ["reasoning.encrypted_content"]`, system → `instructions`,
+    flat tools with `strict: false`, `reasoning.effort`, `max_output_tokens`);
+  - a whole or streamed answer → chat-completions JSON and stream events;
+  - `ReasoningLedger` keeps each turn's output items and replays its encrypted reasoning before its function calls.
+  The rate limiter keys both APIs by the chat endpoint.
+- **Stall:** an empty `ReasoningDelta` on `response.in_progress` and on a reasoning item's start. While a reasoning
+  item is open, the stream waits up to `REASONING_SILENCE` (10 min) and says it is alive every
+  `REASONING_HEARTBEAT` (30 s); the watchdog counts that as progress. Empty deltas count for nothing else (TTFT,
+  gap-f3f950's reasoning cut, the TUI, `run_agent_streaming`).
+- **Effort:** helpers (`CheapFactoryAgent`) and the distiller ask `low`; tries keep bug-29014c's precedence. The
+  verdict records the effort sent (`none` for a tool model on chat completions).
+- **call_cost:** gains `reasoning_tokens`, `finish_reason` and `wall_ms` (`TurnBudget::record_call`, `CallFacts`).
+- **Proofs:** the unit tests (the `[[verify]]` among them); a $0 rehearsal through `roko run` against a stand-in
+  `/v1/responses` whose streamed turn reasoned silently for 200 s (not cut, no watchdog warning); a fenced live check
+  (2 probes each on gpt-5.4 and gpt-5.4-mini, 1 streamed tool turn; all 200, replays accepted, reasoning tokens
+  20/69/27 at medium, $0.004). Records: `tmp/hermes-roko-v7/roko-effort/responses/checks/`.
 
 ## Plan
 

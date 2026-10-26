@@ -38,7 +38,7 @@ use crate::translate::capability::{cap_tools_for_profile, translator_for_openai_
 use roko_core::agent::{ProviderKind, ReasoningEffort};
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
-use roko_core::config::schema::{ModelProfile, ProviderConfig};
+use roko_core::config::schema::{ModelProfile, OpenAiApi, ProviderConfig};
 use roko_core::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 use roko_core::tool::aliases::canonical_of_claude;
 use roko_core::tool::{ToolDef, ToolRegistry, ToolSource, VecToolRegistry};
@@ -293,15 +293,25 @@ fn inject_reasoning_effort(body: &mut Map<String, Value>, model: &ModelProfile) 
 }
 
 /// The `reasoning_effort` roko sends with each request to `model` on
-/// `provider`, for an attempt's record (bug-29014c). `none` for a model that
-/// calls tools: its requests carry function tools, so they carry no effort
-/// and the API's default applies. `None` when no effort applies at all: to a
-/// model that is no OpenAI reasoning model, or to a provider other than the
-/// OpenAI-compatible and Cerebras ones.
+/// `provider`, for an attempt's record (bug-29014c). On the Responses API it
+/// goes with every request (gap-1ba0ac). On chat completions it is `none`
+/// for a model that calls tools: its requests carry function tools, so they
+/// carry no effort and the API's default applies. `None` when no effort
+/// applies at all: to a model that is no OpenAI reasoning model, or to a
+/// provider other than the OpenAI-compatible and Cerebras ones.
 #[must_use]
 pub fn request_reasoning_effort(
     provider: &ProviderConfig,
     model: &ModelProfile,
+) -> Option<&'static str> {
+    request_reasoning_effort_on(provider, model, openai_wire(provider, model))
+}
+
+/// [`request_reasoning_effort`], for requests that go through `wire`.
+fn request_reasoning_effort_on(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    wire: OpenAiApi,
 ) -> Option<&'static str> {
     if !matches!(
         provider.kind,
@@ -310,10 +320,64 @@ pub fn request_reasoning_effort(
     {
         return None;
     }
-    if model.supports_tools {
+    if model.supports_tools && wire == OpenAiApi::ChatCompletions {
         return Some("none");
     }
     reasoning_effort_param(model)
+}
+
+/// The environment variable that turns the Responses API off for every
+/// model: `0` (or `false`, `no`, `off`) calls each through chat completions
+/// whatever its `[models.*] api` says (gap-1ba0ac).
+pub const OPENAI_RESPONSES_ENV: &str = "ROKO_OPENAI_RESPONSES";
+
+/// The OpenAI API roko's tool loop calls `model` on `provider` through
+/// (gap-1ba0ac): the model's own `api`, else the Responses API for an OpenAI
+/// reasoning model on OpenAI's own endpoint, the only API where it reasons
+/// beside function tools, else chat completions. [`OPENAI_RESPONSES_ENV`]
+/// set to `0` turns the Responses API off for every model.
+#[must_use]
+pub fn openai_wire(provider: &ProviderConfig, model: &ModelProfile) -> OpenAiApi {
+    let disabled = std::env::var(OPENAI_RESPONSES_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    });
+    openai_wire_unless(provider, model, disabled)
+}
+
+/// [`openai_wire`], with the Responses API turned off when `disabled`.
+fn openai_wire_unless(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    disabled: bool,
+) -> OpenAiApi {
+    if disabled || provider.kind != ProviderKind::OpenAiCompat {
+        return OpenAiApi::ChatCompletions;
+    }
+    if let Some(api) = model.api {
+        return api;
+    }
+    if is_openai_reasoning_model(&model.slug) && is_openai_endpoint(provider) {
+        OpenAiApi::Responses
+    } else {
+        OpenAiApi::ChatCompletions
+    }
+}
+
+/// Whether `provider` calls OpenAI's own API: no `base_url`, which defaults
+/// to it, or one on `api.openai.com`.
+fn is_openai_endpoint(provider: &ProviderConfig) -> bool {
+    provider.base_url.as_deref().is_none_or(|base_url| {
+        let host = base_url
+            .split_once("://")
+            .map_or(base_url, |(_, rest)| rest)
+            .split(['/', ':'])
+            .next()
+            .unwrap_or_default();
+        host.eq_ignore_ascii_case("api.openai.com")
+    })
 }
 
 /// The request-body keys that set sampling.
@@ -2558,16 +2622,26 @@ done
         let compat = provider(ProviderKind::OpenAiCompat);
         let high = at("gpt-5.4", ReasoningEffort::High);
         assert_eq!(request_reasoning_effort(&compat, &high), Some("high"));
-        // A model that calls tools sends function tools with each request,
-        // and so no effort.
+        // A model that calls tools sends function tools with each request:
+        // through chat completions they go without an effort, and the
+        // Responses API takes both (gap-1ba0ac).
         let calls_tools = ModelProfile {
             supports_tools: true,
             ..high.clone()
         };
         assert_eq!(
-            request_reasoning_effort(&compat, &calls_tools),
+            request_reasoning_effort_on(&compat, &calls_tools, OpenAiApi::ChatCompletions),
             Some("none")
         );
+        assert_eq!(
+            request_reasoning_effort_on(&compat, &calls_tools, OpenAiApi::Responses),
+            Some("high")
+        );
+        let local = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9/v1".to_string()),
+            ..compat.clone()
+        };
+        assert_eq!(request_reasoning_effort(&local, &calls_tools), Some("none"));
         let glm = ModelProfile {
             slug: "glm-4.7".to_string(),
             ..calls_tools
@@ -2576,6 +2650,83 @@ done
         assert_eq!(
             request_reasoning_effort(&provider(ProviderKind::CodexCli), &high),
             None
+        );
+    }
+
+    /// gap-1ba0ac: roko's tool loop calls an OpenAI reasoning model on
+    /// OpenAI's own endpoint through the Responses API, where it reasons
+    /// beside its tools, and any other model or endpoint through chat
+    /// completions. A model's own `api` wins, and the kill switch sends every
+    /// model through chat completions.
+    #[test]
+    fn openai_reasoning_models_on_openai_take_the_responses_api() {
+        let model = |slug: &str, api| ModelProfile {
+            slug: slug.to_string(),
+            supports_tools: true,
+            api,
+            ..ModelProfile::default()
+        };
+        let provider = |kind, base_url: Option<&str>| ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            ..ProviderConfig::default()
+        };
+        let wire = |provider: &ProviderConfig, model: &ModelProfile| {
+            openai_wire_unless(provider, model, false)
+        };
+        let openai = provider(ProviderKind::OpenAiCompat, None);
+        let mini = model("gpt-5.4-mini", None);
+
+        assert_eq!(wire(&openai, &mini), OpenAiApi::Responses);
+        assert_eq!(wire(&openai, &model("o4-mini", None)), OpenAiApi::Responses);
+        for base_url in [
+            "https://api.openai.com/v1",
+            "https://API.OpenAI.com:443/v1/",
+        ] {
+            let named = provider(ProviderKind::OpenAiCompat, Some(base_url));
+            assert_eq!(wire(&named, &mini), OpenAiApi::Responses, "{base_url}");
+        }
+        for slug in ["gpt-4o", "gpt-5-chat-latest", "glm-4.7"] {
+            assert_eq!(
+                wire(&openai, &model(slug, None)),
+                OpenAiApi::ChatCompletions,
+                "{slug}"
+            );
+        }
+        for base_url in [
+            "http://127.0.0.1:18753/v1",
+            "https://api.openai.com.example.net/v1",
+            "https://openrouter.ai/api/v1",
+        ] {
+            let elsewhere = provider(ProviderKind::OpenAiCompat, Some(base_url));
+            assert_eq!(
+                wire(&elsewhere, &mini),
+                OpenAiApi::ChatCompletions,
+                "{base_url}"
+            );
+        }
+        for kind in [ProviderKind::Hermes, ProviderKind::CerebrasApi] {
+            assert_eq!(
+                wire(&provider(kind, None), &mini),
+                OpenAiApi::ChatCompletions
+            );
+        }
+
+        // A model's own `api` wins, either way.
+        let local = provider(ProviderKind::OpenAiCompat, Some("http://127.0.0.1:9/v1"));
+        let responses = model("gpt-5.4-mini", Some(OpenAiApi::Responses));
+        let chat = model("gpt-5.4-mini", Some(OpenAiApi::ChatCompletions));
+        assert_eq!(wire(&local, &responses), OpenAiApi::Responses);
+        assert_eq!(wire(&openai, &chat), OpenAiApi::ChatCompletions);
+
+        // The kill switch sends every model through chat completions.
+        assert_eq!(
+            openai_wire_unless(&openai, &mini, true),
+            OpenAiApi::ChatCompletions
+        );
+        assert_eq!(
+            openai_wire_unless(&local, &responses, true),
+            OpenAiApi::ChatCompletions
         );
     }
 

@@ -2,7 +2,7 @@
 id = "bug-35b190"
 kind = "bug"
 title = "A provider's HTTP 4xx refusal reads as a network error: OpenAI's 400 invalid_request_error on reasoning_effort in phase 4's run 16fc88ae came out as 'network error: http 400', failure class provider_error:unknown, and a 403 or 404 reads the same"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/provider"]
 created = 2026-10-21
 updated = 2026-10-21
 last_verified = 2026-10-21
+last_verified_rev = "7440f7be7"
 source = "round-v7 phase 4 run 16fc88ae (Undertow .roko/roko.log 08:06Z), the lead's ask"
 discovered_from = "agent:hermes-pilot (round v7 phase 4)"
 anchors = ["crates/roko-agent/src/openai_compat_backend.rs::classify_http_error", "crates/roko-agent/src/provider/mod.rs::ProviderError", "crates/roko-agent/src/provider/error_classify.rs::classify_failure_text", "crates/roko-cli/src/dispatch/rung_probe.rs::failure_reason"]
@@ -24,6 +25,18 @@ command = "grep -rqw 'fn a_refused_request_is_not_sent_again' crates/roko-agent/
 
 [[verify]]
 command = "grep -rqw 'fn a_rung_probe_records_a_refusals_words' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_rung_probe_records_a_refusals_words"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T10:27:22Z"
+commit = "7440f7be7"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-21T09:37:11Z"
+forced = false
+evidence = "7440f7be7. openai_compat_backend::classify_http_error now takes the provider (send_turn and stream_turn pass self.provider_id, the SSE error path its provider) and sends every 4xx but 401 (AuthFailure, unchanged) and 429 (rate limit) through error_classify::classify_http_refusal: a 402 or a 4xx whose words or code say the account can't pay is bug-390e4b's billing refusal, a 400 about the context (context_length_exceeded) stays ContextOverflow, a 408 is Timeout, and any other 4xx becomes ProviderError::RequestRefused { provider, status, message }: the provider's own words (error.message, message or error, whitespace collapsed, at most 400 characters) with the param and code it named. It renders as \"openai refused the request (HTTP 400): Function tools with reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions. (param reasoning_effort)\". Transport errors (no status) stay LlmError::Network. refusal_class(status) names the class: auth_failure for 401/403, model_not_found for 404, else request_refused; classify_failure_text (via refused_request_status, so the ladder's infra class reads provider_error:request_refused), model_call_service::provider_error_kind and the openai_compat, gemini_native and anthropic tool-loop circuit-breaker kinds use it, and classify_failure_text names \"model not found\" as model_not_found. RetryPolicy::should_retry never sends a RequestRefused again (ErrorClass::RequestRefused). The rung probe's failure_reason keeps a refusal from the provider's name on. Circuit-breaker accounting is unchanged: request_refused and model_not_found count as Unknown, as a 400 did. Tests: a_providers_4xx_refusal_reads_as_a_refusal_not_a_network_error (OpenAI's 400 body: RequestRefused with those words and class request_refused; a 401 stays AuthFailure, auth_failure; a 403 no-access refusal is auth_failure with its words; a 404 is model_not_found; a context-length 400 stays ContextOverflow; transport errors stay Network, a timed-out one classed timeout; a 408 is Timeout), a_refused_request_is_not_sent_again (one call, the run ends in the provider's words; an untyped provider error is still retried), a_rung_probe_records_a_refusals_words (end to end over the OpenAI-compatible mock: one request, reason \"request_refused: mid_api refused the request (HTTP 400): Function tools ... (param reasoning_effort)\", also in the probe cache); the classify_http_error, retry, billing and probe tests beside them pass. fmt and clippy -D warnings clean; lib suites roko-agent 2397, roko-cli 3988, roko-core 2047, roko-learn 1393, roko-runtime 213, roko-serve 1081, all passing."
 +++
 
 ## Problem

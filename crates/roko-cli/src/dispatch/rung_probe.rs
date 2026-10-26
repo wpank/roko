@@ -215,7 +215,9 @@ async fn run_probe(agent: &dyn Agent, echo: &EchoTool) -> Result<(), String> {
     }
 }
 
-/// Why a probe in which the model made no tool call failed.
+/// Why a probe in which the model made no tool call failed. A request the
+/// provider refused keeps the refusal in the provider's own words
+/// (bug-35b190).
 fn failure_reason(result: &AgentResult) -> String {
     let text = result.output.body.as_text().unwrap_or_default().trim();
     let class = crate::dispatch_v2::classify_provider_error(&text.to_ascii_lowercase());
@@ -224,9 +226,22 @@ fn failure_reason(result: &AgentResult) -> String {
         "empty_response: a blank answer with no tool call".to_string()
     } else if result.success {
         format!("no tool call; the model answered: {said}")
+    } else if let Some(refusal) = refusal_words(text) {
+        format!("{class}: {refusal}")
     } else {
         format!("{class}: {said}")
     }
+}
+
+/// The refusal a provider's HTTP 4xx became in `text`, from the provider's
+/// name on: `openai refused the request (HTTP 400): …`.
+fn refusal_words(text: &str) -> Option<&str> {
+    let at = text.find(roko_agent::provider::error_classify::REQUEST_REFUSED_MARKER)?;
+    let start = text[..at]
+        .trim_end()
+        .rfind(' ')
+        .map_or(0, |space| space + 1);
+    Some(text[start..].trim())
 }
 
 /// The probe's one tool: `echo`, taking a `text` string.

@@ -1503,6 +1503,19 @@ pub enum ProviderError {
     ContentPolicy,
     ContextOverflow,
     ModelNotFound,
+    /// The provider answered with an HTTP 4xx that refuses this request as it
+    /// stands: a parameter it rejects, a model it does not serve or the key
+    /// may not use (bug-35b190). Sending the same request again gets the same
+    /// answer. [`error_classify::refusal_class`] names its failure class by
+    /// `status`.
+    RequestRefused {
+        /// The provider that refused, as roko names it (`openai`).
+        provider: String,
+        /// The HTTP status.
+        status: u16,
+        /// The provider's own words, with the parameter or code it named.
+        message: String,
+    },
     Other(String),
 }
 
@@ -1529,6 +1542,22 @@ impl fmt::Display for ProviderError {
             Self::ContentPolicy => f.write_str("content policy violation"),
             Self::ContextOverflow => f.write_str("context overflow"),
             Self::ModelNotFound => f.write_str("model not found"),
+            Self::RequestRefused {
+                provider,
+                status,
+                message,
+            } => {
+                let provider = if provider.is_empty() {
+                    "the provider"
+                } else {
+                    provider.as_str()
+                };
+                write!(
+                    f,
+                    "{provider} {} {status}): {message}",
+                    error_classify::REQUEST_REFUSED_MARKER
+                )
+            }
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -1566,6 +1595,9 @@ pub fn should_retry(error: &ProviderError) -> RetryAction {
         ProviderError::ServerError(_) => RetryAction::TryFallback,
         ProviderError::ContentPolicy => RetryAction::Skip,
         ProviderError::ContextOverflow => RetryAction::TryWithSmallerContext,
+        // The same request gets the same answer from this provider
+        // (bug-35b190).
+        ProviderError::RequestRefused { .. } => RetryAction::TryFallback,
         _ => RetryAction::TryFallback,
     }
 }

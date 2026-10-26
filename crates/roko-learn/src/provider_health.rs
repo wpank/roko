@@ -95,6 +95,12 @@ pub enum ErrorClass {
     /// reset time; [`ProviderHealthRegistry::record_exhaustion`] opens the
     /// circuit until exactly then.
     Exhausted,
+    /// The provider answered and refused the request, for a parameter it
+    /// rejects (`request_refused`) or a model it does not serve
+    /// (`model_not_found`, bug-35b190). That is a fault in the request or its
+    /// model, not the provider, so it never counts toward the provider's
+    /// circuit (bug-80f0d0); the ladder climbs past the model instead.
+    Refused,
     /// Fallback classification when the exact class is unknown.
     Unknown,
 }
@@ -114,6 +120,7 @@ impl ErrorClass {
             "provider_exhausted" => Self::Exhausted,
             "content_policy" => Self::ContentPolicy,
             "context_overflow" => Self::ContextOverflow,
+            "request_refused" | "model_not_found" => Self::Refused,
             _ => Self::Unknown,
         }
     }
@@ -549,9 +556,20 @@ impl ProviderHealthRegistry {
     /// Record a failed request for `provider_id`.
     ///
     /// The key is normalized (hyphens to underscores, lowercased) so that
-    /// `"claude-cli"` and `"claude_cli"` map to the same circuit breaker.
+    /// `"claude-cli"` and `"claude_cli"` map to the same circuit breaker. A
+    /// request the provider refused ([`ErrorClass::Refused`]) leaves its
+    /// health alone: one model's rejected parameter must not take every model
+    /// of the provider out of routing (bug-80f0d0).
     pub fn record_failure(&self, provider_id: &str, error: ErrorClass) {
         let key = normalize_provider_key(provider_id);
+        if error == ErrorClass::Refused {
+            tracing::debug!(
+                provider = %key,
+                "a refused request is the request's fault or its model's; the provider's \
+                 health is unchanged"
+            );
+            return;
+        }
         // P2-24: Provider health Prometheus-compatible metrics.
         tracing::info!(
             monotonic_counter.roko_provider_failures_total = 1_u64,
@@ -2771,6 +2789,56 @@ mod tests {
             !registry.is_available("p"),
             "circuit should be open after 3 provider failures via trait"
         );
+    }
+
+    /// bug-80f0d0: a request the provider refused, a rejected parameter
+    /// (`request_refused`, a model-access 403 too) or a model it does not
+    /// serve (`model_not_found`), never counts toward the provider's circuit,
+    /// however often it comes; three unknown failures still trip it. A 403
+    /// whose words say the key is bad is an auth failure and trips it at once.
+    #[test]
+    fn a_refusal_never_counts_toward_the_providers_circuit() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+        assert_eq!(
+            ErrorClass::from_kind("request_refused"),
+            ErrorClass::Refused
+        );
+        assert_eq!(
+            ErrorClass::from_failure_text(
+                "agent error (openai): provider error: openai refused the request (HTTP 400): \
+                 Function tools with reasoning_effort are not supported (param reasoning_effort)"
+            ),
+            ErrorClass::Refused
+        );
+        assert_eq!(
+            ErrorClass::from_failure_text(
+                "agent error (openai): provider error: openai refused the request (HTTP 403): \
+                 Project `proj_1` does not have access to model `gpt-5.4` (code model_not_found)"
+            ),
+            ErrorClass::Refused
+        );
+        let revoked = "agent error (openai): provider error: openai refused the request (HTTP \
+                       403): Invalid API key: this key has been revoked. (code invalid_api_key)";
+        assert_eq!(
+            ErrorClass::from_failure_text(revoked),
+            ErrorClass::AuthFailure
+        );
+        let keyed = ProviderHealthRegistry::new();
+        keyed.record_failure("openai", ErrorClass::from_failure_text(revoked));
+        assert!(!keyed.is_available("openai"), "a revoked key trips at once");
+        for kind in ["request_refused", "model_not_found", "request_refused"] {
+            registry.record_provider_failure("openai", kind);
+        }
+        registry.record_failure("openai", ErrorClass::Refused);
+        assert!(registry.is_available("openai"));
+        assert_eq!(registry.get("openai").consecutive_failures, 0);
+
+        for _ in 0..3 {
+            registry.record_provider_failure("openai", "unknown");
+        }
+        assert!(!registry.is_available("openai"));
     }
 
     /// Unknown error_kind labels fall back to `ErrorClass::Unknown`.

@@ -2785,6 +2785,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-s","model":"claude-sonnet-4-6
         }
     }
 
+    /// bug-80f0d0: a request the rung's provider refused (bug-35b190) is the
+    /// request's fault or its model's, not the provider's, so it leaves the
+    /// provider's circuit alone; the same refusal twice in a row on a rung
+    /// climbs the task past the model instead. So does a 403 that refuses
+    /// the model; one that says the key is bad is the account's, and never
+    /// climbs.
+    #[tokio::test]
+    async fn a_refused_request_twice_on_a_rung_climbs() {
+        const REFUSED: &str = "provider: agent error (openai): provider error: openai refused the \
+                               request (HTTP 400): Function tools with reasoning_effort are not \
+                               supported for gpt-5.4-mini in /v1/chat/completions. (param \
+                               reasoning_effort)";
+        const NO_ACCESS: &str = "provider: agent error (openai): provider error: openai refused \
+                                 the request (HTTP 403): Project `proj_1` does not have access to \
+                                 model `gpt-5.4` (code model_not_found)";
+        const REVOKED: &str = "provider: agent error (openai): provider error: openai refused the \
+                               request (HTTP 403): Invalid API key: this key has been revoked. \
+                               (code invalid_api_key)";
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let settled = infra_failure_on_cheap_rung(&spec, &task, 1, REFUSED, None, false);
+        assert_eq!(
+            infra_failure_class(&settled).as_deref(),
+            Some("provider_error:request_refused")
+        );
+        dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 0);
+        let settled = infra_failure_on_cheap_rung(&spec, &task, 2, REFUSED, None, false);
+        dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+
+        for (id, failure, climbs) in [("T-403", NO_ACCESS, true), ("T-KEY", REVOKED, false)] {
+            let mut other = task.clone();
+            other.id = id.to_string();
+            for attempt in 1..=2 {
+                let settled =
+                    infra_failure_on_cheap_rung(&spec, &other, attempt, failure, None, false);
+                dispatcher.note_ladder_outcome(&spec, &other, &settled);
+            }
+            assert_eq!(
+                dispatcher.ladder_step(&spec, &other),
+                u32::from(climbs),
+                "{failure}"
+            );
+        }
+    }
+
     /// bug-f6b99f: a try whose reply ran past its model's output limit
     /// settles as the agent's failure on its rung, as a turn cap does, so two
     /// of them climb the task; its reason says it was the output limit.

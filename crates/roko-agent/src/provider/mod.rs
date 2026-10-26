@@ -1495,7 +1495,7 @@ pub enum ProviderError {
     /// stands: a parameter it rejects, a model it does not serve or the key
     /// may not use (bug-35b190). Sending the same request again gets the same
     /// answer. [`error_classify::refusal_class`] names its failure class by
-    /// `status`.
+    /// `status` and the provider's words.
     RequestRefused {
         /// The provider that refused, as roko names it (`openai`).
         provider: String,

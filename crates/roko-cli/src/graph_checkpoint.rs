@@ -2239,10 +2239,16 @@ fn validate_cost_ledger_state(
     if state.run_id != manifest.run_id {
         bail!("cost ledger run ID does not match the checkpoint manifest");
     }
-    // The cost a resume takes (see `GraphCostLedgerCheckpoint::load`).
+    // The cost a resume takes (see `GraphCostLedgerCheckpoint::load`). A
+    // reservation is left when roko stopped while a task was in flight (a
+    // crash or a restart): say how to go on (bug-b7f6a8).
     if state.reserved_micro_usd > 0 {
         bail!(
-            "the checkpoint committed {} unresolved reserved micro-USD from an interrupted provider call",
+            "the checkpoint committed {} unresolved reserved micro-USD from an interrupted provider \
+             call: roko stopped while a task was in flight, and this checkpoint cannot be resumed. \
+             Start the plan over with `--fresh` (`roko run <plan dir> --fresh`), or with \
+             `roko plan run <plan dir> --resume-plan --force-resume`; either runs its passed tasks \
+             again",
             state.reserved_micro_usd
         );
     }
@@ -4341,7 +4347,11 @@ depends_on = ["T1"]
             .err()
             .expect("unresolved reservation must fail closed");
 
-        assert!(format!("{error:#}").contains("unresolved reserved micro-USD"));
+        let error = format!("{error:#}");
+        assert!(error.contains("unresolved reserved micro-USD"), "{error}");
+        // It says how to go on (bug-b7f6a8).
+        assert!(error.contains("--fresh"), "{error}");
+        assert!(error.contains("--resume-plan --force-resume"), "{error}");
     }
 
     #[test]

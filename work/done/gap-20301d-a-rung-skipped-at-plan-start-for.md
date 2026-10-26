@@ -2,7 +2,7 @@
 id = "gap-20301d"
 kind = "gap"
 title = "A rung skipped at plan start for a failed probe fires no event and is missing from the run summary, and with every rung skipped a task the ladder routes goes to a model outside it without a word (phase 4: cheap's Cerebras 402; the pilot's fenced check sent T1 to glm-4.7 on z.ai)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch", "roko-serve/routes"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "d8755c60c"
 source = "round-v7-lead#rung-skipped"
 discovered_from = "agent:team-lead (round v7, 2026-10-21: phase 4's plan drops cheap on Cerebras' 402); agent:hermes-pilot's fenced check tmp/hermes-roko-v7/pilot/gpt54-proof/checks/20261021-101949"
 anchors = ["crates/roko-cli/src/dispatch/rung_probe.rs", "crates/roko-cli/src/dispatch/factory.rs::skip_failed_rungs", "crates/roko-cli/src/dispatch/model_routing.rs::without_models", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-core/src/dashboard_snapshot.rs", "crates/roko-serve/src/routes/runs.rs::run_summary"]
@@ -21,6 +22,13 @@ command = "grep -rqw 'fn a_failed_probe_skips_its_rung_with_an_event' crates/rok
 
 [[verify]]
 command = "grep -rqw 'fn a_runs_summary_lists_its_skipped_rungs' crates/roko-serve/src && cargo test -p roko-serve --lib -- a_runs_summary_lists_its_skipped_rungs"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:00:16Z"
+commit = "f76bede1b"
+forced = false
+evidence = "f76bede1b: at plan start, each rung the tool-use probes skip (a fresh failed verdict in .roko/learn/rung-probes.json) gets a rung_skipped event per plan of the run once the plan set is announced, with plan_id, rung, model, provider, reason (the probe's words), until_ms (probed_at + PROBE_TTL_MS) and detail (\"rung cheap (gpt-oss-120b on cerebras) is skipped until 20:33: its tool-use probe failed: ...; a task that would start on it starts on the next rung that runs\"), shown in the CLI's progress lines and the hub's event log; the run summary lists rungs_skipped (the latest of each plan and rung); the end-of-run readout adds \"Rung cheap (... on ...): skipped until HH:MM, its tool-use probe failed: ...\" and --json carries rungs_skipped. With every rung skipped, the factory keeps the ladder as bound and a task it would route is refused before its agent runs (RokoError::Rejected, not retried), naming each rung, model, provider and reason; pinned tasks and roles the ladder doesn't route still run. Red at 11:37 on main's behaviour (event variant wired so the tests compile): the plan-run test saw no event ('one rung, one plan: []'), the refusal test's task ran on the router's pick and failed its verify step instead of being refused, the summary had no rungs_skipped. Green: a_failed_probe_skips_its_rung_with_an_event, a_task_the_ladder_routes_is_refused_when_every_rung_failed_its_probe, a_skipped_rung_says_why_and_until_when, a_runs_summary_lists_its_skipped_rungs pass, with 29 nearby roko-cli tests. On the branch merged with main (d8755c60c): roko-cli lib 4003/0 (share_run_scrubs_output_text_and_prompt skipped), roko-core 2048/0, roko-serve 1082/0; clippy -D warnings (roko-core, roko-serve, roko-cli) and nightly fmt clean; CARGO_INCREMENTAL=0."
 +++
 
 ## Problem

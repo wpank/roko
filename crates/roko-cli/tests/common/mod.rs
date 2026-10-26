@@ -119,6 +119,7 @@ pub fn init_workspace(workdir: &Path) {
     Command::cargo_bin("roko")
         .expect("roko binary")
         .isolated()
+        .with_mock_agents()
         .current_dir(workdir)
         .arg("init")
         .arg(workdir)
@@ -172,19 +173,66 @@ pub fn write_executable(path: &Path, body: &str) {
     }
 }
 
-/// Mock `claude` script that emits valid stream-json output so runner v2
-/// can process it without a real LLM. Writes a trivial code change + completes.
+/// Mock `claude` script that emits valid stream-json output, so a plan run
+/// can process it without a real LLM. It changes nothing and completes, on
+/// the `--model` it was asked for (`claude-sonnet-4-6` when it names none),
+/// and answers `--version` as roko's probes (`auth_detect::version_probe`)
+/// expect.
 const MOCK_CLAUDE_SCRIPT: &str = r#"#!/bin/sh
-# Mock claude CLI for runner v2 smoke tests.
-# Reads prompt from stdin (ignored), emits stream-json to stdout.
-cat <<'STREAM'
-{"type":"system","subtype":"init","session_id":"smoke-sess","model":"claude-sonnet-4-6","tools":[]}
+# Mock claude CLI for the offline plan-run tests.
+if [ "${1:-}" = --version ]; then
+  echo '2.1.0 (Claude Code)'
+  exit 0
+fi
+model=claude-sonnet-4-6
+previous=
+for arg in "$@"; do
+  if [ "$previous" = --model ]; then
+    model=$arg
+  fi
+  previous=$arg
+done
+# Reads the prompt from stdin (ignored), emits stream-json to stdout.
+cat >/dev/null
+cat <<STREAM
+{"type":"system","subtype":"init","session_id":"smoke-sess","model":"$model","tools":[]}
 {"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"I will verify the project compiles."}],"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
 {"type":"result","session_id":"smoke-sess","total_cost_usd":0.001,"num_turns":1,"is_error":false}
 STREAM
 "#;
 
+/// The agent CLIs a spawned `roko` may run by name, each of which
+/// [`Isolated::with_mock_agents`] shadows with the mock agent.
+pub const MOCK_AGENT_NAMES: [&str; 3] = ["claude", "codex", "gemini"];
+
+/// A directory holding the mock agent ([`MOCK_CLAUDE_SCRIPT`]) as each of
+/// [`MOCK_AGENT_NAMES`]: one per test process, beside the scratch `HOME`.
+pub fn mock_agent_bin() -> &'static Path {
+    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let bin = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("roko-test-agents-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bin);
+        fs::create_dir_all(&bin).expect("create the mock agent directory");
+        for name in MOCK_AGENT_NAMES {
+            write_executable(&bin.join(name), MOCK_CLAUDE_SCRIPT);
+        }
+        bin
+    })
+}
+
+/// The test process's `PATH` with [`mock_agent_bin`] first.
+fn path_with_mock_agents() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(
+        std::iter::once(mock_agent_bin().to_path_buf()).chain(std::env::split_paths(&path)),
+    )
+    .expect("join PATH")
+}
+
 pub fn setup_sample_plan_workspace(workdir: &Path) {
+    // With the mock agent on PATH as `claude`, `roko init` writes the same
+    // Claude CLI provider and model on every machine (bug-c63cca).
     init_workspace(workdir);
     seed_minimal_rust_project(workdir);
     seed_git_repo(workdir);
@@ -193,8 +241,8 @@ pub fn setup_sample_plan_workspace(workdir: &Path) {
     let mock_claude = workdir.join("mock-claude.sh");
     write_executable(&mock_claude, MOCK_CLAUDE_SCRIPT);
 
-    // Configure roko.toml to use the mock claude script.
-    // Replace the existing `command = "..."` line under [agent] with our mock path.
+    // Configure roko.toml to use the mock claude script: every `command =
+    // "..."` line, such as the Claude CLI provider's, runs the mock.
     let roko_toml = workdir.join("roko.toml");
     let existing = fs::read_to_string(&roko_toml).unwrap_or_default();
     let mock_cmd_line = format!("command = {:?}", mock_claude.display());
@@ -281,6 +329,7 @@ pub fn run_sample_plan(workdir: &Path) -> Value {
     let mut command = ProcessCommand::new(cargo_bin("roko"));
     command
         .isolated()
+        .with_mock_agents()
         .current_dir(workdir)
         .arg("--json")
         .arg("plan")
@@ -594,11 +643,13 @@ pub fn run_roko(workdir: &Path, args: &[&str]) -> Assert {
         .assert()
 }
 
-/// Like `run_roko`, with the workdir as `HOME`.
+/// Like `run_roko`, with the workdir as `HOME` and the mock agent on `PATH`
+/// ([`Isolated::with_mock_agents`]).
 pub fn run_roko_isolated(workdir: &Path, args: &[&str]) -> Assert {
     Command::cargo_bin("roko")
         .expect("roko binary")
         .isolated()
+        .with_mock_agents()
         .current_dir(workdir)
         .args(args)
         .env("HOME", workdir)
@@ -647,6 +698,13 @@ pub trait Isolated {
     /// and with audits off ([`AUDITS_OFF`]). Call it before the test sets
     /// variables of its own.
     fn isolated(&mut self) -> &mut Self;
+
+    /// Run with the mock agent first on `PATH` as `claude`, `codex` and
+    /// `gemini` ([`mock_agent_bin`], bug-c63cca), so roko never finds the
+    /// developer's CLI and always finds one, CI's empty machine included:
+    /// `roko init` writes a Claude CLI provider for a `claude` on `PATH`, and
+    /// the doctor counts one as a credential.
+    fn with_mock_agents(&mut self) -> &mut Self;
 }
 
 /// Audits are on by default (decision 7103), and a run that draws one
@@ -665,6 +723,10 @@ impl Isolated for ProcessCommand {
         }
         self.env(AUDITS_OFF.0, AUDITS_OFF.1)
     }
+
+    fn with_mock_agents(&mut self) -> &mut Self {
+        self.env("PATH", path_with_mock_agents())
+    }
 }
 
 impl Isolated for Command {
@@ -676,6 +738,10 @@ impl Isolated for Command {
             self.env_remove(name);
         }
         self.env(AUDITS_OFF.0, AUDITS_OFF.1)
+    }
+
+    fn with_mock_agents(&mut self) -> &mut Self {
+        self.env("PATH", path_with_mock_agents())
     }
 }
 

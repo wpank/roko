@@ -2,15 +2,16 @@
 id = "gap-0cfa36"
 kind = "gap"
 title = "Retry feedback doesn't parse doctest failures: its failing-tests list and diagnosis name doctest's summary lines, not the failing CHECKs and their values (Undertow phase 2 run 82b7e069)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "3dbd54d9e"
 source = "round-v7-roko-ladder#doctest-feedback"
 discovered_from = "agent:roko-ladder (round v7, run 82b7e069 analysis)"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::GateFeedback::from_raw"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-59ed90"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn doctest_failures_name_the_failing_checks' crates/roko-cli/ && cargo test -p roko-cli --lib -- doctest_failures_name_the_failing_checks"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T15:42:29Z"
+commit = "3dbd54d9e"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-26T14:54:44Z"
+forced = false
+evidence = "3dbd54d9e on top of bug-3e3d08 (b7b13f77f, which lists TEST CASE: and each failed C++ check once and never a summary line): from_raw appends what a failed check saw, doctest's values: line or Catch2's check with its with expansion: line (observed_values), entries up to 400 chars. Verify: doctest_failures_name_the_failing_checks passes (phase 2's shape: [TEST CASE: P2.04 ..., output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct! (values: CHECK( 0.975951 >= 0.98 ))], no [doctest] line; Catch2 gives the REQUIRE and its expansion); dispatch::prompt_builder, retry_feedback and graph_task_dispatch::verification 97/97; nightly fmt and clippy -p roko-cli -D warnings clean."
 +++
 
 ## Problem

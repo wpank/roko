@@ -150,6 +150,9 @@ impl GraphTaskDispatcher {
             )
             .await?;
         let unchanged_tree = matches!(screened, red_flags::Screened::UnchangedTree(_));
+        // What the checks write into the person's checkout, when the attempt
+        // runs outside it (bug-b7d9ad).
+        let checkout_before = self.checkout_before_checks(spec, effective_workdir).await;
         let verified = self
             .run_verify_steps(
                 spec,
@@ -165,8 +168,44 @@ impl GraphTaskDispatcher {
                 steps,
             )
             .await;
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        let written = self.checkout_written(checkout_before, &task_key).await;
+        // Checks that pass on a tree the attempt left unchanged while the
+        // person's checkout changes may have tested that checkout: the task
+        // is not shown to be satisfied.
+        let unverified = !written.is_empty()
+            && unchanged_tree
+            && matches!(
+                verified,
+                Ok(TaskGateVerdict::Passed | TaskGateVerdict::PassedWithPreexistingFailures)
+            );
+        if !written.is_empty() {
+            self.report_checkout_written(
+                spec,
+                task,
+                attempt_number,
+                effective_workdir,
+                &written,
+                unverified,
+                scope_findings,
+            );
+        }
         match screened {
             red_flags::Screened::Clear => verified,
+            red_flags::Screened::UnchangedTree(_) if unverified => {
+                if let Some(progress_tx) = progress_tx {
+                    let message = "unverified: the verify steps pass on the unchanged tree, but \
+                                   the person's checkout changed while they ran";
+                    let _ = progress_tx
+                        .send(GraphTaskEvent::Progress {
+                            message: message.to_string(),
+                            completed: None,
+                            total: None,
+                        })
+                        .await;
+                }
+                Ok(TaskGateVerdict::Unverified)
+            }
             red_flags::Screened::UnchangedTree(unchanged) => {
                 self.settle_unchanged_tree(
                     spec,

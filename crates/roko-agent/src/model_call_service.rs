@@ -2190,7 +2190,7 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
     }
     // A request the provider refused, by its status (bug-35b190).
     if let Some(status) = crate::provider::error_classify::refused_request_status(&lower) {
-        return crate::provider::error_classify::refusal_class(status);
+        return crate::provider::error_classify::refusal_class(status, &lower);
     }
     if is_rate_limit_message(&lower) {
         "rate_limit"

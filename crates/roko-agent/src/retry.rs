@@ -47,8 +47,11 @@ impl From<&ProviderError> for ErrorClass {
             ProviderError::ContentPolicy => Self::ContentPolicy,
             ProviderError::ContextOverflow => Self::ContextOverflow,
             ProviderError::ModelNotFound => Self::ModelNotFound,
-            ProviderError::RequestRefused { status, .. } => {
-                match crate::provider::error_classify::refusal_class(*status) {
+            ProviderError::RequestRefused {
+                status, message, ..
+            } => {
+                let lower = message.to_ascii_lowercase();
+                match crate::provider::error_classify::refusal_class(*status, &lower) {
                     "auth_failure" => Self::AuthFailure,
                     "model_not_found" => Self::ModelNotFound,
                     _ => Self::RequestRefused,

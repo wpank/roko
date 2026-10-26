@@ -445,9 +445,12 @@ impl OpenAiCompatLlmBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
-            LlmError::Provider(ProviderError::RequestRefused { status, .. }) => {
-                crate::provider::error_classify::refusal_class(*status)
-            }
+            LlmError::Provider(ProviderError::RequestRefused {
+                status, message, ..
+            }) => crate::provider::error_classify::refusal_class(
+                *status,
+                &message.to_ascii_lowercase(),
+            ),
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -2795,9 +2798,8 @@ mod tests {
     /// provider's own words, and not as a network error. OpenAI's 400 on
     /// reasoning_effort in phase 4's run 16fc88ae came out as "network error:
     /// http 400: {…}", class `provider_error:unknown`. A 401 stays an auth
-    /// failure, a 403 is the key's, a 404 an unknown model, a 400 about the
-    /// context a context overflow, and a transport error or a timeout stays
-    /// what it was.
+    /// failure, a 404 is an unknown model, a 400 about the context a context
+    /// overflow, and a transport error or a timeout stays what it was.
     #[test]
     fn a_providers_4xx_refusal_reads_as_a_refusal_not_a_network_error() {
         use crate::provider::error_classify::classify_failure_text;
@@ -2839,14 +2841,21 @@ mod tests {
         );
         assert_eq!(class(&err), "auth_failure");
 
+        // A 403 is "you may not do this", most often scoped to the model: a
+        // refusal, unless its words say the credential itself is bad
+        // (bug-80f0d0).
         let no_access = r#"{"error":{"message":"Project `proj_1` does not have access to model `gpt-5.4`","code":"model_not_found"}}"#;
         let err = classify_http_error(HttpPostError::http(403, no_access), "openai");
-        assert_eq!(class(&err), "auth_failure", "{err}");
+        assert_eq!(class(&err), "request_refused", "{err}");
         assert!(
             err.to_string()
                 .contains("does not have access to model `gpt-5.4`"),
             "{err}"
         );
+        let revoked = r#"{"error":{"message":"Invalid API key: this key has been revoked.","code":"invalid_api_key"}}"#;
+        let err = classify_http_error(HttpPostError::http(403, revoked), "openai");
+        assert_eq!(class(&err), "auth_failure", "{err}");
+        assert!(err.to_string().contains("has been revoked"), "{err}");
 
         let no_model = r#"{"error":{"message":"The model `gpt-5.4-minii` does not exist or you do not have access to it.","code":"model_not_found"}}"#;
         let err = classify_http_error(HttpPostError::http(404, no_model), "openai");

@@ -13,8 +13,10 @@
 //! - The stratum is the green verdict: `passed`,
 //!   `passed_with_preexisting_failures` and `already_satisfied` are drawn at
 //!   the policy's π (ρ from `[audit]`), `unverified` and the reserved
-//!   `forced_accept` at π = 1 (decisions 7102 and 7103). A failed attempt
-//!   draws nothing.
+//!   `forced_accept` at π = 1 (decisions 7102 and 7103). A pass with a step
+//!   the gate took from the try's own checks of its tree (gap-6df2bf) is
+//!   drawn as `passed_self_checked`, at `passed`'s π, so its false-green rate
+//!   shows apart (gap-4ba837). A failed attempt draws nothing.
 //! - The draw is keyed on the run, the task, the attempt and the attempt's
 //!   result tree, which stands in for S05's accepted commit (Graph attempts
 //!   do not commit). The pre-verify screen notes the trees ([`AuditSelector::note_trees`]);
@@ -80,8 +82,9 @@ use crate::runtime_feedback::HomeostasisSink;
 use crate::task_parser::TaskDef;
 
 /// Every stratum a run reports, in order.
-const STRATA: [&str; 5] = [
+const STRATA: [&str; 6] = [
     "passed",
+    "passed_self_checked",
     "passed_with_preexisting_failures",
     "already_satisfied",
     "unverified",
@@ -389,6 +392,13 @@ impl AuditSelector {
         *run.spend.lock() += attempt_usd(verdict);
         let Some((stratum, census)) = verdict.gate_verdict.map(stratum_of) else {
             return;
+        };
+        // A pass the gate took from the try's own checks of its tree is
+        // drawn apart, so its false-green rate shows (gap-6df2bf, gap-4ba837).
+        let stratum = if stratum == "passed" && verdict.steps.iter().any(|step| step.self_checked) {
+            "passed_self_checked"
+        } else {
+            stratum
         };
         let risk = self.risk_of(&identity.chain_key);
         let pi = if census || self.census.load(Ordering::Relaxed) {
@@ -1399,6 +1409,41 @@ mod tests {
         let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
         verdict.gate_verdict = Some(GateVerdictTag::Passed);
         verdict
+    }
+
+    /// gap-4ba837: a pass with a step the gate took from the try's own
+    /// checks (gap-6df2bf) is drawn in a stratum of its own,
+    /// `passed_self_checked`, at the same π as a pass the gate ran.
+    #[test]
+    fn a_self_checked_pass_is_drawn_in_its_own_stratum() {
+        let (_temp, selector) = worker_less_lottery(0.2, &[]);
+        let mut checked = green("T2");
+        checked.steps = vec![roko_learn::telemetry::VerifyStepVerdict {
+            rung: "verify:0/test".to_string(),
+            passed: Some(true),
+            self_checked: true,
+            ..roko_learn::telemetry::VerifyStepVerdict::default()
+        }];
+        selector.draw(&green("T1"), None, 1);
+        selector.draw(&checked, None, 1);
+
+        let drawn: HashMap<String, (String, f64)> = records(&selector.vault().ledger_dir())
+            .expect("the ledger")
+            .into_iter()
+            .filter_map(|record| match record.event {
+                AuditEvent::Selection {
+                    task_id,
+                    stratum,
+                    pi,
+                    ..
+                } => Some((task_id, (stratum.verdict, pi))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawn["T1"].0, "passed", "{drawn:?}");
+        assert_eq!(drawn["T2"].0, "passed_self_checked", "{drawn:?}");
+        assert!((drawn["T1"].1 - drawn["T2"].1).abs() < 1e-12, "{drawn:?}");
+        assert!(STRATA.contains(&"passed_self_checked"));
     }
 
     /// gap-3cd890 (S05 §4.2, 6132): the tilt weighs the self-model's

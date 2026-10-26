@@ -214,7 +214,8 @@ impl SelfModel {
                         ForecastBasis::Logit,
                     )
                 }
-                _ => (l0.p, l0_lcb, p_fg, ForecastBasis::Prior),
+                Some(_) => (l0.p, l0_lcb, p_fg, ForecastBasis::PriorFallback),
+                None => (l0.p, l0_lcb, p_fg, ForecastBasis::Prior),
             }
         };
         let price = self.attempt_prices.of_model(&arm.model);
@@ -231,6 +232,7 @@ impl SelfModel {
             lat_q90_s: costs.lat_q90_s,
             cold_start,
             basis,
+            prior_p_vs: l0.p * (1.0 - p_fg),
             cost_prior: costs.cost_prior,
             latency_prior: costs.latency_prior,
         }
@@ -599,6 +601,33 @@ mod tests {
         for forecast in &retry {
             assert!(forecast.p_vs > 0.0 && forecast.p_vs_lcb > 0.0, "{retry:?}");
         }
+    }
+
+    /// gap-d91691: a retry whose raw L1 forecast ran away takes L0's rate, and its basis says so,
+    /// `prior_fallback` and not `prior`, so the prediction rows count the fallbacks. A first try
+    /// keeps `prior`. Every forecast carries the prior's P(VS).
+    #[test]
+    fn a_runaway_retry_forecast_is_recorded_as_a_prior_fallback() {
+        let arms = [ArmKey::roko("cerebras", "gpt-oss-120b")];
+        let mut model = SelfModel::new(&snapshot());
+        for i in 0..40 {
+            model.observe_with(&unit("gpt-oss-120b", "T1", 1, i % 4 != 0), &task(), 1.0);
+        }
+        // An L1 fit that ran away, as Undertow's did under the explicit step.
+        let mut state = serde_json::to_value(&model).expect("the state");
+        state["gates"]["rungs"]["gate"]["weights"]["bias"] = serde_json::json!(-100.0);
+        let ran_away: SelfModel = serde_json::from_value(state).expect("the state");
+        let retry = TaskFeatures {
+            attempt: 2,
+            has_prior_failure: true,
+            ..task()
+        };
+        let forecast = &ran_away.forecast(&retry, &arms)[0];
+        assert_eq!(forecast.basis, ForecastBasis::PriorFallback, "{forecast:?}");
+        assert!(forecast.p_vs > 0.5, "L0's rate: {forecast:?}");
+        assert_eq!(forecast.prior_p_vs, forecast.p_vs, "{forecast:?}");
+        let first = &ran_away.forecast(&task(), &arms)[0];
+        assert_eq!(first.basis, ForecastBasis::Prior, "{first:?}");
     }
 
     #[test]

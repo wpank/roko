@@ -2,7 +2,7 @@
 id = "bug-c5f406"
 kind = "bug"
 title = "A declared line range stays at the base file's length on a retry: fitted to 1-254 when the plan was written, it showed phase 4.3's T2#3 lines 1-247 of a kept tree's 290-line Displays.cpp, and the \"not shown\" note named only 248-254, not the 36 lines past the range"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_policy"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "70c408cd2"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 9, run 3752b8ff), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::fit_range", "crates/roko-cli/src/plan_policy.rs::render_declared_files"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-7ff055", "gap-b95913", "
 
 [[verify]]
 command = "grep -rqw 'fn a_grown_file_shows_or_names_the_lines_past_its_planned_range' crates/roko-cli/src && cargo test -p roko-cli --lib a_grown_file_shows_or_names_the_lines_past_its_planned_range"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:58:19Z"
+commit = "dd74a8ceb"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-26T19:33:23Z"
+forced = false
+evidence = "dd74a8ceb, as merged with roko-exact's bug-fa22cc in af1855cb6: render_declared_files names the lines a file has grown past a declared range that starts at line 1 (as bug-fa22cc's fitted_lines fits it), less any anchor block's, merged with any cut's, so T2#3's 1-254 of a file grown to 290 lines and cut by the budget names the cut and the grown lines in one note. A range from line 1 past the file's end becomes the whole file when the plan is written and at dispatch: bug-fa22cc's fit_line_range, which the merge kept in place of dd74a8ceb's own rule, so an exact 1-N stays ranged and its note names what the file grows past. A part the planner chose stays as it is. Test a_grown_file_shows_or_names_the_lines_past_its_planned_range; red at 20:54 on the old code (the write-time fit cut 1-12 to 1-10, and no grown line was named). Chain on af1855cb6, with main b3c2b4746 merged in: 21 targeted tests pass (the four items', bug-fa22cc's a_range_past_the_end_fits_the_file, roko-planner's three generation tests), lib suites roko-cli 4049/0, roko-compose 528/0 and roko-learn 1409/0, the two crates' integration tests pass, clippy -D warnings and nightly fmt clean."
 +++
 
 ## Problem

@@ -17,9 +17,7 @@ use crate::prompt::{
 use crate::scorer::{GoalDirectedHeuristicScorer, SectionScorer};
 use crate::system_prompt_builder::SystemPromptBuilder;
 use crate::templates::RolePromptTemplate;
-use crate::templates::common::{
-    CONTEXT_LAYOUT_STANZA, MCP_TOOLS_STANZA, REFERENCE_CONTEXT_WINDOW_TOKENS,
-};
+use crate::templates::common::{MCP_TOOLS_STANZA, REFERENCE_CONTEXT_WINDOW_TOKENS};
 use crate::templates::conductor::ConductorTemplate;
 use crate::templates::implementer::ImplementerTemplate;
 use crate::templates::integration::IntegrationTemplate;
@@ -480,8 +478,11 @@ impl RoleSystemPromptSpec {
         self
     }
 
+    /// The project conventions: the default rules, then the caller's own. They name no
+    /// repository layout: the mori port's "Plans context layout" sent every agent to
+    /// `.roko/plans/` files that exist in no workspace (bug-7ecea3).
     fn conventions_text(&self) -> String {
-        let mut out = format!("{CONTEXT_LAYOUT_STANZA}\n\n{DEFAULT_CONVENTIONS_SUFFIX}");
+        let mut out = DEFAULT_CONVENTIONS_SUFFIX.to_string();
         if let Some(extra) = &self.extra_conventions {
             let trimmed = extra.trim();
             if !trimmed.is_empty() {
@@ -1183,6 +1184,33 @@ mod tests {
         assert!(prompt.contains("## Relevant Context"));
         assert!(prompt.contains("Runtime tool allowlist: Read,Edit,Bash"));
         assert!(prompt.contains("Prefer additive changes."));
+    }
+
+    /// bug-7ecea3: every system prompt's conventions opened with roko's own repository layout,
+    /// a "Plans context layout" naming `.roko/plans/workspace-map.md` "instead of find/ls on
+    /// crates/" and three more files that exist in no workspace. The conventions now carry the
+    /// default rules and the caller's own, and no layout.
+    #[test]
+    fn conventions_carry_no_roko_repo_layout() {
+        for role in [
+            AgentRole::Implementer,
+            AgentRole::Conductor,
+            AgentRole::Researcher,
+        ] {
+            let spec = RoleSystemPromptSpec::new(role, TaskContext::new("Wire it"), "Read,Edit");
+            let conventions = spec.conventions_text();
+            assert!(!conventions.contains("crates/"), "{role:?}: {conventions}");
+            assert!(
+                !conventions.contains(".roko/plans/workspace-map.md"),
+                "{role:?}: {conventions}"
+            );
+            assert!(
+                conventions.starts_with(DEFAULT_CONVENTIONS_SUFFIX),
+                "{conventions}"
+            );
+            let prompt = spec.build();
+            assert!(!prompt.contains("workspace-map.md"), "{role:?}");
+        }
     }
 
     #[test]

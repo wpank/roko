@@ -2,7 +2,7 @@
 id = "gap-6df2bf"
 kind = "gap"
 title = "The gate re-runs a try's verify steps on a tree its own run_tests already passed: 36 round-v7 tries re-ran 11.2 min of checks (up to 100 s a try on the plugin phases)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "059d85430"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::run_verify_steps", "crates/roko-std/src/tool/builtin/task_checks.rs::read_check_runs", "crates/roko-cli/src/graph_task_dispatch/best_try.rs::BestTries"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-56f761", "gap-770cb5"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_green_run_tests_on_the_final_tree_is_not_run_again' crates/roko-cli/src && cargo test -p roko-cli --lib a_green_run_tests_on_the_final_tree_is_not_run_again"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:16:34Z"
+commit = "059d85430"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T11:44:56Z"
+forced = false
+evidence = "059d85430: run_checks (roko-std) records each passed check's command and milliseconds with the run's tree (CheckRun::commands, CheckRun::ms). Before run_verify_steps runs a try's steps, self_checked (best_try.rs) takes the newest run of the try's own checks (run_tests or the hand-off check) on the tree the checkout holds now, when every check it ran passed; a step whose label and command it passed settles as passed without running, shown as 'passed in this try's own checks at HH:MM:SS, on this tree: not run again', its verdict row self_checked: true with the run's duration. Rungs, rewritten commands, a changed tree, a red newest run and an unchanged-tree probe run as before. Verify: a_green_run_tests_on_the_final_tree_is_not_run_again passes (green run on the final tree: the step doesn't run, self_checked, 1500 ms; another command under the label, or a tree edited after the run: it runs); graph_task_dispatch:: 490/490, roko-std task_checks and roko-learn telemetry::records pass; nightly fmt and clippy -p roko-cli -p roko-std -p roko-learn -D warnings clean."
 +++
 
 ## Problem

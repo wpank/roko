@@ -6,7 +6,7 @@ status = "open"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
-size = "S"
+size = "M"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-26
 updated = 2026-10-26
@@ -52,18 +52,42 @@ workspace, or one whose regression checkout was removed, pays it again.
 - `crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees`: the clone and relocation attempt
   worktrees get. It already skips a tree the checkout has, and honours `[gates] warm_build_dirs`.
 
+## The counter-case: a cold check finds what warm trees hide
+
+This rehearsal is exactly where a cold regression checkout earned its keep (the lead, 2026-10-26).
+- Built from nothing, check.sh failed on its own step order.
+- Undertow's warm, persistent trees had hidden that from phase 0 through phase 5: the plugin tree was already there
+  when its step ran.
+- A delivery check run only on warm trees can pass on build state no clean checkout reproduces.
+
+So the shape is **warm by default for speed, plus a way to force a cold delivery check**.
+
 ## Plan
 
-1. After `reset_regression_checkout` adds or resets the checkout, give it the person's checkout's build trees with
-   `give_build_trees(workdir, checkout, warm_build_dirs)`, on a blocking thread as the workspace provider does.
+1. **Warm by default.**
+   - After `reset_regression_checkout` adds or resets the checkout, give it the person's checkout's build trees with
+     `give_build_trees(workdir, checkout, warm_build_dirs)`, on a blocking thread as the workspace provider does.
    - A tree the checkout already has, from an earlier delivery, is left alone, as `give_build_trees` does.
    - So this costs only the first delivery's clone, about 1 s a tree on APFS.
-2. Log the trees given, as for attempt worktrees.
+   - Log the trees given, as for attempt worktrees.
+2. **A cold check on demand.** One switch makes a delivery check start from no build trees at all: none given, and the
+   checkout's own removed (`git clean -ffdxq`, or a fresh checkout). Either:
+   - a config key such as `[delivery] cold_regression = true`, with a per-plan `[meta]` override, or
+   - a `plan run` flag (`--cold-delivery-check`), for a ship phase.
+   Pick whichever fits how plans are run. The run's records and the delivery's evidence log say which mode the
+   check ran in.
+3. **Which one a plan's final delivery uses** must be stated, in the docs and the delivery evidence:
+   - By default: warm, like every other delivery.
+   - A ship phase sets cold.
+   - Recommended for Undertow: its last phase, or any plan whose `[meta]` marks it as shipping, runs cold. That is
+     where a step-order or missing-artifact bug in the project's own check script must show up.
 
 ## Done when
 
 - A new regression checkout holds the person's checkout's build trees, relocated to its own path, before its first
   command runs. Test: `the_regression_checkout_starts_with_the_workdirs_build_trees`.
+- A delivery check can be forced cold, from no build trees, and its record says which mode it ran in.
+- The docs say which mode a plan's final delivery uses.
 - The `[[verify]]` passes.
 
 ## Notes

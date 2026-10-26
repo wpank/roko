@@ -2,15 +2,16 @@
 id = "bug-2a5566"
 kind = "bug"
 title = "A direct-loop attempt whose every call ended in an HTTP error books an unknown cost, so the ledger charges its whole reservation for zero billed tokens"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-18
-updated = 2026-10-18
-last_verified = 2026-10-18
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "d6dc06de7"
 source = "gap-942f88 worker (claude-agent), 2026-10-18: the same pricing in vb refine's first live run charged BL15's whole $0.40 for 20 calls metered not_billed"
 discovered_from = "gap-942f88"
 anchors = ["benchmarks/viabilitybench/driver/mini_loop.py::_settle", "benchmarks/viabilitybench/driver/ledger.py::price"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-942f88", "bug-7b1b7f"], 
 
 [[verify]]
 command = "grep -qw 'def test_an_attempt_of_http_errors_books_a_known_zero_cost' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_an_attempt_of_http_errors_books_a_known_zero_cost -q"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T10:46:07Z"
+commit = "d6dc06de7"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T10:26:18Z"
+forced = false
+evidence = "d6dc06de7: mini_loop._settle now resolves `model = attempt.model_reported or attempt.model_requested` and prices by `ctx.snapshot.row(model)`, so an attempt whose every call met an HTTP error (billed_unknown=False, zero usage, model_reported never set) prices at the requested model's row instead of Cost(None, None, \"unknown\"); a reported model with no price row (served by the wrong model) is left unsubstituted and still prices unknown (test_a_model_without_a_price_row_costs_null, unchanged, still passes). New test test_an_attempt_of_http_errors_books_a_known_zero_cost: StubServer's broken() handler answers every call with an HTTP 500 through a full offline `vb run --limit 1`; asserts calls == 1 + RETRIES, record/ledger api_equiv_usd == 0.0, source == \"provider_usage\", billed_usd == 0.0, model_reported is None, and both validate() clean. benchmarks/viabilitybench/driver/test_driver.py + test_ledger.py: 55 passed, 0 failed."
 +++
 
 ## Problem

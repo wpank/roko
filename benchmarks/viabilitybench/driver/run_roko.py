@@ -115,6 +115,10 @@ match, so the attempts fail as `no_proxy_traffic`.
   is priced from the snapshot by the model the provider reported. A billed request without usage leaves the
   attempt's cost unknown, never 0; an attempt whose requests were all unbilled (refused, faulted or failed) cost $0.
 - An attempt whose window saw no request is `no_proxy_traffic`, which makes the task `infra_error`.
+- A task whose `finally` never reaches `read_evidence` (bug-bb6b73: `vb run` stopped with SIGTERM, or any other
+  exception that unwinds `run_task` first) still writes one placeholder attempt, `ended_by="no_attempt_record"`.
+  When a proxy log exists, that attempt is priced from the task's own rows the same way as above ($0 when every one
+  is unbilled, else their sum); its full reservation is kept as an unknown cost only when no proxy log exists at all.
 - Roko has no per-attempt input cap, so the proxy holds each attempt to the arm's `input_tokens_per_attempt`
   (`PROXY_CAPS`; the proxy draws attempts as conversations, gap-806e37). An attempt whose calls it refused there ends
   `attempt_input_tokens`, the direct loop's name for that cap.
@@ -356,9 +360,13 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             for name in planemit.SCAFFOLDING:
                 archive.remove_tree(ctx.workdir / name)
         if dispatched and not attempts:  # Roko may have called the model without recording an attempt
-            attempts = [RokoAttempt(number=1, attempt_key=f"{ctx.chain_key}:1", model_requested=ctx.model,
-                                    provider=ctx.endpoint.provider, reserved_usd=task_bound, usage_unknown=True,
-                                    ended_by="no_attempt_record", roko_build=build, checks=["model_unverified"])]
+            placeholder = RokoAttempt(number=1, attempt_key=f"{ctx.chain_key}:1", model_requested=ctx.model,
+                                      provider=ctx.endpoint.provider, reserved_usd=task_bound, usage_unknown=True,
+                                      ended_by="no_attempt_record", roko_build=build, checks=["model_unverified"])
+            proxy_rows = _proxy_rows(ctx)
+            if proxy_rows is not None:  # bug-bb6b73: price it from what the proxy metered, not an unknown cost
+                _meter_killed_attempt(placeholder, proxy_rows, ctx.snapshot)
+            attempts = [placeholder]
         if attempts:
             try:
                 attempts[-1].tree = repo.tree_hash(ctx.workdir)
@@ -1092,6 +1100,33 @@ def _proxy_rows(ctx: harness.TaskContext) -> list[dict] | None:
         return None
     found, _ = _jsonl(path)
     return [row for row in found if row.get("task") == ctx.key]
+
+
+def _meter_killed_attempt(attempt: RokoAttempt, rows: list[dict], snapshot: ledger.Snapshot) -> None:
+    """Price a placeholder attempt (bug-bb6b73: `run_task`'s `finally` never reached `read_evidence`, so no episode
+    survived to build a real attempt from -- `vb run` stopped with SIGTERM while Roko was running is how this
+    happens) from the task's own proxy rows, the way `_meter_from_proxy` prices a normal attempt whose own window
+    was all unbilled (module docstring, "The proxy"): $0 (known) when every row is unbilled, else the sum of what
+    was actually billed, priced by the model that served it. `rows` may be empty -- the proxy ran but never saw a
+    request from this task -- which is $0 too, not unknown; a billed row without usage leaves it unknown, as
+    `_meter_from_proxy` leaves a normal attempt's."""
+    attempt.calls, attempt.calls_known = len(rows), True
+    billed = [row for row in rows if row.get("usage_source") != "none"]
+    if not billed:
+        attempt.usage_unknown = False
+        attempt.cost = ledger.Cost(0.0, 0.0, "provider_usage")
+        return
+    served = {row.get("model_reported") for row in billed}
+    attempt.model_reported = served.pop() if len(served) == 1 else None
+    usages = [_proxy_usage(row.get("usage")) for row in billed]
+    attempt.usage_unknown = any(usage is None for usage in usages)
+    if attempt.usage_unknown:
+        return
+    total = ledger.vb_usage(0, 0)
+    for usage in usages:
+        total = ledger.add_usage(total, usage)
+    attempt.usage = total
+    attempt.cost = ledger.price(total, snapshot.row(attempt.model_reported))
 
 
 def _save_evidence(root: Path, dest: Path, transcript: list[dict]) -> None:

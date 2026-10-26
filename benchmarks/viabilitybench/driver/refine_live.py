@@ -104,7 +104,7 @@ from specops import refine  # noqa: E402  (refine puts speclint/ on sys.path)
 
 import speclint  # noqa: E402
 
-PROMPT_VERSION = "refine-live-1"
+PROMPT_VERSION = "refine-live-2"
 DEFAULT_EXPERIMENT = "REFINE-COST"
 DEFAULT_LINE = "BL15"  # experiments/budget.toml: decision 5's $0.40 for this sample
 DEFAULT_ARM = "cheap_direct"  # whose [providers.cerebras] endpoint serves gpt-oss-120b
@@ -142,8 +142,9 @@ Fields and the shape of each item:
   the state the task leaves (grep -q, test -f, diff), and it fails until the task is done.
 - "non_goals": a string naming something the task must not do or change.
 - "assumptions": a string saying how you resolved something the spec leaves open.
-- "context.read_files": an object {"path": "<a file the spec names, or one of its files>", "why": "<what the
-  implementer learns from it>"}.
+- "context.read_files": an object {"path": "<a file that already exists in the repository now>", "why": "<what
+  the implementer learns from it>"}. Never name a file only because the task's own "files" lists it: that file
+  may not exist yet, since the task has not run.
 - "context.symbols": a string "exact:<identifier>", a function or type defined in one of the read_files.
 
 Rules:
@@ -152,6 +153,8 @@ Rules:
 - Add only what the spec already implies through its title, goal, description, files and items. Never invent a
   requirement.
 - Each new acceptance criterion needs a new verify step that lists it in "covers", in the same reply.
+- A verify step that ends in "|| true" or "|| exit 0" always exits zero, so it checks nothing; never write one
+  that way.
 - Each addition needs a "source": the spec field, file or symbol it comes from, such as "description",
   "title" or "files: src/app.py".
 
@@ -644,8 +647,8 @@ def summarize(run_dir: Path) -> str:
                    f"{sum(1 for row in rows if row['before']['hard_fail'])} task(s) had one before, "
                    f"{sum(1 for row in rows if (row['after'] or row['before'])['hard_fail'])} after; added: "
                    + (", ".join(f"{fail} on {n} task(s)" for fail, n in sorted(gained.items())) or "none")
-                   + ". A round is kept when the score does not drop (`refine`'s guard), even one that adds a hard "
-                   "fail.")
+                   + ". A round that would add a hard fail is rejected, even one that raises the score (`refine`'s "
+                   "guard, bug-d0906c).")
     out.append(f"- **Per-task budget:** ${budget:.2f} (S07 §4.3), held before every call and reserved on the ledger "
                f"for each task; at most {config['max_tokens']} output tokens a call.")
     if errors:

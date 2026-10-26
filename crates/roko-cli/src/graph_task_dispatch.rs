@@ -1798,6 +1798,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let dispatch_result =
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
+        // The calls a provider refused before the one that ran cost what
+        // they used, which the verdict counts beside it (bug-8bcd98).
+        attempt.record_refused_spend(progress.refused_usd());
         if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
             attempt.record_continues(continues);
         }

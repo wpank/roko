@@ -939,15 +939,28 @@ impl GateFeedback {
         let mut compile_errors = Vec::new();
         let mut test_failures = Vec::new();
         let mut clippy_warnings = Vec::new();
-        for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let lines: Vec<&str> = raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        for (index, line) in lines.iter().enumerate() {
             let lower = line.to_ascii_lowercase();
             let truncated = line.chars().take(240).collect::<String>();
             if lower.contains("error[") || lower.starts_with("error:") || line.contains("-->") {
                 compile_errors.push(truncated);
             } else if is_failing_test_line(line) {
-                // A runner prints one failed assertion many times.
-                if !test_failures.contains(&truncated) {
-                    test_failures.push(truncated);
+                // A failed check with what it saw (gap-0cfa36); a runner
+                // prints one failed assertion many times.
+                let failure = match observed_values(&lines[index + 1..]) {
+                    Some(values) => format!("{line} ({values})")
+                        .chars()
+                        .take(400)
+                        .collect::<String>(),
+                    None => truncated,
+                };
+                if !test_failures.contains(&failure) {
+                    test_failures.push(failure);
                 }
             } else if lower.contains("warning") || lower.contains("clippy") {
                 clippy_warnings.push(truncated);
@@ -989,6 +1002,20 @@ fn is_failing_test_line(line: &str) -> bool {
             .iter()
             .any(|marker| line.contains(marker))
         || (lower.contains("test") && (lower.contains("failed") || lower.contains("panicked")))
+}
+
+/// What a C++ runner says a failed check saw, from the lines after it,
+/// `after` (gap-0cfa36): doctest's `values: CHECK( 0.975951 >= 0.98 )`, or
+/// Catch2's check and its expansion, `REQUIRE( a == b ), with expansion: 1
+/// == 2`. `None` when they say neither.
+fn observed_values(after: &[&str]) -> Option<String> {
+    match after {
+        [values, ..] if values.starts_with("values:") => Some((*values).to_string()),
+        [check, with, expanded, ..] if *with == "with expansion:" => {
+            Some(format!("{check}, with expansion: {expanded}"))
+        }
+        _ => None,
+    }
 }
 
 /// Longest diagnosis a retry prompt carries.
@@ -4622,6 +4649,47 @@ mod tests {
         let rendered = render_gate_feedback(&compile);
         assert!(rendered.contains("## Compile errors"), "{rendered}");
         assert!(!rendered.contains("## Raw gate output"), "{rendered}");
+    }
+
+    /// gap-0cfa36 (Undertow phase 2, run 82b7e069): a failing doctest step's
+    /// failing tests are its failed checks, each with the values it saw, not
+    /// doctest's summary lines; Catch2's checks carry their expansion.
+    #[test]
+    fn doctest_failures_name_the_failing_checks() {
+        let doctest = "verify[0:test] (`tools/spec.sh 2 output`): exit code: 1\n\
+             [doctest] run with \"--help\" for options\n\
+             ===============================================================================\n\
+             /x/tests/spec/p2/output_test.cpp:117:\n\
+             TEST CASE:  P2.04 the output stage keeps the level below full scale\n\n\
+             /x/tests/spec/p2/output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct!\n\
+             \x20 values: CHECK( 0.975951 >= 0.98 )\n\n\
+             /x/tests/spec/p2/output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct!\n\
+             \x20 values: CHECK( 0.975951 >= 0.98 )\n\n\
+             ===============================================================================\n\
+             [doctest] test cases: 2 | 1 passed | 1 failed | 0 skipped\n\
+             [doctest] assertions: 19 | 15 passed | 4 failed |\n\
+             [doctest] Status: FAILURE!";
+
+        let feedback = GateFeedback::from_raw(doctest).expect("feedback");
+
+        assert_eq!(
+            feedback.test_failures,
+            [
+                "TEST CASE:  P2.04 the output stage keeps the level below full scale",
+                "/x/tests/spec/p2/output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct! \
+                 (values: CHECK( 0.975951 >= 0.98 ))",
+            ]
+        );
+        let catch2 = "/src/layout_test.cpp:15: FAILED:\n  REQUIRE( found != nullptr )\n\
+             with expansion:\n  nullptr != nullptr\n";
+        let feedback = GateFeedback::from_raw(catch2).expect("feedback");
+        assert_eq!(
+            feedback.test_failures,
+            [
+                "/src/layout_test.cpp:15: FAILED: (REQUIRE( found != nullptr ), with expansion: \
+                 nullptr != nullptr)"
+            ]
+        );
     }
 
     /// gap-c8bfc8: QuickReviewer and AutoFixer get no cross-plan context, yet

@@ -2,19 +2,29 @@
 id = "bug-e362a1"
 kind = "bug"
 title = "graph_execution::plan_verify::tests::plan_check_publishes_start_heartbeat_and_finish fails under load (an exit-3 step crosses the heartbeat interval and publishes heartbeats the test counts exactly) and passes alone"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan-verify"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "a86c648c3"
 source = "round-v7-roko-planner#flake"
 discovered_from = "agent:roko-planner (round v7, full suites of work/bug-72dc0d and work/plan-058)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_verify.rs::plan_check_publishes_start_heartbeat_and_finish"]
-links = { depends_on = [], blocks = [], related = ["bug-5c77d6"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-5c77d6"], supersedes = [], duplicate_of = "bug-8d8f98" }
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:25:20Z"
+commit = "aaa06db5e"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Duplicate of bug-8d8f98 (filed 2026-10-16): the same test failing the same way, its step 2 (exit 3) publishing \"heartbeat 2\" rows under load. Fixed by aaa06db5e. The test now compares the rows other than heartbeats exactly and checks each heartbeat against the step running when it came, and its step 2 outlasts two heartbeat periods on every run; bug-8d8f98's evidence has the before and after. This item's own done-when (the full roko-cli lib suite three times in a row under heavy.sh at high load) was not run: the single test passed 21 times in a row at load ~40, and the old assertion fails every time once step 2 is delayed."
 +++
 
 ## Problem

@@ -273,6 +273,11 @@ mod tests {
 
     /// gap-6b6ec1: each step of a plan's check publishes its start, a
     /// heartbeat while it runs, and its end; the step that fails is the last.
+    ///
+    /// How many heartbeats a step gets depends on how long it runs, which a
+    /// busy machine stretches (bug-8d8f98). So the other rows must match
+    /// exactly, and each heartbeat must name the step that was running when
+    /// it came.
     #[tokio::test]
     async fn plan_check_publishes_start_heartbeat_and_finish() {
         use roko_core::DashboardEvent;
@@ -289,9 +294,11 @@ mod tests {
             "cargo-default",
         )
         .with_heartbeat_every(Duration::from_millis(40));
+        // The failing step exits 3 after 0.1 s, past two heartbeat periods,
+        // so a run checks its heartbeats too, not only on a loaded machine.
         let steps = [
             verify_step("sleep 0.4"),
-            verify_step("exit 3"),
+            verify_step("exit $(sleep 0.1; echo 3)"),
             verify_step("touch never"),
         ];
 
@@ -300,7 +307,7 @@ mod tests {
             .await
             .expect_err("the second step fails");
 
-        assert_eq!(failure.command, "exit 3");
+        assert_eq!(failure.command, steps[1].command);
         let mut seen = Vec::new();
         while let Ok(envelope) = published.try_recv() {
             seen.push(envelope.payload);
@@ -337,16 +344,39 @@ mod tests {
                 other => format!("{other:?}"),
             })
             .collect();
-        let mut expected = vec!["started demo in_place 1/3 sleep command cargo-default: sleep 0.4"];
-        let beats = rows.iter().filter(|row| *row == "heartbeat 1").count();
-        assert!(beats >= 1, "{rows:#?}");
-        expected.extend(std::iter::repeat_n("heartbeat 1", beats));
-        expected.extend([
-            "finished 1 true Some(0) None",
-            "started demo in_place 2/3 exit command cargo-default: exit 3",
-            "finished 2 false Some(3) None",
-        ]);
-        assert_eq!(rows, expected);
+        // A step starts only once the one before it finished, and each
+        // heartbeat comes between its own step's start and end.
+        let mut running = None;
+        for event in &seen {
+            match event {
+                DashboardEvent::PlanCheckStarted { step, .. } => {
+                    assert_eq!(running.replace(*step), None, "{rows:#?}");
+                }
+                DashboardEvent::PlanCheckHeartbeat { step, .. } => {
+                    assert_eq!(running, Some(*step), "{rows:#?}");
+                }
+                DashboardEvent::PlanCheckFinished { step, .. } => {
+                    assert_eq!(running.take(), Some(*step), "{rows:#?}");
+                }
+                _ => {}
+            }
+        }
+        // The first step runs for ten heartbeat periods.
+        assert!(rows.iter().any(|row| row == "heartbeat 1"), "{rows:#?}");
+        let others: Vec<&str> = rows
+            .iter()
+            .map(String::as_str)
+            .filter(|row| !row.starts_with("heartbeat "))
+            .collect();
+        assert_eq!(
+            others,
+            [
+                "started demo in_place 1/3 sleep command cargo-default: sleep 0.4",
+                "finished 1 true Some(0) None",
+                "started demo in_place 2/3 exit command cargo-default: exit $(sleep 0.1; echo 3)",
+                "finished 2 false Some(3) None",
+            ]
+        );
         assert!(!dir.path().join("never").exists());
     }
 

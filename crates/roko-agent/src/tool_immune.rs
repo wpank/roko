@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::immune_evidence::{
-    append_release_audit, persist_evidence_signals, validate_boundary_label,
+    ReleaseOrigin, append_release_audit, persist_evidence_signals, validate_boundary_label,
 };
 
 /// Signal kind for exact quarantined tool-result payloads.
@@ -150,6 +150,10 @@ pub struct ReleasedToolControl {
     pub by: String,
     /// Why it was released.
     pub reason: String,
+    /// How the release came in (find-d05b5e); `None` on a line written
+    /// before releases recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<ReleaseOrigin>,
 }
 
 /// Durable control for one exact tool/source scope.
@@ -316,11 +320,13 @@ pub async fn check_tool_control(
         })?;
     match control.map(|control| control.control) {
         // gap-a2787f: the isolation stays until a person releases it, so the
-        // refusal says how they find and release it.
+        // refusal says how they find and release it. The agent reading it
+        // cannot (find-d05b5e), and is told so.
         Some(ToolControlState::Isolated) => Err(ToolError::PermissionDenied(format!(
             "tool source is isolated by the immune boundary until a person reviews and \
              releases it: `roko safety controls` lists it, and `roko safety release --tool {} \
-             --scope {scope} --reason <why>` releases it",
+             --scope {scope} --reason <why>` releases it. An agent cannot release it: carry \
+             on without the tool, and say in your hand-off that it is isolated",
             call.name
         ))),
         Some(ToolControlState::RateLimited { until_ms }) if now_ms <= until_ms => {
@@ -874,11 +880,12 @@ pub fn list_tool_controls(workspace_root: &Path) -> io::Result<Vec<ToolControl>>
 /// Release the control that refuses `tool_name` from `source_scope` in the
 /// workspace at `workspace_root`, after a person reviewed it (gap-a2787f):
 /// remove it from the ledger and append one audit line (when, the tool and
-/// scope, the control's state, issue time and triggering result, `by` and
-/// `reason`) to [`tool_control_releases_path`], both under the ledger's
-/// lock. The audit line is written first, so no release goes unrecorded.
-/// Releasing a tool with no control in force (none, or a cooldown that ran
-/// out) returns `Ok(None)` and writes no audit line.
+/// scope, the control's state, issue time and triggering result, `by`,
+/// `reason`, and how the release came in, `via`) to
+/// [`tool_control_releases_path`], both under the ledger's lock. The audit
+/// line is written first, so no release goes unrecorded. Releasing a tool
+/// with no control in force (none, or a cooldown that ran out) returns
+/// `Ok(None)` and writes no audit line.
 ///
 /// # Errors
 ///
@@ -892,6 +899,7 @@ pub fn release_tool_control(
     source_scope: &str,
     by: &str,
     reason: &str,
+    via: ReleaseOrigin,
 ) -> io::Result<Option<ReleasedToolControl>> {
     let invalid_input =
         |error: io::Error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string());
@@ -926,6 +934,7 @@ pub fn release_tool_control(
                 triggering_output: control.triggering_output,
                 by: by.to_string(),
                 reason: reason.to_string(),
+                via: Some(via),
             };
             append_release_audit(&audit_path, &released)?;
             ledger.controls.remove(&key);
@@ -1380,17 +1389,31 @@ mod tests {
             ),
             "{refused}"
         );
+        // find-d05b5e: the agent reading the refusal is told it cannot
+        // release the control itself.
+        assert!(
+            refused
+                .to_string()
+                .contains("An agent cannot release it: carry on without the tool"),
+            "{refused}"
+        );
         assert_eq!(
             list_tool_controls(workspace.path()).unwrap(),
             vec![isolated.clone()]
         );
 
+        let via = ReleaseOrigin {
+            channel: crate::immune_evidence::ReleaseChannel::Cli,
+            by_source: crate::immune_evidence::PrincipalSource::Flag,
+            terminal: Some(true),
+        };
         let released = release_tool_control(
             workspace.path(),
             "external_lookup",
             "mcp:test-server",
             "reviewer",
             "a false positive",
+            via,
         )
         .unwrap()
         .expect("the control is released");
@@ -1402,6 +1425,7 @@ mod tests {
             (released.by.as_str(), released.reason.as_str()),
             ("reviewer", "a false positive")
         );
+        assert_eq!(released.via, Some(via));
         let audit_path = tool_control_releases_path(workspace.path());
         let audit = std::fs::read_to_string(&audit_path).unwrap();
         let lines: Vec<ReleasedToolControl> = audit
@@ -1420,11 +1444,12 @@ mod tests {
             "mcp:test-server",
             "reviewer",
             "again",
+            via,
         )
         .unwrap();
         assert_eq!(again, None);
         assert_eq!(std::fs::read_to_string(&audit_path).unwrap(), audit);
-        let error = release_tool_control(workspace.path(), "", "mcp:test-server", "r", "why")
+        let error = release_tool_control(workspace.path(), "", "mcp:test-server", "r", "why", via)
             .expect_err("an empty tool name is refused");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }

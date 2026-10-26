@@ -68,6 +68,31 @@ There is one design choice. A step can read files outside git, such as `build/` 
 doesn't cover them, either include their hashes or keep this to steps that read only tracked files. That stays
 correct.
 
+## Design
+
+roko-exact, 2026-10-26: the lead's call (reuse a green record for the same tree and commands, and say so).
+
+1. **Record what the gate needs.** `run_checks` (roko-std) already records each run's tree (gap-56f761). It now also
+   records, for each check it passed, the check's command and its seconds: `CheckRun::commands` and
+   `CheckRun::secs`, in `passed`'s order. Records written before carry neither, so they settle nothing.
+2. **Reuse at the gate.** Before `run_verify_steps` runs a try's steps, it takes the newest run of the try's own
+   checks whose tree is the tree the try ends with. That is the agent's `run_tests` with `build: "checks"`, or the
+   hand-off check, and the tree is the same `snapshot_tree` id 56f761 ranks by. The run must have passed every
+   check it ran.
+   - Each step whose label and command that run passed settles as passed from it, and no command runs. The hub
+     shows it passed with "passed in this try's own checks at 12:04:31, on this tree: not run again". Its verdict
+     row says `self_checked: true` and carries the run's duration.
+   - Every other step runs as before: a workspace rung, a step whose command the focused mode rewrote, or one that
+     run didn't reach.
+   - A try whose final tree differs, or whose newest run on it failed a check, runs every step.
+3. **Only roko's runs count.** The records are the ones `run_checks` wrote for this attempt's key. An agent's own
+   bash runs never count.
+4. **What the tree covers.** The tree id holds the tracked and unignored files. What a step reads under ignored
+   paths, such as build trees, counts as it was at the self-check. The gate would read the same build trees in the
+   same checkout, and the plan's check and the delivery's regression check run on the integrated tree regardless.
+5. **Unchanged.** An unchanged-tree probe still runs its steps, since its result decides `already_satisfied`. So do
+   the plan check and the delivery regression check.
+
 ## Done when
 
 - A try whose last `run_tests` passed all its steps on its final tree settles `passed` without running them again.

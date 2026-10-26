@@ -2038,6 +2038,7 @@ async fn run_graph_plan_body(
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
         gate_env_passthrough: &roko_config.gates.env_passthrough,
+        warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
         worktrees: worktrees.as_ref(),
         delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
@@ -3146,6 +3147,9 @@ struct PlanRunContext<'a> {
     /// `[gates] env_passthrough`: what the whole-plan check's steps (and the
     /// delivery regression that runs them) inherit beyond the gate allowlist.
     gate_env_passthrough: &'a [String],
+    /// `[gates] warm_build_dirs`: the build trees the delivery regression's
+    /// checkout gets a warm copy of (gap-dc24dd).
+    warm_build_dirs: Option<&'a [String]>,
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     /// `[runner] delete_attempt_branches`: a delivered plan's attempt
@@ -4557,6 +4561,7 @@ async fn run_one_plan(
                     plan,
                     plan_checks,
                     ctx.gate_env_passthrough,
+                    ctx.warm_build_dirs,
                     ctx.worktrees,
                     ctx.delete_attempt_branches,
                     &ctx.interrupt,
@@ -5010,6 +5015,7 @@ async fn deliver_plan_to_batch(
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
     env_passthrough: &[String],
+    warm_build_dirs: Option<&[String]>,
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
     stop: &PlanRunInterruptHandle,
@@ -5031,6 +5037,9 @@ async fn deliver_plan_to_batch(
         .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
         .with_regression_source(plan_check_source(plan))
         .with_env_passthrough(env_passthrough.to_vec())
+        // Warm by default, cold for a plan that asks (gap-dc24dd).
+        .with_warm_build_dirs(warm_build_dirs.map(<[String]>::to_vec))
+        .with_cold_check(plan.tasks.meta.cold_verify)
         .with_check_events(plan_check_events(
             graph_tui_bridge,
             plan,
@@ -5444,6 +5453,16 @@ async fn check_plan_in_place(
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanCheckResult> {
+    // A cold check needs a checkout of its own to clear (gap-dc24dd); the
+    // shared working tree is the person's, so here it runs on their build
+    // trees.
+    if plan.tasks.meta.cold_verify {
+        tracing::warn!(
+            plan_id = %plan.id,
+            "[meta] cold_verify asks for a cold check, which needs --worktree-per-task; the \
+             plan's check runs warm in the shared working tree"
+        );
+    }
     let events = plan_check_events(
         graph_tui_bridge,
         plan,

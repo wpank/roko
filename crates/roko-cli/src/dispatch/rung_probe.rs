@@ -151,6 +151,135 @@ pub async fn probe_ladder(
         .collect()
 }
 
+/// A rung the run skips because its model's fresh probe failed: what its
+/// `rung_skipped` event and the run's readout say (gap-20301d).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkippedRung {
+    /// The rung's name.
+    pub rung: String,
+    /// The model dispatch runs for it.
+    pub model: String,
+    /// The model's provider.
+    pub provider: String,
+    /// Why its probe failed, in the probe's own words.
+    pub reason: String,
+    /// When its verdict stops standing and the rung is probed again (unix
+    /// ms); `None` when the probe cache does not say when it was probed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<i64>,
+}
+
+impl SkippedRung {
+    /// The rung in words, for a refusal that lists the skipped rungs:
+    /// `cheap (gpt-oss-120b on cerebras): <reason>`.
+    #[must_use]
+    pub fn named(&self) -> String {
+        format!(
+            "{} ({} on {}): {}",
+            self.rung, self.model, self.provider, self.reason
+        )
+    }
+
+    /// The rung's line in a run's readout, beside the rungs that ran: "cheap
+    /// (gpt-oss-120b on cerebras): skipped until 20:33, its tool-use probe
+    /// failed: …".
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "{} ({} on {}): skipped{}, its tool-use probe failed: {}",
+            self.rung,
+            self.model,
+            self.provider,
+            self.until(),
+            self.reason
+        )
+    }
+
+    /// The finding in plain words: "rung cheap (gpt-oss-120b on cerebras) is
+    /// skipped until 20:33: its tool-use probe failed: …; a task that would
+    /// start on it starts on the next rung that runs".
+    #[must_use]
+    pub fn detail(&self) -> String {
+        let until = self.until();
+        format!(
+            "rung {} ({} on {}) is skipped{until}: its tool-use probe failed: {}; a task that \
+             would start on it starts on the next rung that runs",
+            self.rung, self.model, self.provider, self.reason
+        )
+    }
+
+    /// ` until 20:33`, or nothing when the probe's time is unknown.
+    fn until(&self) -> String {
+        self.until_ms
+            .map(|until_ms| format!(" until {}", local_until(until_ms)))
+            .unwrap_or_default()
+    }
+
+    /// This rung's `rung_skipped` event for the run's plan `plan_id`.
+    #[must_use]
+    pub fn event(&self, plan_id: &str) -> roko_core::DashboardEvent {
+        roko_core::DashboardEvent::RungSkipped {
+            plan_id: plan_id.to_string(),
+            rung: self.rung.clone(),
+            model: self.model.clone(),
+            provider: self.provider.clone(),
+            reason: self.reason.clone(),
+            until_ms: self.until_ms,
+            detail: self.detail(),
+        }
+    }
+}
+
+/// The rungs of `ladder` that the failed probes `failed` skip, by model with
+/// why, as [`probe_ladder`] returns them: one per rung whose model failed,
+/// with the model's provider and until when the verdict saved at `workdir`
+/// stands.
+#[must_use]
+pub fn skipped_rungs(
+    config: &Arc<RokoConfig>,
+    ladder: &RoutingLadder,
+    failed: &BTreeMap<String, String>,
+    workdir: &Path,
+) -> Vec<SkippedRung> {
+    if failed.is_empty() {
+        return Vec::new();
+    }
+    let probes = RungProbes::load(&RungProbes::path(workdir));
+    let resolver = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(config));
+    let mut skipped = Vec::new();
+    for (model, reason) in failed {
+        let provider = resolver.resolve(model).provider_id;
+        let until_ms = probes
+            .models
+            .get(model)
+            .map(|probe| probe.probed_at_ms.saturating_add(PROBE_TTL_MS));
+        for rung in ladder.rungs_running(model) {
+            skipped.push(SkippedRung {
+                rung,
+                model: model.clone(),
+                provider: provider.clone(),
+                reason: reason.clone(),
+                until_ms,
+            });
+        }
+    }
+    skipped
+}
+
+/// `until_ms` as local time: `20:33` today, else with its date.
+fn local_until(until_ms: i64) -> String {
+    use chrono::TimeZone;
+
+    let Some(at) = chrono::Local.timestamp_millis_opt(until_ms).single() else {
+        return until_ms.to_string();
+    };
+    if at.date_naive() == chrono::Local::now().date_naive() {
+        at.format("%H:%M").to_string()
+    } else {
+        at.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
 /// Whether roko's tool loop drives `model`'s calls. A CLI or ACP harness
 /// brings its own tools and is not probed.
 fn tool_loop_drives(config: &RokoConfig, model: &str) -> bool {
@@ -277,5 +406,45 @@ impl ToolHandler for EchoTool {
     async fn execute(&self, call: ToolCall, _ctx: &ToolContext) -> ToolResult {
         self.called.store(true, Ordering::SeqCst);
         ToolResult::text(call.arguments.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// gap-20301d: a skipped rung's readout line and event detail say which
+    /// rung, on which model and provider, until when, and why.
+    #[test]
+    fn a_skipped_rung_says_why_and_until_when() {
+        let mut rung = SkippedRung {
+            rung: "cheap".to_string(),
+            model: "gpt-oss-120b".to_string(),
+            provider: "cerebras".to_string(),
+            reason: "insufficient_credits: cerebras refused the request (HTTP 402)".to_string(),
+            until_ms: None,
+        };
+        assert_eq!(
+            rung.line(),
+            "cheap (gpt-oss-120b on cerebras): skipped, its tool-use probe failed: \
+             insufficient_credits: cerebras refused the request (HTTP 402)"
+        );
+        rung.until_ms = Some(chrono::Utc::now().timestamp_millis() + 3_600_000);
+        let until = local_until(rung.until_ms.expect("until"));
+        assert_eq!(
+            rung.detail(),
+            format!(
+                "rung cheap (gpt-oss-120b on cerebras) is skipped until {until}: its tool-use \
+                 probe failed: insufficient_credits: cerebras refused the request (HTTP 402); a \
+                 task that would start on it starts on the next rung that runs"
+            )
+        );
+        let roko_core::DashboardEvent::RungSkipped {
+            plan_id, detail, ..
+        } = rung.event("p1")
+        else {
+            panic!("a rung_skipped event");
+        };
+        assert_eq!((plan_id.as_str(), detail), ("p1", rung.detail()));
     }
 }

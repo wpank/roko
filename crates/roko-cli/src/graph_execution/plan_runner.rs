@@ -2558,7 +2558,11 @@ async fn run_graph_plan_body(
                 roko_learn::telemetry::report::RunRecords::load(&runs_dir.join(run_id)).ok()
             })
             .collect();
-        roko_learn::telemetry::rung_stats::RungReport::of(&records)
+        // A rung's refused calls count on it (gap-5cfa9c).
+        roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+            &records,
+            &graph_layout.learn_dir().join("costs.jsonl"),
+        )
     };
 
     if json {

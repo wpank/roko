@@ -14,6 +14,10 @@
 //! - A try's cost is what its plan's budget counted, as its `attempt_settled`
 //!   event says it: a CLI agent's own figure, else the provider's charge, else
 //!   the price snapshot's.
+//! - A call a rung's model made that its provider refused before failover
+//!   moved the try on counts on that rung as `refused_usd`, from its
+//!   `failover_refused` cost row in `learn/costs.jsonl` (gap-5cfa9c), so the
+//!   rungs and the other side calls add up to a run's cost.
 //!
 //! [`misordered`] compares the rungs of one role. A higher rung that is both
 //! cheaper and faster per verified pass than a lower one, each with at least
@@ -24,9 +28,11 @@
 //! which a plan run's time-left estimate learns from (gap-c1045f).
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use roko_core::dashboard_snapshot::FAILOVER_REFUSED_SIDE_CALL;
+use serde::{Deserialize, Serialize};
 
 use super::records::{AttemptVerdictRecord, BOUND_TIME};
 use super::report::RunRecords;
@@ -84,6 +90,10 @@ pub struct RungRow {
     pub cost_per_pass_usd: Option<f64>,
     /// Tries whose cost is unknown.
     pub unpriced: u32,
+    /// What the calls the model made and its provider refused before
+    /// failover moved their tries on cost, in USD (gap-5cfa9c). They are no
+    /// try's, so `cost_usd` leaves them out.
+    pub refused_usd: f64,
 }
 
 /// The middle and the 90th percentile of some durations, in seconds; `None`
@@ -163,7 +173,23 @@ impl RungReport {
     /// The readout of `runs`.
     #[must_use]
     pub fn of(runs: &[RunRecords]) -> Self {
-        let rows = rows(runs);
+        Self::of_with_refused(runs, &[])
+    }
+
+    /// The readout of `runs`, with the calls their providers refused before
+    /// failover in the cost rows at `costs_path` (`learn/costs.jsonl`)
+    /// counted on the rungs of the models that made them (gap-5cfa9c).
+    #[must_use]
+    pub fn of_with_costs(runs: &[RunRecords], costs_path: &Path) -> Self {
+        Self::of_with_refused(runs, &refused_calls(costs_path, runs))
+    }
+
+    /// The readout of `runs`, with `refused` counted on the rungs of the
+    /// models that made them.
+    #[must_use]
+    pub fn of_with_refused(runs: &[RunRecords], refused: &[RefusedCall]) -> Self {
+        let mut rows = rows(runs);
+        add_refused(&mut rows, runs, refused);
         let misordered = misordered(&rows);
         Self {
             runs: runs.iter().map(|run| run.run_id.clone()).collect(),
@@ -227,8 +253,104 @@ impl RungRow {
                 self.time_bound_stops
             ));
         }
+        if self.refused_usd > 0.0 {
+            line.push_str(&format!(
+                ", {} in calls refused before failover",
+                usd(self.refused_usd)
+            ));
+        }
         line
     }
+}
+
+/// A call a rung's model made that its provider refused before failover
+/// moved the try on (gap-5cfa9c), from its cost row, role `failover_refused`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefusedCall {
+    /// The try's attempt key.
+    pub attempt_key: String,
+    /// The model that made the call, as its tries' rows name it.
+    pub model: String,
+    /// What the call cost, in USD.
+    pub cost_usd: f64,
+}
+
+/// The refused calls of `runs` among the cost rows at `costs_path`
+/// (`learn/costs.jsonl`); a missing file gives none.
+#[must_use]
+pub fn refused_calls(costs_path: &Path, runs: &[RunRecords]) -> Vec<RefusedCall> {
+    #[derive(Deserialize)]
+    struct CostRow {
+        #[serde(default)]
+        attempt_key: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        cost_usd: Option<f64>,
+    }
+
+    let Ok(file) = std::fs::File::open(costs_path) else {
+        return Vec::new();
+    };
+    let prefixes: Vec<String> = runs.iter().map(|run| format!("{}:", run.run_id)).collect();
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|line| line.contains(FAILOVER_REFUSED_SIDE_CALL))
+        .filter_map(|line| serde_json::from_str::<CostRow>(&line).ok())
+        .filter(|row| row.role.as_deref() == Some(FAILOVER_REFUSED_SIDE_CALL))
+        .filter_map(|row| {
+            let attempt_key = row.attempt_key?;
+            if !prefixes
+                .iter()
+                .any(|prefix| attempt_key.starts_with(prefix.as_str()))
+            {
+                return None;
+            }
+            Some(RefusedCall {
+                attempt_key,
+                model: row.model?,
+                cost_usd: row.cost_usd.filter(|usd| usd.is_finite() && *usd >= 0.0)?,
+            })
+        })
+        .collect()
+}
+
+/// Count each of `refused` on the row of its try's role and its model: the
+/// row with a rung and the most tries, else a new row with no rung.
+fn add_refused(rows: &mut Vec<RungRow>, runs: &[RunRecords], refused: &[RefusedCall]) {
+    if refused.is_empty() {
+        return;
+    }
+    let roles: HashMap<&str, &str> = runs
+        .iter()
+        .flat_map(|run| &run.opens)
+        .filter_map(|line| {
+            let open = &line.record;
+            Some((open.identity.attempt_key.as_str(), open.role.as_deref()?))
+        })
+        .collect();
+    for call in refused {
+        let role = roles
+            .get(call.attempt_key.as_str())
+            .copied()
+            .unwrap_or(UNKNOWN_ROLE);
+        let found = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.role == role && row.model == call.model)
+            .max_by_key(|(_, row)| (row.rung.is_some(), row.tries))
+            .map(|(at, _)| at);
+        let at = found.unwrap_or_else(|| {
+            let key = (role.to_string(), None, call.model.clone());
+            rows.push(row_of((key, Tally::default())));
+            rows.len() - 1
+        });
+        rows[at].refused_usd += call.cost_usd;
+    }
+    sort_rows(rows);
 }
 
 /// The runs under `runs_dir` that hold attempt records, newest first, at
@@ -349,6 +471,12 @@ pub fn rows<'a>(runs: impl IntoIterator<Item = &'a RunRecords>) -> Vec<RungRow> 
         tally_run(run, &mut tallies);
     }
     let mut rows: Vec<RungRow> = tallies.into_iter().map(row_of).collect();
+    sort_rows(&mut rows);
+    rows
+}
+
+/// Sort `rows` by role, then ladder order, then model.
+fn sort_rows(rows: &mut [RungRow]) {
     rows.sort_by(|a, b| {
         (&a.role, a.index.is_none(), a.index, &a.rung, &a.model).cmp(&(
             &b.role,
@@ -358,7 +486,6 @@ pub fn rows<'a>(runs: impl IntoIterator<Item = &'a RunRecords>) -> Vec<RungRow> 
             &b.model,
         ))
     });
-    rows
 }
 
 /// Add `run`'s settled tries to `tallies`.
@@ -444,6 +571,7 @@ fn row_of((key, tally): (RowKey, Tally)) -> RungRow {
         cost_per_try_usd: per(tally.priced),
         cost_per_pass_usd: per(tally.verified_passes),
         unpriced: tally.tries - tally.priced,
+        refused_usd: 0.0,
     }
 }
 
@@ -685,6 +813,108 @@ mod tests {
             ]
         );
         assert!(times.iter().all(|time| time.run_id == RUN));
+    }
+
+    /// gap-5cfa9c: run 7b8cb121's rungs came to $0.7009 against a run cost
+    /// of $0.9085. The $0.2076 its mid model, glm-4.7, spent in calls its
+    /// provider refused before T2's failover was on no rung. A refused call's
+    /// cost row now counts on the row of its try's role and its model, as
+    /// `refused_usd`, so the rungs add up to the run; a try's own cost stays
+    /// its own. A model with no try gets a row of its own. Another run's rows
+    /// and other roles' rows are not counted.
+    #[test]
+    fn a_rungs_spend_counts_its_models_refused_calls() {
+        use AttemptOutcome::{GateFailed, Passed};
+        let run = run_of(&[
+            Try {
+                task: "T1",
+                attempt: 1,
+                rung: "mid",
+                index: 1,
+                model: "glm-4.7",
+                outcome: GateFailed,
+                secs: 600,
+                usd: 0.4155,
+            },
+            Try {
+                task: "T1",
+                attempt: 2,
+                rung: "mid",
+                index: 1,
+                model: "glm-4.7",
+                outcome: Passed,
+                secs: 600,
+                usd: 0.25,
+            },
+            Try {
+                task: "T2",
+                attempt: 1,
+                rung: "strong",
+                index: 2,
+                model: "gpt-5.4-mini",
+                outcome: Passed,
+                secs: 300,
+                usd: 0.0354,
+            },
+        ]);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let costs = temp.path().join("costs.jsonl");
+        let t2 = AttemptKey::new(RUN, "plan", "T2", 1).attempt_key();
+        let row = |key: &str, role: &str, model: &str, usd: f64| {
+            serde_json::json!({
+                "attempt_key": key, "role": role, "model": model, "cost_usd": usd,
+                "provider": "zai", "plan_id": "plan", "task_id": "T2",
+            })
+            .to_string()
+        };
+        let lines = [
+            row(&t2, "failover_refused", "glm-4.7", 0.2076),
+            row(&t2, "failover_refused", "kimi-k2", 0.01),
+            row(&t2, "helper", "glm-4.7", 0.5),
+            row("other-run:plan:T2:1", "failover_refused", "glm-4.7", 9.0),
+        ];
+        std::fs::write(&costs, lines.join("\n") + "\n").expect("costs.jsonl");
+
+        let report = RungReport::of_with_costs(std::slice::from_ref(&run), &costs);
+        let rows: Vec<(Option<&str>, &str, u32, f64, f64)> = report
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.rung.as_deref(),
+                    row.model.as_str(),
+                    row.tries,
+                    (row.cost_usd * 10_000.0).round() / 10_000.0,
+                    (row.refused_usd * 10_000.0).round() / 10_000.0,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("mid"), "glm-4.7", 2, 0.6655, 0.2076),
+                (Some("strong"), "gpt-5.4-mini", 1, 0.0354, 0.0),
+                (None, "kimi-k2", 0, 0.0, 0.01),
+            ]
+        );
+        let total: f64 = report
+            .rows
+            .iter()
+            .map(|row| row.cost_usd + row.refused_usd)
+            .sum();
+        assert!((total - 0.9185).abs() < 1e-9, "{total}");
+        assert!(
+            report.rows[0]
+                .line()
+                .ends_with(", $0.21 in calls refused before failover"),
+            "{}",
+            report.rows[0].line()
+        );
+        // Without the cost rows, as before.
+        let plain = RungReport::of(std::slice::from_ref(&run));
+        assert_eq!(plain.rows.len(), 2);
+        assert!(plain.rows.iter().all(|row| row.refused_usd == 0.0));
+        assert!(refused_calls(&temp.path().join("missing.jsonl"), &[run]).is_empty());
     }
 
     /// gap-3217a0: each rung's row counts its tries by how they ended, takes

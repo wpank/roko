@@ -323,13 +323,16 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
     let workdir = state.workdir.clone();
     let io_run_id = run_id.to_string();
     let rungs = blocking_io(move || {
-        let dir = roko_fs::RokoLayout::for_project(&workdir)
-            .runs_dir()
-            .join(&io_run_id);
+        let layout = roko_fs::RokoLayout::for_project(&workdir);
+        let dir = layout.runs_dir().join(&io_run_id);
         let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
-        Ok(roko_learn::telemetry::rung_stats::RungReport::of(
-            std::slice::from_ref(&records),
-        ))
+        // A rung's refused calls count on it (gap-5cfa9c).
+        Ok(
+            roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+                std::slice::from_ref(&records),
+                &layout.learn_dir().join("costs.jsonl"),
+            ),
+        )
     })
     .await?;
     summary["rungs"] = json!(rungs.rows);
@@ -4479,7 +4482,9 @@ mod tests {
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own
     /// records, with their passes, time and cost, says when a higher rung
-    /// beat a lower one, and names the rungs the run said ran slow.
+    /// beat a lower one, and names the rungs the run said ran slow. A call
+    /// its provider refused before failover counts on the rung of the model
+    /// that made it, as `refused_usd` (gap-5cfa9c).
     #[tokio::test]
     async fn run_summary_lists_its_rungs() {
         use roko_learn::telemetry::records::{
@@ -4559,6 +4564,14 @@ mod tests {
             &state.layout.runs_dir().join("r3").join("attempts.jsonl"),
             &lines,
         );
+        // glm-4.7's calls refused before T4 failed over to strong.
+        let t4 = AttemptKey::new("r3", "p1", "T4", 1).attempt_key();
+        write_rows(
+            &state.layout.learn_dir().join("costs.jsonl"),
+            &[
+                json!({"attempt_key": t4, "role": "failover_refused", "model": "glm-4.7", "cost_usd": 0.2076}),
+            ],
+        );
 
         let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r3".into()))
             .await
@@ -4569,8 +4582,10 @@ mod tests {
         assert_eq!(rungs[0]["model"], "glm-4.7", "{summary}");
         assert_eq!(rungs[0]["verified_passes"], 3, "{summary}");
         assert_eq!(rungs[0]["try_s"]["median"], 600.0, "{summary}");
+        assert_eq!(rungs[0]["refused_usd"], 0.2076, "{summary}");
         assert_eq!(rungs[1]["rung"], "strong", "{summary}");
         assert_eq!(rungs[1]["pass_s"]["median"], 45.0, "{summary}");
+        assert_eq!(rungs[1]["refused_usd"], 0.0, "{summary}");
         let misordered = summary["misordered"].as_str().expect("misordered");
         assert!(
             misordered.starts_with("strong (gpt-5.4-mini) is cheaper and faster per verified pass"),

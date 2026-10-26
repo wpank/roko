@@ -3,8 +3,9 @@
 //!
 //! Every Graph attempt writes a `roko.attempt_open/1` line before its prompt is assembled and a
 //! `roko.verdict/1` line when it settles. [`read_runs`] joins the two by attempt key. An open
-//! line with no verdict is an abandoned attempt: it is counted and skipped. The label is the
-//! verdict's `learning_label` (S01 §4.1), through [`Label::of_verdict`] as in the live outcome
+//! line with no verdict is an abandoned attempt: it is counted and skipped, as is one whose
+//! verdict a resume wrote as `abandoned` (bug-b7f6a8). The label is the verdict's
+//! `learning_label` (S01 §4.1), through [`Label::of_verdict`] as in the live outcome
 //! sink: `1` a pass, `0` an agent failure, and none for an unverified attempt, a forced accept
 //! or a provider or harness outcome. An attempt a provider failover substituted is marked: the
 //! model learns what the model that ran did, while the fit neither scores it nor counts it in the
@@ -202,8 +203,12 @@ impl RunLines {
                 let Ok(verdict) = serde_json::from_value::<AttemptVerdictRecord>(value) else {
                     return false;
                 };
-                self.verdicts
-                    .insert(verdict.identity.attempt_key.clone(), verdict);
+                // A resume's `abandoned` verdict leaves its attempt abandoned, as an open
+                // line with no verdict is (bug-b7f6a8).
+                if verdict.outcome != AttemptOutcome::Abandoned {
+                    self.verdicts
+                        .insert(verdict.identity.attempt_key.clone(), verdict);
+                }
                 true
             }
             // Decisions and other records share no line with attempts; skip them.
@@ -352,6 +357,7 @@ impl ForecastJoin {
         let verdicts: HashMap<&str, &AttemptVerdictRecord> = run
             .verdicts
             .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
             .map(|line| (line.record.identity.attempt_key.as_str(), &line.record))
             .collect();
         self.forecasts += forecast.len();
@@ -507,6 +513,57 @@ mod tests {
         );
         assert_eq!(report.audit.labelled, 2);
         assert_eq!(report.audit.unlabelled, 2);
+    }
+
+    /// bug-b7f6a8: the `abandoned` verdict a resume writes for an attempt a stopped process
+    /// left is skipped like a missing one: the attempt counts as abandoned, makes no unit, and
+    /// is no prior failure of the chain's next attempt.
+    #[test]
+    fn a_resumes_abandoned_verdict_counts_as_no_verdict() {
+        let identity =
+            |attempt| AttemptIdentity::new(&AttemptKey::new("run-r", "plan-r", "T1", attempt));
+        let stamped = |mut line: serde_json::Value, schema: &str| {
+            line["schema_version"] = schema.into();
+            format!("{line}\n")
+        };
+        let mut passed = AttemptVerdictRecord::settle(identity(2), AttemptOutcome::Passed, true);
+        passed.executed.provider = Some("cerebras".to_string());
+        passed.executed.model_dispatched = Some("gpt-oss-120b".to_string());
+        let text = [
+            stamped(
+                serde_json::to_value(AttemptOpenRecord::new(identity(1), 1_000)).expect("open"),
+                ATTEMPT_OPEN_SCHEMA,
+            ),
+            stamped(
+                serde_json::to_value(AttemptVerdictRecord::settle(
+                    identity(1),
+                    AttemptOutcome::Abandoned,
+                    true,
+                ))
+                .expect("abandoned"),
+                VERDICT_SCHEMA,
+            ),
+            stamped(
+                serde_json::to_value(AttemptOpenRecord::new(identity(2), 2_000)).expect("open"),
+                ATTEMPT_OPEN_SCHEMA,
+            ),
+            stamped(
+                serde_json::to_value(&passed).expect("passed"),
+                VERDICT_SCHEMA,
+            ),
+        ]
+        .concat();
+        let mut report = IngestReport::default();
+        read_run(&text, &mut report);
+
+        assert_eq!(report.audit.attempts, 2);
+        assert_eq!(report.audit.abandoned, 1);
+        assert_eq!((report.audit.labelled, report.audit.unlabelled), (1, 0));
+        let [unit] = report.units.as_slice() else {
+            panic!("one unit: {:?}", report.units);
+        };
+        assert_eq!(unit.attempt, 2);
+        assert!(!unit.prior_failure);
     }
 
     #[test]

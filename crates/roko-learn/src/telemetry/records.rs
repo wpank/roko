@@ -397,8 +397,9 @@ pub enum AttemptOutcome {
     /// steps: prompt assembly, or recording its spend in the plan's cost
     /// ledger.
     HarnessError,
-    /// An attempt-open line with no verdict. It is derived offline; dispatch
-    /// never writes it.
+    /// An attempt-open line with no verdict, derived offline, or the verdict
+    /// a resume writes for an attempt a stopped process left in flight
+    /// (bug-b7f6a8). Dispatch never writes it.
     Abandoned,
 }
 

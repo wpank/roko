@@ -177,6 +177,9 @@ struct ProgressState {
     /// The watchdog, the conductor or a stopping plan run cancelled the
     /// call.
     interrupted: bool,
+    /// What the attempt's calls a provider refused part-way cost, in USD
+    /// (bug-8bcd98).
+    refused_usd: f64,
 }
 
 impl ProgressState {
@@ -360,6 +363,21 @@ impl AttemptProgress {
         state.call = Some(CallInFlight { target, failover });
         state.calls += 1;
         state.usage = StreamedUsage::default();
+    }
+
+    /// A provider refused the attempt's call part-way, with a rate limit or
+    /// an out-of-usage answer, after it spent `usd`: failover moves the try
+    /// on, or it calls the same model again. Its verdict counts the spend
+    /// beside the call that ran (bug-8bcd98).
+    pub(super) fn call_refused(&self, usd: f64) {
+        if usd.is_finite() && usd > 0.0 {
+            self.inner.lock().refused_usd += usd;
+        }
+    }
+
+    /// What the attempt's refused calls cost, in USD ([`Self::call_refused`]).
+    pub(super) fn refused_usd(&self) -> f64 {
+        self.inner.lock().refused_usd
     }
 
     /// Whether the attempt reported anything yet: after it did, a timeout is

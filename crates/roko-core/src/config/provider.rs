@@ -644,6 +644,21 @@ pub struct ModelProfile {
     /// Context window in tokens.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
+    /// The estimated prompt size, in tokens, past which roko's tool loop
+    /// compacts the conversation's older tool results: outside the newest
+    /// two groups, each result over 500 characters becomes a 200-character
+    /// preview (gap-b46c16). `None` compacts at 80% of `context_window`, as
+    /// before; a value above that changes nothing.
+    ///
+    /// A try re-sends its whole history every turn, and a long one on an
+    /// expensive model pays more for that re-sent, cached input than for
+    /// anything else, long before its window fills: about 40,000 suits
+    /// gpt-5.4 on Undertow's tasks, whose first prompt is 17,000. Each
+    /// compaction breaks the provider's prompt cache once, and the agent may
+    /// read a file again whose old contents it dropped. Keep it well above
+    /// the first prompt, or every turn compacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at_tokens: Option<u64>,
     /// Maximum output tokens, if the provider/model sets one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,

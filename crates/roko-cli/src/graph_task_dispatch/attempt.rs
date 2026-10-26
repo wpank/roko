@@ -439,6 +439,7 @@ impl AttemptBook {
                 ..AttemptTiming::default()
             },
             failover: FailoverChain::default(),
+            refused_usd: 0.0,
             helpers: None,
             ladder: None,
             reflex_rule: None,
@@ -471,6 +472,8 @@ pub(super) struct AttemptContext {
     timing: AttemptTiming,
     /// The models provider failover passed over.
     failover: FailoverChain,
+    /// What the calls a provider refused part-way cost, in USD (bug-8bcd98).
+    refused_usd: f64,
     /// The attempt's helper model calls, once they settled.
     helpers: Option<HelperCallsUsage>,
     /// Where the attempt stands on the model ladder, and whether it is the
@@ -623,6 +626,12 @@ impl AttemptContext {
             *last_chance = false;
         }
         self.failover = failover;
+    }
+
+    /// The calls a provider refused part-way, before failover moved the try
+    /// on or it called the same model again, cost `usd` (bug-8bcd98).
+    pub(super) fn record_refused_spend(&mut self, usd: f64) {
+        self.refused_usd = usd;
     }
 
     /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
@@ -843,6 +852,8 @@ impl AttemptContext {
         // What the attempt's tokens cost at the run's price snapshot, the
         // figure cost per verified task reads (backlog 2115, 6105).
         price_at_snapshot(&mut verdict, dispatch, self.pricing.as_deref());
+        // Beside the call that ran, what its refused calls cost (bug-8bcd98).
+        verdict.cost.refused_usd = (self.refused_usd > 0.0).then_some(self.refused_usd);
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {

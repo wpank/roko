@@ -756,6 +756,7 @@ mod tests {
             provider: "gemini".to_string(),
             slug: "gemini-3.1-pro-preview".to_string(),
             context_window: 1_048_576,
+            compact_at_tokens: None,
             max_output: Some(8_192),
             supports_tools: true,
             supports_thinking: true,

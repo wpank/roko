@@ -1756,6 +1756,7 @@ fn build_schema_tree() -> toml::Value {
         thinking_level: Some(String::new()),
         max_tools: Some(0),
         max_tool_iterations: Some(0),
+        compact_at_tokens: Some(0),
         tokenizer_ratio: Some(0.0),
         search_context_size: Some(String::new()),
         tier: Some(crate::agent::ModelTier::Standard),
@@ -5593,5 +5594,48 @@ env_passthrough = ["DATABASE_URL", "PGHOST"]
         assert_eq!(levenshtein_distance("abc", "xyz"), 3);
         assert_eq!(levenshtein_distance("", "abc"), 3);
         assert_eq!(levenshtein_distance("abc", ""), 3);
+    }
+
+    /// gap-b46c16: a model's compaction trigger is a known key, so a load
+    /// keeps it instead of stripping it as unknown.
+    #[test]
+    fn a_models_compact_at_tokens_survives_a_load() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.gpt-5-4]
+provider = "openai"
+slug = "gpt-5.4"
+context_window = 272000
+compact_at_tokens = 40000
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options).expect("load");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.message.contains("unknown") && diagnostic.key.starts_with("models.")
+            })
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        assert!(unknown.is_empty(), "{unknown:?}");
+        assert_eq!(
+            loaded.config().models["gpt-5-4"].compact_at_tokens,
+            Some(40_000)
+        );
     }
 }

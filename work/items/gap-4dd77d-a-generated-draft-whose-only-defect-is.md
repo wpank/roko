@@ -73,6 +73,20 @@ Undertow's `.roko/roko.log.2026-10-26`, 12:20:02–12:20:25Z.
 - roko logged "repaired the draft" for the regeneration too. So the raise this item asks for, in
   `repair_generated_draft`, would have kept the 17-of-17 plan for no extra call.
 
+## Evidence: phase 5, two more regenerations (2026-10-26, hermes-pilot)
+
+Undertow phase 5's plan was written from a chat: op `79f278ed`, roko e90161ec4, planner gpt-5.4-mini. The log is
+Undertow's `.roko/roko.log.2026-10-26`, 15:08:02–15:09:03Z.
+
+- **The draft and regeneration 1 were both rejected for the same thing:** "PLAN_TIER_SIZE [T8]: focused task is over
+  its tier's size limits: 5 verify steps (limit 4); split it into smaller tasks, or raise its tier to integrative"
+  (15:08:33Z and 15:08:53Z).
+- **Regeneration 2 raised T8 to integrative** and was kept: "retry succeeded attempt=2".
+- **The cost:** the two extra calls cost **$0.0918** ($0.0716 + $0.0202) of the write's $0.1595 planner spend. That's
+  58%, for a raise the validator's own message names.
+- **Coverage:** every draft kept all 21 source checks, so this case cost money only, unlike phase 4.3's above.
+- **Generation:** 60.4 s (`total_ms=60401`), about 20 s of it on each rejected draft.
+
 ## Where
 
 - `plan_generate/pipeline.rs::validate_and_fix_generated_plan`: the text-level fix-ups before

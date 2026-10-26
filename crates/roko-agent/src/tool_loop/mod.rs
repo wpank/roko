@@ -2047,7 +2047,7 @@ impl ToolLoop {
         if estimated_tokens > limit {
             return OverflowAction::CompactRequired;
         }
-        if estimated_tokens > Self::compaction_target(limit) {
+        if estimated_tokens > Self::compaction_trigger(model, limit) {
             return OverflowAction::CompactRecommended;
         }
         OverflowAction::Ok
@@ -2058,10 +2058,19 @@ impl ToolLoop {
             Some(model) => match self.check_context_overflow(messages, model) {
                 OverflowAction::Ok => {}
                 OverflowAction::CompactRecommended | OverflowAction::CompactRequired => {
+                    let before = prune::estimate_message_tokens(messages);
                     compaction::compact_tool_results(messages);
+                    // Only past 80% of the window are whole messages dropped.
                     prune::prune_if_needed(
                         messages,
                         Self::compaction_target(Self::model_context_limit(model)),
+                    );
+                    tracing::info!(
+                        model = %model.slug,
+                        before,
+                        after = prune::estimate_message_tokens(messages),
+                        trigger = Self::compaction_trigger(model, Self::model_context_limit(model)),
+                        "tool_loop: compacted the conversation's older tool results"
                     );
                 }
             },
@@ -2083,6 +2092,19 @@ impl ToolLoop {
 
     const fn compaction_target(limit: usize) -> usize {
         limit.saturating_mul(80) / 100
+    }
+
+    /// The estimated prompt size past which older tool results are
+    /// compacted: the model's `compact_at_tokens`, else 80% of its window
+    /// `limit` ([`Self::compaction_target`]), and never later than that
+    /// (gap-b46c16).
+    fn compaction_trigger(model: &ModelProfile, limit: usize) -> usize {
+        let target = Self::compaction_target(limit);
+        model
+            .compact_at_tokens
+            .and_then(|tokens| usize::try_from(tokens).ok())
+            .filter(|tokens| *tokens > 0)
+            .map_or(target, |tokens| tokens.min(target))
     }
 
     /// What the data-LLM boundary ([`Self::with_data_llm`]) makes of each
@@ -4898,6 +4920,85 @@ mod tests {
         );
         assert_eq!(messages[5]["content"], "b".repeat(900));
         assert_eq!(messages[7]["content"], "c".repeat(900));
+    }
+
+    /// gap-b46c16: in phase 4.2 gpt-5.4's tries grew from 17k to 73k tokens a
+    /// prompt and never compacted, since 80% of its 272k window is 218k. A
+    /// model's `compact_at_tokens` starts compaction there instead: the older
+    /// tool results become previews, the newest two groups stay whole and no
+    /// message is dropped. Without it the same history is left alone, and a
+    /// value past 80% of the window never delays compaction.
+    #[test]
+    fn compaction_starts_at_the_configured_tokens_not_the_window() {
+        let backend = Arc::new(FinalAnswerBackend {
+            text: "unused".into(),
+        });
+        let mut history = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "usr"}),
+        ];
+        for (id, fill) in [
+            ("old-1", 'a'),
+            ("old-2", 'b'),
+            ("recent-1", 'c'),
+            ("recent-2", 'd'),
+        ] {
+            history.push(serde_json::json!({"role": "assistant", "tool_calls": [{"id": id}]}));
+            history.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": fill.to_string().repeat(900),
+            }));
+        }
+        let estimated = prune::estimate_message_tokens(&history);
+        assert!(estimated > 900 && estimated < 2_000, "{estimated}");
+
+        // The window alone: 80% of 128k is far off, so nothing changes.
+        let window_only =
+            make_tool_loop(backend.clone(), 25).with_model_profile(test_model_profile(128_000));
+        let model = window_only.model_profile.as_ref().expect("model");
+        assert_eq!(
+            window_only.check_context_overflow(&history, model),
+            OverflowAction::Ok
+        );
+        let mut untouched = history.clone();
+        window_only.prune_context_if_needed(&mut untouched);
+        assert_eq!(untouched, history);
+
+        // The same window with compaction from 500 tokens.
+        let early = make_tool_loop(backend, 25).with_model_profile(ModelProfile {
+            compact_at_tokens: Some(500),
+            ..test_model_profile(128_000)
+        });
+        let model = early.model_profile.as_ref().expect("model");
+        assert_eq!(
+            early.check_context_overflow(&history, model),
+            OverflowAction::CompactRecommended
+        );
+        let mut compacted = history.clone();
+        early.prune_context_if_needed(&mut compacted);
+        assert_eq!(compacted.len(), history.len(), "no message is dropped");
+        for (index, total) in [(3, "900"), (5, "900")] {
+            let content = compacted[index]["content"].as_str().expect("old result");
+            assert!(
+                content.ends_with(&format!("[truncated, {total} chars total]")),
+                "{content}"
+            );
+            assert_eq!(
+                compacted[index]["tool_call_id"],
+                history[index]["tool_call_id"]
+            );
+        }
+        assert_eq!(compacted[7], history[7], "the newest two groups stay whole");
+        assert_eq!(compacted[9], history[9]);
+        assert!(prune::estimate_message_tokens(&compacted) < estimated);
+
+        // A trigger past 80% of the window is held to it.
+        let late = ModelProfile {
+            compact_at_tokens: Some(5_000),
+            ..test_model_profile(1_000)
+        };
+        assert_eq!(ToolLoop::compaction_trigger(&late, 1_000), 800);
     }
 
     #[tokio::test]

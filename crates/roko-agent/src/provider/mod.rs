@@ -2356,6 +2356,7 @@ mod tests {
                 provider: "perplexity".to_string(),
                 slug: model_slug.to_string(),
                 context_window: 127_072,
+                compact_at_tokens: None,
                 max_output: Some(8_192),
                 supports_tools: false,
                 supports_thinking: false,

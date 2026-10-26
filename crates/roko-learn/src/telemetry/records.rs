@@ -2076,6 +2076,9 @@ pub enum ForecastBasis {
     Prior,
     /// L1, the logit over the task's and the arm's features.
     Logit,
+    /// L0's per-arm rate for a retry whose L1 forecast ran away, below 1e-6 or above 1 − 1e-6: a
+    /// fit that ran away is no evidence (bug-bce0ed, gap-d91691).
+    PriorFallback,
 }
 
 /// One candidate arm's forecast. Probabilities are in [0, 1], costs in USD at the price

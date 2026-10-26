@@ -81,7 +81,10 @@ document the deviation.\n\
 \n\
 ## Before you write any code\n\
 \n\
-1. Read ALL files listed in the task's `read_files` and `files` fields\n\
+1. If this prompt has a \"Declared source context\" section, work from the files it holds: \
+use `read_file` only for the lines a note there says are not shown, and for the files in the \
+task's `files` field that it does not hold. Otherwise read the files listed in the task's \
+`read_files` and `files` fields\n\
 2. Check existing code for types, traits, and functions you need — search before creating\n\
 3. Check existing imports and re-exports — the module may already expose what you need\n\
 4. If a \"Previous attempt feedback\" section exists below, read it FIRST and fix those exact errors\n\
@@ -545,6 +548,18 @@ mod tests {
             "Rust-specific text must not appear in the language-agnostic identity"
         );
         assert!(id.contains("Previous attempt feedback"));
+    }
+
+    /// gap-744bd0: phase 4.3's tries read again, in their first turn, the
+    /// files the prompt's declared source context already held, as rule 1
+    /// told them to: about 8% of the run. The role works from that section,
+    /// and reads only the lines a note names and the files it leaves out.
+    #[test]
+    fn implementer_works_from_its_declared_files() {
+        let id = ImplementerTemplate.role_identity();
+        assert!(!id.contains("Read ALL files"), "{id}");
+        assert!(id.contains("\"Declared source context\""), "{id}");
+        assert!(id.contains("not shown"), "{id}");
     }
 
     #[test]

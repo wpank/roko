@@ -20,7 +20,7 @@ You are the Implementer. Your job is to write production-quality code that satis
 
 ## Before you write any code
 
-1. Read ALL files listed in the task's `read_files` and `files` fields
+1. If this prompt has a "Declared source context" section, work from the files it holds: use `read_file` only for the lines a note there says are not shown, and for the files in the task's `files` field that it does not hold. Otherwise read the files listed in the task's `read_files` and `files` fields
 2. Check existing code for types, traits, and functions you need — search before creating
 3. Check existing imports and re-exports — the module may already expose what you need
 4. If a "Previous attempt feedback" section exists below, read it FIRST and fix those exact errors
@@ -34,21 +34,6 @@ You are the Implementer. Your job is to write production-quality code that satis
 - **You are on a retry after gate failure**: The "Previous attempt feedback" section contains the exact errors from your last attempt. Fix THOSE SPECIFIC ERRORS first before doing anything else.
 
 ## Project Conventions
-
-## Plans context layout
-
-- `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
-- `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
-- `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
-- `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
-- `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
-- `.roko/plans/<plan-base>/tasks.toml` — task checklists.
-- `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
-- `.roko/plans/<plan-base>/verify.sh` — invariant runner when generated (optional).
-- `.roko/plans/<plan-base>/brief.md` — implementation brief when present.
-- `.roko/plans/<plan-base>/reviews/` — per-plan review outputs when present.
-
 
 - Keep changes minimal and prefer wiring existing modules over reimplementation.
 - Use the repo's existing patterns before inventing new ones.
@@ -135,7 +120,7 @@ You are the Implementer. Your job is to write production-quality code that satis
 
 ## Before you write any code
 
-1. Read ALL files listed in the task's `read_files` and `files` fields
+1. If this prompt has a "Declared source context" section, work from the files it holds: use `read_file` only for the lines a note there says are not shown, and for the files in the task's `files` field that it does not hold. Otherwise read the files listed in the task's `read_files` and `files` fields
 2. Check existing code for types, traits, and functions you need — search before creating
 3. Check existing imports and re-exports — the module may already expose what you need
 4. If a "Previous attempt feedback" section exists below, read it FIRST and fix those exact errors
@@ -150,21 +135,6 @@ You are the Implementer. Your job is to write production-quality code that satis
 
 <!-- POLICY -->
 ## Project Conventions
-
-## Plans context layout
-
-- `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
-- `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
-- `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
-- `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
-- `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
-- `.roko/plans/<plan-base>/tasks.toml` — task checklists.
-- `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
-- `.roko/plans/<plan-base>/verify.sh` — invariant runner when generated (optional).
-- `.roko/plans/<plan-base>/brief.md` — implementation brief when present.
-- `.roko/plans/<plan-base>/reviews/` — per-plan review outputs when present.
-
 
 - Keep changes minimal and prefer wiring existing modules over reimplementation.
 - Use the repo's existing patterns before inventing new ones.

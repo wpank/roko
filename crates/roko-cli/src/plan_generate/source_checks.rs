@@ -636,7 +636,8 @@ impl SourceCoverage {
     /// its acceptance text does. It cannot run when only steps that cannot
     /// pass cover it otherwise; shallow when only grep, file test or build
     /// steps do; dropped when `[meta] dropped_checks` gives a reason for it
-    /// that does more than restate it; and missing otherwise.
+    /// that does more than restate it, unless it comes with its own command
+    /// (gap-8b1f4f); and missing otherwise.
     pub(super) fn of(checks: &[SourceCheck], plan: &TasksFile, unrunnable: &[Unrunnable]) -> Self {
         let text_of = |id: &str| {
             checks
@@ -748,8 +749,13 @@ impl SourceCoverage {
                 let (id, reason) = entry.split_once(':')?;
                 let (id, reason) = (id.trim(), reason.trim());
                 let check = text_of(id)?;
-                (!reason.is_empty() && !kept.contains_key(id) && !is_restatement(reason, check))
-                    .then(|| (id.to_string(), reason.to_string()))
+                // gap-8b1f4f: a command can check a check that comes with its
+                // own, so it is never dropped.
+                (!reason.is_empty()
+                    && !kept.contains_key(id)
+                    && run_of(id).is_none()
+                    && !is_restatement(reason, check))
+                .then(|| (id.to_string(), reason.to_string()))
             })
             .collect::<BTreeMap<_, _>>();
         shallow.retain(|id, _| !dropped.contains_key(id));
@@ -1060,6 +1066,12 @@ const SELF_CONTAINED: &str = "A source check's command must be self-contained an
                               written, so a check that needs a build includes the build in its own \
                               command: a build put before it in a step is dropped.";
 
+/// What a check that comes with its own command never is (gap-8b1f4f):
+/// dropped, or left to the plan's final check. The planner hears it with the
+/// checks and when asked again.
+const NEVER_DROPPED: &str = "A check that comes with its own command is never dropped and never left \
+                             to the plan's final check: the task that owns it runs it.";
+
 /// The planner prompt's list of the source's `checks`, with how to keep
 /// each one; empty when the source states none. `states` says who states
 /// them ([`checks_stated_by`]).
@@ -1089,6 +1101,8 @@ pub(super) fn planner_block(checks: &[SourceCheck], states: &str) -> String {
              alone. ",
         );
         block.push_str(SELF_CONTAINED);
+        block.push(' ');
+        block.push_str(NEVER_DROPPED);
         block.push_str("\n\n");
     }
     if checks.iter().any(|check| check.run.is_none()) {
@@ -1822,7 +1836,8 @@ const COMMON_WORDS: &[&str] = &[
 
 /// Whether `run`, a check's command, names one of `task`'s files: a word of
 /// its arguments is the name of a file the task writes, without its
-/// extension, or a part of that name (`output` of `output_stage.cpp`).
+/// extension, or a part of that name (`output` of `output_stage.cpp`), a
+/// plural `s` aside (`display` of `Displays.cpp`, gap-8b1f4f).
 fn names_files_of(run: &str, task: &TaskDef) -> bool {
     let words: Vec<String> = command_words(run)
         .iter()
@@ -1844,10 +1859,43 @@ fn names_files_of(run: &str, task: &TaskDef) -> bool {
         .filter_map(|file| Path::new(file).file_stem()?.to_str())
         .map(str::to_ascii_lowercase)
         .any(|stem| {
-            words
-                .iter()
-                .any(|word| *word == stem || stem.split(['_', '-']).any(|part| part == word))
+            words.iter().any(|word| {
+                same_word(word, &stem) || stem.split(['_', '-']).any(|part| same_word(word, part))
+            })
         })
+}
+
+/// Whether `word` and `name` are one word, a plural `s` aside.
+fn same_word(word: &str, name: &str) -> bool {
+    word == name || name.strip_suffix('s') == Some(word) || word.strip_suffix('s') == Some(name)
+}
+
+/// Take out of `[meta] dropped_checks` each check that comes with its own
+/// command (gap-8b1f4f): a command can check it, so it is never dropped, and
+/// the task that owns it runs it ([`assign_runs`]). Round v7's phase-4.3
+/// re-ask dropped P4.3.15 (`tools/spec.sh 4 display 'P4.07*'`) as "covered by
+/// the plan's final check". Returns one line per entry taken out.
+pub(super) fn refuse_drops(plan: &mut TasksFile, checks: &[SourceCheck]) -> Vec<String> {
+    let mut refused = Vec::new();
+    plan.meta.dropped_checks.retain(|entry| {
+        let id = entry
+            .split_once(':')
+            .map_or(entry.as_str(), |(id, _)| id)
+            .trim();
+        let Some(run) = checks
+            .iter()
+            .find(|check| check.id == id)
+            .and_then(|check| check.run.as_deref())
+        else {
+            return true;
+        };
+        refused.push(format!(
+            "`[meta] dropped_checks`: {id} comes with its own command, `{run}`, so it is not \
+             dropped: the task that owns it runs it"
+        ));
+        false
+    });
+    refused
 }
 
 /// The prompt that asks the planner once more for a plan that leaves some of
@@ -1939,7 +1987,7 @@ pub(super) fn regeneration_prompt(
         )
     };
     let own = if coverage.checks.iter().any(|check| check.run.is_some()) {
-        format!(" {SELF_CONTAINED}")
+        format!(" {SELF_CONTAINED} {NEVER_DROPPED}")
     } else {
         String::new()
     };
@@ -2846,6 +2894,71 @@ mod tests {
             tight.tasks[0].verify[1].expect,
             Some(VerifyExpect::PassOnBase)
         );
+    }
+
+    /// gap-8b1f4f: round v7's phase-4.3 re-ask draft (Undertow 2ac4b36)
+    /// dropped P4.3.15, `tools/spec.sh 4 display 'P4.07*'`, as "covered by
+    /// the plan's final check", and roko counted it dropped with a reason. A
+    /// check that comes with its own command is never dropped: the coverage
+    /// counts it missing, the drop leaves the plan, and the task whose file
+    /// its command names (`display` of `Displays.cpp`) runs it, so the
+    /// draft keeps all 17. The planner hears the rule with the checks.
+    #[test]
+    fn a_check_with_its_own_command_is_never_dropped() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p4_3_tiers");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let mut plan = TasksFile::parse(&fixture.join("draft-2.toml")).expect("the re-ask draft");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&spec);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let p07 = checks
+            .iter()
+            .find(|check| check_label(&check.text) == Some("P4.3.15"))
+            .expect("P4.3.15")
+            .id
+            .clone();
+        assert_eq!(plan.meta.dropped_checks.len(), 5);
+
+        let before = SourceCoverage::of(&checks, &plan, &[]);
+        assert!(before.dropped.is_empty(), "{:?}", before.dropped);
+        let missing: Vec<&str> = before
+            .missing()
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect();
+        assert_eq!(missing, [p07.as_str()]);
+
+        let refused = refuse_drops(&mut plan, &checks);
+        assert_eq!(refused.len(), 5, "{refused:#?}");
+        assert!(
+            refused.contains(&format!(
+                "`[meta] dropped_checks`: {p07} comes with its own command, `tools/spec.sh 4 \
+                 display 'P4.07*'`, so it is not dropped: the task that owns it runs it"
+            )),
+            "{refused:#?}"
+        );
+        assert!(plan.meta.dropped_checks.is_empty());
+        let assigned = assign_runs(&mut plan, &checks, &[], |_| 6);
+        assert_eq!(
+            assigned,
+            [format!(
+                "T2: added a step running `tools/spec.sh 4 display 'P4.07*'`, the source's own \
+                 commands for {p07}, which passes on the base too: the source calls it a \
+                 regression check"
+            )]
+        );
+        let after = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(
+            after.kept.len(),
+            checks.len(),
+            "{:#?}",
+            after.detail_lines()
+        );
+
+        let block = planner_block(&checks, "The spec states");
+        assert!(block.contains(NEVER_DROPPED), "{block}");
+        let again = regeneration_prompt("Finish the editor.", "[meta]", &after, &[], &[]);
+        assert!(again.contains(NEVER_DROPPED), "{again}");
     }
 
     /// gap-115c2a: roko runs a source check's own command alone (bug-56a806),

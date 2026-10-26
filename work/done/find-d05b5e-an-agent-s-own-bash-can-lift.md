@@ -2,7 +2,7 @@
 id = "find-d05b5e"
 kind = "finding"
 title = "An agent's own bash can lift an immune control: nothing stops it running roko safety release (now named in an isolated tool's refusal) against the workspace root, and the audit line records the person's $USER as by"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 size = "M"
@@ -10,6 +10,7 @@ subsystem = ["roko-agent/safety", "roko-cli/commands"]
 created = 2026-10-21
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "59ea6de81"
 source = "gap-a2787f fix (2026-10-21)"
 discovered_from = "gap-a2787f"
 anchors = ["crates/roko-agent/src/safety/bash.rs::BashPolicy", "crates/roko-cli/src/commands/safety.rs::SafetyCmd", "crates/roko-agent/src/tool_immune.rs::check_tool_control", "crates/roko-cli/src/commands/safety.rs::roko_started_markers", "crates/roko-agent/src/immune_evidence.rs::ReleaseOrigin"]
@@ -17,6 +18,18 @@ links = { depends_on = [], blocks = [], related = ["gap-a2787f"], supersedes = [
 
 [[verify]]
 command = "grep -qw 'fn default_policy_refuses_roko_safety_release' crates/roko-agent/src/safety/bash.rs && grep -qw 'fn an_agents_bash_call_that_runs_the_release_is_refused' crates/roko-cli/src/commands/safety.rs && grep -qw 'fn release_refuses_in_an_agent_environment' crates/roko-cli/src/commands/safety.rs && grep -qw 'fn a_persons_release_still_works_and_records_how' crates/roko-cli/src/commands/safety.rs && grep -qw 'fn safety_release_refuses_in_a_claude_agents_shell' crates/roko-cli/tests/safety_cli.rs && cargo test -p roko-agent --lib safety::bash && cargo test -p roko-cli --lib commands::safety && cargo test -p roko-cli --test safety_cli"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T14:25:25Z"
+commit = "59ea6de81"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-26T10:26:17Z"
+forced = false
+evidence = "59ea6de81. Cause: an agent's own bash could run roko safety release (which an isolated tool's refusal names), nothing refused it, and the release recorded the person's $USER as by. Fix, the coordinator's conservative call under Will's decision 9, recorded on the item: only a person releases a control. roko-agent: BashPolicy::with_defaults refuses a command whose shell words run roko ... safety ... release (DenyPattern::RokoSubcommand, runs_roko_subcommand: any path to the binary, cargo run -p roko-cli --, $ROKO_BIN, $(which roko), flags between the words, quotes and backslashes, chained commands, $(...) and backticks, sh -c and eval strings, here-documents fed to a shell), while a quoted mention such as grep 'roko safety release' passes; the refusal tells the agent to leave the control and name it in its hand-off, and an isolated tool's refusal now says an agent cannot release it. roko-cli: roko safety release exits 1 before reading or writing anything under the variables roko already sets on agent and check processes, no new one (roko_started_markers: the Claude agents' ISOLATION_ENV pair, a roko-cli-provider-* config path, ROKO_TOOL_ARGS, the ROKO_GATE_* rung variables, ROKO_EFFECT_FILE, ROKO_CELL_INPUT; the spawn sites now share these names through constants). Both audit files record via (ReleaseOrigin: channel cli or serve_api; by_source flag, user_env, fallback, authenticated_user or local_api; for the CLI whether stdin was a terminal), old lines still read with no via, and POST /api/safety/controls/{agent_id}/release records its principal's source (ConfigEdit; agent tokens fail closed there). Checked through heavy.sh: on 59ea6de81's tree after cargo +nightly fmt --all, the [[verify]] passes (roko-agent safety::bash 30 passed, among them default_policy_refuses_roko_safety_release and default_policy_admits_commands_that_only_mention_the_release; roko-cli commands::safety 5, among them an_agents_bash_call_that_runs_the_release_is_refused, release_refuses_in_an_agent_environment and a_persons_release_still_works_and_records_how; tests/safety_cli.rs 4 through the roko binary, among them safety_release_refuses_in_a_claude_agents_shell) and cargo clippy --workspace --no-deps -- -D warnings is clean; on the same change before formatting, roko-agent safety::, immune_evidence and tool_immune 417 passed, safety_integration 12, roko-cli runner::extension_loader 45, roko-serve routes::safety 9 and roko-graph shell_exec 1. Filed gap-31e8a7: roko's own bash and run_tests commands and the Codex, Cursor, Hermes and OpenClaw agents carry no roko marker, so in their shells only the bash policy stops a release."
 +++
 
 ## Problem

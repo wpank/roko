@@ -210,6 +210,38 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// A task that depends on `task_id` of plan `plan_id` can warm its build
+    /// trees from `checkout`, the checkout of its attempt just accepted onto
+    /// the plan branch, which built that work (gap-b6b7a1).
+    fn note_accepted_checkout(&self, plan_id: &str, task_id: &str, checkout: &Path) {
+        let mut accepted = self.accepted_checkouts.lock();
+        let order = accepted
+            .values()
+            .map(|(order, _)| order + 1)
+            .max()
+            .unwrap_or(0);
+        accepted.insert(
+            format!("{plan_id}/{task_id}"),
+            (order, checkout.to_path_buf()),
+        );
+    }
+
+    /// The checkout to warm `task`'s new checkout from: of the tasks of plan
+    /// `plan_id` it depends on, the one accepted last whose checkout is still
+    /// there, holding that work built (gap-b6b7a1); `None` without one, when
+    /// the repository checkout serves. With several, the last one's work
+    /// builds on the others' or beside them: what it lacks still rebuilds,
+    /// as from the repository checkout.
+    pub(super) fn dependency_checkout(&self, plan_id: &str, task: &TaskDef) -> Option<PathBuf> {
+        let accepted = self.accepted_checkouts.lock();
+        task.depends_on
+            .iter()
+            .filter_map(|dependency| accepted.get(&format!("{plan_id}/{dependency}")))
+            .filter(|(_, checkout)| checkout.join(".git").exists())
+            .max_by_key(|(order, _)| *order)
+            .map(|(_, checkout)| checkout.clone())
+    }
+
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
@@ -323,6 +355,9 @@ impl GraphTaskDispatcher {
         } else {
             None
         };
+        if matches!(&accepted, Some(Ok(_))) {
+            self.note_accepted_checkout(&spec.plan_id, &task.id, &lease.path);
+        }
         if let Err(error) = provider
             .release(lease, WorkspaceReleasePolicy::RetainForReview)
             .await
@@ -1141,6 +1176,79 @@ cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"nothing to change"}}'
 printf '%s\n' '{"type":"result","session_id":"sess-n","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
+
+    /// gap-b6b7a1: in phase 4, T3, T4 and T6 each rebuilt T1's and T2's work
+    /// in their first build (200-214 s), since every checkout warmed its build
+    /// trees from the person's checkout at the run's base. A task that depends
+    /// on another now warms them from that task's accepted checkout, which
+    /// built its work: the dependent's check finds what the dependency's
+    /// check built there, in a tree relocated to its own checkout.
+    #[tokio::test]
+    async fn a_dependent_attempt_starts_from_its_dependency_s_build_trees() {
+        let (repo, worktrees) = repo_with_worktrees();
+        if !crate::orchestrator::worktree::clones_on(repo.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
+        // The person's checkout has a CMake build tree in an ignored build/.
+        std::fs::write(repo.path().join(".gitignore"), "build/\n").expect("gitignore");
+        git(repo.path(), &["add", ".gitignore"]);
+        git(repo.path(), &["commit", "-m", "ignore the build tree"]);
+        let root = repo.path().canonicalize().expect("canonical repo");
+        std::fs::create_dir_all(root.join("build")).expect("build");
+        std::fs::write(
+            root.join("build/CMakeCache.txt"),
+            format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", root.display()),
+        )
+        .expect("cache");
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, task) = make_test_dispatcher_with(
+            &repo,
+            WRITES_FEATURE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        // The dependency's check builds: its build tree gains a target.
+        let mut built = task.clone();
+        built.id = "A".to_string();
+        built.files = vec!["feature.txt".to_string()];
+        built.verify = vec![verify_step("build", "touch build/built-by-A")];
+        // The dependent's check needs that target.
+        let mut dependent = built.clone();
+        dependent.id = "B".to_string();
+        dependent.depends_on = vec!["A".to_string()];
+        dependent.verify = vec![verify_step("build", "test -f build/built-by-A")];
+
+        dispatcher
+            .dispatch(&make_spec(&built), Vec::new(), &ctx)
+            .await
+            .expect("A builds and passes");
+        let outputs = dispatcher
+            .dispatch(&make_spec(&dependent), Vec::new(), &ctx)
+            .await
+            .expect("B's checkout holds what A built");
+
+        assert!(TaskGateVerdict::from_signals(&outputs).is_some());
+        let warm: Vec<PathBuf> = std::fs::read_dir(worktrees.path())
+            .expect("the worktrees")
+            .map(|entry| entry.expect("a worktree").path())
+            .filter(|dir| dir.join("build/built-by-A").exists())
+            .collect();
+        assert_eq!(warm.len(), 2, "A's checkout and B's: {warm:?}");
+        for checkout in warm {
+            let checkout = checkout.canonicalize().expect("canonical checkout");
+            let cache = std::fs::read_to_string(checkout.join("build/CMakeCache.txt"))
+                .expect("the tree's cache");
+            assert_eq!(
+                cache,
+                format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", checkout.display()),
+                "relocated to its own checkout"
+            );
+        }
+    }
 
     /// bug-b7d9ad: in round v7's rehearsal p41 a check wrote the review PNGs
     /// through a path compiled in from the person's checkout, so they landed

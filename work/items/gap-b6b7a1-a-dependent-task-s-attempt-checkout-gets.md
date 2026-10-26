@@ -66,6 +66,42 @@ pay this on every dependent task. Their checks are plugin builds.
 3. With several dependencies, only one tree can seed the checkout. Pick the one whose changes touch the most build
    inputs. The others' changes still rebuild, but less than from the base.
 
+## Measured (roko-speed, 2026-10-26, $0)
+
+- **The bench:** fixture plan `dep-bench` (`tmp/hermes-roko-v7/roko-speed/fixture-src/plans/dep-bench`), in phase
+  4's shape, on roko-main-e90161ec4, with `--worktree-per-task`, the person's checkout built first, and the agents
+  running their own checks.
+  - D1 adds a header every plugin translation unit includes, through PluginProcessor.h, and a CONFIGURE_DEPENDS
+    glob of plugin/ui/*.cpp.
+  - D2 depends on D1 and edits the editor. D3 and D4 both depend on D2, and each adds a ui/*.cpp.
+  - The bench's cmake shim logged every build: slot wait, seconds, objects compiled. `bench/builds.py` puts each
+    build down to its task.
+- **Result** (`runs/b6b7a1-dep/builds.txt`):
+  - Each dependent task's first build in its new checkout, before any edit of its own, recompiled exactly its
+    dependencies' changed translation units: D2 3 objects in 4.6 s, D3 3 in 4.9 s, D4 3 in 5.4 s.
+  - D4 also waited 6 s for the one cpp-proof slot behind D3.
+  - Their own changes then compiled 1 object each.
+- **For phase 4:** the cost scales with the translation units the dependencies' headers reach.
+  - Phase 4's T1 and T2 changed engine.h, PluginProcessor.h and five ui headers, which most plugin translation
+    units include.
+  - So each of T3, T4 and T6 rebuilt all of them, three at once through one slot: 200–214 s, against 10–35 s for
+    their later builds.
+  - JUCE's own modules did not rebuild in the fixture: a CMakeLists change that only globs sources leaves them
+    alone.
+
+## What was built (roko-speed, 2026-10-26)
+
+- `ExecutionWorkspaceProvider::acquire_seeded(attempt, seed)` (roko-graph) warms a new checkout's build trees from
+  `seed` instead of the repository checkout. The default ignores `seed`. The worktree provider passes it to
+  `give_build_trees` with the same relocation and safety rules.
+- The dispatcher records each task's accepted checkout (`accept_attempt`). Accepted checkouts stay on disk for
+  review until the plan is delivered.
+- A task's new checkout is seeded from the dependency it names in `depends_on` that was accepted last and whose
+  checkout is still there. Without one, the repository checkout serves, as before.
+- With several dependencies, what the last one's tree lacks still rebuilds, as from the base, but less.
+- Test: `a_dependent_attempt_starts_from_its_dependency_s_build_trees`. A's check builds a target in its tree. B,
+  which depends on A, finds it in its own checkout, in a tree relocated to that checkout.
+
 ## Done when
 
 - A dependent attempt's checkout gets its build trees from its dependency's accepted checkout. Its first build of

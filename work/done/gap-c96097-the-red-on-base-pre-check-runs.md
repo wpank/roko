@@ -2,7 +2,7 @@
 id = "gap-c96097"
 kind = "gap"
 title = "The red-on-base pre-check runs before the rung probes and its cache key includes roko's build: it hit its cache in 2 of 15 round-v7 runs, and run 16fc88ae pre-checked for 134 s, then died in 7 s on a refusal the probe also got"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/spec_gate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "bb0af5a61"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-cli/src/spec_red_on_base.rs::CACHE_VERSION", "crates/roko-cli/src/spec_red_on_base.rs::cache_key"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-e02ec4", "gap-618a75", "
 
 [[verify]]
 command = "grep -rqw 'fn the_rung_probes_run_before_the_red_on_base_pre_check' crates/roko-cli/src && grep -rqw 'fn a_new_roko_build_reuses_the_pre_check_cache' crates/roko-cli/src && cargo test -p roko-cli --lib the_rung_probes_run_before_the_red_on_base_pre_check && cargo test -p roko-cli --lib a_new_roko_build_reuses_the_pre_check_cache"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:04:45Z"
+commit = "bb0af5a61"
+forced = false
+evidence = "bb0af5a61: unrunnable_ladder (plan_runner.rs) probes the routing ladder before the spec gate with plan start's probes and 24 h cache, under their conditions; when every rung's model failed its probe and the ladder routes every task (none pinned by --model, model_hint or preferred_model) the run stops there in the probes' own words, before the red-on-base pre-check runs a step. spec_red_on_base: CACHE_VERSION = red-on-base/2 (the check's semantics, bumped by hand; roko's build left the key) and the base keyed by its tree (<sha>^{tree}). Verify: the_rung_probes_run_before_the_red_on_base_pre_check (every rung's cached probe refused: the run errs with each rung's reason and the pre-check's marker is never written; a pinned task, --model or --no-budget lets it go on) and a_new_roko_build_reuses_the_pre_check_cache (no build in the key; an empty commit, same tree, reuses the decided check) pass; spec_red_on_base:: and spec_gate:: 15/15; nightly fmt and clippy -p roko-cli -D warnings clean."
 +++
 
 ## Problem

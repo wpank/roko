@@ -2,7 +2,7 @@
 id = "gap-b6b7a1"
 kind = "gap"
 title = "A dependent task's attempt checkout gets warm build trees from the person's checkout at the run's base, never from its dependency's accepted checkout: phase 4's T3, T4 and T6 took 200-214 s for their first plugin run_tests, later ones 10-35 s"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "f177be7e9"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/graph_execution/workspaces.rs::acquire", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-6754ab", "gap-7c3e13"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_dependent_attempt_starts_from_its_dependency_s_build_trees' crates/roko-cli/src && cargo test -p roko-cli --lib a_dependent_attempt_starts_from_its_dependency_s_build_trees"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:35:23Z"
+commit = "f177be7e9"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T15:04:10Z"
+forced = false
+evidence = "Measured first, $0: the fixture plan dep-bench in phase 4's shape (D1 adds a header every plugin translation unit includes plus a CONFIGURE_DEPENDS ui/*.cpp glob; D2 depends on D1; D3 and D4 on D2), the bench cmake shim logging each build's slot wait, time and objects (runs/b6b7a1-dep/builds.txt): each dependent's first build recompiled exactly its dependencies' changed translation units (D2, D3, D4: 3 objects in 4.6-5.4 s, D4 after a 6 s slot wait), its own change then 1. Built: ExecutionWorkspaceProvider::acquire_seeded, the dispatcher recording each task's accepted checkout and seeding a dependent's new checkout from the dependency accepted last. chain46 on main eab74f5b2 (with reg-d2deba): fmt and clippy clean (with roko-graph and roko-std), a_dependent_attempt_starts_from_its_dependency_s_build_trees and acquire_gives_the_checkout_warm_build_trees passed, lib suites green: roko-agent 2400, roko-cli 4017, roko-core 2048, roko-learn 1401, roko-runtime 213, roko-serve 1083."
 +++
 
 ## Problem

@@ -14,7 +14,9 @@
 //! Exactly one `run.started` and one `run.completed` line bracket the events,
 //! and every line carries the same `run_id` (`ROKO_EVIDENCE_RUN_ID` when set).
 //! That is the contract `scripts/run_evidence.py --require-events` checks for
-//! `./dev.sh fast`. A `log.lagged` line counts events the recorder missed
+//! `./dev.sh fast`. `run.started` is written when the recorder opens, before
+//! the run publishes anything, and names the plans the run executes
+//! ([`RunPlanSet`]). A `log.lagged` line counts events the recorder missed
 //! because it fell behind the hub's broadcast buffer.
 //!
 //! The log holds no agent or gate output text, because evidence bundles keep
@@ -39,7 +41,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, Utc};
 use roko_core::DashboardEvent;
-use roko_core::dashboard_snapshot::PlanSetEntry;
 use roko_core::obs::LogScrubber;
 use roko_runtime::event_bus::Envelope;
 use serde::Serialize;
@@ -48,8 +49,8 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::oneshot;
 
 use super::plan_runner::{
-    GraphPlanRunParams, PlanRunInterrupt, PlanRunInterruptHandle, run_graph_plan,
-    run_graph_plan_observed,
+    GraphPlanRunParams, PlanRunInterrupt, PlanRunInterruptHandle, compute_plan_run_set,
+    run_graph_plan, run_graph_plan_observed,
 };
 use crate::exit_codes::EXIT_SUCCESS;
 use crate::runner::tui_bridge::STREAM_RECORD_PREFIX;
@@ -164,10 +165,16 @@ pub(crate) fn run_recorded(
         // The log, `status.json` and the workspace event log name the run
         // alike.
         let run_id = graph_run_id(None);
-        let log =
-            RunEventLog::open_for_run(&path, &hub, params.resume_plan.is_some(), run_id.clone())
-                .with_context(|| format!("open --log-file {}", path.display()))?
-                .with_interrupt(interrupt);
+        let plans = RunPlanSet::of_run(&params);
+        let log = RunEventLog::open_for_run(
+            &path,
+            &hub,
+            params.resume_plan.is_some(),
+            run_id.clone(),
+            &plans,
+        )
+        .with_context(|| format!("open --log-file {}", path.display()))?
+        .with_interrupt(interrupt);
         let result = run_graph_plan_observed(params, None, run_id).await;
         if let Err(error) = log.finish(&result).await {
             tracing::warn!(
@@ -189,29 +196,37 @@ pub struct RunEventLog {
 
 impl RunEventLog {
     /// Create (or truncate) `path` and start recording `hub`'s events under a
-    /// new run id ([`graph_run_id`]).
+    /// new run id ([`graph_run_id`]), for a run whose plans are not known:
+    /// its `run.started` names none.
     pub fn open(path: &Path, hub: &StateHub, resumed: bool) -> std::io::Result<Self> {
-        Self::open_for_run(path, hub, resumed, graph_run_id(None))
+        Self::open_for_run(
+            path,
+            hub,
+            resumed,
+            graph_run_id(None),
+            &RunPlanSet::default(),
+        )
     }
 
-    /// [`Self::open`] for the run `run_id`.
+    /// [`Self::open`] for the run `run_id`, which executes `plans`: its
+    /// `run.started` line is written now, before the run publishes anything.
     pub fn open_for_run(
         path: &Path,
         hub: &StateHub,
         resumed: bool,
         run_id: String,
+        plans: &RunPlanSet,
     ) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let out = BufWriter::new(File::create(path)?);
-        let writer = EventLogWriter {
+        let mut writer = EventLogWriter {
             out,
             run_id,
             scrubber: output_scrubber(),
             started_at: Utc::now(),
             resumed,
-            wrote_start: false,
             task_outcomes: BTreeMap::new(),
             agent_calls: 0,
             open_agents: BTreeSet::new(),
@@ -219,6 +234,10 @@ impl RunEventLog {
             skipped: 0,
             write_error: None,
         };
+        writer.write_start(plans);
+        if let Some(error) = writer.write_error.take() {
+            return Err(error);
+        }
         Ok(Self {
             tap: EventTap::spawn(hub, writer, EventLogWriter::record),
             interrupt: None,
@@ -246,6 +265,43 @@ impl RunEventLog {
         match writer.write_error.take() {
             Some(error) => Err(error.into()),
             None => Ok(()),
+        }
+    }
+}
+
+/// What a recorded run's `run.started` line says about its plans.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunPlanSet {
+    /// The plans' ids, in the order the run executes them.
+    pub plan_ids: Vec<String>,
+    /// How many tasks the plans hold, all together.
+    pub total_tasks: usize,
+}
+
+impl RunPlanSet {
+    /// The plans a run of `params` executes, worked out before it starts as
+    /// the run selects them ([`compute_plan_run_set`]): the set its
+    /// `PlanSetLoaded` announces, which comes only after the plan-load spec
+    /// gate's events, and never for a run the gate refuses (bug-bd261a).
+    /// Empty when the plans cannot be selected: the run then stops on the
+    /// same error before it executes anything.
+    fn of_run(params: &GraphPlanRunParams) -> Self {
+        match compute_plan_run_set(
+            &params.workdir,
+            &params.plans_dir,
+            params.only_plans.as_deref(),
+        ) {
+            Ok(plans) => Self {
+                total_tasks: plans.iter().map(|plan| plan.tasks.tasks.len()).sum(),
+                plan_ids: plans.into_iter().map(|plan| plan.id).collect(),
+            },
+            Err(error) => {
+                tracing::debug!(
+                    error = %format!("{error:#}"),
+                    "the run's plans could not be selected; its run.started names none"
+                );
+                Self::default()
+            }
         }
     }
 }
@@ -559,7 +615,6 @@ struct EventLogWriter {
     scrubber: LogScrubber,
     started_at: DateTime<Utc>,
     resumed: bool,
-    wrote_start: bool,
     task_outcomes: BTreeMap<String, usize>,
     agent_calls: usize,
     /// Agents whose row is open: spawned and not yet completed.
@@ -575,11 +630,6 @@ impl EventLogWriter {
         match tapped {
             Tapped::Event(envelope) => {
                 let event = &envelope.payload;
-                let plan_set = match event {
-                    DashboardEvent::PlanSetLoaded { plans } => Some(plans.as_slice()),
-                    _ => None,
-                };
-                self.write_start(plan_set);
                 match event {
                     DashboardEvent::TaskCompleted { outcome, .. } => {
                         *self.task_outcomes.entry(outcome.clone()).or_default() += 1;
@@ -613,7 +663,6 @@ impl EventLogWriter {
                 write_line(&mut self.out, &mut self.write_error, &line);
             }
             Tapped::Lagged(skipped) => {
-                self.write_start(None);
                 self.skipped += skipped;
                 let line = LaggedLine {
                     kind: "log.lagged",
@@ -625,20 +674,15 @@ impl EventLogWriter {
         }
     }
 
-    /// Write `run.started` once, before the first other line. The plan set
-    /// comes from the run's `PlanSetLoaded` event, its first.
-    fn write_start(&mut self, plan_set: Option<&[PlanSetEntry]>) {
-        if self.wrote_start {
-            return;
-        }
-        self.wrote_start = true;
-        let plans = plan_set.unwrap_or_default();
+    /// Write the `run.started` line, which names the run's `plans`: the
+    /// log's first line, written as the recorder opens.
+    fn write_start(&mut self, plans: &RunPlanSet) {
         let start = RunnerEvent::RunStarted {
             timestamp: self.started_at.to_rfc3339(),
             timestamp_ms: unix_millis(self.started_at),
             run_id: self.run_id.clone(),
-            plan_ids: plans.iter().map(|plan| plan.plan_id.clone()).collect(),
-            total_tasks: plans.iter().map(|plan| plan.tasks_total).sum(),
+            plan_ids: plans.plan_ids.clone(),
+            total_tasks: plans.total_tasks,
             resumed: self.resumed,
             resume_session: None,
         };
@@ -648,7 +692,6 @@ impl EventLogWriter {
     /// Write `run.completed` for the run's `result`; `stopped_by` is the stop
     /// request its run recorded, if any.
     fn write_end(&mut self, result: &anyhow::Result<i32>, stopped_by: Option<PlanRunInterrupt>) {
-        self.write_start(None);
         let (outcome, exit_code, error) = match result {
             Ok(code) if *code == EXIT_SUCCESS => (RunOutcome::Succeeded, Some(*code), None),
             Ok(code)
@@ -827,6 +870,8 @@ fn output_scrubber() -> LogScrubber {
 
 #[cfg(test)]
 mod tests {
+    use roko_core::dashboard_snapshot::PlanSetEntry;
+
     use super::*;
 
     fn read_lines(path: &Path) -> Vec<serde_json::Value> {
@@ -842,7 +887,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nested").join("events.jsonl");
         let hub = crate::state_hub::shared_state_hub();
-        let log = RunEventLog::open(&path, &hub, false).expect("open log");
+        let plans = RunPlanSet {
+            plan_ids: vec!["p1".to_string()],
+            total_tasks: 2,
+        };
+        let log = RunEventLog::open_for_run(&path, &hub, false, graph_run_id(None), &plans)
+            .expect("open log");
 
         let sender = hub.sender();
         sender.publish(DashboardEvent::PlanSetLoaded {
@@ -894,6 +944,69 @@ mod tests {
         assert_eq!(end["total_agent_calls"], 1);
         assert_eq!(end["task_outcomes"]["passed"], 1);
         assert!(end["timestamp_ms"].as_u64() >= lines[0]["timestamp_ms"].as_u64());
+    }
+
+    /// bug-bd261a: a run's first hub events are the plan-load spec gate's,
+    /// and its `PlanSetLoaded` comes only after them. `run.started` names the
+    /// run's plans all the same: it is on disk before the run publishes
+    /// anything, and written once.
+    #[tokio::test]
+    async fn run_started_names_the_plans_before_the_spec_gate_events() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let hub = crate::state_hub::shared_state_hub();
+        let plans = RunPlanSet {
+            plan_ids: vec!["p2".to_string(), "p1".to_string()],
+            total_tasks: 3,
+        };
+        let log = RunEventLog::open_for_run(&path, &hub, false, "graph-bd261a".to_string(), &plans)
+            .expect("open log");
+        let opened = read_lines(&path);
+        assert_eq!(opened.len(), 1, "{opened:?}");
+        assert_eq!(opened[0]["type"], "run.started");
+
+        let sender = hub.sender();
+        sender.publish(DashboardEvent::SpecGateStarted {
+            plan_ids: plans.plan_ids.clone(),
+            tasks_total: 1,
+            steps_total: 2,
+        });
+        sender.publish(DashboardEvent::SpecGateFinished {
+            elapsed_ms: 1_500,
+            tasks_checked: Some(1),
+            steps_run: Some(2),
+            cached: Some(0),
+            blocked: 0,
+        });
+        let entry = |plan_id: &str, tasks_total| PlanSetEntry {
+            plan_id: plan_id.to_string(),
+            tasks_total,
+            ..PlanSetEntry::default()
+        };
+        sender.publish(DashboardEvent::PlanSetLoaded {
+            plans: vec![entry("p2", 1), entry("p1", 2)],
+        });
+        log.finish(&Ok(0)).await.expect("finish log");
+
+        let lines = read_lines(&path);
+        let types: Vec<&str> = lines
+            .iter()
+            .map(|line| line["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "run.started",
+                "dashboard.spec_gate_started",
+                "dashboard.spec_gate_finished",
+                "dashboard.plan_set_loaded",
+                "run.completed",
+            ]
+        );
+        assert_eq!(lines[0], opened[0]);
+        assert_eq!(lines[0]["run_id"], "graph-bd261a");
+        assert_eq!(lines[0]["plan_ids"], serde_json::json!(["p2", "p1"]));
+        assert_eq!(lines[0]["total_tasks"], 3);
     }
 
     /// One attempt's dashboard row in plan `p1`: `AgentSpawned` naming

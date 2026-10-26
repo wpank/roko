@@ -109,9 +109,20 @@ run-analyst checked it over round v7 (`tmp/hermes-roko-v7/run-analyst`).
   - Test: `a_failed_over_try_s_verdict_counts_its_refused_calls`. The routed model reads a file ($0.102), then 429s
     past the loop's retries; a backup finishes ($0.011). Billed plus refused equals the try's `call_cost` sum and
     the plan's spend.
-- **Part 1 (failed calls' rows), to do:** it builds on roko-effort's gap-1ba0ac, which adds
-  `CallAllowance::record_finished_call(…, CallFacts { finish_reason, wall_ms })` and `wall_ms` on `call_cost`. A
-  failed call goes through the same path with zero usage, unless the stream tally has some, and an `outcome`.
+- **Part 1 (failed calls' rows), built on gap-1ba0ac's `CallFacts`:**
+  - `CallFacts` gains `outcome`, and `call_outcome(&LlmError)` names it:
+    - `timeout`: a response wait or stream stall;
+    - `rate_limited`: a 429 past the retries;
+    - `refused`: a 4xx refusal, a credential or model the provider won't serve, or spent usage or balance;
+    - `error`: anything else.
+  - The tool loop tells its budget of a call that fails past its retries: streamed or not, with what it streamed
+    (else no tokens), how long it took and how it ended.
+  - `MeteredCalls` publishes its `call_cost` row with `outcome`, `ok` for a call that returned a response. A failed
+    call's row costs what it streamed, else $0, so the call is still counted.
+  - Test: `a_call_that_fails_writes_its_call_cost_row`. A provider answers 200 and then streams nothing; the try's
+    one row has no tokens, $0, `timeout`, and a wait of at least the 300 ms TTFT limit.
+  - Also `a_failed_calls_outcome_names_how_it_failed`. The failover test now sees the 429-ended call's row.
+  - A non-streamed call whose retries all failed returns `RetriesExhausted` and reads `error`. A try's calls stream.
 - **Part 3** is roko-recovery's, as bug-b7f6a8.
 
 ## Done when

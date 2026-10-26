@@ -1017,6 +1017,37 @@ pub struct CallFacts<'a> {
     pub finish_reason: Option<&'a str>,
     /// How long the call took, in ms.
     pub wall_ms: Option<u64>,
+    /// How the call failed, when it did ([`call_outcome`]): `timeout`,
+    /// `rate_limited`, `refused` or `error` (bug-8bcd98). `None` for a call
+    /// that returned a response.
+    pub outcome: Option<&'a str>,
+}
+
+/// How a model call that failed with `error`, past the loop's retries, ended,
+/// as its cost record says it (bug-8bcd98): `timeout` when the provider did
+/// not answer in time, `rate_limited` on a rate limit, `refused` when the
+/// provider refused the request (a 4xx refusal, a credential or model it
+/// would not serve, its usage or balance spent), and `error` for anything
+/// else.
+#[must_use]
+pub fn call_outcome(error: &LlmError) -> &'static str {
+    match error {
+        LlmError::Timeout(_) | LlmError::Provider(ProviderError::Timeout) => "timeout",
+        LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limited",
+        LlmError::Provider(
+            ProviderError::RequestRefused { .. }
+            | ProviderError::AuthFailure
+            | ProviderError::ModelNotFound
+            | ProviderError::ContentPolicy
+            | ProviderError::ContextOverflow
+            | ProviderError::InsufficientCredits
+            | ProviderError::ProviderExhausted { .. },
+        ) => "refused",
+        LlmError::Provider(ProviderError::ServerError(_) | ProviderError::Other(_))
+        | LlmError::Backend(_)
+        | LlmError::Network(_)
+        | LlmError::RetriesExhausted => "error",
+    }
 }
 
 /// A daily and lifetime [`BudgetTracker`]: no model call starts once it is
@@ -1600,20 +1631,28 @@ impl ToolLoop {
                     Err((e, tally)) => {
                         // The provider bills a call cut off mid-stream for
                         // what it streamed: count it, priced, so the budget
-                        // and the spend stay true (bug-72d775).
+                        // and the spend stay true (bug-72d775). A call that
+                        // streamed nothing is recorded too, with how it
+                        // failed and how long it took (bug-8bcd98).
                         let input_tokens = estimated_input_tokens(&messages, &rendered_tools);
-                        if let Some((mut usage, usage_source)) = tally.usage(input_tokens) {
+                        let streamed_usage = tally.usage(input_tokens);
+                        if let Some(budget) = &self.budget {
+                            let mut usage = streamed_usage
+                                .as_ref()
+                                .map_or_else(Usage::default, |(usage, _)| *usage);
+                            self.price_turn(&mut usage);
+                            budget.record_call(
+                                &usage,
+                                CallFacts {
+                                    finish_reason: None,
+                                    wall_ms: call_ms(),
+                                    outcome: Some(call_outcome(&e)),
+                                },
+                            );
+                        }
+                        if let Some((mut usage, usage_source)) = streamed_usage {
                             self.price_turn(&mut usage);
                             total_usage.add(&usage);
-                            if let Some(budget) = &self.budget {
-                                budget.record_call(
-                                    &usage,
-                                    CallFacts {
-                                        finish_reason: None,
-                                        wall_ms: call_ms(),
-                                    },
-                                );
-                            }
                             turn_traces.push(ToolLoopTurnTrace {
                                 turn: trace_turn(iterations),
                                 tool_calls: Vec::new(),
@@ -1647,6 +1686,18 @@ impl ToolLoop {
                 {
                     Ok(r) => r,
                     Err(e) => {
+                        // The failed call is recorded with how it failed and
+                        // how long it took, its usage unknown (bug-8bcd98).
+                        if let Some(budget) = &self.budget {
+                            budget.record_call(
+                                &Usage::default(),
+                                CallFacts {
+                                    finish_reason: None,
+                                    wall_ms: call_ms(),
+                                    outcome: Some(call_outcome(&e)),
+                                },
+                            );
+                        }
                         let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
                             .with_session(session.clone());
                         return ToolLoopOutput {
@@ -1692,6 +1743,7 @@ impl ToolLoop {
                     CallFacts {
                         finish_reason: finish_reason.as_deref(),
                         wall_ms: turn_duration_ms,
+                        outcome: None,
                     },
                 );
             }
@@ -4365,6 +4417,37 @@ mod tests {
         (out, recorded, forwarded)
     }
 
+    /// bug-8bcd98: a model call that failed past the loop's retries is
+    /// recorded with how it ended, which its cost row then says.
+    #[test]
+    fn a_failed_calls_outcome_names_how_it_failed() {
+        let refused = ProviderError::RequestRefused {
+            provider: "openai".to_string(),
+            status: 400,
+            message: "bad request".to_string(),
+        };
+        for (error, outcome) in [
+            (LlmError::Timeout("ttft".to_string()), "timeout"),
+            (LlmError::Provider(ProviderError::Timeout), "timeout"),
+            (
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: Some(1_000),
+                }),
+                "rate_limited",
+            ),
+            (LlmError::Provider(refused), "refused"),
+            (
+                LlmError::Provider(ProviderError::InsufficientCredits),
+                "refused",
+            ),
+            (LlmError::Provider(ProviderError::ServerError(502)), "error"),
+            (LlmError::Network("connection reset".to_string()), "error"),
+            (LlmError::RetriesExhausted, "error"),
+        ] {
+            assert_eq!(call_outcome(&error), outcome, "{error}");
+        }
+    }
+
     /// bug-72d775: the provider bills a model call cut off mid-stream for
     /// what it streamed. glm-4.7 calls that streamed about 4,000 reasoning
     /// deltas each and then broke were recorded at 0 tokens and $0, so the
@@ -4431,7 +4514,8 @@ mod tests {
         assert_eq!(recorded, vec![usage]);
         assert_eq!(out.turn_traces[0].usage_source, UsageSource::Estimated);
 
-        // A call that broke before it streamed anything shows no usage.
+        // A call that broke before it streamed anything shows no usage; its
+        // budget hears of it, at nothing, with how it failed (bug-8bcd98).
         let backend = CutStreamBackend {
             reported: None,
             deltas: 0,
@@ -4439,7 +4523,7 @@ mod tests {
         };
         let (out, recorded, _) = run_cut_stream(backend, priced.clone()).await;
         assert_eq!(out.total_usage, Usage::default());
-        assert!(recorded.is_empty());
+        assert_eq!(recorded, vec![Usage::default()]);
         assert!(out.turn_traces.is_empty());
 
         // A stream that closed without a finish reason or usage: the call

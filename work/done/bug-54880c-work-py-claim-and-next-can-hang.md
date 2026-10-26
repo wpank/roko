@@ -2,7 +2,7 @@
 id = "bug-54880c"
 kind = "bug"
 title = "work.py claim and next can hang for minutes: worktree_changes() runs git status in every worktree with no timeout, and after the 2026-10-26 reboot git blocks on a unix socket (a stale fsmonitor) in another session's worktrees"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["tools/work"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "6f385718f"
 source = "round-v7 roko-recovery's finding, via the lead (2026-10-26)"
 discovered_from = "agent:roko-recovery (round v7)"
 anchors = ["tools/work.py::worktree_changes", "tools/work.py::cmd_claim"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_a_worktree_whose_git_status_hangs_is_checked_as_unknown' tools/test_work.py && python3 tools/test_work.py TestWorktreeBusy.test_a_worktree_whose_git_status_hangs_is_checked_as_unknown"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:15:31Z"
+commit = "6f385718f"
+by = "run-analyst (round v7)"
+executor = "claude-agent"
+forced = false
+model = "claude-opus-5-5"
+evidence = "6f385718f: worktree_status() runs git --no-optional-locks -c core.fsmonitor=false status with a 10 s timeout (WORK_GIT_STATUS_TIMEOUT_S overrides it); a worktree that times out keeps its committed files in the scan, is reported 'unknown (git status timed out after 10s)' on stderr, and claim names it for each item it claims. Verify passes: test_a_worktree_whose_git_status_hangs_is_checked_as_unknown fakes a git whose status sleeps 30 s; the scan returns at the 0.5 s timeout with that worktree unknown and its commit still counted, and claim's note names it; the test errors on the previous work.py. tools/test_work.py 46 tests OK; test_work_backfill, test_work_harvest, test_work_import_checklist and test_work_telemetry OK. A read-only scan of this repo's 94 worktrees (79 .claude/worktrees/agent-*) took 3.9 s, none timing out."
 +++
 
 ## Problem

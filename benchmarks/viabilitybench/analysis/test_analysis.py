@@ -807,10 +807,12 @@ def test_pilot_refuses_two_suites_and_lists_the_superseded_bundle(pilot_sources,
     assert report.main(argv) == 1
     assert "the bundles ran 2 suites" in capsys.readouterr().err and not pilot_sources["out"].exists()
 
-    # Named with --superseded, it is listed with its runs and suite, and no number uses it; through `vb report`.
+    # Named with --superseded, it is listed with its runs and suite, and no number uses it; through `vb report`. A
+    # note longer than a file name, with a slash in it, is a note, not a path.
+    note = "roko_fixed waits for its provider (a test note); see experiments/pilot_b.toml. " + "Still waiting. " * 30
     vb = report.VB_ROOT / "driver" / "vb.py"
     done = subprocess.run([sys.executable, str(vb), "report", "--pilot", *map(str, pilot_sources["bundles"].values()),
-                           "--superseded", str(old), "--note", "roko_fixed waits for its provider (a test note)",
+                           "--superseded", str(old), "--note", note,
                            "--bundle", str(pilot_sources["out"]), "--experiments", str(pilot_sources["experiments"]),
                            "--budget", str(pilot_sources["budget"]), "--b", "50"],
                           capture_output=True, text=True, timeout=120, check=False)
@@ -818,7 +820,7 @@ def test_pilot_refuses_two_suites_and_lists_the_superseded_bundle(pilot_sources,
     page = (pilot_sources["out"] / "REPORT.md").read_text()
     assert "- **Not merged:** " in page and "suite `sha256:older`" in page and "it ran another suite" in page
     assert "cheap_direct × seeds 1, 2, 3 (18 runs: cd-old)" in page
-    assert "- roko_fixed waits for its provider (a test note)" in page
+    assert f"- {note}" in page and "--note 'roko_fixed waits for its provider" in page
     assert "cd-old" not in json.dumps(json.loads((pilot_sources["out"] / "metrics.json").read_text())["records"])
 
 

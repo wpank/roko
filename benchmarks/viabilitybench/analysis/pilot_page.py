@@ -1339,4 +1339,9 @@ def _show_out(argv: Sequence[str]) -> str:
 
 
 def _shell_arg(arg: str) -> str:
-    return shlex.quote(_show(arg) if os.sep in arg or Path(arg).exists() else arg)
+    """An argument of the command line, quoted for a shell; a path is shown relative to the repository."""
+    try:
+        is_path = os.sep in arg and Path(arg).exists()
+    except OSError:  # a --note longer than a file name may be
+        is_path = False
+    return shlex.quote(_show(arg) if is_path else arg)

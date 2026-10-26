@@ -394,7 +394,10 @@ impl PlanStart {
 /// `max_usd` as its budget ceiling when set (9116), treating the plan's
 /// checkpoint as `start` says (bug-cbdb6b). A chat host's run that says
 /// neither `resume` nor `fresh` is refused while the checkpoint records a
-/// run that stopped part way ([`resumable_run_refusal`]).
+/// run that stopped part way ([`resumable_run_refusal`]). A resume is
+/// refused while the checkpoint records a run it cannot continue
+/// ([`cannot_resume_refusal`]): only `fresh` starts the plan over
+/// (bug-b7f6a8).
 pub(crate) async fn start_plan_run_with(
     state: &Arc<AppState>,
     id: String,
@@ -472,6 +475,11 @@ pub(crate) async fn start_plan_run_with(
             (None, checkpoint)
         }
     };
+    if let Some(run) = resumes.as_ref().filter(|run| !run.continues) {
+        return Err(cannot_resume_refusal(&id, run));
+    }
+    // The run continues the checkpoint; with none, it runs every task.
+    let resumed = resumes.as_ref().is_some_and(|run| run.continues);
 
     // What a resume replays, read before the run can touch the checkpoint
     // (gap-b07969). It only informs the caller: a runtime that cannot tell,
@@ -506,6 +514,7 @@ pub(crate) async fn start_plan_run_with(
 
     Ok(StartedPlanRun {
         run_id,
+        resumed,
         // A queued run starts after the live run, which may move the
         // checkpoint, so what it replays is not known yet.
         skippable_task_ids: skippable_task_ids.filter(|_| queued.is_none()),
@@ -518,6 +527,11 @@ pub(crate) async fn start_plan_run_with(
 /// A run [`start_plan_run`] started or queued.
 pub(crate) struct StartedPlanRun {
     pub(crate) run_id: String,
+    /// Whether the run continues a run the plan's checkpoint records, as the
+    /// checkpoint stood when the run was asked for (bug-b7f6a8): `false` for
+    /// a run that starts over, and for a resume of a plan with no
+    /// checkpoint, which runs every task.
+    pub(crate) resumed: bool,
     /// Tasks the run replays from its checkpoint instead of running: none for
     /// a fresh run, `None` when the runtime cannot tell (gap-b07969) or the
     /// run is queued.
@@ -563,6 +577,50 @@ fn resumable_run_refusal(plan_id: &str, run: &CheckpointRun) -> ApiError {
             "status": run.status,
             "passed_tasks": run.passed_tasks,
             "tasks_left": run.tasks_left,
+        }))),
+        ..ApiError::conflict(message)
+    }
+}
+
+/// 409 for a resume of plan `plan_id` while its checkpoint records `run`,
+/// which a resume cannot continue (bug-b7f6a8): the checkpoint no longer fits
+/// the plan, or cannot be read. Nothing starts over unasked: the message
+/// says why, and what a run with `fresh` would run again. `details` names
+/// the run, its status, the reason, the tasks it passed and what it spent,
+/// with `refusal` `cannot_resume`.
+fn cannot_resume_refusal(plan_id: &str, run: &CheckpointRun) -> ApiError {
+    let short = crate::runtime::short_run_id(&run.run_id);
+    let reason = run
+        .reason
+        .as_deref()
+        .unwrap_or("its checkpoint cannot be resumed");
+    let again = if run.passed_tasks.is_empty() {
+        "every task runs".to_string()
+    } else {
+        let (runs, it) = if run.passed_tasks.len() == 1 {
+            ("runs", "it")
+        } else {
+            ("run", "they")
+        };
+        format!(
+            "{} {runs} again, though {it} passed",
+            task_list(&run.passed_tasks)
+        )
+    };
+    let message = format!(
+        "Plan '{plan_id}' cannot resume run {short} ({}): {reason}. Pass fresh=true to start \
+         over and set its progress aside: {again}.",
+        run.status,
+    );
+    ApiError {
+        details: Some(Box::new(json!({
+            "refusal": "cannot_resume",
+            "refusals": ["cannot_resume"],
+            "run_id": run.run_id,
+            "status": run.status,
+            "reason": run.reason,
+            "passed_tasks": run.passed_tasks,
+            "spent_usd": run.spent_usd,
         }))),
         ..ApiError::conflict(message)
     }
@@ -1061,6 +1119,7 @@ pub(super) async fn execute_plan(
             "id": started.run_id,
             "run_id": started.run_id,
             "resume": resume,
+            "resumed": started.resumed,
             "skippable_task_ids": started.skippable_task_ids,
             "resumes": started.resumes,
             "set_aside": started.set_aside,
@@ -1209,7 +1268,9 @@ pub(super) async fn pause_plan(
 /// the run took it (409 if it did not). Otherwise delegates to
 /// [`start_plan_run`] with `resume: true` — the same path that
 /// `POST /api/plans/{id}/execute` with `{ "resume": true }` follows — and
-/// returns 202.
+/// returns 202, with `resumed` saying whether the run continues the plan's
+/// checkpoint, and `resumes` the run it continues (bug-b7f6a8). A checkpoint
+/// the run cannot continue is refused with 409 `cannot_resume`.
 pub(super) async fn resume_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1226,8 +1287,9 @@ pub(super) async fn resume_plan(
     let body = json!({
         "id": started.run_id,
         "run_id": started.run_id,
-        "resumed": true,
+        "resumed": started.resumed,
         "resume": true,
+        "resumes": started.resumes,
         "skippable_task_ids": started.skippable_task_ids,
         "queued": started.queued.is_some(),
         "position": started.queued,

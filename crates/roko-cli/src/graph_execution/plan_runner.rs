@@ -2384,6 +2384,8 @@ async fn run_graph_plan_body(
             serde_json::json!({
                 "plan_id": plan.id,
                 "spent_usd": budget.spent_usd,
+                // Of it, what earlier processes of the run spent (bug-b7f6a8).
+                "carried_usd": budget.carried_usd,
                 "reserved_usd": budget.reserved_usd,
                 "ceiling_usd": budget.ceiling_usd,
                 "exhausted": budget.exhausted,
@@ -3278,6 +3280,46 @@ async fn close_plan(
         }
     }
     ctx.graph_tui_bridge.plan_completed(plan_id, succeeded);
+}
+
+/// The `budget_carried` event of plan `plan_id`, which resumed with
+/// `carried_micro_usd` that earlier processes of its run spent, `settled`
+/// saying what of it the attempts a stopped process left were charged
+/// (bug-b7f6a8), under `budget`, its budget once it took that spend over.
+fn budget_carried(
+    plan_id: &str,
+    carried_micro_usd: u64,
+    settled: Option<&crate::graph_checkpoint::SettledHolds>,
+    budget: &crate::graph_task_dispatch::GraphPlanBudgetSnapshot,
+) -> roko_core::DashboardEvent {
+    use crate::graph_task_dispatch::micro_usd_to_usd;
+    let carried_usd = micro_usd_to_usd(carried_micro_usd);
+    let settled_usd = settled.map_or(0.0, |settled| micro_usd_to_usd(settled.charged_micro_usd));
+    let of_it = settled
+        .filter(|settled| !settled.holds.is_empty())
+        .map(|settled| {
+            let attempts = settled.holds.len();
+            let plural = if attempts == 1 { "" } else { "s" };
+            format!(
+                " (${settled_usd:.4} of it by {attempts} attempt{plural} a stopped process \
+                 left)"
+            )
+        })
+        .unwrap_or_default();
+    let left = budget.ceiling_usd.map_or_else(
+        || "the plan has no budget ceiling".to_string(),
+        |ceiling| {
+            let left = (ceiling - budget.spent_usd).max(0.0);
+            format!("${left:.4} of its ${ceiling:.4} budget is left")
+        },
+    );
+    roko_core::DashboardEvent::BudgetCarried {
+        plan_id: plan_id.to_string(),
+        carried_usd,
+        settled_usd,
+        ceiling_usd: budget.ceiling_usd,
+        detail: format!("Resumed with ${carried_usd:.4} spent before the restart{of_it}; {left}"),
+    }
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -4229,8 +4271,21 @@ async fn run_one_plan(
         }
     }
     let replayed_entries = checkpoint.replayed_entries();
+    // What earlier processes of the run spent, which the plan's budget counts
+    // (bug-b7f6a8), read before its ledger moves to the budget.
+    let carried_micro_usd = checkpoint.restored_spend_micro_usd();
+    let settled = checkpoint.settled_holds().cloned();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
+    if carried_micro_usd > 0 {
+        let budget = ctx.graph_task_dispatcher.plan_budget_snapshot(&plan.id);
+        ctx.graph_tui_bridge.publish_event(budget_carried(
+            &plan.id,
+            carried_micro_usd,
+            settled.as_ref(),
+            &budget,
+        ));
+    }
     // By default a failed task blocks only its own dependants: the tasks that
     // do not depend on it keep running, and the plan reports failure once
     // every task has settled. `fail_fast` (from `[meta] failure_policy`, else

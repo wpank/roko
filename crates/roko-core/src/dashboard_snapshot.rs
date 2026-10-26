@@ -522,6 +522,27 @@ pub enum DashboardEvent {
         #[serde(default)]
         detail: String,
     },
+    /// A plan the run resumed carried over what earlier processes of its
+    /// run spent (bug-b7f6a8): its budget counts it, so its ceiling caps the
+    /// whole run, not each process. One per plan that resumed with spend.
+    BudgetCarried {
+        /// The plan.
+        plan_id: String,
+        /// What earlier processes of its run spent, in USD, the attempts a
+        /// stopped process left included.
+        carried_usd: f64,
+        /// Of it, what this resume charged the attempts a stopped process
+        /// left in flight: their finished model calls, and each call in
+        /// flight at its estimate.
+        #[serde(default)]
+        settled_usd: f64,
+        /// The plan's budget ceiling, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ceiling_usd: Option<f64>,
+        /// The finding in words.
+        #[serde(default)]
+        detail: String,
+    },
     /// A provider refused a try's call because the account is out of usage
     /// or can't be billed (bug-390e4b): roko skips it until `until_ms`, and
     /// the try goes on with the next model, with no retry, no wait and no try
@@ -3708,6 +3729,17 @@ impl DashboardSnapshot {
                 self.push_event_log(
                     ts,
                     "rung_skipped".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::BudgetCarried {
+                plan_id, detail, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "budget_carried".to_string(),
                     plan_id.clone(),
                     String::new(),
                     detail.clone(),

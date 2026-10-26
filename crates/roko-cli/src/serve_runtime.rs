@@ -1112,31 +1112,40 @@ fn config_live_output_to_dispatcher(
 /// The run checkpoint `preview` records, as `roko serve` reports it
 /// (bug-cbdb6b): resumable when the run stopped part way, with tasks passed
 /// and tasks left, and its checkpoint resumes. A `running` checkpoint counts
-/// as stopped only while no run is `live` in the workspace.
+/// as stopped only while no run is `live` in the workspace. A checkpoint a
+/// resume cannot continue says why, and still names the tasks it recorded
+/// as passed, which a run that starts over runs again (bug-b7f6a8).
 fn checkpoint_run_of(
     preview: &crate::graph_checkpoint::ResumePreview,
     live: bool,
 ) -> Option<CheckpointRun> {
     let run_id = preview.run_id.clone()?;
     let status = preview.status?;
-    let resumes = preview.action == crate::graph_checkpoint::ResumeAction::Resume;
-    let (passed_tasks, tasks_left) = if resumes {
-        (preview.restored_tasks.clone(), preview.tasks_to_run.clone())
+    let continues = preview.action == crate::graph_checkpoint::ResumeAction::Resume;
+    let tasks_left = if continues {
+        preview.tasks_to_run.clone()
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
     };
+    let passed_tasks = preview.recorded_tasks.clone();
     let stopped = status.stopped_part_way()
         && !(live && status == crate::graph_checkpoint::GraphCheckpointStatus::Running);
     Some(CheckpointRun {
         run_id,
         status: status.as_str().to_string(),
-        resumable: resumes && stopped && !passed_tasks.is_empty() && !tasks_left.is_empty(),
+        resumable: continues && stopped && !passed_tasks.is_empty() && !tasks_left.is_empty(),
         passed_tasks,
         tasks_left,
+        continues,
+        reason: preview.cause.clone().filter(|_| !continues),
+        spent_usd: preview
+            .spent_micro_usd
+            .map(crate::graph_task_dispatch::micro_usd_to_usd),
     })
 }
 
-/// The run a checkpoint `set_aside` records, as `roko serve` reports it.
+/// The run a checkpoint `set_aside` records, as `roko serve` reports it. A
+/// resume would have continued it when it named the tasks it passed or left.
 fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Option<CheckpointRun> {
     let status = set_aside.status?;
     Some(CheckpointRun {
@@ -1147,6 +1156,9 @@ fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Opt
             && !set_aside.tasks_left.is_empty(),
         passed_tasks: set_aside.passed_tasks.clone(),
         tasks_left: set_aside.tasks_left.clone(),
+        continues: !set_aside.passed_tasks.is_empty() || !set_aside.tasks_left.is_empty(),
+        reason: None,
+        spent_usd: None,
     })
 }
 

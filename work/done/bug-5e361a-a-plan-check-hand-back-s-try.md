@@ -2,7 +2,7 @@
 id = "bug-5e361a"
 kind = "bug"
 title = "A plan-check hand-back's try dies in pre-validation on a declared line range that the plan's own work shortened: phase 5's rehearsal T6#2, line range 1-123 outside core/src/filter.cpp (122 lines)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "c953445b3"
 source = "round-v7 lead (phase 5 rehearsal 20261026-162312 and run 1f677933)"
 discovered_from = "agent:team-lead (round v7, phase 5)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_handback.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-3b3bb6"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_hand_back_reads_a_file_the_plan_changed_whole' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_hand_back_reads_a_file_the_plan_changed_whole"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:23:24Z"
+commit = "c953445b3"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+model = "claude-opus-5-5"
+forced = false
+evidence = "c953445b3: handback_task drops the declared line range of every read_files entry whose file a task of the plan changed, so the hand-back's try reads it whole and pre-validation never sees a range older than the plan's work; a range in a file nothing changed stays. Verify: a_hand_back_reads_a_file_the_plan_changed_whole passes (T6's 1-123 of core/src/filter.cpp dropped, 1-40 of an unchanged header kept). Retries of a normal task are the p1 filed next (the same defect on every try). Chain26 on c953445b3's tree (base 99745fefa): the three verify tests 3/3; plan_handback:: and plan_runner's hand-back tests (a_plan_check_is_handed_back_at_most_max_handbacks_times, a_hand_back_whose_try_fails_ends_the_plan, a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails, a_failure_across_two_tasks_goes_back_as_one_try_at_both_files, a_plan_started_during_a_failing_check_does_not_build_on_its_merge, a_cancel_stops_the_whole_plan_check_and_frees_the_workspace) 17/17; dispatch::prompt_builder, retry_feedback and graph_task_dispatch::verification 97/97; roko-learn failure_text and error_enrichment 9/9; nightly fmt and clippy -D warnings clean on roko-cli and roko-learn."
 +++
 
 ## Problem

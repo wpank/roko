@@ -2,7 +2,7 @@
 id = "bug-8b9468"
 kind = "bug"
 title = "A plan-check hand-back misses the task whose verify step runs the failing test when the test's name is built from plain words: phase 5 run 1f677933 sent spec_p5_presets (T1's tools/spec.sh 5 presets) to T8"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "c953445b3"
 source = "round-v7 lead (phase 5 rehearsal 20261026-162312 and run 1f677933)"
 discovered_from = "agent:team-lead (round v7, phase 5)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_handback.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-3b3bb6"], 
 
 [[verify]]
 command = "grep -rqw 'fn the_task_that_runs_the_failing_ctest_target_leads' crates/roko-cli/src && cargo test -p roko-cli --lib -- the_task_that_runs_the_failing_ctest_target_leads"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:23:24Z"
+commit = "c953445b3"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+model = "claude-opus-5-5"
+forced = false
+evidence = "c953445b3: runs_target maps a failing test target named after a verify command's arguments to its task (tools/spec.sh 5 presets runs spec_p5_presets; tools/spec.sh 4_2 layout runs spec_p4_2_layout; a p before a number ignored; commands that select cases are read by the selector rule alone, which now skips each simple command's own program). A runner leads the hand-back; the tasks are the runners and the owners of files named on the failure's lines, and when no plan file is named the other changed files are offered second. The description, the diagnosis and the hand-back event name the runners. Verify: the_task_that_runs_the_failing_ctest_target_leads passes on run 1f677933's check log (fixture p5_presets_check.txt): T1 runs spec_p5_presets, leads and is the task it goes back to; the warnings in presets.cpp, filter.cpp, Displays.cpp and PluginProcessor.cpp name nothing. Chain26 on c953445b3's tree (base 99745fefa): the three verify tests 3/3; plan_handback:: and plan_runner's hand-back tests (a_plan_check_is_handed_back_at_most_max_handbacks_times, a_hand_back_whose_try_fails_ends_the_plan, a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails, a_failure_across_two_tasks_goes_back_as_one_try_at_both_files, a_plan_started_during_a_failing_check_does_not_build_on_its_merge, a_cancel_stops_the_whole_plan_check_and_frees_the_workspace) 17/17; dispatch::prompt_builder, retry_feedback and graph_task_dispatch::verification 97/97; roko-learn failure_text and error_enrichment 9/9; nightly fmt and clippy -D warnings clean on roko-cli and roko-learn."
 +++
 
 ## Problem

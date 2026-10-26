@@ -2,7 +2,7 @@
 id = "bug-32f73a"
 kind = "bug"
 title = "A warning in a failed plan check's output implicates a task: phase 5's rehearsal handed spec_p5_demos and spec_p5_install's failure to T6 because a clang warning named core/src/filter.cpp, not to T4 and T5, whose render-demos.sh and install.sh the failure names"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "c953445b3"
 source = "round-v7 lead (phase 5 rehearsal 20261026-162312 and run 1f677933)"
 discovered_from = "agent:team-lead (round v7, phase 5)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_handback.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-3b3bb6"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_warning_never_implicates_a_task' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_warning_never_implicates_a_task"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:23:23Z"
+commit = "c953445b3"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+model = "claude-opus-5-5"
+forced = false
+evidence = "c953445b3: a failed plan check's files are read only from its own failure lines (roko_learn::failure_text::failure_lines: the failure lines outside any case, each failing case's header and failures with the lines under them; never a warning, build progress or summary), and CTest's ***Failed line now closes the case before it. A bare file name names the one owned file with that base name when no path character is next to it. Verify: a_warning_never_implicates_a_task passes on the rehearsal's check log (fixture p5_rehearsal_check.txt): the files are tools/render-demos.sh (T4) and tools/install.sh (T5), T4 and T5 run the failing tests, T5 leads, and core/src/filter.cpp, named only by a clang warning, names nothing. Chain26 on c953445b3's tree (base 99745fefa): the three verify tests 3/3; plan_handback:: and plan_runner's hand-back tests (a_plan_check_is_handed_back_at_most_max_handbacks_times, a_hand_back_whose_try_fails_ends_the_plan, a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails, a_failure_across_two_tasks_goes_back_as_one_try_at_both_files, a_plan_started_during_a_failing_check_does_not_build_on_its_merge, a_cancel_stops_the_whole_plan_check_and_frees_the_workspace) 17/17; dispatch::prompt_builder, retry_feedback and graph_task_dispatch::verification 97/97; roko-learn failure_text and error_enrichment 9/9; nightly fmt and clippy -D warnings clean on roko-cli and roko-learn."
 +++
 
 ## Problem

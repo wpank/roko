@@ -2910,6 +2910,98 @@ mod tests {
         );
     }
 
+    /// Serve one streamed Responses answer that sends `keepalives`
+    /// keepalive events `gap` apart before it answers "ok", with no
+    /// reasoning item open while it waits, as OpenAI does while its model
+    /// works.
+    fn serve_keepalives(keepalives: usize, gap: StdDuration) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let _ = read_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write response headers");
+            let send = |stream: &mut TcpStream, event: Value| {
+                let kind = event["type"].as_str().unwrap_or_default().to_string();
+                let line = format!("event: {kind}\n{}", sse_json_line(event));
+                stream.write_all(line.as_bytes()).is_ok() && stream.flush().is_ok()
+            };
+            send(
+                &mut stream,
+                serde_json::json!({"type": "response.created", "response": {"id": "resp_1"}}),
+            );
+            send(
+                &mut stream,
+                serde_json::json!({"type": "response.in_progress", "response": {"id": "resp_1"}}),
+            );
+            for sequence in 0..keepalives {
+                thread::sleep(gap);
+                if !send(
+                    &mut stream,
+                    serde_json::json!({"type": "keepalive", "sequence_number": sequence + 2}),
+                ) {
+                    return;
+                }
+            }
+            let message = serde_json::json!({
+                "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                "content": [{ "type": "output_text", "text": "ok", "annotations": [] }],
+            });
+            send(
+                &mut stream,
+                serde_json::json!({"type": "response.output_text.delta", "item_id": "msg_1", "delta": "ok"}),
+            );
+            send(
+                &mut stream,
+                serde_json::json!({"type": "response.completed", "response": {
+                    "status": "completed", "output": [message],
+                    "usage": {"input_tokens": 50, "output_tokens": 2},
+                }}),
+            );
+        });
+        (format!("http://{addr}/v1/"), server)
+    }
+
+    /// gap-a94400: OpenAI sends `keepalive` events while its model works and
+    /// streams nothing else. Each one reaches the tool loop as an empty
+    /// reasoning delta, which the stall watchdog counts as progress, even
+    /// with no reasoning item open for roko's own heartbeat; the call then
+    /// answers as any other.
+    #[tokio::test]
+    async fn a_keepalive_says_the_call_is_alive() {
+        use futures::StreamExt;
+
+        let (base_url, server) = serve_keepalives(4, StdDuration::from_millis(250));
+        let config = TurnConfig {
+            request_timeout: StdDuration::from_secs(5),
+            ..TurnConfig::default()
+        };
+        let items: Vec<_> = OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini")
+            .with_base_url(&base_url)
+            .with_wire(OpenAiApi::Responses)
+            .stream_turn(
+                &[serde_json::json!({ "role": "user", "content": "hello" })],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+                &config,
+            )
+            .await
+            .expect("the request is sent")
+            .collect()
+            .await;
+        server.join().expect("server thread");
+
+        assert!(items.iter().all(Result::is_ok), "{items:?}");
+        // One for `response.in_progress`, then one for each keepalive.
+        assert_eq!(alive_beats(&items), 1 + 4, "{items:?}");
+        assert_eq!(streamed_text(&items), "ok");
+        assert_eq!(finish_reasons(&items), vec!["stop".to_string()]);
+    }
+
     /// Two Responses answers: the model reasons, then calls `echo` with
     /// `{"value":1}`; then it answers "final answer".
     fn responses_answers() -> [Value; 2] {

@@ -70,6 +70,31 @@ L1). One failed try is enough.
 **The log line:** it says "the attempt runs on the ladder's choice", but `action=abandon` reads as if roko gave up. In
 shadow mode it should say it is advice only.
 
+### Second case: phase 4.3 run `3752b8ff`, T2#2 (2026-10-26, hermes-pilot)
+
+It happened again in the next phase's run, with Undertow on roko main f50dc58fa and the same shadow model:
+
+```
+2026-10-26T14:37:02.913149Z  WARN roko_cli::graph_task_dispatch::self_model: self-model: T2 is unlikely to pass on any
+rung; the attempt runs on the ladder's choice plan_id=p4-3-the-editor-s-finish task_id=T2
+attempt_key=3752b8ff-83df-447e-bf79-b97db67b9bc7:p4-3-the-editor-s-finish:T2:2 action=abandon spec_score=Some(1.0)
+best_p_vs=1.0727327479924159e-12
+```
+
+The run's predictions are copied to `tmp/hermes-roko-v7/pilot/evidence/p4-3-run/predictions-3752b8ff.jsonl`:
+
+| Try | ts (Z) | trained_on_n | basis | mini p_vs (lcb) | strong p_vs (lcb) | decision | outcome |
+|---|---|---|---|---|---|---|---|
+| T2#1 | 14:33:51.675 | 67 | prior | 0.597 (0.495) | 0.723 (0.584) | start, mini | gate_failed on mid (45-turn cap) |
+| **T2#2** | **14:37:02.913** | **68** | **logit** | **1.57e-15** (1.57e-15) | **1.07e-12** (1.07e-12) | **abandon** | gate_failed on mid |
+| T2#3 | 14:40:28.467 | 69 | logit | 0.19 (0.0016) | 0.266 (0.0049) | retry | **passed on strong** ($0.32) |
+
+- Here the forecast saturated without the isotonic map's exact 0 (1e-15 and 1e-12, not 0.0). That is cause 1 alone.
+- One more training row later (n 69), the same task's forecasts swung to 0.19 and 0.27. This is the overshoot back
+  and forth described above.
+- In active mode the abandon would have stopped T2 two tries before the strong try that passed, leaving phase 4.3
+  undelivered.
+
 ## Where
 
 - `crates/roko-learn/src/self_model/logit.rs`: `OnlineLogit::update` and `forecast`.

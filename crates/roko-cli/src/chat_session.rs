@@ -50,6 +50,9 @@ use crate::learning_helpers::{
 use crate::model_selection::EffectiveModelSelection;
 
 const CHAT_SYSTEM_PROMPT_TOKEN_BUDGET: usize = 4_000;
+/// The `ROKO_AGENT_ID` a chat turn's Claude CLI runs with (gap-31e8a7): a
+/// chat session has no agent id, so its role names it.
+const CHAT_AGENT_ID: &str = "chat";
 const MAX_WORKSPACE_SAMPLE_BYTES: usize = 16_384;
 const MAX_WORKSPACE_SAMPLE_FILES: usize = 8;
 const MAX_WORKSPACE_SCAN_DEPTH: usize = 5;
@@ -1325,6 +1328,8 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
     for (key, value) in isolation.env() {
         cmd.env(key, value);
     }
+    // Marked as an agent's process (gap-31e8a7).
+    roko_core::child_env::mark_agent_process(cmd.as_std_mut(), CHAT_AGENT_ID);
     cmd.env("CARGO_INCREMENTAL", "0");
     cmd.env("CARGO_BUILD_JOBS", "2");
     cmd.env_remove("CLAUDECODE");
@@ -2341,6 +2346,12 @@ mod tests {
         assert_eq!(env_values(&chat_env, workdir_claude_md), ["1"]);
         // A variable the request sets itself wins over the isolation's.
         assert_eq!(env_values(&dispatch.env, workdir_claude_md), ["0"]);
+        // gap-31e8a7: the chat's Claude runs marked as an agent's process
+        // (the dispatcher's spawn marks its own, `runner::agent_stream`).
+        assert_eq!(
+            env_values(&chat_env, roko_core::child_env::AGENT_ID_ENV),
+            [CHAT_AGENT_ID]
+        );
     }
 
     /// `roko chat` skips Claude's permission checks only when the workspace

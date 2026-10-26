@@ -82,3 +82,4 @@ Options, not exclusive; the first needs a decision, since it adds a marker:
 - `crates/roko-cli/tests/common/mod.rs::Isolated` drops every inherited `ROKO_*` variable from a test's `roko`. A
   `ROKO_*` marker would leave the CLI tests unaffected; a non-`ROKO_` one would need adding to
   `crates/roko-cli/tests/safety_cli.rs::roko`.
+- Coordinator 2026-10-26: option 1 (ROKO_AGENT_ID) built on work/gap-31e8a7 for Will's review; merge waits on his decision.

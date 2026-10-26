@@ -115,7 +115,9 @@ pub fn tool_def() -> ToolDef {
 /// The tests run with the environment verify steps get
 /// ([`child_env::apply_gate_env`]): agent-written tests see no provider key,
 /// secret-looking name or `.env`-loaded name unless
-/// [`ToolContext::env_passthrough`] names it.
+/// [`ToolContext::env_passthrough`] names it. They also get
+/// [`child_env::AGENT_ID_ENV`], set to the calling agent's id, which marks
+/// them as an agent's (gap-31e8a7).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Handler;
 
@@ -319,6 +321,9 @@ async fn run_all(
         let mut cmd = tokio::process::Command::new(runner.program);
         cmd.args(args).current_dir(ctx.worktree());
         child_env::apply_gate_env(cmd.as_std_mut(), env.to_vec(), &ctx.env_passthrough);
+        // As `bash`'s commands: marked as the calling agent's, an unnamed
+        // agent's when the call carries no id (gap-31e8a7).
+        child_env::mark_agent_process(cmd.as_std_mut(), &ctx.correlation.agent_id);
         // The run leads a process group of its own, which a cancel or the
         // timeout kills whole (bug-c83c84).
         let left = timeout.budget.saturating_sub(started.elapsed());
@@ -1944,7 +1949,12 @@ mod tests {
             parent.push((name.to_string(), OsString::from(value)));
         }
         let call = ToolCall::new("c", NAME, serde_json::json!({"build": "make"}));
-        let ctx = ToolContext::testing(dir.path());
+        let ctx = ToolContext::testing(dir.path()).with_correlation(
+            roko_core::tool::CorrelationEnvelope {
+                agent_id: "live-a/glm".to_string(),
+                ..roko_core::tool::CorrelationEnvelope::empty()
+            },
+        );
 
         let result = run(call, &ctx, Some(parent)).await;
 
@@ -1964,6 +1974,11 @@ mod tests {
         assert!(
             env.contains("CARGO_HOME=/tmp/tests-cargo"),
             "toolchain env missing:\n{env}"
+        );
+        // gap-31e8a7: the tests are marked as the calling agent's.
+        assert!(
+            env.lines().any(|line| line == "ROKO_AGENT_ID=live-a/glm"),
+            "agent mark missing:\n{env}"
         );
     }
 }

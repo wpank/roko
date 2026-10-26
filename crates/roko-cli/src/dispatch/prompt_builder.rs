@@ -944,10 +944,11 @@ impl GateFeedback {
             let truncated = line.chars().take(240).collect::<String>();
             if lower.contains("error[") || lower.starts_with("error:") || line.contains("-->") {
                 compile_errors.push(truncated);
-            } else if lower.contains("test")
-                && (lower.contains("failed") || lower.contains("panicked"))
-            {
-                test_failures.push(truncated);
+            } else if is_failing_test_line(line) {
+                // A runner prints one failed assertion many times.
+                if !test_failures.contains(&truncated) {
+                    test_failures.push(truncated);
+                }
             } else if lower.contains("warning") || lower.contains("clippy") {
                 clippy_warnings.push(truncated);
             }
@@ -970,8 +971,33 @@ impl GateFeedback {
     }
 }
 
+/// Whether `line` of a check's output names a failing test or one of its
+/// failed assertions: a line with "test" that says it failed or panicked,
+/// a doctest `TEST CASE:` (doctest prints only the cases that fail), a C++
+/// runner's failed assertion (doctest's `ERROR:`, Catch2's `FAILED:`,
+/// GoogleTest's `Failure`) or GoogleTest's `[  FAILED  ] Suite.Test`; never
+/// a runner's summary of counts, which named no test in Undertow's phase 4.2
+/// retry (bug-3e3d08).
+fn is_failing_test_line(line: &str) -> bool {
+    if roko_learn::failure_text::is_summary_line(line) {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    line.starts_with("TEST CASE:")
+        || line.starts_with("[  FAILED  ]")
+        || [": ERROR: ", ": FATAL ERROR: ", ": FAILED:", ": Failure"]
+            .iter()
+            .any(|marker| line.contains(marker))
+        || (lower.contains("test") && (lower.contains("failed") || lower.contains("panicked")))
+}
+
 /// Longest diagnosis a retry prompt carries.
 const MAX_DIAGNOSIS_CHARS: usize = 1_200;
+
+/// Most characters of a check's raw output a retry prompt shows. A failed
+/// step's entry is cut failure first to 2,400 characters (bug-3e3d08), so
+/// one step's entry shows whole.
+const RAW_EXCERPT_CHARS: usize = 4_096;
 
 // ─── Outputs ───────────────────────────────────────────────────────────
 
@@ -3290,8 +3316,11 @@ pub(crate) fn render_gate_feedback_sections(feedback: &GateFeedback) -> String {
             buf.push('\n');
         }
         buf.push_str("## Raw gate output\n```\n");
-        // Limit to ~2 KB to avoid blowing the prompt budget.
-        let raw_excerpt: String = feedback.raw_output.chars().take(2048).collect();
+        let raw_excerpt: String = feedback
+            .raw_output
+            .chars()
+            .take(RAW_EXCERPT_CHARS)
+            .collect();
         buf.push_str(&raw_excerpt);
         buf.push_str("\n```\n");
     }

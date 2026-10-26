@@ -103,6 +103,10 @@ pub struct SharedAgentFactory {
     /// The models that failed their tool-use probe this run, with why
     /// (backlog 1121): helper calls pass over them too (bug-f9ca2f).
     failed_probes: std::collections::BTreeMap<String, String>,
+    /// The routing ladder as bound before its probes, when every rung of it
+    /// failed one: the tasks it routes are refused rather than routed
+    /// outside it (gap-20301d).
+    lost_ladder: Option<RoutingLadder>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -300,6 +304,7 @@ impl SharedAgentFactory {
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
             prompt_snapshot,
             failed_probes: std::collections::BTreeMap::new(),
+            lost_ladder: None,
         }
     }
 
@@ -307,6 +312,17 @@ impl SharedAgentFactory {
     /// failed its tool-use probe this run, when it did (backlog 1121).
     pub fn failed_probe(&self, model: &str) -> Option<&str> {
         self.failed_probes.get(model).map(String::as_str)
+    }
+
+    /// The routing ladder as bound before its probes, with why each of its
+    /// models failed one, when every rung failed (gap-20301d): the tasks it
+    /// routes are refused rather than routed outside it.
+    pub fn lost_ladder(
+        &self,
+    ) -> Option<(&RoutingLadder, &std::collections::BTreeMap<String, String>)> {
+        self.lost_ladder
+            .as_ref()
+            .map(|ladder| (ladder, &self.failed_probes))
     }
 
     /// What the run's prompt-cache snapshot holds, when this factory's
@@ -331,8 +347,10 @@ impl SharedAgentFactory {
     }
 
     /// Skip the ladder rungs whose models `failed` their tool-use probe, by
-    /// model with the reason (backlog 1121); with no rung left the router
-    /// picks. Helper calls pass over those models too (bug-f9ca2f).
+    /// model with the reason (backlog 1121). With no rung left, the tasks the
+    /// ladder routes are refused rather than routed outside it, and a pinned
+    /// task still runs (gap-20301d). Helper calls pass over those models too
+    /// (bug-f9ca2f).
     #[must_use]
     pub fn skip_failed_rungs(
         mut self,
@@ -347,8 +365,15 @@ impl SharedAgentFactory {
                 .map(|(model, reason)| (model.clone(), reason.clone())),
         );
         if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
-            self.dispatcher
-                .replace_routing_ladder(ladder.without_models(failed));
+            let kept = ladder.clone().without_models(failed);
+            if kept.is_none() {
+                tracing::warn!(
+                    "routing ladder: every rung failed its probe, so the tasks it routes are \
+                     refused; a pinned task still runs"
+                );
+                self.lost_ladder = Some(ladder);
+            }
+            self.dispatcher.replace_routing_ladder(kept);
         }
         self
     }

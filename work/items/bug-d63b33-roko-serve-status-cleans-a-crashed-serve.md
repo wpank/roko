@@ -9,7 +9,7 @@ goal = "hermes"
 size = "S"
 subsystem = ["roko-cli/serve"]
 created = 2026-10-19
-updated = 2026-10-19
+updated = 2026-10-26
 last_verified = 2026-10-19
 source = "roko-autostart round, roko-serve worker note at 513890e42"
 anchors = ["crates/roko-cli/src/serve_lifecycle.rs"]
@@ -50,3 +50,12 @@ When status cleans a stale serve while holding the workspace lock, also remove `
 ## Notes
 
 Low priority. A new serve start replaces both files.
+
+- 2026-10-26 (roko-recovery, round v7): **a dead CLI run leaves `hub.sock.path` and `hub.token` too.**
+  - This is `roko run plans/<p>` with no serve, killed. `roko serve status` says "stopped" and removes nothing, and the
+    files stay until the next run writes its own.
+  - Seen at every kill point of the kill matrix on 4d22b94e8 (`tmp/hermes-roko-v7/roko-recovery/`).
+  - For a dead serve, `roko serve status` removed `serve.json`, `serve.token` and the registry entry, but not these
+    two, as this item says.
+  - The fix should clean a dead owner's hub files wherever roko finds them: at run start, at serve start, and in
+    `serve status`.

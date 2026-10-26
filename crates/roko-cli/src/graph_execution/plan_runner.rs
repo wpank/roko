@@ -1483,9 +1483,15 @@ async fn run_graph_plan_body(
     let probe_rungs = roko_config.routing.ladder.probe
         && !no_budget
         && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    // The rungs the probes skip: each plan's `rung_skipped` events name them
+    // once the plan set is announced, and the run's readout lists them at its
+    // end (gap-20301d).
+    let mut skipped_rungs = Vec::new();
     if probe_rungs && let Some(ladder) = shared_factory.dispatcher().routing_ladder().cloned() {
         let failed =
             crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
+        skipped_rungs =
+            crate::dispatch::rung_probe::skipped_rungs(&roko_config, &ladder, &failed, workdir);
         shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
     // A chat host's run holds its tasks' outbound tool calls for approval
@@ -1583,14 +1589,21 @@ async fn run_graph_plan_body(
     // Announce the whole selected set before any plan starts, so the TUI and
     // StateHub consumers show every plan, the whole-set task total, and one
     // run clock across plan boundaries.
-    state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded {
-        plans: plan_set_entries(
-            &crate::plan::plans_dir(workdir),
-            &plans,
-            &plan_order,
-            &plan_conflicts,
-        ),
-    });
+    let plan_set = plan_set_entries(
+        &crate::plan::plans_dir(workdir),
+        &plans,
+        &plan_order,
+        &plan_conflicts,
+    );
+    let plan_ids: Vec<String> = plan_set.iter().map(|plan| plan.plan_id.clone()).collect();
+    state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded { plans: plan_set });
+    // Each plan's view of the ladder shows the rungs the probes skipped, and
+    // until when (gap-20301d).
+    for plan_id in &plan_ids {
+        for rung in &skipped_rungs {
+            state_hub_sender.publish(rung.event(plan_id));
+        }
+    }
     let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         crate::runner::graph_tui_bridge::StateHubTelemetrySink::new(state_hub_sender.clone()),
     );
@@ -2573,7 +2586,11 @@ async fn run_graph_plan_body(
                 roko_learn::telemetry::report::RunRecords::load(&runs_dir.join(run_id)).ok()
             })
             .collect();
-        roko_learn::telemetry::rung_stats::RungReport::of(&records)
+        // A rung's refused calls count on it (gap-5cfa9c).
+        roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+            &records,
+            &graph_layout.learn_dir().join("costs.jsonl"),
+        )
     };
 
     if json {
@@ -2593,6 +2610,7 @@ async fn run_graph_plan_body(
                 "plan_outcomes": plan_outcome_labels,
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
                 "rungs": rungs.rows,
+                "rungs_skipped": skipped_rungs,
                 "misordered": rungs.misordered.as_ref().map(|misorder| &misorder.line),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
@@ -2659,9 +2677,13 @@ async fn run_graph_plan_body(
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
         }
         // How each rung did, and whether a higher one beat a lower one
-        // (gap-3217a0).
+        // (gap-3217a0); then the rungs the probes skipped, and why
+        // (gap-20301d).
         for line in rungs.lines() {
             println!("{line}");
+        }
+        for rung in &skipped_rungs {
+            println!("Rung {}", rung.line());
         }
         // Work no check ran on is never delivered: say where it is
         // (bug-db89d4).
@@ -6458,6 +6480,119 @@ files = ["README.md"]
             crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-disabled"),
             Some(GraphCheckpointStatus::Failed)
         );
+    }
+
+    /// A two-rung ladder of OpenAI-compatible models, as the rung probes
+    /// probe them, on a provider nothing listens at: a test seeds their
+    /// verdicts, so no probe call is made.
+    const PROBED_LADDER_CONFIG: &str = r#"
+[providers.cheap_api]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "PATH"
+
+[providers.mid_api]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "PATH"
+
+[models.cheap-model]
+provider = "cheap_api"
+slug = "cheap-1"
+supports_tools = true
+tool_format = "openai_json"
+
+[models.mid-model]
+provider = "mid_api"
+slug = "mid-1"
+supports_tools = true
+tool_format = "openai_json"
+
+[routing.ladder]
+rungs = [{ name = "cheap", model = "cheap-model" }, { name = "mid", model = "mid-model" }]
+"#;
+
+    /// gap-20301d: a rung whose model's fresh probe failed is skipped at plan
+    /// start with one `rung_skipped` event for the run's plan, naming the
+    /// rung, its model and provider, the probe's words and until when the
+    /// verdict stands, and the run's own record keeps it for its summary. The
+    /// rung whose fresh probe passed gets none. Both verdicts are fresh, so
+    /// no probe runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_probe_skips_its_rung_with_an_event() {
+        use crate::dispatch::rung_probe::{PROBE_TTL_MS, RungProbe, RungProbes};
+
+        let dir = disabled_role_plan_set(&[("a", "a.txt", &[])], PROBED_LADDER_CONFIG);
+        let probed_at_ms = chrono::Utc::now().timestamp_millis() - 60_000;
+        let probe = |passed: bool, reason: &str| RungProbe {
+            passed,
+            reason: reason.to_string(),
+            probed_at_ms,
+        };
+        let probes = RungProbes {
+            models: [
+                (
+                    "cheap-1".to_string(),
+                    probe(
+                        false,
+                        "insufficient_credits: cheap_api refused the request (HTTP 402): \
+                         payment required",
+                    ),
+                ),
+                ("mid-1".to_string(), probe(true, "")),
+            ]
+            .into(),
+        };
+        let path = RungProbes::path(dir.path());
+        std::fs::create_dir_all(path.parent().expect("learn dir")).expect("learn dir");
+        std::fs::write(&path, serde_json::to_string(&probes).expect("probes")).expect("probes");
+
+        let (_, _, hub) = run_plan_set_with(dir.path(), Some(1), None, false, false).await;
+
+        let skipped: Vec<_> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::RungSkipped {
+                    plan_id,
+                    rung,
+                    model,
+                    provider,
+                    reason,
+                    until_ms,
+                    detail,
+                } => Some((plan_id, rung, model, provider, reason, until_ms, detail)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(skipped.len(), 1, "one rung, one plan: {skipped:?}");
+        let (plan_id, rung, model, provider, reason, until_ms, detail) = &skipped[0];
+        assert_eq!(
+            (
+                plan_id.as_str(),
+                rung.as_str(),
+                model.as_str(),
+                provider.as_str()
+            ),
+            ("a", "cheap", "cheap-1", "cheap_api")
+        );
+        assert!(reason.contains("(HTTP 402)"), "{reason}");
+        assert_eq!(*until_ms, Some(probed_at_ms + PROBE_TTL_MS));
+        assert!(
+            detail.starts_with("rung cheap (cheap-1 on cheap_api) is skipped until ")
+                && detail.contains("its tool-use probe failed: insufficient_credits"),
+            "{detail}"
+        );
+        let events =
+            std::fs::read_to_string(RokoLayout::for_project(dir.path()).events_jsonl_path())
+                .expect("the run's event log");
+        let kept = events
+            .lines()
+            .filter(|line| line.contains("\"type\":\"rung_skipped\""))
+            .count();
+        assert_eq!(kept, 1, "the run's record keeps the event for its summary");
+        assert_eq!(RungProbes::load(&path), probes, "no probe ran");
     }
 
     /// gap-568056: a Graph run keeps `.roko/state/status.json` current and

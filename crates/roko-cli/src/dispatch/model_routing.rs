@@ -1762,10 +1762,25 @@ impl RoutingLadder {
         models.into_iter().cloned().collect()
     }
 
+    /// The names of the rungs, its roles' own rungs included, whose model
+    /// dispatch runs as `model`, each once, in the order the ladder lists
+    /// them.
+    #[must_use]
+    pub fn rungs_running(&self, model: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for rung in self.config.all_rungs() {
+            let runs = self.runnable.get(&rung.model).map(String::as_str);
+            if runs == Some(model) && !names.contains(&rung.name) {
+                names.push(rung.name.clone());
+            }
+        }
+        names
+    }
+
     /// This ladder without the rungs whose model `failed` names, each logged
     /// with the reason it gives: rungs whose agent-work probe failed (backlog
-    /// 1121). `None` when no rung is left, which leaves routing to the
-    /// router.
+    /// 1121). `None` when no rung is left: the tasks the ladder routes are
+    /// then refused rather than routed outside it (gap-20301d).
     #[must_use]
     pub fn without_models(mut self, failed: &BTreeMap<String, String>) -> Option<Self> {
         self.runnable.retain(|rung_model, model| {
@@ -1780,7 +1795,7 @@ impl RoutingLadder {
             false
         });
         if self.runnable.is_empty() {
-            tracing::warn!("routing ladder: no rung passed its probe; the router picks");
+            tracing::warn!("routing ladder: no rung passed its probe");
             return None;
         }
         self.note_unreachable_starts();

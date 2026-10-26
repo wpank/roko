@@ -240,9 +240,12 @@ async fn learn_rungs(
 ) -> Result<Json<Value>, ApiError> {
     let workdir = state.workdir.clone();
     let report = tokio::task::spawn_blocking(move || {
-        let runs_dir = roko_fs::RokoLayout::for_project(&workdir).runs_dir();
-        let runs = roko_learn::telemetry::rung_stats::load_runs(&runs_dir, query.runs);
-        roko_learn::telemetry::rung_stats::RungReport::of(&runs)
+        let layout = roko_fs::RokoLayout::for_project(&workdir);
+        let runs = roko_learn::telemetry::rung_stats::load_runs(&layout.runs_dir(), query.runs);
+        roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+            &runs,
+            &layout.learn_dir().join("costs.jsonl"),
+        )
     })
     .await
     .map_err(|error| ApiError::internal(format!("read the runs: {error}")))?;

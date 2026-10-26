@@ -1073,6 +1073,12 @@ impl GraphTaskDispatcher {
         if let Some(rejection) = self.unbuilt_rung(spec, task) {
             return Err(rejection);
         }
+        // So does a task the ladder routes when every rung of it failed its
+        // probe at plan start: no model outside the ladder runs it
+        // (gap-20301d).
+        if let Some(rejection) = self.unroutable(task) {
+            return Err(rejection);
+        }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let mut task = self.prompt_task(spec, task);

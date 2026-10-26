@@ -1,0 +1,262 @@
+[meta]
+plan = "phase-5-ship"
+title = "P5 · Undertow ship"
+total = 7
+done = 0
+status = "ready"
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "The factory presets"
+goal = "The core library has the twelve factory presets in four categories, each loudness-matched to the init patch."
+description = "Add `core/include/undertow/presets.h` with the API the spec gives and `core/src/presets.cpp` with the twelve presets in the spec's order, each a full parameter set and a pattern, with names, slugs, `findFactoryPreset` by name or slug, and each preset's `master_gain` set so its render lands within 3 dB of -18 dBFS RMS. The core's glob in `core/CMakeLists.txt` picks up `presets.cpp`."
+acceptance = [
+    "AC1: SC1 and SC7: `tools/spec.sh 5 presets` passes: at least 12 presets with unique names and slugs in four categories, each renders clean and repeatably with its category's character, and each is loudness-matched (P5.01-P5.03, P5.09).",
+]
+non_goals = ["Do not edit `core/CMakeLists.txt`, `tests/spec/`, `docs/` or the given tools."]
+open_questions = []
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = ["core/include/undertow/presets.h", "core/src/presets.cpp"]
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 1 holds the presets, their order, character and level rules, and the API." },
+    { path = "core/include/undertow/params.h", lines = "1-41", why = "The parameter ids and defaults each preset sets." },
+    { path = "core/include/undertow/sequencer.h", lines = "1-87", why = "The Pattern each preset fills." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5 presets"
+timeout_ms = 900000
+covers = ["SC1", "SC7"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "The programs and strict validation"
+goal = "The plugin's programs are the factory presets, and pluginval passes at strictness 10 with its log kept."
+description = "Make `getNumPrograms`, `getProgramName`, `setCurrentProgram` and `getCurrentProgram` serve the factory presets, setting every parameter through the APVTS and the pattern. After `replaceState` in `setStateInformation`, set each parameter from the state so bools restore. Run `tools/pluginval.sh 10 artifacts/reports/pluginval-strict.txt` and commit the report."
+acceptance = [
+    "AC1: SC2: `tools/spec.sh 5 programs` passes: the presets are the plugin's programs, names in order, and setCurrentProgram sets every parameter and the pattern (P5.04).",
+    "AC2: SC6: `tools/pluginval.sh 10 artifacts/reports/pluginval-strict.txt` passes, and the report is committed (P5.08).",
+]
+non_goals = ["Do not change the editor or the parameter definitions."]
+open_questions = []
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = ["plugin/PluginProcessor.h", "plugin/PluginProcessor.cpp", "artifacts/reports/pluginval-strict.txt"]
+depends_on = ["T1"]
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 2 holds the programs and the bool restore pluginval needs." },
+    { path = "plugin/PluginProcessor.h", lines = "1-46", why = "The processor's program and state declarations." },
+    { path = "plugin/PluginProcessor.cpp", lines = "1-163", why = "The current program stubs and setStateInformation." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5 programs"
+timeout_ms = 900000
+covers = ["SC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/pluginval.sh 10 artifacts/reports/pluginval-strict.txt"
+timeout_ms = 900000
+covers = ["SC6"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "The offline renderer"
+goal = "`undertow_render` writes a bar-exact 24-bit stereo WAV of any preset, the same bytes every time."
+description = "Add the `undertow_render` target (`tools/render/CMakeLists.txt`, `tools/render/main.cpp`), plain C++ on `Undertow::core`, with the spec's arguments, frame count, output line and errors, and add `tools/render` to the top-level `CMakeLists.txt` before `tests/spec`."
+acceptance = [
+    "AC1: SC3: `tools/spec.sh 5 render` passes: a bar-exact 24-bit stereo WAV of a preset by slug, name or init, in level, byte-identical on a second run, failing on bad input (P5.05).",
+]
+non_goals = ["Do not link JUCE into the renderer."]
+open_questions = []
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = ["tools/render/main.cpp", "tools/render/CMakeLists.txt", "CMakeLists.txt"]
+depends_on = ["T1"]
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 3 holds the renderer's arguments, frame count and output." },
+    { path = "CMakeLists.txt", lines = "1-26", why = "Where tools/render joins, before tests/spec." },
+    { path = "core/include/undertow/engine.h", lines = "1-62", why = "The engine the renderer runs with a host transport." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5 render"
+timeout_ms = 900000
+covers = ["SC3"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "The demo renders"
+goal = "Every preset has a demo render, and the four showcase renders are committed."
+description = "Add `tools/render-demos.sh`: build `undertow_render` (core preset), empty `build/demos`, render every preset for 8 bars at 128 BPM into `build/demos/<slug>.wav` and the four showcase sounds into `artifacts/audio/`, exiting non-zero on any failure. Commit the four `artifacts/audio` WAVs."
+acceptance = [
+    "AC1: SC4: `tools/render-demos.sh && tools/spec.sh 5 demos` passes: the four showcase renders are in artifacts/audio and every preset has a render in build/demos (P5.06).",
+]
+non_goals = ["Do not commit anything under build/."]
+open_questions = []
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = [
+    "tools/render-demos.sh",
+    "artifacts/audio/init.wav",
+    "artifacts/audio/sub-pure-foundation.wav",
+    "artifacts/audio/bass-hypnotic-roller.wav",
+    "artifacts/audio/rumble-dark-room.wav",
+]
+depends_on = ["T3"]
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 4 holds the renders, their paths and sizes." },
+    { path = "tools/spec.sh", lines = "1-60", why = "How the given scripts build with the presets." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/render-demos.sh && tools/spec.sh 5 demos"
+timeout_ms = 900000
+covers = ["SC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T5"
+title = "The install script"
+goal = "`tools/install.sh --dest <dir>` installs the three signed bundles into a test folder, never the user's own."
+description = "Add `tools/install.sh`: build the plugin preset's `Undertow_All`, copy the VST3, the AU component and the app into their folders (or under `--dest`), sign each ad hoc, rescan Audio Units only without `--dest`, print what it installed where, and remove the copies with `--uninstall`."
+acceptance = [
+    "AC1: SC5: `tools/install.sh --dest build/install-test && tools/spec.sh 5 install` passes: the three bundles in VST3, Components and Applications, whole and signed, with the Metakosmia ids (P5.07).",
+]
+non_goals = ["Do not install into ~/Library or ~/Applications, and do not run auval."]
+open_questions = []
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = ["tools/install.sh"]
+depends_on = ["T2", "T3", "T4"]
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 5 holds the install paths, signing and flags." },
+    { path = "plugin/CMakeLists.txt", lines = "1-80", why = "The bundle names and the Undertow_All target." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/install.sh --dest build/install-test && tools/spec.sh 5 install"
+timeout_ms = 900000
+covers = ["SC5"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T6"
+title = "The top of the resonance knob"
+goal = "A quiet tone at the cutoff gains at least +17 dB at resonance 0.9 and +20 dB at 1, and the earlier filter checks still pass."
+description = "Replace the resonance curve with the spec's curve linear in dB (`g = -3.01 + 19.39 r` up to 0.8, then `12.5 + 80.75 (r - 0.8)`) with the resonant stage's damping `k = 0.5412 * 10^(-g / 20)`."
+acceptance = [
+    "AC1: SC8: `tools/spec.sh 5 filter` passes: +17 dB at 0.9 and +20 dB at 1 (P5.10).",
+    "AC2: SC9: `tools/spec.sh 2_2 filter` still passes (P5.11).",
+    "AC3: SC10: `tools/spec.sh 2_1 filter` still passes (P5.12).",
+]
+non_goals = ["Do not change the filter's drive or its stages' structure."]
+open_questions = []
+status = "ready"
+tier = "mechanical"
+max_loc = 20
+files = ["core/include/undertow/filter.h", "core/src/filter.cpp"]
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 6 holds the curve and the damping." },
+    { path = "core/src/filter.cpp", lines = "70-123", why = "The resonance-to-damping mapping to replace." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5 filter"
+timeout_ms = 900000
+covers = ["SC8"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 2_2 filter"
+timeout_ms = 900000
+covers = ["SC9"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 2_1 filter"
+timeout_ms = 900000
+covers = ["SC10"]
+expect = "pass_on_base"
+
+[[task]]
+id = "T7"
+title = "Random draws below 1"
+goal = "Every random draw the sequencer makes is below 1, so a probability-1 step always plays."
+description = "In `core/src/sequencer.cpp`, turn the hash into a draw in [0, 1) with its top 24 bits (`(h >> 8) * 2^-24`) in both the step draw and mutate's draws."
+acceptance = [
+    "AC1: SC11: `tools/spec.sh 5 sequencer` passes: seed 1089 plays step 3692 and seed 2443 step 3787 (P5.13).",
+    "AC2: SC12: `tools/spec.sh 3 sequencer` still passes (P5.14).",
+]
+non_goals = ["Do not change how a seed and a step pick a draw."]
+open_questions = []
+status = "ready"
+tier = "mechanical"
+max_loc = 20
+files = ["core/src/sequencer.cpp"]
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5-ship.md", lines = "1-221", why = "What to build item 7 holds the rule and the fix." },
+    { path = "core/src/sequencer.cpp", lines = "60-100", why = "The two divisions of the hash." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5 sequencer"
+timeout_ms = 900000
+covers = ["SC11"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 3 sequencer"
+timeout_ms = 900000
+covers = ["SC12"]
+expect = "pass_on_base"

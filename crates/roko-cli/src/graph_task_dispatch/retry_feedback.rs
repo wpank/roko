@@ -716,6 +716,7 @@ impl super::GraphTaskDispatcher {
         self.restart_from_plan_tip(plan_id, task_id, "plan-check hand-back");
         let key = format!("{plan_id}/{task_id}");
         self.handed_back.lock().insert(key.clone());
+        self.unchanged_tries.lock().remove(&key);
         let started = self
             .task_attempts
             .lock()
@@ -729,6 +730,18 @@ impl super::GraphTaskDispatcher {
             failing_steps: &failing,
         };
         self.leave_retry_feedback(plan_id, task_id, &notice, feedback, started);
+    }
+
+    /// Whether the last attempt of task `task_id` of plan `plan_id` that
+    /// reached the pre-verify screen had changed nothing since the task's
+    /// base, which for a hand-back's try is the plan's accepted work
+    /// (bug-fc05a3). An attempt whose changes the screen could not read
+    /// counts as one that changed something.
+    #[must_use]
+    pub fn changed_nothing(&self, plan_id: &str, task_id: &str) -> bool {
+        self.unchanged_tries
+            .lock()
+            .contains(&format!("{plan_id}/{task_id}"))
     }
 }
 

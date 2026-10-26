@@ -329,6 +329,11 @@ pub struct GraphTaskDispatcher {
     /// the tree it started on, even in a shared working tree whose base that
     /// attempt took itself.
     handed_back: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt the pre-verify
+    /// screen saw had changed nothing since the task's base
+    /// ([`Self::changed_nothing`]): a hand-back's try is not retried after one
+    /// (bug-fc05a3).
+    unchanged_tries: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Durable attempt identity per run: ordinals, and the run's
     /// `attempts.jsonl` writer (see [`Self::open_attempt`]).
     attempts: AttemptBook,
@@ -443,6 +448,7 @@ impl GraphTaskDispatcher {
             tries: parking_lot::Mutex::default(),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             handed_back: parking_lot::Mutex::default(),
+            unchanged_tries: parking_lot::Mutex::default(),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),

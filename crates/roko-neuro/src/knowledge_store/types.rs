@@ -133,6 +133,9 @@ pub struct KnowledgeStats {
     pub source_counts: BTreeMap<String, usize>,
     /// Number of AntiKnowledge entries.
     pub anti_knowledge_count: usize,
+    /// Number of entries a person retired (bug-2ad4fa), which retrieval
+    /// skips.
+    pub retired_count: usize,
     /// Mean confidence across all entries.
     pub average_confidence: Option<f64>,
     /// Oldest entry in the store, if any.

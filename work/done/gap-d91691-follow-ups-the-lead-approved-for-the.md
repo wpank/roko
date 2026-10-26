@@ -2,7 +2,7 @@
 id = "gap-d91691"
 kind = "gap"
 title = "Follow-ups the lead approved for the ladder stack: c96097's early stop still exempts billing failures that bug-374384 now re-probes, an all_rungs_skipped try still counts as a rung try and folds into M1, and bug-bce0ed's prior fallback goes unrecorded and an abandon needs no agreement from the prior"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/self_model"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "4d376a003"
 source = "round-v7-lead#ladder-stack-followups"
 discovered_from = "agent:team-lead and agent:roko-exact (round v7, 2026-10-26: approvals of bug-374384, gap-b856d3 and bug-bce0ed that crossed with merge c8f9bff80)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::unrunnable_ladder", "crates/roko-learn/src/telemetry/rung_stats.rs::tally_run", "crates/roko-cli/src/runtime_feedback/homeostasis.rs::settle", "crates/roko-learn/src/self_model/policy.rs"]
@@ -21,6 +22,16 @@ command = "grep -rqw 'fn an_abandon_needs_the_prior_to_agree' crates/roko-learn/
 
 [[verify]]
 command = "grep -rqw 'fn the_rung_probes_run_before_the_red_on_base_pre_check' crates/roko-cli/src && cargo test -p roko-cli --lib -- the_rung_probes_run_before_the_red_on_base_pre_check"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:56:10Z"
+commit = "a909be764"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "a909be764: plan_runner's unrunnable_ladder no longer exempts billing failures, so gap-c96097's early stop counts a rung refused on billing in this run, and the stop says such a rung is probed again when the next run starts (roko-exact's billed case now expects the stop); rung_stats::tally_run and the homeostasis settle skip an all_rungs_skipped try; a raw L1 forecast that fell back to the prior is recorded as basis prior_fallback; CandidateForecast carries prior_p_vs, and policy (a) and the cascade abandon only when the prior's forecast is below the bar too. Tests: an_abandon_needs_the_prior_to_agree, a_runaway_retry_forecast_is_recorded_as_a_prior_fallback, a_try_refused_for_no_rung_is_no_rung_try, the_rung_probes_run_before_the_red_on_base_pre_check. Red not run (each test asserts behaviour the old code lacks by construction). Chain on the stack (base 5e9af6682): red at 20:54, both new tests failed on the old code; green: roko-learn lib 1408/0, roko-compose lib 528/0, roko-cli lib 4033 passed and 3 failed (reg-1bf684's two, since fixed on main, and bug-c5f406's own test, whose 'not shown' check also matched the section's intro; it now checks the note's own words); roko-compose's 3 and roko-learn's 10 integration tests pass; clippy -D warnings and nightly fmt clean. With main c39ddd6fb merged in (4d376a003): the four items' tests, their neighbours and roko-planner's three new generation tests pass (19), lib suites roko-cli 4046/0, roko-compose 528/0, roko-learn 1409/0, the integration tests pass, clippy and fmt clean."
 +++
 
 ## Problem

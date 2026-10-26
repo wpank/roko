@@ -2,14 +2,16 @@
 id = "gap-d9e9fe"
 kind = "gap"
 title = "vb report --pilot: a one-page pilot result with confidence intervals and run ids"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "ab79034b9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-proof.md (rec 8; §4, the quick proof's deliverable)"
 anchors = ["benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/analysis/pilot_page.py", "benchmarks/viabilitybench/analysis/bootstrap.py", "benchmarks/viabilitybench/analysis/test_analysis.py", "benchmarks/viabilitybench/reports/pilot/"]
@@ -22,6 +24,18 @@ command = "grep -qw 'def test_pilot_page_has_intervals_and_run_ids' benchmarks/v
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot/REPORT.md && grep -q 'pilot, descriptive' benchmarks/viabilitybench/reports/pilot/REPORT.md && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T11:19:40Z"
+commit = "ab79034b9"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T10:26:19Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "d7819ccc9 and 733f3e0d2 add vb report --pilot: analysis/pilot_page.py, wired into analysis/report.py (--pilot, --superseded, --note, --experiments, --verifier-ci, --b, --seed). It merges summary bundles that pass --check together and share one suite, pairing runs by (task, seed); it reads what each experiment manifest planned (campaign.load) and lists every planned arm and seed with no run as pending. Every estimate (VS rate and its unknown = 1 bound, pass^3, $/VS from U' with R and |U'-R|/R beside it, the false-green rate; per pair of arms the $/VS ratio and the VS-rate and pass^3 differences) has a 95% interval from bootstrap.paired_bootstrap, S09 §4.1's two-stage method as written (B = 10,000; percentile, BCa for $/VS and ratios), read back as whole task draws so that a task drawn twice counts twice; each estimate is checked against metrics.py's own value. report.py --check accepts a merged document's own id when its experiments list is exactly the bundle's. ab79034b9 commits reports/pilot/ from reports/pilot_a_recal and reports/pilot_b (reports/pilot_a superseded: suite ebe9c482, not 630e4dcb) at analysis commit 733f3e0d2: the 4 runs (identical to the sources' files), metrics.json with 183 MetricRecords (108 with an interval, every one with run ids), verifier-ci.json, and REPORT.md labelled 'pilot, descriptive: two Python families (F1, F4), 20 tasks × 3 seeds, not pre-registered'. Partial data: roko_fixed has no usable run (Cerebras 402, gap-f3944c), so its row (0 of 60, seeds 1-3) and its two contrasts read pending; the rebuild is gap-64ac11. The page notes dec-3d5714 (over-coverage 0.975 in simulation) and keeps the method. Result: cheap_direct VS 0.20 [0.15, 0.25] against fd_claude 1.00; $/VS ratio 0.348 [0.236, 0.508] at a VS-rate difference of -0.80 [-0.85, -0.75], cheaper per VS but not at equal quality; 22 of cheap_direct's 34 visible passes are false greens, 18 of them F4's. Checks: verify 1 (test_pilot_page_has_intervals_and_run_ids, on a fixture bundle) passes; verify 2 (REPORT.md present and labelled; report.py --check reports/pilot: 1 bundle, 0 problems) passes; benchmarks/viabilitybench/analysis and driver/test_run_roko.py: 140 passed, 5 skipped. Filed bug-ec7f84 (Pilot B's provider-fault runs would repeat roko_fixed's report keys) and gap-64ac11."
 +++
 
 ## Problem
@@ -75,9 +89,9 @@ Checked at `41c7ffbd6`: nothing exists. The metric code comes from gap-b24517.
 
 ## Done when
 
-- [ ] Rendered from a fixture bundle, the page shows intervals and run ids for every number.
-- [ ] The real page is committed, and `--check` accepts its bundle.
-- [ ] Both `[[verify]]` commands pass.
+- [x] Rendered from a fixture bundle, the page shows intervals and run ids for every number.
+- [x] The real page is committed, and `--check` accepts its bundle.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 

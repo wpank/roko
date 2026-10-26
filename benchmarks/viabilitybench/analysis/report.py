@@ -3,6 +3,7 @@
 
     report.py --experiment PILOT-A [--results DIR] [--out metrics.json] [--bundle DIR] [--k 3[,5]]
     report.py --check BUNDLE [BUNDLE ...] [--budget FILE]
+    report.py --pilot BUNDLE [BUNDLE ...] --bundle DIR [--superseded BUNDLE ...] [--note TEXT ...] [--b 10000]
 
 **Report.** It reads every run of one experiment, `<results>/<experiment>/<run_id>/{manifest.json,records.jsonl}`,
 where results is `--results`, else `$VB_RESULTS`, else the driver's default `~/.roko-bench/viability`. It refuses to
@@ -18,8 +19,12 @@ cell's rows name the model and its filters add `model == "<slug>"`. Every Metric
 commits and config hashes, its exact `record_filter`, `label_source` "vs_census", a `cost_basis` (null for a metric
 that is not a cost), and the experiment's one `price_snapshot_id`. The report is descriptive: `preregistered` is
 false, `prereg_id` null and `blinded` false. It computes no confidence intervals (`ci_method` "none"): those come
-with the pilot page (gap-d9e9fe). The exception is the plan-level slice's Clopper-Pearson interval, which S09 §4.9
-asks for.
+with the pilot page (`--pilot`, below). The exception is the plan-level slice's Clopper-Pearson interval, which
+S09 §4.9 asks for.
+
+**The pilot page.** `--pilot` merges committed summary bundles on one suite into a new bundle (`--bundle`, D4's
+`reports/pilot/`): their runs, a `metrics.json` with every number and its paired bootstrap interval and run ids,
+the verifier-CI record, and `REPORT.md`, the one-page result. `analysis/pilot_page.py` has the rules (gap-d9e9fe).
 
 **Bundle.** `--bundle DIR` also writes the summary bundle that gets committed under `reports/` (D4). It holds
 `metrics.json`, and for each run a `<run_id>/` directory with its `manifest.json`, `order-*.json`, `records.jsonl`,
@@ -33,7 +38,9 @@ canaries, pristine bundles), `archives/` or `transcripts/`.
 - every run directory has a manifest, and its records are exactly the (instance, seed) runs the manifest planned,
   with none missing, none extra and none repeated;
 - every attempt in the records has a ledger row, so no spend escapes the cap check;
-- every MetricRecord has run ids, each naming a run in the bundle, and the records' one price snapshot;
+- every MetricRecord has run ids, each naming a run in the bundle, and the records' one price snapshot; its
+  experiment has runs in the bundle, or it is the document's own experiment id when the document merges experiments
+  (`experiments`, the pilot page's), which must then be exactly the experiments the bundle's runs belong to;
 - the false-green list is exactly the false greens in the records;
 - the ledgers' spend, summed over all the bundles given, is within every cap of the budget file (`--budget`, default
   `experiments/budget.toml`, `vb.budget/1`): each line's (`[[line]]`, S09 §4.6), each experiment cap's
@@ -95,6 +102,10 @@ class Run:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.pilot:
+            import pilot_page  # noqa: PLC0415 (it imports this module)
+
+            return pilot_page.run(args, sys.argv[1:] if argv is None else argv)
         if args.check:
             problems = check(args.check, args.budget)
             for problem in problems:
@@ -299,6 +310,14 @@ def check_bundle(bundle: Path, spend: dict[tuple[str, str], tuple[str, str, floa
         return problems + [f"{path}: not a {METRICS_VERSION} document with {', '.join(LISTS)} lists"]
     run_ids = {record["run_id"] for record in records}
     experiments = {record["experiment_id"] for record in records}
+    merged = report.get("experiments")  # the pilot page's document merges several experiments under its own id
+    own = None
+    if merged is not None:
+        if not isinstance(merged, list) or set(merged) != experiments:
+            problems.append(f"{path}: experiments {json.dumps(merged)} are not the bundle's runs' "
+                            f"{json.dumps(sorted(experiments))}")
+        else:
+            own = report.get("experiment_id")
     for index, row in enumerate(report["records"]):
         where = f"{path}: records[{index}]"
         errors = validate.validate("metric-record", row)
@@ -308,7 +327,7 @@ def check_bundle(bundle: Path, spend: dict[tuple[str, str], tuple[str, str, floa
         unknown = sorted(set(row["run_ids"]) - run_ids)
         if unknown:
             problems.append(f"{where} ({row['metric']}): run ids not in the bundle: {', '.join(unknown)}")
-        if row["experiment_id"] not in experiments:
+        if row["experiment_id"] not in experiments and row["experiment_id"] != own:
             problems.append(f"{where} ({row['metric']}): experiment {row['experiment_id']} has no runs in the bundle")
         if snapshot and row["price_snapshot_id"] != snapshot:
             problems.append(f"{where} ({row['metric']}): priced from {row['price_snapshot_id']}, not {snapshot}")
@@ -530,11 +549,26 @@ def _parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--experiment", help="report this experiment's runs")
     mode.add_argument("--check", nargs="+", type=Path, metavar="BUNDLE", help="check summary bundles")
+    mode.add_argument("--pilot", nargs="+", type=Path, metavar="BUNDLE", help="merge these summary bundles into the "
+                      "pilot page's bundle (--bundle), with intervals and run ids (analysis/pilot_page.py)")
     parser.add_argument("--results", help="default: $VB_RESULTS, then " + str(DEFAULT_RESULTS))
     parser.add_argument("--out", help="where metrics.json goes (default: the experiment directory)")
-    parser.add_argument("--bundle", help="also write the summary bundle to this new directory")
-    parser.add_argument("--k", type=_ks, default=(3,), help="pass^k for these k, e.g. 3 or 3,5 (default 3)")
+    parser.add_argument("--bundle", help="also write the summary bundle to this new directory (--pilot: required, "
+                        "the merged bundle and its REPORT.md)")
+    parser.add_argument("--k", type=_ks, default=(3,), help="pass^k for these k, e.g. 3 or 3,5 (default 3; "
+                        "--pilot shows the first)")
     parser.add_argument("--budget", type=Path, default=DEFAULT_BUDGET, help=f"line caps (default: {DEFAULT_BUDGET})")
+    pilot = parser.add_argument_group("--pilot")
+    pilot.add_argument("--superseded", nargs="+", type=Path, metavar="BUNDLE", help="bundles the page lists as not "
+                       "merged (another suite), with their run ids; no number uses them")
+    pilot.add_argument("--note", action="append", metavar="TEXT", help="a line for the page's status list "
+                       "(repeatable), e.g. why an arm is pending")
+    pilot.add_argument("--experiments", type=Path, help="the experiment manifests' directory, which says what was "
+                       "planned (default: experiments/)")
+    pilot.add_argument("--verifier-ci", type=Path, help="the verifier-CI record (default: the bundles' "
+                       "verifier-ci.json)")
+    pilot.add_argument("--b", type=int, default=10_000, help="bootstrap replicates (default 10000, S09 §4.1)")
+    pilot.add_argument("--seed", type=int, default=0, help="the bootstrap's random seed (default 0)")
     return parser
 
 

@@ -107,6 +107,9 @@ pub struct SharedAgentFactory {
     /// failed one: the tasks it routes are refused rather than routed
     /// outside it (gap-20301d).
     lost_ladder: Option<RoutingLadder>,
+    /// The providers a rung's probe found refusing for want of pay this run:
+    /// helper calls pass over all their models (bug-e33b7e).
+    unpaid_providers: std::collections::BTreeSet<String>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -305,6 +308,7 @@ impl SharedAgentFactory {
             prompt_snapshot,
             failed_probes: std::collections::BTreeMap::new(),
             lost_ladder: None,
+            unpaid_providers: std::collections::BTreeSet::new(),
         }
     }
 
@@ -312,6 +316,12 @@ impl SharedAgentFactory {
     /// failed its tool-use probe this run, when it did (backlog 1121).
     pub fn failed_probe(&self, model: &str) -> Option<&str> {
         self.failed_probes.get(model).map(String::as_str)
+    }
+
+    /// Whether a rung's probe found `provider` refusing for want of pay this
+    /// run, on its billing or usage window (bug-e33b7e).
+    pub fn unpaid_provider(&self, provider: &str) -> bool {
+        self.unpaid_providers.contains(provider)
     }
 
     /// The routing ladder as bound before its probes, with why each of its
@@ -350,7 +360,8 @@ impl SharedAgentFactory {
     /// model with the reason (backlog 1121). With no rung left, the tasks the
     /// ladder routes are refused rather than routed outside it, and a pinned
     /// task still runs (gap-20301d). Helper calls pass over those models too
-    /// (bug-f9ca2f).
+    /// (bug-f9ca2f), and over every model of a provider whose probe was
+    /// refused for want of pay (bug-e33b7e).
     #[must_use]
     pub fn skip_failed_rungs(
         mut self,
@@ -364,6 +375,14 @@ impl SharedAgentFactory {
                 .iter()
                 .map(|(model, reason)| (model.clone(), reason.clone())),
         );
+        // A probe refused for want of pay speaks for its provider's every
+        // model (bug-e33b7e).
+        for (model, reason) in failed {
+            if super::rung_probe::billing_refusal(reason) {
+                self.unpaid_providers
+                    .insert(self.resolver.resolve(model).provider_id);
+            }
+        }
         if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
             let kept = ladder.clone().without_models(failed);
             if kept.is_none() {

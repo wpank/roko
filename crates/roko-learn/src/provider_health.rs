@@ -275,6 +275,23 @@ impl ProviderHealth {
         }
     }
 
+    /// Whether the provider was last seen refusing for want of pay: its
+    /// latest failure was a billing refusal or an exhausted plan (a 402,
+    /// z.ai's 1113, an insufficient balance), and no request succeeded since
+    /// (bug-e33b7e). A balance does not come back on a timer, so this holds
+    /// past the quarantine until a call or a probe succeeds.
+    #[must_use]
+    pub fn last_seen_unpaid(&self) -> bool {
+        self.failure_window.back().is_some_and(|last| {
+            matches!(
+                last.error_class,
+                ErrorClass::Billing | ErrorClass::Exhausted
+            ) && self
+                .last_success_at
+                .is_none_or(|success| success < last.timestamp_ms)
+        })
+    }
+
     /// Record a usage-window exhaustion and quarantine until `until_ms`.
     ///
     /// The circuit opens immediately and stays open until the provider's
@@ -672,6 +689,18 @@ impl ProviderHealthRegistry {
             self.schedule_persist();
         }
         available
+    }
+
+    /// Whether `provider_id` was last seen refusing for want of pay
+    /// ([`ProviderHealth::last_seen_unpaid`]); `false` for a provider the
+    /// registry does not track. The key is normalized before lookup.
+    #[must_use]
+    pub fn last_seen_unpaid(&self, provider_id: &str) -> bool {
+        let key = normalize_provider_key(provider_id);
+        self.providers
+            .lock()
+            .get(&key)
+            .is_some_and(ProviderHealth::last_seen_unpaid)
     }
 
     /// Return whether `provider_id` currently looks healthy without mutating
@@ -1789,6 +1818,27 @@ mod tests {
             registry.available_providers(&candidates),
             vec!["good".to_owned(), "unknown".to_owned()]
         );
+    }
+
+    /// bug-e33b7e: a provider last seen refusing for want of pay stays so
+    /// past its quarantine, until one of its calls succeeds. Other failures
+    /// don't count, and a provider never seen is not unpaid.
+    #[test]
+    fn a_provider_last_seen_unpaid_stays_so_until_a_success() {
+        let registry = ProviderHealthRegistry::new();
+        registry.record_exhaustion("zai", 0);
+        assert!(registry.is_available("zai"), "its quarantine is over");
+        assert!(registry.last_seen_unpaid("zai"));
+        registry.record_success("zai");
+        assert!(!registry.last_seen_unpaid("zai"));
+        registry.record_failure("zai", ErrorClass::Timeout);
+        assert!(
+            !registry.last_seen_unpaid("zai"),
+            "a timeout is not about pay"
+        );
+        registry.record_failure("openai", ErrorClass::Billing);
+        assert!(registry.last_seen_unpaid("openai"));
+        assert!(!registry.last_seen_unpaid("never-seen"));
     }
 
     /// Registry snapshots persist to disk and load back intact.

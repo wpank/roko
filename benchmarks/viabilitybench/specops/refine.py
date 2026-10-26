@@ -18,7 +18,9 @@ A round is rejected, and refinement stops, when it:
 - carries an addition with no ``source``, or to a field :data:`ADDITIVE_FIELDS` does not list, or to one where the
   spec holds no list to add to (a live model's ``acceptance.x``, or a ``context`` that is not a table);
 - would not raise the spec's own `speclint.score_task` score (monotonicity): a refiner that could lower the
-  score could be gamed into laundering a worse spec through "refinement".
+  score could be gamed into laundering a worse spec through "refinement";
+- adds a hard fail (S07 §4.2) the input did not have: a round may raise the score while turning an unblocked
+  spec into a blocked one (bug-d0906c), and a hard fail blocks a spec whatever its score.
 
 A proposal with no additions also stops the loop (the model has nothing left to add). ``red_on_base`` is the
 caller's own dynamic-mode verdict (``speclint/dynamic.py``), passed through unchanged to every round's rescoring,
@@ -123,7 +125,7 @@ def refine(spec: dict, model: Model, ctx: speclint.PlanContext, *, max_rounds: i
     """Run at most `max_rounds` of `model` over a copy of `spec`; `spec` itself is never modified."""
     current = copy.deepcopy(spec)
     rounds: list[RefineRound] = []
-    before_score = speclint.score_task(current, ctx, red_on_base=red_on_base, linter=linter)["score"]
+    before = speclint.score_task(current, ctx, red_on_base=red_on_base, linter=linter)
     stopped = "rounds_exhausted"
     for round_number in range(1, max_rounds + 1):
         proposal = model(current, round_number)
@@ -137,19 +139,23 @@ def refine(spec: dict, model: Model, ctx: speclint.PlanContext, *, max_rounds: i
         if problem is not None:
             stopped = problem
             break
-        after_score = speclint.score_task(candidate, ctx, red_on_base=red_on_base, linter=linter)["score"]
-        if after_score < before_score:
-            stopped = f"round {round_number} would lower the score ({before_score} -> {after_score})"
+        after = speclint.score_task(candidate, ctx, red_on_base=red_on_base, linter=linter)
+        if after["score"] < before["score"]:
+            stopped = f"round {round_number} would lower the score ({before['score']} -> {after['score']})"
+            break
+        gained = [hf for hf in after["hard_fail"] if hf not in before["hard_fail"]]
+        if gained:
+            stopped = f"adds a hard fail: {', '.join(gained)}"
             break
         added: dict[str, int] = {}
         for addition in proposal.additions:
             added[addition.field] = added.get(addition.field, 0) + 1
         rounds.append(RefineRound(
             round=round_number, before_hash=spec_hash(current), after_hash=spec_hash(candidate),
-            before_score=before_score, after_score=after_score, added=added,
+            before_score=before["score"], after_score=after["score"], added=added,
             sources=[addition.source for addition in proposal.additions], model=proposal.model,
             cost_usd=proposal.cost_usd))
-        current, before_score = candidate, after_score
+        current, before = candidate, after
     return RefineResult(spec=current, rounds=rounds, stopped=stopped)
 
 

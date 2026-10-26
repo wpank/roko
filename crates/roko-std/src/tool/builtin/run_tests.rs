@@ -899,11 +899,15 @@ struct Counts {
     ignored: u32,
 }
 
-/// The counts in a run's summary lines, in cargo's, Node's or `unittest`'s
-/// words, whichever runner printed them (`make test` may run any of them).
+/// The counts in a run's summary lines, in cargo's, Node's, forge's,
+/// pytest's, go's or `unittest`'s words, whichever runner printed them
+/// (`make test` may run any of them).
 fn read_counts(output: &str) -> Option<Counts> {
     cargo_counts(output)
         .or_else(|| node_counts(output))
+        .or_else(|| forge_counts(output))
+        .or_else(|| pytest_counts(output))
+        .or_else(|| go_counts(output))
         .or_else(|| unittest_counts(output))
 }
 
@@ -963,6 +967,81 @@ fn node_counts(output: &str) -> Option<Counts> {
     found.then_some(counts)
 }
 
+/// forge's `Suite result: ok. 1 passed; 1 failed; 0 skipped; finished in …`
+/// lines, summed across its suites; its `Ran N tests for …` and `Ran N test
+/// suites in …` lines are not `unittest`'s (bug-f831b3).
+fn forge_counts(output: &str) -> Option<Counts> {
+    let mut counts = Counts::default();
+    let mut found = false;
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix("Suite result:") else {
+            continue;
+        };
+        found = true;
+        counts.passed += extract(rest, "passed");
+        counts.failed += extract(rest, "failed");
+        counts.ignored += extract(rest, "skipped");
+    }
+    found.then_some(counts)
+}
+
+/// pytest's final `N passed, N failed, N skipped, N error(s) in …s` line
+/// (`=== … ===` around it, or none under `-q`); only the last such line
+/// counts, as pytest prints one summary for the whole run.
+fn pytest_counts(output: &str) -> Option<Counts> {
+    let mut counts = Counts::default();
+    let mut found = false;
+    for line in output.lines() {
+        let line = line.trim().trim_matches('=').trim();
+        let summary = line.split(" in ").next().unwrap_or(line);
+        let mut this_line = Counts::default();
+        let mut matched = false;
+        for part in summary.split(',') {
+            let Some((number, label)) = part.trim().split_once(' ') else {
+                continue;
+            };
+            let Ok(number) = number.parse::<u32>() else {
+                continue;
+            };
+            match label {
+                "passed" => this_line.passed += number,
+                "failed" => this_line.failed += number,
+                "error" | "errors" => this_line.failed += number,
+                "skipped" => this_line.ignored += number,
+                _ => continue,
+            }
+            matched = true;
+        }
+        if matched {
+            counts = this_line;
+            found = true;
+        }
+    }
+    found.then_some(counts)
+}
+
+/// go's `--- PASS:`, `--- FAIL:` and `--- SKIP:` lines, counted one per
+/// top-level test: an indented one is a subtest's and is not counted again.
+/// `go test` without `-v` prints no `--- PASS:` lines, so a passing,
+/// non-verbose run reads no counts at all.
+fn go_counts(output: &str) -> Option<Counts> {
+    let mut counts = Counts::default();
+    let mut found = false;
+    for line in output.lines() {
+        if line.starts_with("--- PASS: ") {
+            counts.passed += 1;
+        } else if line.starts_with("--- FAIL: ") {
+            counts.failed += 1;
+        } else if line.starts_with("--- SKIP: ") {
+            counts.ignored += 1;
+        } else {
+            continue;
+        }
+        found = true;
+    }
+    found.then_some(counts)
+}
+
 /// `unittest`'s `Ran 8 tests in 0.001s` and `FAILED (failures=1, errors=1,
 /// skipped=2)` or `OK (skipped=2)`: what ran less what failed or was skipped
 /// passed.
@@ -972,9 +1051,7 @@ fn unittest_counts(output: &str) -> Option<Counts> {
     for line in output.lines() {
         let line = line.trim();
         if let Some(ran) = line.strip_prefix("Ran ")
-            && let Some((number, rest)) = ran.split_once(' ')
-            && rest.starts_with("test")
-            && let Ok(number) = number.parse::<u32>()
+            && let Some(number) = unittest_ran(ran)
         {
             counts.passed += number;
             found = true;
@@ -1002,6 +1079,16 @@ fn unittest_counts(output: &str) -> Option<Counts> {
         }
     }
     found.then_some(counts)
+}
+
+/// The count in `unittest`'s own `Ran 8 tests in 0.001s`, read only when the
+/// words after the number are exactly `test`/`tests` then `in`: forge's `Ran
+/// 2 tests for …` and `Ran 1 test suite in …` are not this, though both
+/// start with `Ran <N> test`.
+fn unittest_ran(rest: &str) -> Option<u32> {
+    let mut words = rest.split_whitespace();
+    let number = words.next()?.parse::<u32>().ok()?;
+    (matches!(words.next(), Some("test" | "tests")) && words.next() == Some("in")).then_some(number)
 }
 
 /// The test files below `root`: Node's (`*.test.ts`, `*-test.js`, …) and
@@ -1200,6 +1287,86 @@ mod tests {
                 failed: 0,
                 ignored: 0
             })
+        );
+    }
+
+    /// bug-f831b3: a forge run's `Ran N tests for …` and `Ran N test suites
+    /// in …` lines are not `unittest`'s, so they are not counted as passed
+    /// tests, and its own `Suite result: … passed; … failed; … skipped`
+    /// lines are, summed across suites; a failure is counted, not dropped.
+    /// pytest's and go's summaries, which carried no counts at all, are read
+    /// too.
+    #[test]
+    fn forge_pytest_and_go_summaries_are_read() {
+        let one_suite = "Ran 2 tests for test/Counter.t.sol:CounterTest\n\
+                          [FAIL: assertion failed] test_Increment() (gas: 0)\n\
+                          [PASS] testFuzz_SetNumber(uint256) (runs: 256)\n\
+                          Suite result: FAILED. 1 passed; 1 failed; 0 skipped; finished in \
+                          7.62ms (7.13ms CPU time)\n\n\
+                          Ran 1 test suite in 9.89ms (7.62ms CPU time): 1 tests passed, 1 \
+                          failed, 0 skipped (2 total tests)";
+        assert_eq!(
+            read_counts(one_suite),
+            Some(Counts {
+                passed: 1,
+                failed: 1,
+                ignored: 0
+            }),
+            "a forge suite's own passed/failed, not its `Ran` lines read as unittest's"
+        );
+
+        let three_suites = "Ran 2 tests for test/A.t.sol:ATest\n\
+                             Suite result: ok. 2 passed; 0 failed; 0 skipped; finished in 1ms\n\n\
+                             Ran 2 tests for test/B.t.sol:BTest\n\
+                             Suite result: ok. 2 passed; 0 failed; 0 skipped; finished in 1ms\n\n\
+                             Ran 2 tests for test/C.t.sol:CTest\n\
+                             Suite result: ok. 2 passed; 0 failed; 0 skipped; finished in 1ms\n\n\
+                             Ran 3 test suites in 3ms: 6 tests passed, 0 failed, 0 skipped (6 \
+                             total tests)";
+        assert_eq!(
+            read_counts(three_suites),
+            Some(Counts {
+                passed: 6,
+                failed: 0,
+                ignored: 0
+            }),
+            "three suites of two must sum to 6, not 9"
+        );
+
+        let pytest = "=========================== FAILURES ============================\n\
+                      ___________________________ test_two ____________________________\n\
+                      ===== 3 passed, 1 failed in 0.12s =====";
+        assert_eq!(
+            read_counts(pytest),
+            Some(Counts {
+                passed: 3,
+                failed: 1,
+                ignored: 0
+            })
+        );
+
+        let go_default = "--- FAIL: TestX (0.00s)\n    x_test.go:10: expected 1, got 2\nFAIL\n\
+                           exit status 1\nFAIL\texample.com/m\t0.002s";
+        assert_eq!(
+            read_counts(go_default),
+            Some(Counts {
+                passed: 0,
+                failed: 1,
+                ignored: 0
+            }),
+            "go without -v prints no --- PASS: lines, so passed stays 0"
+        );
+
+        let go_verbose = "--- PASS: TestParent (0.00s)\n    --- PASS: TestParent/Sub (0.00s)\n\
+                           --- SKIP: TestB (0.00s)\nPASS\nok  \texample.com/m\t0.002s";
+        assert_eq!(
+            read_counts(go_verbose),
+            Some(Counts {
+                passed: 1,
+                failed: 0,
+                ignored: 1
+            }),
+            "an indented subtest's line is not counted again"
         );
     }
 

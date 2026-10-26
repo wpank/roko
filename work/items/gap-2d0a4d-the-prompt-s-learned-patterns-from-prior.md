@@ -86,3 +86,12 @@ statement is the gate's failure text, so the entries are mostly build progress l
   from `tmp/hermes-roko-v7/run-analyst/prompt_logs.py`.
 - Held, not part of this item: stripping the same noise from the retry feedback's raw gate output. That waits for
   phase 5's prompt logs, to see what bug-3e3d08's reader leaves.
+- **Phase 5 repeats it (run 1f677933, roko 74c3594bc, 13 prompt logs).**
+  - Every prompt has a learned-patterns section of 2,404–2,415 bytes, with 4–5 entries.
+  - The repeats: T6#1 has 3 duplicate entries of 5, T4#1–T4#3 have 2 of 4, and T1#1–T1#3 have 1 of 5.
+  - Only 42–468 bytes (2–19%) are assertion text. Build progress lines are 342–1,128 bytes.
+  - The data is in `tmp/hermes-roko-v7/run-analyst/prompt_logs.py 1f677933 p5-ship`, and in
+    `tmp/hermes-roko-v7/findings/run-analyst.md`, section 10.
+- **The raw-gate-output part was settled by phase 5's logs, so it stays out of this item.** bug-3e3d08's reader
+  leaves no build lines in the raw output, and only the worktree path prefixes remain. Those are a note in the
+  run-analyst findings, not an item.

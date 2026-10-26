@@ -15,9 +15,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -137,6 +139,31 @@ for attempt in range(3):  # every attempt starts over from the same first prompt
 (roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
     {"plan_id": slug, "status": "failed", "extensions": {}}))
 sys.exit(1)
+'''
+
+KILLED_MID_RUN_ROKO = r'''#!__PYTHON__
+"""A stand-in for roko's `plan run` that makes one call the provider refuses, then hangs well past any test's
+patience, as if the whole `vb run` were about to be stopped with SIGTERM before Roko could write an episode
+(bug-bb6b73's Pilot B shape: roko-fixed-s1-3 and roko-fixed-s2-1, both stuck after a 402)."""
+import json, os, sys, time, tomllib, urllib.error, urllib.request
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("roko 0.1.0 (git 0fa4e0fa4e)")
+    sys.exit(0)
+if "validate" in args:
+    sys.exit(0)
+config = tomllib.loads(Path(os.environ["ROKO_CONFIG"]).read_text())
+[provider], [model] = config["providers"].values(), config["models"]
+request = urllib.request.Request(provider["base_url"] + "/chat/completions", data=json.dumps(
+    {"model": model, "messages": [{"role": "user", "content": "Fix clamp. " * 40}]}).encode(),
+    headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ[provider["api_key_env"]]})
+try:
+    urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request).read()
+except urllib.error.HTTPError:
+    pass
+time.sleep(60)  # the driver's SIGTERM kills this session first; "plan run" never finishes, no episode is written
 '''
 
 SERVED_ROKO = r'''#!__PYTHON__
@@ -976,6 +1003,36 @@ def test_a_task_the_provider_refused_for_the_account_is_an_infra_error(places, t
             {"forwarded": False, "status": 503, "fault_injected": "http_5xx"}, {"forwarded": True, "status": 429}]
     assert run_roko.account_refusals(rows) == ["provider_account: the provider refused 1 call(s) with HTTP 401"]
     assert run_roko.account_refusals(rows[2:]) == run_roko.account_refusals(None) == []
+
+
+def test_a_killed_task_with_only_refused_calls_books_nothing(places, tmp_path):
+    # bug-bb6b73, Pilot B (gap-327242) on 2026-10-20: vb run was stopped with SIGTERM while Cerebras answered 402 to
+    # every call. run_task's finally never reaches read_evidence when that happens, so the task's placeholder
+    # attempt used to book an unknown cost at its full reservation even though the proxy's own log, which survives
+    # the kill, showed nothing was billed.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(KILLED_MID_RUN_ROKO.replace("__PYTHON__", sys.executable))
+    binary.chmod(0o755)
+
+    def send_sigterm() -> None:
+        time.sleep(2.5)  # time enough for the one 402 call to land and be logged; the fake roko then sleeps 60s
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    before = signal.getsignal(signal.SIGTERM)
+    with StubServer(lambda body: ErrorStatus(status=402)) as stub:
+        threading.Thread(target=send_sigterm, daemon=True).start()
+        with pytest.raises(SystemExit) as stopped:
+            run_vb(places, arm_with(tmp_path, binary), stub.url, "--proxy")
+    # vb.py's `with secret.tripwire(...)` raises SystemExit on SIGTERM and restores the previous handler afterward.
+    assert stopped.value.code == 128 + signal.SIGTERM and signal.getsignal(signal.SIGTERM) is before
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    assert [(row["status"], row["forwarded"]) for row in read_jsonl(out / "proxy.jsonl")] == [(402, True)]
+    [row] = read_jsonl(out / "ledger.jsonl")
+    assert row["api_equiv_usd"] == 0.0 and row["source"] == "provider_usage" and row["billed_usd"] == 0.0
+    assert row["usage"] == {"tokens_in": 0, "tokens_out": 0, "tokens_cache_read": 0, "tokens_reasoning": 0}
+    assert validate.validate("ledger", row) == []
+    assert not (out / "records.jsonl").exists()  # the kill unwound before a run-record for this task was ever built
 
 
 def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path, monkeypatch):

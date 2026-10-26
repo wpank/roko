@@ -151,6 +151,11 @@ kind = "shell"
 program = "true"
 args = []
 timeout_ms = 5000
+
+# This smoke test checks the episode log, not the spec gate, which refuses
+# a run whose only check is `true` (HF2: a check that can never fail).
+[spec_quality]
+mode = "off"
 "#
         ),
     )

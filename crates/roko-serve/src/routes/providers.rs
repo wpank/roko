@@ -804,6 +804,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -837,6 +838,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -915,6 +917,7 @@ mod tests {
                 provider: "hermes-local".into(),
                 slug: "hermes-3-llama-3.1-405b".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -948,6 +951,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1016,6 +1020,7 @@ mod tests {
                 provider: "openclaw-gpu".into(),
                 slug: "openclaw-7b-instruct".into(),
                 context_window: 32_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -1049,6 +1054,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1098,6 +1104,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: true,
@@ -1131,6 +1138,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1335,6 +1343,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 200_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: true,
@@ -1368,6 +1377,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
         config.models.insert(
@@ -1376,6 +1386,7 @@ mod tests {
                 provider: "anthropic".into(),
                 slug: "claude-sonnet-4-6".into(),
                 context_window: 200_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -1409,6 +1420,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1594,6 +1606,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -1627,6 +1640,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 

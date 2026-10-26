@@ -222,7 +222,8 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | Command | What it does |
 |---|---|
 | `roko knowledge query "<topic>"` | Search durable knowledge store |
-| `roko knowledge stats/gc` | Store statistics, garbage collection |
+| `roko knowledge stats/gc` | Store statistics (retired entries and how often their lessons were learned again), garbage collection |
+| `roko knowledge retire <id> --reason "…"` | Retire one entry: retrieval skips it, and `.roko/neuro/knowledge-retired.jsonl` keeps it retired through restores, imports and rollbacks |
 | `roko knowledge backup/restore` | Backup with genomic bottleneck, restore with decay |
 | `roko knowledge sync <peer>` | Mesh knowledge sync |
 | `roko knowledge dream run/report/schedule` | Dream consolidation cycle |

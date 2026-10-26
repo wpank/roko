@@ -2263,11 +2263,18 @@ async fn run_graph_plan_body(
             let _ = acks.try_send(ack);
         }
     }
-    // A conductor `Fail` stopped the run: it fails, naming the watcher.
-    if let Some(stop) = conductor_stop.lock().take() {
-        return Err(anyhow!("{stop}"));
-    }
-    if let Some(error) = first_error {
+    // A conductor `Fail` stopped the run: it fails, naming the watcher. A
+    // run that ends with an error delivered nothing, so its knowledge batch
+    // is rolled back now, with the error as the reason (bug-2ad4fa).
+    let conductor_failure = conductor_stop.lock().take().map(|stop| anyhow!("{stop}"));
+    if let Some(error) = conductor_failure.or(first_error) {
+        super::learning_commit::settle_errored_run_knowledge(
+            workdir,
+            &roko_config,
+            knowledge_batch.as_deref(),
+            &error,
+            Some(&state_hub),
+        );
         return Err(error);
     }
 
@@ -2440,8 +2447,9 @@ async fn run_graph_plan_body(
     // later load does not replay them again (bug-dfb28f). If the save fails,
     // the journal keeps them for that load. `[learning] guarded_commit`
     // proposes the router's merge and the run's knowledge batch to their
-    // guards, whatever the run's outcome; `off` saves the router unchecked.
-    // A frozen run saves and proposes nothing.
+    // guards, whatever the run's outcome; the batch commits only when every
+    // plan was delivered and nothing stopped the run (bug-2ad4fa). `off`
+    // saves the router unchecked. A frozen run saves and proposes nothing.
     let plan_run_ids: Vec<String> = plans
         .iter()
         .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
@@ -2450,6 +2458,12 @@ async fn run_graph_plan_body(
         .cascade_router
         .as_deref()
         .zip(cascade_journal.as_deref());
+    let delivery = super::learning_commit::run_delivery(
+        plan_execution_order
+            .iter()
+            .map(|plan_id| (plan_id.as_str(), scheduler.outcome(plan_id))),
+        stopped_by,
+    );
     super::learning_commit::commit_run_learning(&super::learning_commit::RunLearning {
         workdir,
         config: &roko_config,
@@ -2457,6 +2471,7 @@ async fn run_graph_plan_body(
         router,
         run_ids: &plan_run_ids,
         notices: Some(&state_hub),
+        delivery,
     });
 
     // ── Persist the section bandit (S02 L9) ─────────────────────────
@@ -5517,10 +5532,11 @@ enum HandbackStep {
 
 /// Hand plan `plan`'s failed whole-plan check `failure` back to its tasks
 /// (find-5bcba7): one attempt, from the plan's accepted work, with the
-/// failure as its feedback. The tasks it goes back to own the files its
-/// output names, or are every task that changed a file when it names none
-/// ([`super::plan_handback::implicated_tasks`]); a file belongs to the task
-/// that changed it last ([`super::plan_handback::file_owners`]).
+/// failure as its feedback. The tasks it goes back to run a test that failed
+/// in their own checks or own the files the failure's own lines name, or are
+/// every task that changed a file when neither names one
+/// ([`super::plan_handback::implicate`]); a file belongs to the task that
+/// changed it last ([`super::plan_handback::file_owners`]).
 ///
 /// The attempt is one, not one per task, since fixing the failure can take
 /// more than one task's files (bug-fc05a3): one of them runs it, a task whose
@@ -5548,8 +5564,7 @@ async fn hand_back_plan_check(
     use roko_graph::engine::NodeStatus;
 
     use super::plan_handback::{
-        Handback, MAX_HANDBACKS, file_owners, handback_feedback, implicated_tasks, lead_task,
-        named_files,
+        Handback, MAX_HANDBACKS, file_owners, handback_feedback, implicate, lead_task,
     };
 
     let not_handed_back = |why: &str| -> anyhow::Result<HandbackStep> {
@@ -5574,17 +5589,18 @@ async fn hand_back_plan_check(
     }
     let repo = ctx.batch.map(super::batch::BatchIntegration::repo);
     let owners = file_owners(repo, plan, rerun.run_id).await;
-    let files = named_files(&failure.output, &owners);
-    let tasks = implicated_tasks(plan, &owners, &files);
-    let Some(lead) = lead_task(plan, &tasks, failure) else {
+    let implicated = implicate(plan, &owners, failure);
+    let Some(lead) = lead_task(plan, &implicated) else {
         return not_handed_back("no task of the plan changed a file");
     };
     let checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
-    let Some(try_task) = handback_try(plan, rerun, &lead, &tasks, checks, failure, &owners) else {
+    let Some(try_task) = handback_try(plan, rerun, &lead, &implicated, checks, failure, &owners)
+    else {
         return not_handed_back(&format!("task {lead}'s definition could not be read"));
     };
+    let (files, tasks) = (implicated.files.clone(), implicated.tasks.clone());
     let round = handbacks.len() + 1;
-    if let Some(feedback) = handback_feedback(failure, &files, &tasks) {
+    if let Some(feedback) = handback_feedback(failure, &implicated) {
         ctx.graph_task_dispatcher
             .hand_back(&plan.id, &lead, &failure.command, feedback);
     }
@@ -5593,10 +5609,15 @@ async fn hand_back_plan_check(
     } else {
         files.keys().cloned().collect::<Vec<_>>().join(", ")
     };
+    let runners = match implicated.runners.as_slice() {
+        [] => String::new(),
+        runners => format!(" in a test that task(s) {} run", runners.join(", ")),
+    };
     tracing::info!(
         plan_id = %plan.id,
         check = %failure.command,
         files = %named_list,
+        runners = %implicated.runners.join(", "),
         tasks = %tasks.join(", "),
         lead = %lead,
         round,
@@ -5605,9 +5626,9 @@ async fn hand_back_plan_check(
     ctx.graph_tui_bridge.log_event(
         "graph.plan_check_handback",
         &format!(
-            "plan '{}': its whole-plan check `{}` failed, naming {named_list}; handing it back \
-             to task {lead}, which may change the files of task(s) {} (hand-back {round} of at \
-             most {MAX_HANDBACKS})",
+            "plan '{}': its whole-plan check `{}` failed{runners}, naming {named_list}; handing \
+             it back to task {lead}, which may change the files of task(s) {} (hand-back \
+             {round} of at most {MAX_HANDBACKS})",
             plan.id,
             failure.command,
             tasks.join(", ")
@@ -5679,14 +5700,15 @@ async fn hand_back_plan_check(
 
 /// Task `lead` of `plan` as a hand-back's try runs it, as the graph converter
 /// takes it (bug-fc05a3): its task as [`super::plan_handback::handback_task`]
-/// makes it, with the files of `tasks` (by `owners`), their verify steps and
-/// the plan's check `checks`, and without its dependencies, which passed.
-/// `None` when its definition cannot be read.
+/// makes it for what the failure points at, `implicated`, of the files the
+/// plan's tasks changed, `owners`, with the verify steps of the tasks it goes
+/// back to and the plan's check `checks`, and without its dependencies, which
+/// passed. `None` when its definition cannot be read.
 fn handback_try(
     plan: &crate::runner::plan_loader::Plan,
     rerun: &HandbackRerun<'_>,
     lead: &str,
-    tasks: &[String],
+    implicated: &super::plan_handback::Implicated,
     checks: &[crate::task_parser::VerifyStep],
     failure: &super::plan_handback::FailedPlanCheck,
     owners: &BTreeMap<String, String>,
@@ -5698,14 +5720,10 @@ fn handback_try(
         .tasks
         .tasks
         .iter()
-        .filter(|other| other.id != lead && tasks.contains(&other.id))
+        .filter(|other| other.id != lead && implicated.tasks.contains(&other.id))
         .collect();
-    let scope: BTreeMap<String, String> = owners
-        .iter()
-        .filter(|(_, owner)| tasks.contains(owner))
-        .map(|(path, owner)| (path.clone(), owner.clone()))
-        .collect();
-    let task = super::plan_handback::handback_task(&task, &others, checks, failure, &scope);
+    let task =
+        super::plan_handback::handback_task(&task, &others, checks, failure, implicated, owners);
     let mut info = info.clone();
     info.depends_on.clear();
     info.files.clone_from(&task.files);
@@ -8216,17 +8234,23 @@ max_retries = 0
     /// Decision 2218: `--frozen-learning` freezes a run's learning (the
     /// params' `frozen_learning`), and `[learning] frozen = true` every
     /// run's. Either reaches the run's config, so its fingerprint is a frozen
-    /// one, and its manifest records `ablation_flags = ["learning_frozen"]`;
-    /// neither leaves the flags empty.
+    /// one, and its manifest's `ablation_flags` hold `learning_frozen`; a live
+    /// run's do not. The other flags follow the workspace's audit and holdout
+    /// settings (find-697944), which these runs do not exercise (reg-1bf684).
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn frozen_learning_switch_reaches_config_and_manifest() {
+        let frozen_flag = |flags: &[String]| {
+            flags
+                .iter()
+                .any(|flag| flag == super::super::run_manifest::LEARNING_FROZEN_FLAG)
+        };
         let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
         let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let live = only_run_manifest(dir.path());
         assert!(
-            live.experiment.ablation_flags.is_empty(),
+            !frozen_flag(&live.experiment.ablation_flags),
             "{:?}",
             live.experiment
         );
@@ -8235,7 +8259,11 @@ max_retries = 0
         let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, true, true).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let frozen = only_run_manifest(dir.path());
-        assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
+        assert!(
+            frozen_flag(&frozen.experiment.ablation_flags),
+            "{:?}",
+            frozen.experiment
+        );
         let hashes: Vec<&str> = frozen
             .invocations
             .iter()
@@ -8250,7 +8278,11 @@ max_retries = 0
         let (exit_code, _, _) = run_plan_set(configured.path(), Some(1), None).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let manifest = only_run_manifest(configured.path());
-        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+        assert!(
+            frozen_flag(&manifest.experiment.ablation_flags),
+            "{:?}",
+            manifest.experiment
+        );
     }
 
     /// The `[gates]` and later lines of the workspace of
@@ -8503,7 +8535,17 @@ max_retries = 0
             "a frozen run wrote learned state: {changed:?}"
         );
         let manifest = only_run_manifest(dir.path());
-        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+        // The other flags follow the workspace's audit and holdout settings
+        // (find-697944, reg-1bf684).
+        assert!(
+            manifest
+                .experiment
+                .ablation_flags
+                .iter()
+                .any(|flag| flag == super::super::run_manifest::LEARNING_FROZEN_FLAG),
+            "{:?}",
+            manifest.experiment
+        );
 
         let run_dir = dir.path().join(".roko/runs").join(&manifest.run_id);
         let run = RunRecords::load(&run_dir).expect("read the run's records");

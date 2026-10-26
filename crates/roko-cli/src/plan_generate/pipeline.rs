@@ -971,6 +971,66 @@ fn repair_generated_draft(
     repairs
 }
 
+/// `toml`, a draft, with each verify step written as its bare command
+/// (`verify = ["tools/check.sh"]` in `[meta]` or a task, or one string) made
+/// a step table that runs it (gap-4dd77d): round v7's phase-3 re-plan wrote
+/// one, and the draft failed to parse and went back for a whole new one. A
+/// draft that does not parse, or has no such step, comes back as it was.
+/// Returns the draft and one line per step changed.
+fn wrap_command_steps(toml: &str) -> (String, Vec<String>) {
+    let Ok(mut root) = toml::from_str::<toml::Value>(&crate::task_parser::repair_toml(toml)) else {
+        return (toml.to_string(), Vec::new());
+    };
+    let mut lines = Vec::new();
+    if let Some(meta) = root.get_mut("meta").and_then(toml::Value::as_table_mut) {
+        lines.extend(wrap_table_steps(meta, "`[meta]`"));
+    }
+    if let Some(tasks) = root.get_mut("task").and_then(toml::Value::as_array_mut) {
+        for task in tasks.iter_mut().filter_map(toml::Value::as_table_mut) {
+            let owner = task
+                .get("id")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("a task")
+                .to_string();
+            lines.extend(wrap_table_steps(task, &owner));
+        }
+    }
+    match (lines.is_empty(), toml::to_string(&root)) {
+        (false, Ok(wrapped)) => (wrapped, lines),
+        _ => (toml.to_string(), Vec::new()),
+    }
+}
+
+/// The verify steps of `table` written as bare commands made step tables,
+/// `phase = "test"`, with one line each naming `owner`.
+fn wrap_table_steps(table: &mut toml::map::Map<String, toml::Value>, owner: &str) -> Vec<String> {
+    let Some(verify) = table.get_mut("verify") else {
+        return Vec::new();
+    };
+    if let toml::Value::String(command) = verify {
+        *verify = toml::Value::Array(vec![toml::Value::String(std::mem::take(command))]);
+    }
+    let Some(steps) = verify.as_array_mut() else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for step in steps {
+        let toml::Value::String(command) = step else {
+            continue;
+        };
+        let command = std::mem::take(command);
+        lines.push(format!(
+            "{owner}: the verify step `{command}`, written as its bare command, became a step \
+             that runs it"
+        ));
+        let mut wrapped = toml::map::Map::new();
+        wrapped.insert("phase".to_string(), toml::Value::String("test".to_string()));
+        wrapped.insert("command".to_string(), toml::Value::String(command));
+        *step = toml::Value::Table(wrapped);
+    }
+    lines
+}
+
 /// A plan source, read for the planner.
 struct ReadSource<'a> {
     origin: PlanSource<'a>,
@@ -1875,8 +1935,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     return Err("TOML block is missing required [[task]] entries".to_string());
                 }
 
+                // gap-4dd77d: a verify step written as its bare command is
+                // that step, not a parse error and a new draft.
+                let (toml_content, wrapped) = wrap_command_steps(toml_content);
                 let validated = validate_and_fix_generated_plan(
-                    toml_content,
+                    &toml_content,
                     slug,
                     &resolved.config.models,
                     resolved.config.agent.model.as_deref(),
@@ -1892,8 +1955,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // gap-b95913: what the planner need not be asked to fix; and
                 // gap-dc5d7c: a step that covers a source check by its id names
                 // a criterion of its task that states the check.
-                let mut repairs =
-                    repair_generated_draft(&mut parsed, policy, workdir_ref, &source_documents);
+                let mut repairs = wrapped;
+                repairs.extend(repair_generated_draft(
+                    &mut parsed,
+                    policy,
+                    workdir_ref,
+                    &source_documents,
+                ));
                 // bug-7c6f1b: under "No new files", a `files` path the
                 // workspace lacks names the file of that name its task reads;
                 // bug-ce1e4b: never one the source names.
@@ -1972,6 +2040,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     workdir_ref,
                     &probe,
                 ));
+                // gap-4dd77d: a task over its tier's size limits takes the
+                // smallest tier it fits, as the size check suggests, instead
+                // of a new draft; a task no tier fits still goes back.
+                repairs.extend(sizes::raise_tiers(&mut parsed, policy));
                 let validated = if repairs.is_empty() {
                     validated
                 } else {
@@ -2001,10 +2073,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         listed(policy_issues.iter().map(ToString::to_string).collect())
                     ));
                 }
-                // 3225 (decision 3203): a task over its tier's size limits is
-                // a spec defect the planner fixes before a cheap model meets
-                // it. Its tier is never raised here, since that would move
-                // the work to a pricier rung without the planner choosing to.
+                // 3225 (decision 3203): a task over the size limits of every
+                // tier is a spec defect the planner fixes, by a split, before
+                // a cheap model meets it. One a higher tier fits was raised
+                // above (gap-4dd77d, the round v7 lead's call): a new draft
+                // cost a planner call and, in phase 4.3, the checks the
+                // regeneration had put back.
                 let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
                 if !size_issues.is_empty() {
                     refusals.push(format!(
@@ -5020,6 +5094,167 @@ mod tests {
         }
     }
 
+    /// gap-4dd77d: round v7's phase-3 re-plan (op 3b13af5f) wrote `verify =
+    /// ["tools/check.sh"]` in `[meta]`, where step tables go. The draft failed
+    /// to parse and went back for a whole new one. The bare command is now
+    /// the step that runs it, after one call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_string_verify_step_is_repaired_not_regenerated() {
+        let draft = WIDGET_PLAN.replace(
+            "status = \"ready\"\n\n[[task]]",
+            "status = \"ready\"\nverify = [\"test -f src/widget.rs\"]\n\n[[task]]",
+        );
+        assert_ne!(draft, WIDGET_PLAN);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), &draft);
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+        let line = "`[meta]`: the verify step `test -f src/widget.rs`, written as its bare command, \
+                    became a step that runs it";
+        assert!(
+            outcome.repairs.iter().any(|repair| repair == line),
+            "{:?}",
+            outcome.repairs
+        );
+        let written = TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the plan");
+        let commands: Vec<&str> = written
+            .meta
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(commands, ["test -f src/widget.rs"]);
+    }
+
+    /// gap-4dd77d: a task over its tier's size limits that a higher tier
+    /// fits went back to the planner for a whole new draft (round v7's phase
+    /// 0: an integrative task with 7 steps; phase 4.1: a mechanical one with
+    /// 5 files and 4 steps), though the check names the fix. Its tier is now
+    /// raised, after one call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_over_its_tier_is_raised_not_regenerated() {
+        let steps: String = ["fn", "pub", "struct"]
+            .iter()
+            .map(|word| {
+                format!(
+                    "\n[[task.verify]]\nphase = \"check\"\ncommand = \"grep -q {word} src/widget.rs\"\n"
+                )
+            })
+            .collect();
+        let draft = WIDGET_PLAN.replace("tier = \"focused\"", "tier = \"mechanical\"") + &steps;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), &draft);
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "raised, not asked again");
+        let line = "T1: tier mechanical became focused, to fit its 4 verify steps (limit 3)";
+        assert!(
+            outcome.repairs.iter().any(|repair| repair == line),
+            "{:?}",
+            outcome.repairs
+        );
+        let written = TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the plan");
+        assert_eq!(written.tasks[0].tier, "focused");
+        assert_eq!(written.tasks[0].verify.len(), 4);
+    }
+
+    /// gap-4dd77d: round v7's phase-4.3 plan write (op ff02a005, gpt-5.4-mini)
+    /// kept 12 of its spec's 17 checks. The coverage re-ask's regeneration
+    /// put T1's four regression checks back, at 5 verify steps on a focused
+    /// task (limit 4), and roko threw it away on PLAN_TIER_SIZE and wrote
+    /// the draft that lacked them. The regeneration is now kept, with T1
+    /// raised to integrative.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p4_3_tiers");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let first = std::fs::read_to_string(fixture.join("draft-1.toml")).expect("the draft");
+        let again =
+            std::fs::read_to_string(fixture.join("draft-2.toml")).expect("the regeneration");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        cmake_workspace(workdir);
+        let code = "// code\n".repeat(260);
+        for file in [
+            "plugin/ui/Theme.h",
+            "plugin/ui/Status.h",
+            "plugin/ui/Status.cpp",
+            "plugin/ui/Displays.cpp",
+            "plugin/PluginEditor.cpp",
+            "tests/spec/p4_3/panels_test.cpp",
+        ] {
+            let path = workdir.join(file);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, &code).expect("a file");
+        }
+        std::fs::create_dir_all(workdir.join("docs/specs")).expect("docs");
+        std::fs::write(workdir.join("docs/specs/phase-4.3-finish.md"), &spec).expect("the spec");
+        for script in ["tools/spec.sh", "tools/check.sh"] {
+            let path = workdir.join(script);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("a script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("permissions");
+        }
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&first, &again],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let source = PlanSource::Text {
+            text: &spec,
+            kind: "prompt",
+        };
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "p4-3-the-editor-s-finish", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "the draft, then the regeneration");
+        let line = "T1: tier focused became integrative, to fit its 5 verify steps (limit 4)";
+        assert!(
+            outcome.repairs.iter().any(|repair| repair == line),
+            "{:?}",
+            outcome.repairs
+        );
+        let written = TasksFile::parse(&workdir.join("plans/p4-3-the-editor-s-finish/tasks.toml"))
+            .expect("the plan");
+        assert_eq!(written.tasks[0].tier, "integrative");
+        assert_eq!(written.tasks[0].verify.len(), 5);
+        let checks = outcome
+            .source_checks
+            .expect("the spec's checks are reported");
+        assert!(checks.regenerated, "{checks:?}");
+        // The regeneration keeps 16 and drops P4.07 with a reason, where the
+        // draft kept 12 and left 5 in no step.
+        assert_eq!(
+            (checks.kept, checks.dropped, checks.missing, checks.total),
+            (16, 1, 0, 17),
+            "{checks:?}"
+        );
+    }
+
     /// bug-8723fc: in a CMake workspace (Undertow's phase 2), the plan writer
     /// taught by Rust examples and added `cargo check --workspace` to a task
     /// with no check. Now the examples, the note on runners and a task with
@@ -6349,18 +6584,21 @@ mod tests {
     /// bug-a5cd6b: generation writes the plan it was asked for and no other.
     /// An old-format plan and a generated plan, which names no model, keep
     /// their tasks.toml byte for byte, and the planner is called once.
-    /// 3225 (decision 3203): a generated task over its tier's size limits
-    /// fails validation. A mechanical task with six files goes back to the
-    /// planner with the limit it exceeds, and the split plan is written.
+    /// 3225 (decision 3203): a generated task over the size limits of every
+    /// tier fails validation. A mechanical task with nine files, more than a
+    /// generated task may own, goes back to the planner with the limit it
+    /// exceeds, and the split plan is written; one a higher tier fits is
+    /// raised instead (gap-4dd77d).
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn generation_rejects_a_task_over_its_tier_size() {
         const OVERSIZED: &str = "\
             [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
             [[task]]\nid = \"T1\"\ntitle = \"Add the widget modules\"\n\
-            description = \"Create the six widget modules.\"\nstatus = \"ready\"\n\
+            description = \"Create the nine widget modules.\"\nstatus = \"ready\"\n\
             role = \"implementer\"\ntier = \"mechanical\"\nfiles = [\"src/a.rs\", \
-            \"src/b.rs\", \"src/c.rs\", \"src/d.rs\", \"src/e.rs\", \"src/f.rs\"]\n\
+            \"src/b.rs\", \"src/c.rs\", \"src/d.rs\", \"src/e.rs\", \"src/f.rs\", \
+            \"src/g.rs\", \"src/h.rs\", \"src/i.rs\"]\n\
             depends_on = []\n\n[task.context]\nread_files = []\n\n\
             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/a.rs\"\n";
         const SPLIT: &str = "\
@@ -6415,7 +6653,8 @@ mod tests {
             retry.contains("PLAN_TIER_SIZE [T1]: mechanical task is over its tier's size limits"),
             "{retry}"
         );
-        assert!(retry.contains("raise its tier to"), "{retry}");
+        assert!(retry.contains("split it into smaller tasks"), "{retry}");
+        assert!(!retry.contains("raise its tier to"), "{retry}");
     }
 
     #[cfg(unix)]

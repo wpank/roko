@@ -2448,6 +2448,56 @@ mod tests {
         assert_eq!(cold[0].id, "frozen-entry");
     }
 
+    /// bug-2ad4fa: a retired entry (`deprecated`) is skipped wherever
+    /// knowledge is retrieved, as a frozen one is: queries, kind queries,
+    /// the hot entries prompts load, and fingerprint queries. Only a cold
+    /// query lists the frozen one.
+    #[test]
+    fn retrieval_skips_deprecated_entries() {
+        let dir = TempDir::new().unwrap();
+        let store = KnowledgeStore::for_roko_dir(dir.path());
+        let fingerprint = vec![0b1010_1010_u8; HDC_VECTOR_BYTES];
+        let lesson = |id: &str, content: &str| {
+            let mut lesson = entry(
+                KnowledgeKind::StrategyFragment,
+                id,
+                content,
+                &["tools/render-demos.sh", "lesson"],
+                0.87,
+                &[id],
+                Utc::now(),
+            );
+            lesson.hdc_vector = Some(fingerprint.clone());
+            lesson
+        };
+        let live = lesson("live", "Showcase demos render at each preset's own level.");
+        let retired = KnowledgeEntry {
+            deprecated: true,
+            ..lesson(
+                "retired",
+                "Showcase demos render too quiet, so the demo script must compensate.",
+            )
+        };
+        let frozen = KnowledgeEntry {
+            frozen: true,
+            ..lesson("frozen", "Showcase demos render from the presets in order.")
+        };
+        store.rewrite_all(&[live, retired, frozen]).unwrap();
+
+        let ids = |entries: Vec<KnowledgeEntry>| -> Vec<String> {
+            entries.into_iter().map(|entry| entry.id).collect()
+        };
+        let topic = "showcase demos render";
+        assert_eq!(ids(store.query(topic, 10).unwrap()), ["live"]);
+        let kind = KnowledgeKind::StrategyFragment;
+        assert_eq!(ids(store.query_kind(topic, kind, 10).unwrap()), ["live"]);
+        assert_eq!(ids(store.hot_entries().unwrap()), ["live"]);
+        let similar = store.query_similar(&fingerprint, 10).unwrap();
+        let similar: Vec<&str> = similar.iter().map(|hit| hit.entry.id.as_str()).collect();
+        assert_eq!(similar, ["live"]);
+        assert_eq!(ids(store.query_cold(10).unwrap()), ["frozen"]);
+    }
+
     #[test]
     fn gc_with_freeze_freezes_low_confidence_entries() {
         let dir = TempDir::new().unwrap();

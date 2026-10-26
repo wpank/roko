@@ -230,7 +230,7 @@ impl TierSizeLimits {
     }
 
     /// Each limit `task` exceeds, as `"6 files (limit 3)"`.
-    fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
+    pub(crate) fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
         let mut over = Vec::new();
         if task.files.len() > self.max_files {
             over.push(format!(

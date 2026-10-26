@@ -621,6 +621,11 @@ impl GraphTaskDispatcher {
             self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
             self.budget_ledger
                 .settle(&spec.plan_id, None, refused_cost_usd)?;
+            // Its calls are on the plan's books now, so a resume after a
+            // crash charges the try only for its calls since (bug-b7f6a8).
+            if let Some(allowance) = allowance {
+                allowance.book_recorded_calls();
+            }
             // The attempt's verdict counts it beside the call that runs
             // (bug-8bcd98).
             if let Some(progress) = progress {
@@ -2209,21 +2214,40 @@ exit 1
         assert!((usd("billed_usd") - 0.011).abs() < 1e-6, "{verdict}");
         assert!((usd("refused_usd") - 0.102).abs() < 1e-6, "{verdict}");
 
-        // Every call the try made reached the hub with its cost, and they
-        // add up to the verdict's billed and refused calls, as the plan's
-        // budget counted them.
+        // Every call the try made reached the hub with its cost and how it
+        // ended, the one the 429 failed included (bug-8bcd98), and they add up
+        // to the verdict's billed and refused calls, as the plan's budget
+        // counted them.
         let mut calls = Vec::new();
         while let Ok(envelope) = events.try_recv() {
             if let DashboardEvent::CallCost {
-                model, cost_usd, ..
+                model,
+                cost_usd,
+                outcome,
+                ..
             } = envelope.payload
             {
-                calls.push((model, cost_usd.expect("a priced call")));
+                calls.push((
+                    model,
+                    cost_usd.expect("a priced call"),
+                    outcome.unwrap_or_default(),
+                ));
             }
         }
-        let models: Vec<&str> = calls.iter().map(|(model, _)| model.as_str()).collect();
-        assert_eq!(models, ["api-model-1", "backup-1"], "{calls:?}");
-        let calls_usd: f64 = calls.iter().map(|(_, usd)| usd).sum();
+        let ended: Vec<(&str, &str)> = calls
+            .iter()
+            .map(|(model, _, outcome)| (model.as_str(), outcome.as_str()))
+            .collect();
+        assert_eq!(
+            ended,
+            [
+                ("api-model-1", "ok"),
+                ("api-model-1", "rate_limited"),
+                ("backup-1", "ok")
+            ],
+            "{calls:?}"
+        );
+        let calls_usd: f64 = calls.iter().map(|(_, usd, _)| usd).sum();
         assert!((calls_usd - 0.113).abs() < 1e-6, "{calls:?}");
         assert!((spent - 0.113).abs() < 1e-6, "plan spend {spent}");
     }

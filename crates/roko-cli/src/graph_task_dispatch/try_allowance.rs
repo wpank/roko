@@ -195,6 +195,15 @@ impl TryAllowance {
         })
     }
 
+    /// The calls the try recorded so far are on the plan's books: failover
+    /// settled their dispatch as refused (bug-8bcd98), so a resume after a
+    /// crash does not charge them again (bug-b7f6a8).
+    pub(super) fn book_recorded_calls(&self) {
+        if let Some(plan) = &self.plan {
+            plan.book_recorded_calls();
+        }
+    }
+
     /// Bound the rest of the try by `rung`'s spend allowance and time in
     /// place of the rung's it was routed to, once failover moved it to a
     /// substitute on that rung (bug-62ae1e); `None` leaves it no bound of a

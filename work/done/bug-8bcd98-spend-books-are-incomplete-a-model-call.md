@@ -2,7 +2,7 @@
 id = "bug-8bcd98"
 kind = "bug"
 title = "Spend books are incomplete: a model call that fails writes no call_cost row, a verdict's billed_usd leaves out the calls refused before its failover (7b8cb121 T2#1: $0.0354 of $0.2430), and a try killed mid-call has no cost row (6059db44: the plugin's Build pad showed $0.04 of $0.0627)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "ae712ef2e"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask; plugin-wow's finding on 6059db44 (tmp/hermes-roko-v7/findings/plugin-wow.md)"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::run_inner", "crates/roko-cli/src/graph_task_dispatch/call_cost.rs::MeteredCalls", "crates/roko-learn/src/telemetry/records.rs::AttemptCost", "crates/roko-learn/src/telemetry/records.rs::plus_refused", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::call_refused", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::record_refused_spend", "crates/roko-learn/src/feedback_service.rs::model_call_cost_record"]
@@ -21,6 +22,18 @@ command = "grep -qw 'refused_usd' crates/roko-learn/src/telemetry/records.rs && 
 
 [[verify]]
 command = "grep -rqw 'fn a_failed_over_try_s_verdict_counts_its_refused_calls' crates/roko-cli/src && cargo test -p roko-cli --lib a_failed_over_try_s_verdict_counts_its_refused_calls && cargo test -p roko-learn --lib a_try_s_spend_counts_its_refused_calls"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:24:08Z"
+commit = "ae712ef2e"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T11:59:05Z"
+forced = false
+evidence = "Part 2 merged as eab74f5b2 (the verdict's cost.refused_usd; chain45b green). Part 1, ae712ef2e: CallFacts.outcome (call_outcome: timeout, rate_limited, refused, error), the tool loop records a call that fails past its retries, streamed or not, with what it streamed (else nothing), its wall time and how it ended, and MeteredCalls publishes its call_cost row with outcome (ok on success). chain47 (main 7675b37f7 plus part 1): fmt and clippy clean (with roko-std and roko-graph), the verify list passed (a_call_that_fails_writes_its_call_cost_row: a provider that starts its answer then stalls gives the try one row of 0 tokens, $0, timeout and >= 300 ms; a_failed_calls_outcome_names_how_it_failed; a_call_cut_off_mid_stream_records_what_it_streamed; a_failed_over_try_s_verdict_counts_its_refused_calls, now with the 429-ended call's rate_limited row; a_running_try_reports_its_spend_per_model_call; a_gpt5_tool_loop_reasons_on_the_responses_api), lib suites: roko-agent 2415, roko-core 2049, roko-learn 1404, roko-runtime 213, roko-serve 1084 green; roko-cli 4029 passed and 2 failed, frozen_learning_run_writes_no_learned_state and frozen_learning_switch_reaches_config_and_manifest, which fail on main itself since find-697944 (9d68ed77f) added audit_off/holdout_off to ablation_flags without updating them. Part 3 (killed tries) was roko-recovery's bug-b7f6a8 (merged 5e9af6682)."
 +++
 
 ## Problem
@@ -109,9 +122,20 @@ run-analyst checked it over round v7 (`tmp/hermes-roko-v7/run-analyst`).
   - Test: `a_failed_over_try_s_verdict_counts_its_refused_calls`. The routed model reads a file ($0.102), then 429s
     past the loop's retries; a backup finishes ($0.011). Billed plus refused equals the try's `call_cost` sum and
     the plan's spend.
-- **Part 1 (failed calls' rows), to do:** it builds on roko-effort's gap-1ba0ac, which adds
-  `CallAllowance::record_finished_call(…, CallFacts { finish_reason, wall_ms })` and `wall_ms` on `call_cost`. A
-  failed call goes through the same path with zero usage, unless the stream tally has some, and an `outcome`.
+- **Part 1 (failed calls' rows), built on gap-1ba0ac's `CallFacts`:**
+  - `CallFacts` gains `outcome`, and `call_outcome(&LlmError)` names it:
+    - `timeout`: a response wait or stream stall;
+    - `rate_limited`: a 429 past the retries;
+    - `refused`: a 4xx refusal, a credential or model the provider won't serve, or spent usage or balance;
+    - `error`: anything else.
+  - The tool loop tells its budget of a call that fails past its retries: streamed or not, with what it streamed
+    (else no tokens), how long it took and how it ended.
+  - `MeteredCalls` publishes its `call_cost` row with `outcome`, `ok` for a call that returned a response. A failed
+    call's row costs what it streamed, else $0, so the call is still counted.
+  - Test: `a_call_that_fails_writes_its_call_cost_row`. A provider answers 200 and then streams nothing; the try's
+    one row has no tokens, $0, `timeout`, and a wait of at least the 300 ms TTFT limit.
+  - Also `a_failed_calls_outcome_names_how_it_failed`. The failover test now sees the 429-ended call's row.
+  - A non-streamed call whose retries all failed returns `RetriesExhausted` and reads `error`. A try's calls stream.
 - **Part 3** is roko-recovery's, as bug-b7f6a8.
 
 ## Done when

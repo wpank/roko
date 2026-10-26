@@ -12,7 +12,7 @@ use regex::Regex;
 use roko_core::task::TaskTier;
 
 use crate::plan_policy::PlanExecutionPolicy;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{TaskDef, TasksFile};
 
 /// One list item of a source that states a size: the files it names, and
 /// the lines it says the work takes.
@@ -99,11 +99,12 @@ fn same_file(file: &str, named: &str) -> bool {
 }
 
 /// Give each task of `plan` whose size its source states ([`sized_items`])
-/// the smallest tier whose line budget covers that size, when the planner's
-/// tier is larger, with its `max_loc` within that tier's budget. A planner's
-/// smaller tier stays as written; the tier-size check judges it. An item
-/// goes to the task that writes most of the files it names, as a share of
-/// that task's files; a tie goes to no task. Returns one line per repair.
+/// the smallest tier whose line budget covers that size, and whose other
+/// limits (files, verify steps, description) the task keeps, when the
+/// planner's tier is larger, with its `max_loc` within that tier's budget.
+/// A planner's smaller tier stays as written; [`raise_tiers`] judges it. An
+/// item goes to the task that writes most of the files it names, as a share
+/// of that task's files; a tie goes to no task. Returns one line per repair.
 pub(super) fn repair_tiers(
     plan: &mut TasksFile,
     sources: &[&str],
@@ -137,10 +138,16 @@ pub(super) fn repair_tiers(
             continue;
         };
         let task = &mut plan.tasks[owner];
-        let Some(fits) = TaskTier::ALL
-            .into_iter()
-            .find(|tier| policy.tier_size_limits(*tier).max_loc >= item.lines)
-        else {
+        // gap-4dd77d: never below a tier whose other limits the task breaks,
+        // which would only send the draft back.
+        let without_loc = TaskDef {
+            max_loc: None,
+            ..task.clone()
+        };
+        let Some(fits) = TaskTier::ALL.into_iter().find(|tier| {
+            let limits = policy.tier_size_limits(*tier);
+            limits.max_loc >= item.lines && limits.exceeded_by(&without_loc).is_empty()
+        }) else {
             continue;
         };
         let tier = task.tier_class();
@@ -162,6 +169,45 @@ pub(super) fn repair_tiers(
         }
     }
     repairs
+}
+
+/// Raise each task of `plan` over its tier's size limits (files, `max_loc`,
+/// description words, verify steps) to the smallest higher tier it fits, as
+/// the size check suggests (gap-4dd77d). Round v7's phase 4.3 threw away the
+/// regeneration that put back five of its spec's checks for "5 verify steps
+/// (limit 4)" and wrote the draft that lacked them; phases 0 and 4.1 paid a
+/// whole new draft each for the same rule. A task no tier fits stays for the
+/// check, which asks for a split. Returns one line per task raised.
+pub(super) fn raise_tiers(plan: &mut TasksFile, policy: PlanExecutionPolicy) -> Vec<String> {
+    let mut raised = Vec::new();
+    for task in &mut plan.tasks {
+        let tier = task.tier_class();
+        let over = policy.tier_size_limits(tier).exceeded_by(task);
+        if over.is_empty() {
+            continue;
+        }
+        let Some(fits) = TaskTier::ALL
+            .into_iter()
+            .filter(|candidate| *candidate > tier)
+            .find(|candidate| {
+                policy
+                    .tier_size_limits(*candidate)
+                    .exceeded_by(task)
+                    .is_empty()
+            })
+        else {
+            continue;
+        };
+        raised.push(format!(
+            "{}: tier {} became {}, to fit its {}",
+            task.id,
+            tier.label(),
+            fits.label(),
+            over.join(", ")
+        ));
+        task.tier = fits.label().to_string();
+    }
+    raised
 }
 
 #[cfg(test)]
@@ -233,5 +279,56 @@ mod tests {
         );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].lines, 70);
+    }
+
+    /// gap-4dd77d: a task over its tier's size limits takes the smallest
+    /// higher tier it fits (phase 4.3's focused T1 with 5 verify steps
+    /// becomes integrative), and one no tier fits stays for the check. A
+    /// stated size never lowers a task below a tier whose step limit it
+    /// breaks.
+    #[test]
+    fn a_task_over_its_tier_takes_the_smallest_tier_it_fits() {
+        let step = |command: &str| {
+            format!("\n[[task.verify]]\nphase = \"test\"\ncommand = \"{command}\"\n")
+        };
+        let steps: String = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|name| step(&format!("tools/spec.sh {name}")))
+            .collect();
+        let plan_with = |tier: &str, files: usize| {
+            let files: Vec<String> = (0..files).map(|n| format!("\"src/f{n}.cpp\"")).collect();
+            TasksFile::parse_str(&format!(
+                "[meta]\nplan = \"p\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Fit the panels\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"{tier}\"\nfiles = [{}]\n{steps}",
+                files.join(", ")
+            ))
+            .expect("a plan")
+        };
+        let policy = PlanExecutionPolicy::generated(8);
+        let mut plan = plan_with("focused", 1);
+        assert_eq!(
+            raise_tiers(&mut plan, policy),
+            ["T1: tier focused became integrative, to fit its 5 verify steps (limit 4)"]
+        );
+        assert_eq!(plan.tasks[0].tier, "integrative");
+        assert!(raise_tiers(&mut plan, policy).is_empty());
+
+        // Nine files: no tier of a generated plan holds them.
+        let mut wide = plan_with("focused", 9);
+        assert!(raise_tiers(&mut wide, policy).is_empty());
+        assert_eq!(wide.tasks[0].tier, "focused");
+
+        // About 10 lines would make it mechanical, whose 3 steps it breaks:
+        // focused holds 4, so integrative it stays.
+        let mut stated = plan_with("architectural", 1);
+        let source = "1. **The panels** (`src/f0.cpp`): about 10 lines.";
+        assert_eq!(
+            repair_tiers(&mut stated, &[source], policy),
+            [
+                "T1: tier architectural became integrative, the smallest whose 150 lines cover the \
+              about 10 lines its source states"
+            ]
+        );
     }
 }

@@ -2,7 +2,7 @@
 id = "gap-4dd77d"
 kind = "gap"
 title = "A generated draft whose only defect is a verify written as a string, or a task over its tier's size limits that a higher tier fits, goes back to the planner for a whole new draft: 3 of round v7's 11 rejected drafts ($0.18) could have been repaired in place"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "4cfc6be60"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 7), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::validate_and_fix_generated_plan", "crates/roko-cli/src/plan_generate/pipeline.rs::repair_generated_draft", "crates/roko-cli/src/plan_policy.rs::validate_tier_sizes"]
@@ -21,6 +22,16 @@ command = "grep -rqw 'fn a_string_verify_step_is_repaired_not_regenerated' crate
 
 [[verify]]
 command = "grep -rqw 'fn a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised' crates/roko-cli/src && cargo test -p roko-cli --lib a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:02:09Z"
+commit = "8e3f70bbe"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 8e3f70bbe (branch f11154c5e; main merged in at 14dd020b3). Post-merge verify in main at 8e3f70bbe: the greps find the three tests and a_string_verify_step_is_repaired_not_regenerated, a_task_over_its_tier_is_raised_not_regenerated and a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised pass (3 of 3). Branch: plan_generate and plan_policy 193/193; roko-cli lib 4034 passed, its other failures the two frozen_learning_* tests already failing on main since 754f45ebd; nightly fmt; clippy -p roko-cli -D warnings clean. A task over its tier's limits takes the smallest tier it fits (sizes::raise_tiers, the last repair); a stated size never lowers a task below a tier whose limits it breaks; a verify of bare commands becomes step tables (wrap_command_steps). $0 replay of phase 4.3 on Undertow 2ac4b36 with the as-written draft then the discarded regeneration (tmp/hermes-roko-v7/roko-planner/replay-p43): before 12 of 17 written, after the regeneration kept with T1 integrative, 16 kept and P4.07 dropped with a reason; 4.2's drafts 1 call; phase 5's eight-task ideal draft 1 call, 21 of 21."
 +++
 
 ## Problem

@@ -1758,6 +1758,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // gap-770cb5: the agent can run its task's checks mid-try. They stay
         // until the try is judged, which reads their runs (gap-56f761).
         let _left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
+        // reg-d2deba: the person's checkout over the try, when it runs in a
+        // checkout of its own.
+        let try_watch = self.watch_checkout(spec, &effective_workdir).await;
         attempt.dispatch_started();
         attempt.record_effort(request.effort.clone());
         let started_at = Instant::now();
@@ -1798,6 +1801,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // The calls a provider refused before the one that ran cost what
         // they used, which the verdict counts beside it (bug-8bcd98).
         attempt.record_refused_spend(progress.refused_usd());
+        // What the try changed in the person's checkout, its own checks
+        // included, said now: the try may end before its gate (reg-d2deba).
+        let (try_written, try_findings) = self
+            .try_checkout_written(
+                spec,
+                &task,
+                attempt_number,
+                &attempt.key.attempt_key(),
+                &effective_workdir,
+                try_watch,
+            )
+            .await;
+        attempt.record_checkout_findings(try_findings);
         if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
             attempt.record_continues(continues);
         }
@@ -2179,6 +2195,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &attempt_key,
                 None,
                 attempt.harness_params(),
+                &try_written,
             ))
             .await;
         attempt.verify_ended();

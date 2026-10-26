@@ -446,6 +446,7 @@ impl AttemptBook {
             live_tool_calls: LiveToolCalls::default(),
             verify_steps: Vec::new(),
             scope_findings: Vec::new(),
+            checkout_findings: Vec::new(),
             exposures: None,
             pricing: None,
             arm_set: None,
@@ -488,6 +489,9 @@ pub(super) struct AttemptContext {
     /// The paths the attempt changed outside its task's `files`, as the
     /// pre-verify screen found them (backlog 1125).
     scope_findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    /// The paths of the person's checkout the try changed before its gate,
+    /// which the verdict lists beside the screen's (reg-d2deba).
+    checkout_findings: Vec<roko_learn::telemetry::ScopeFinding>,
     /// How many content items the attempt's prompt retrieved and included,
     /// once it was planned (S01 P0-9).
     exposures: Option<ExposureCounts>,
@@ -612,6 +616,16 @@ impl AttemptContext {
         findings: Vec<roko_learn::telemetry::ScopeFinding>,
     ) {
         self.scope_findings = findings;
+    }
+
+    /// The try changed the person's checkout at `findings`' paths before its
+    /// gate (reg-d2deba): its verdict lists them as `checkout_written`
+    /// findings, whether or not it reaches the gate.
+    pub(super) fn record_checkout_findings(
+        &mut self,
+        findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    ) {
+        self.checkout_findings = findings;
     }
 
     /// Provider failover passed over `failover`'s models before the one
@@ -813,7 +827,13 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.steps = self.verify_steps;
-        verdict.set_scope_findings(self.scope_findings);
+        let mut findings = self.scope_findings;
+        for finding in self.checkout_findings {
+            if !findings.contains(&finding) {
+                findings.push(finding);
+            }
+        }
+        verdict.set_scope_findings(findings);
         verdict.timing = self.timing;
         // The call's time to first token, measured from its start
         // (gap-7a8474), places the first token. A call that streamed no

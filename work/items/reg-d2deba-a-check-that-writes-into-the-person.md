@@ -70,6 +70,37 @@ overlapping tasks.
    as now.
 4. The unverified rule stays as it is: an unchanged tree whose probe at the gate passes while the checkout changes.
 
+## What was built (roko-speed, 2026-10-26)
+
+- **roko-std `checkout_state`:** `CheckoutState`, moved from roko-cli's `checkout_writes`. It is a checkout's dirty
+  paths from `git status --porcelain=v1 -z --untracked-files=all`, run with git's env scrubbed and a timeout, each
+  with its size and mtime. `changes_since` returns `CheckoutChanges` (changed, added, touched).
+- **`run_checks`, the try's own checks:** this covers both `run_tests` with `build: "checks"` and the hand-off
+  check. When the attempt runs in a checkout other than the workspace root (`ctx.immune_root_path`), it snapshots
+  that root before and after the checks, leaving `.roko/` out. Its `CheckRun` then records the paths that changed
+  as `checkout_written`.
+- **The try's window (roko-cli):**
+  - The dispatcher snapshots the person's checkout when a try in its own checkout starts its dispatch, in both the
+    batch and the streaming path.
+  - It compares as the dispatch ends: `try_checkout_written`. A path some `CheckRun` recorded is put down to the
+    checks. Any other path is put down to a build or command the agent ran itself (`outside_checks`).
+  - The result is reported at once (log, hub diagnosis, end-of-run registry), since the try may end before its
+    gate. Its `checkout_written` findings go on the attempt's verdict whatever the try's end.
+- **The gate's window** stays as it was. When it finds a change, it reports the try's changes and its own together,
+  and the hub's diagnosis is replaced by id. The unverified rule is unchanged.
+- **Wording:**
+  - The diagnosis says "while T's checks ran" when all of it came from checks, else "while T ran". It names the
+    paths changed outside the checks, "unless you changed them yourself".
+  - `roko diagnose`, the end of `roko plan run` and the API doc say "your checkout changed while it ran".
+- **Tests:**
+  - `a_try_s_own_checks_that_write_into_the_checkout_say_so` (roko-cli). The agent writes `a.txt`, runs its checks
+    (which write `artifacts/shot.png` into the person's checkout), then writes `notes/agent.txt` there with `bash`.
+    The gate takes the self-check and runs nothing. Both paths reach the hub, the verdict and the registry, with
+    the note put down to the agent.
+  - `a_check_run_records_what_it_changed_in_the_persons_checkout` and `a_checkout_state_comes_from_git_status`
+    (roko-std).
+  - The b7d9ad tests, updated.
+
 ## Done when
 
 - A try whose own `run_tests` (`build: "checks"`) writes into the person's checkout, and which then passes at the

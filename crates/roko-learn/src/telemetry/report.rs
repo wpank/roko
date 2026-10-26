@@ -79,7 +79,46 @@ pub struct RunRecords {
     pub seqs: Vec<(RunFile, u64)>,
 }
 
+/// A try whose checks changed the person's own checkout instead of its
+/// worktree, from its verdict's `checkout_written` scope findings
+/// (bug-b7d9ad).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckoutWrite {
+    /// The try's plan.
+    pub plan_id: String,
+    /// The try's task.
+    pub task_id: String,
+    /// The try's ordinal, from 1.
+    pub attempt: u32,
+    /// The paths, relative to the checkout.
+    pub paths: Vec<String>,
+}
+
 impl RunRecords {
+    /// The run's tries whose checks changed the person's own checkout, in
+    /// the order their verdicts were written (bug-b7d9ad).
+    #[must_use]
+    pub fn checkout_writes(&self) -> Vec<CheckoutWrite> {
+        self.verdicts
+            .iter()
+            .map(|line| &line.record)
+            .filter_map(|verdict| {
+                let paths: Vec<String> = verdict
+                    .scope_findings
+                    .iter()
+                    .filter(|finding| finding.kind == super::records::SCOPE_CHECKOUT_WRITTEN)
+                    .map(|finding| finding.path.clone())
+                    .collect();
+                (!paths.is_empty()).then(|| CheckoutWrite {
+                    plan_id: verdict.identity.plan_id.clone(),
+                    task_id: verdict.identity.task_id.clone(),
+                    attempt: verdict.identity.attempt,
+                    paths,
+                })
+            })
+            .collect()
+    }
+
     /// Parse the run files in `run_dir`. Missing files hold no lines; a line
     /// that does not parse as a record of its file is kept in
     /// [`Self::invalid`].

@@ -2,7 +2,7 @@
 id = "gap-b46c16"
 kind = "gap"
 title = "A long try on an expensive model re-sends its whole growing history every turn, and roko's tool-result compaction waits for 80% of the context window: phase 4.2's T1 spent $1.21 of its $2.06 on cached input as prompts grew from 17k to 73k tokens, while gpt-5.4's trigger is 218k"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool_loop"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "02fc1943b"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 8, run 1447385e), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::prune_context_if_needed", "crates/roko-agent/src/tool_loop/mod.rs::compaction_trigger", "crates/roko-agent/src/tool_loop/compaction.rs::compact_tool_results", "crates/roko-core/src/config/provider.rs::ModelProfile", "crates/roko-cli/src/config.rs::ModelProfileLayer", "crates/roko-std/src/tool/builtin/edit_file.rs::DESCRIPTION", "crates/roko-core/src/defaults.rs::DEFAULT_TOOL_RESULT_COMPACTION_THRESHOLD_CHARS"]
@@ -21,6 +22,18 @@ command = "grep -rqw 'compact_at_tokens' crates/roko-core/src/config && grep -rq
 
 [[verify]]
 command = "grep -rqw 'fn a_models_compact_at_tokens_survives_a_load' crates/roko-core/src && cargo test -p roko-core --lib a_models_compact_at_tokens_survives_a_load"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T15:38:07Z"
+commit = "02fc1943b"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T12:09:46Z"
+forced = false
+evidence = "chain45b on main f9ba45559 with bug-8bcd98 part 2: fmt clean, clippy clean (chain45), the verify list passed (compaction_starts_at_the_configured_tokens_not_the_window, tool_result_compaction_runs_before_pruning, context_overflow_detection_classifies_utilization_thresholds, context_overflow_detection_prunes_before_next_request in roko-agent; a_models_compact_at_tokens_survives_a_load and a_models_reasoning_effort_survives_a_load in roko-core), gemini_integration and roko-acp's tests compile with the new field, and the lib suites are green: roko-agent 2401, roko-cli 4014, roko-core 2049, roko-learn 1396, roko-runtime 213, roko-serve 1083. [models.<key>] compact_at_tokens starts the tool loop's tool-result compaction at that estimated prompt size (None keeps 80% of context_window, a value above it is held to it; messages are dropped only past 80%), the loader and the CLI's layered config keep the key, and edit_file's and multi_edit's descriptions ask for batched edits."
 +++
 
 ## Problem

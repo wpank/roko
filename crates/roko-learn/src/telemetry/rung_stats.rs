@@ -674,7 +674,9 @@ fn model_time(verdict: &AttemptVerdictRecord) -> Option<(u64, u64)> {
 
 /// A try's cost in USD, as its plan's budget counted it: a CLI agent's own
 /// figure, else the provider's charge, else the price snapshot's; `None`
-/// when none is known.
+/// when none is known. Its refused calls (`cost.refused_usd`) are left out:
+/// they count on the row of the model the provider refused, from the run's
+/// cost rows ([`refused_calls`]).
 fn cost_usd(verdict: &AttemptVerdictRecord) -> Option<f64> {
     let cost = &verdict.cost;
     cost.vendor_usd

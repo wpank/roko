@@ -7,6 +7,11 @@
 //! outside the checkout the agent writes, and this mode runs them in the
 //! checkout, in order, as the gate's environment would, stopping at the
 //! first that fails and returning its output's tail.
+//!
+//! Each run of an attempt's checks, the agent's and the hand-off check's
+//! (bug-cbbaa8), is recorded beside its checks file with the tree it judged
+//! (gap-56f761), so dispatch can judge a try on the best tree its checks saw
+//! when its last edit made the tree worse.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -53,6 +58,51 @@ pub fn task_checks_path(workspace: &Path, attempt_key: &str) -> PathBuf {
     workspace
         .join(".roko/state/task-checks")
         .join(format!("{name}.json"))
+}
+
+/// Where the runs of the attempt `attempt_key`'s checks are recorded, one
+/// [`CheckRun`] per line, beside its checks file ([`task_checks_path`]).
+#[must_use]
+pub fn task_check_runs_path(workspace: &Path, attempt_key: &str) -> PathBuf {
+    task_checks_path(workspace, attempt_key).with_extension("runs.jsonl")
+}
+
+/// One run of an attempt's checks, as [`run_checks`] records it
+/// (gap-56f761): the tree the checks judged, the checks that passed, and the
+/// one that did not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckRun {
+    /// When the checks ran, in Unix milliseconds.
+    pub at_ms: i64,
+    /// The git tree id of the checkout they ran in.
+    pub tree: String,
+    /// The labels of the checks that passed, in order.
+    pub passed: Vec<String>,
+    /// The check that did not pass, when one did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<FailedCheck>,
+}
+
+/// The check of a [`CheckRun`] that did not pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedCheck {
+    /// Its label.
+    pub label: String,
+    /// The tail of what it printed on stdout, then on stderr.
+    pub output: String,
+}
+
+/// The runs recorded at `path` ([`task_check_runs_path`]), in order; lines
+/// that do not parse are skipped.
+#[must_use]
+pub fn read_check_runs(path: &Path) -> Vec<CheckRun> {
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What running an attempt's checks came to ([`run_checks`]).
@@ -162,8 +212,94 @@ pub(super) async fn run(
 /// within its own time limit. Its tasks' agents run them with `run_tests`
 /// (gap-770cb5), and roko runs them when a plan attempt's agent hands back
 /// (bug-cbbaa8). `parent_env` stands in for roko's own environment when
-/// given.
+/// given. A run in an attempt is recorded with the tree it judged
+/// ([`CheckRun`], gap-56f761).
 pub async fn run_checks(
+    checks: &[TaskCheck],
+    ctx: &ToolContext,
+    budget: Duration,
+    parent_env: Option<Vec<(String, OsString)>>,
+) -> ChecksOutcome {
+    let key = &ctx.correlation.attempt_id;
+    let tree = if key.is_empty() {
+        None
+    } else {
+        super::checkout_tree::snapshot_tree(ctx.worktree()).await
+    };
+    let outcome = run_each(checks, ctx, budget, parent_env).await;
+    if let Some(tree) = tree {
+        record_run(
+            &task_check_runs_path(&ctx.immune_root_path, key),
+            checks,
+            &outcome,
+            tree,
+        );
+    }
+    outcome
+}
+
+/// Append the run of `checks` that came to `outcome` on the tree `tree` to
+/// the record at `path`; a run that did not run its checks is not one.
+fn record_run(path: &Path, checks: &[TaskCheck], outcome: &ChecksOutcome, tree: String) {
+    use std::io::Write;
+
+    let labels = |ran: &[(String, f64)]| -> Vec<String> {
+        ran.iter().map(|(label, _)| label.clone()).collect()
+    };
+    let (passed, failed) = match outcome {
+        ChecksOutcome::Passed(ran) => (labels(ran), None),
+        ChecksOutcome::Failed {
+            index,
+            stdout,
+            stderr,
+            passed,
+            ..
+        } => (
+            labels(passed),
+            Some(FailedCheck {
+                label: checks[*index].label.clone(),
+                output: format!("{}\n{}", tail(stdout), tail(stderr)),
+            }),
+        ),
+        ChecksOutcome::TimedOut { index, limit } => (
+            checks[..*index]
+                .iter()
+                .map(|check| check.label.clone())
+                .collect(),
+            Some(FailedCheck {
+                label: checks[*index].label.clone(),
+                output: format!("did not finish within {} s", limit.as_secs()),
+            }),
+        ),
+        ChecksOutcome::NotRun(_) => return,
+    };
+    let at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        });
+    let run = CheckRun {
+        at_ms,
+        tree,
+        passed,
+        failed,
+    };
+    let written = serde_json::to_string(&run)
+        .map_err(std::io::Error::other)
+        .and_then(|line| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            writeln!(file, "{line}")
+        });
+    if let Err(error) = written {
+        tracing::debug!(%error, "the checks' run was not recorded");
+    }
+}
+
+/// [`run_checks`] without the record.
+async fn run_each(
     checks: &[TaskCheck],
     ctx: &ToolContext,
     budget: Duration,

@@ -2,7 +2,7 @@
 id = "bug-b7d9ad"
 kind = "bug"
 title = "A warm build tree keeps compiled-in source paths: relocation rewrites flags.make but keeps its mtime, so an object built with a definition naming the person's checkout (Undertow's UNDERTOW_SOURCE_DIR) is not rebuilt, and a check writes into the person's checkout (rehearsal p41: T2's PNGs landed in the base, T2 settled already_satisfied, the delivery has none)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -10,7 +10,8 @@ size = "M"
 subsystem = ["roko-cli/worktree"]
 created = 2026-10-21
 updated = 2026-10-26
-last_verified = 2026-10-21
+last_verified = 2026-10-26
+last_verified_rev = "1df36e624"
 source = "round-v7 rehearsal p41 (roko-ladder), the lead's ask"
 discovered_from = "agent:roko-ladder (round v7 rehearsal p41)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/build_trees.rs::relocate", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs::write_keeping_times", "crates/roko-cli/src/graph_task_dispatch/checkout_writes.rs::CheckoutState", "crates/roko-cli/src/graph_task_dispatch/verification.rs::screen_and_verify"]
@@ -33,6 +34,18 @@ command = "grep -rqw 'fn graph_report_names_the_checkout_a_tasks_checks_changed'
 
 [[verify]]
 command = "grep -rqw 'fn a_runs_summary_names_the_checks_that_changed_the_checkout' crates/roko-serve/src && cargo test -p roko-serve --lib -- a_runs_summary_names_the_checks_that_changed_the_checkout"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T14:23:53Z"
+commit = "1df36e624"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T10:40:25Z"
+forced = false
+evidence = "chain44 on main 7d47479ce plus 1df36e624: fmt and clippy clean; the verify list passed 14/14 in roko-cli (checks_that_write_into_the_persons_checkout_say_so, a_checkout_state_names_what_changed, the_checkout_warning_says_how_to_drop_or_keep_the_changes, rokos_own_writes_in_the_checkout_raise_no_checkout_flag, graph_report_names_the_checkout_a_tasks_checks_changed, a_worktree_run_delivers_each_plan_into_its_batch_branch, sibling_files_since_names_every_attempt_that_overlapped_the_window, the unchanged-tree, scope and gap-20301d tests) and 3/3 in roko-serve (a_runs_summary_names_the_checks_that_changed_the_checkout, a_runs_summary_lists_its_skipped_rungs, run_summary_lists_its_rungs); lib suites green: roko-agent 2400, roko-cli 4008, roko-core 2048, roko-learn 1395, roko-runtime 213, roko-serve 1083. A check that writes into the person's checkout while an attempt runs in its own worktree raises the hub diagnosis checkout_written:<plan>/<task> (the paths, the likely cause, how to drop or keep them, the tasks in flight beside it), lists the paths as checkout_written scope findings, settles an attempt that changed nothing unverified, and names it in the run summary, roko diagnose and the end of roko plan run. Prevention is gap-184cba."
 +++
 
 ## Problem

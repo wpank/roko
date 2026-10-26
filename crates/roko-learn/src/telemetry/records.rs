@@ -824,6 +824,12 @@ pub struct AttemptCost {
     /// Price snapshot behind the API-equivalent figures, e.g.
     /// `prices-2026-09-28`.
     pub price_snapshot_id: Option<String>,
+    /// The part of `billed_usd` roko estimated rather than read from a
+    /// provider: the model call a crash cut off, which an `abandoned`
+    /// attempt is charged at its costliest call so far (bug-b7f6a8). `None`
+    /// when nothing in it is estimated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_usd: Option<f64>,
 }
 
 /// How many content items were retrieved and included for the attempt

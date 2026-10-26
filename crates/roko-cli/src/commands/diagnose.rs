@@ -2490,7 +2490,7 @@ title = "Tidy the changelog"
         }
         checkpoint
             .take_cost_ledger()
-            .persist(spent_micro_usd, 0)
+            .persist(spent_micro_usd, 0, Vec::new())
             .expect("cost ledger");
         checkpoint.finish_with_status(status).expect("finish");
     }

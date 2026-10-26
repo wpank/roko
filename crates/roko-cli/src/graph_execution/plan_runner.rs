@@ -8221,17 +8221,23 @@ max_retries = 0
     /// Decision 2218: `--frozen-learning` freezes a run's learning (the
     /// params' `frozen_learning`), and `[learning] frozen = true` every
     /// run's. Either reaches the run's config, so its fingerprint is a frozen
-    /// one, and its manifest records `ablation_flags = ["learning_frozen"]`;
-    /// neither leaves the flags empty.
+    /// one, and its manifest's `ablation_flags` hold `learning_frozen`; a live
+    /// run's do not. The other flags follow the workspace's audit and holdout
+    /// settings (find-697944), which these runs do not exercise (reg-1bf684).
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn frozen_learning_switch_reaches_config_and_manifest() {
+        let frozen_flag = |flags: &[String]| {
+            flags
+                .iter()
+                .any(|flag| flag == super::super::run_manifest::LEARNING_FROZEN_FLAG)
+        };
         let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
         let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let live = only_run_manifest(dir.path());
         assert!(
-            live.experiment.ablation_flags.is_empty(),
+            !frozen_flag(&live.experiment.ablation_flags),
             "{:?}",
             live.experiment
         );
@@ -8240,7 +8246,11 @@ max_retries = 0
         let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, true, true).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let frozen = only_run_manifest(dir.path());
-        assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
+        assert!(
+            frozen_flag(&frozen.experiment.ablation_flags),
+            "{:?}",
+            frozen.experiment
+        );
         let hashes: Vec<&str> = frozen
             .invocations
             .iter()
@@ -8255,7 +8265,11 @@ max_retries = 0
         let (exit_code, _, _) = run_plan_set(configured.path(), Some(1), None).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let manifest = only_run_manifest(configured.path());
-        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+        assert!(
+            frozen_flag(&manifest.experiment.ablation_flags),
+            "{:?}",
+            manifest.experiment
+        );
     }
 
     /// The `[gates]` and later lines of the workspace of
@@ -8508,7 +8522,17 @@ max_retries = 0
             "a frozen run wrote learned state: {changed:?}"
         );
         let manifest = only_run_manifest(dir.path());
-        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+        // The other flags follow the workspace's audit and holdout settings
+        // (find-697944, reg-1bf684).
+        assert!(
+            manifest
+                .experiment
+                .ablation_flags
+                .iter()
+                .any(|flag| flag == super::super::run_manifest::LEARNING_FROZEN_FLAG),
+            "{:?}",
+            manifest.experiment
+        );
 
         let run_dir = dir.path().join(".roko/runs").join(&manifest.run_id);
         let run = RunRecords::load(&run_dir).expect("read the run's records");

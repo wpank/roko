@@ -5,11 +5,19 @@
 //!
 //! ```text
 //! z = w_r·x + offset
-//! h_j += p(1 − p)x_j²
-//! w_j −= (p − y)x_j/(h_j + λ2)
 //! v = Σ x_j²/(h_j + λ2)
+//! d: d = v(y − σ(z + d))            the implicit step, p' = σ(z + d)
+//! w_j += (y − p')x_j/(h_j + λ2)
+//! h_j += p'(1 − p')x_j²
 //! p_lcb = σ((z − Φ⁻¹(1 − δ)√v)/√(1 + πv/8))
 //! ```
+//!
+//! The step is implicit (bug-bce0ed): the gradient is taken where the step lands, not where it
+//! starts. An explicit step moves the score by about v(y − p), and a task text of dozens of
+//! words is dozens of fresh `bow:` features, each adding about 1 to v, so one outcome threw the
+//! score tens of logits past its target: 57 of 66 forecasts in Undertow's model ended below
+//! 1e-6 or above 1 − 1e-6, and saturated p(1 − p) then kept h from growing. The implicit step
+//! moves the forecast toward the outcome and never past it.
 //!
 //! λ2 is also the prior precision, so a feature never seen has variance 1/λ2. `p_gate` is the
 //! product of the rungs' forecasts, which handles fail-fast censoring: a rung after the first
@@ -104,15 +112,29 @@ impl OnlineLogit {
         }
     }
 
-    /// Learn outcome `y` of weight `w` for `x` above `offset`.
+    /// Learn outcome `y` of weight `w` for `x` above `offset`, by the implicit step: the score
+    /// moves by `d` where `d = w·v·(y − σ(z + d))`.
     pub fn update(&mut self, x: &FeatureVector, offset: f64, y: bool, w: f64) {
-        let p = sigmoid(self.score(x, offset));
-        let error = p - if y { 1.0 } else { 0.0 };
+        let z = self.score(x, offset);
+        let target = if y { 1.0 } else { 0.0 };
+        let reach = w * self.variance(x);
+        // f(d) = d − reach·(target − σ(z + d)) rises in d, and its root lies between 0 and
+        // ±reach, toward the outcome.
+        let (mut low, mut high) = if y { (0.0, reach) } else { (-reach, 0.0) };
+        for _ in 0..64 {
+            let mid = 0.5 * (low + high);
+            if mid - reach * (target - sigmoid(z + mid)) > 0.0 {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        let landed = sigmoid(z + 0.5 * (low + high));
         for (name, value) in x.pairs() {
             let h = self.curvature.entry(name.to_string()).or_insert(0.0);
-            *h += w * p * (1.0 - p) * value * value;
-            let step = w * error * value / (*h + LAMBDA2);
-            *self.weights.entry(name.to_string()).or_insert(0.0) -= step;
+            let step = w * (target - landed) * value / (*h + LAMBDA2);
+            *h += w * landed * (1.0 - landed) * value * value;
+            *self.weights.entry(name.to_string()).or_insert(0.0) += step;
         }
         self.updates += w;
     }

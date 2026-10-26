@@ -780,6 +780,25 @@ pub struct ModelProfile {
     /// request's effort, else `[agent] default_effort` (bug-29014c).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// The OpenAI API roko's tool loop calls this model through:
+    /// `"chat_completions"` or `"responses"`. `None` picks the Responses API
+    /// for an OpenAI reasoning model (the GPT-5 family and the o-series) on
+    /// OpenAI's own endpoint, the only API where it reasons beside function
+    /// tools, and chat completions for any other model (gap-1ba0ac).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<OpenAiApi>,
+}
+
+/// The OpenAI API an OpenAI-compatible model is called through
+/// (`[models.*] api`, gap-1ba0ac).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiApi {
+    /// `/chat/completions`, which every OpenAI-compatible provider serves.
+    ChatCompletions,
+    /// `/responses`, OpenAI's own, where a reasoning model takes a reasoning
+    /// effort beside function tools.
+    Responses,
 }
 
 impl ModelProfile {

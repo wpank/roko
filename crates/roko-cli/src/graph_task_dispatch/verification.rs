@@ -5,6 +5,7 @@ use roko_core::config::harness_params::HarnessParams;
 use roko_learn::telemetry::records::VerifyDepthRecord;
 use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
+use super::checkout_writes::CheckoutWritten;
 use super::retry_feedback::RetryNotice;
 use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
@@ -72,6 +73,10 @@ impl GraphTaskDispatcher {
     /// record (backlog 2104). `theta`, the θ the attempt runs, sets the
     /// promise thresholds of its verify run (M1's B6, 8125), which failing
     /// fast leaves with nothing to end ([`promise_tracker_for`]).
+    ///
+    /// `try_written` is what the person's checkout changed over the try, up
+    /// to its gate (reg-d2deba), which a change during the gate's steps adds
+    /// to.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn settle_task_verification(
         &self,
@@ -84,6 +89,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         theta: Option<&HarnessParams>,
+        try_written: &CheckoutWritten,
     ) -> VerificationReport {
         let mut steps = Vec::new();
         let mut scope_findings = Vec::new();
@@ -98,6 +104,7 @@ impl GraphTaskDispatcher {
                 attempt_key,
                 progress_tx,
                 theta,
+                try_written,
                 &mut steps,
                 &mut scope_findings,
             )
@@ -134,6 +141,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         theta: Option<&HarnessParams>,
+        try_written: &CheckoutWritten,
         steps: &mut Vec<VerifyStepVerdict>,
         scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<TaskGateVerdict> {
@@ -152,7 +160,7 @@ impl GraphTaskDispatcher {
         let unchanged_tree = matches!(screened, red_flags::Screened::UnchangedTree(_));
         // What the checks write into the person's checkout, when the attempt
         // runs outside it (bug-b7d9ad).
-        let checkout_before = self.checkout_before_checks(spec, effective_workdir).await;
+        let checkout_before = self.watch_checkout(spec, effective_workdir).await;
         let verified = self
             .run_verify_steps(
                 spec,
@@ -180,12 +188,14 @@ impl GraphTaskDispatcher {
                 Ok(TaskGateVerdict::Passed | TaskGateVerdict::PassedWithPreexistingFailures)
             );
         if !written.is_empty() {
+            // With what changed earlier in the try, which the hub heard of
+            // then (reg-d2deba).
             self.report_checkout_written(
                 spec,
                 task,
                 attempt_number,
                 effective_workdir,
-                &written,
+                &try_written.merged(&written),
                 unverified,
                 scope_findings,
             );
@@ -2048,6 +2058,7 @@ mod tests {
             commands: vec![command.to_string()],
             ms: vec![1_500],
             failed: None,
+            checkout_written: Vec::new(),
         };
         let record = |run: CheckRun| {
             let line = serde_json::to_string(&run).expect("a run record");

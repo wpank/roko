@@ -816,7 +816,8 @@ fn guard_reasoning(
         let next = guard.inner.next().await?;
         if let Ok(event) = &next {
             match &event.kind {
-                StreamEventKind::ReasoningDelta(text) => {
+                // An empty one only says the call is alive (gap-1ba0ac).
+                StreamEventKind::ReasoningDelta(text) if !text.is_empty() => {
                     guard.deltas += 1;
                     guard.chars += text.len() as u64;
                 }
@@ -998,6 +999,24 @@ pub trait TurnBudget: Send + Sync + std::fmt::Debug {
     /// Record the usage of a model call that finished, priced by the loop's
     /// model profile when that has rates.
     fn record_turn(&self, usage: &Usage);
+
+    /// [`Self::record_turn`], with what else the loop knows of the call:
+    /// its finish reason and how long it took, which a call's cost record
+    /// carries (gap-1ba0ac).
+    fn record_call(&self, usage: &Usage, facts: CallFacts<'_>) {
+        let _ = facts;
+        self.record_turn(usage);
+    }
+}
+
+/// What the tool loop knows of a model call that finished, beside its usage
+/// ([`TurnBudget::record_call`], gap-1ba0ac).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallFacts<'a> {
+    /// Why the call ended, as its provider named it.
+    pub finish_reason: Option<&'a str>,
+    /// How long the call took, in ms.
+    pub wall_ms: Option<u64>,
 }
 
 /// A daily and lifetime [`BudgetTracker`]: no model call starts once it is
@@ -1587,7 +1606,13 @@ impl ToolLoop {
                             self.price_turn(&mut usage);
                             total_usage.add(&usage);
                             if let Some(budget) = &self.budget {
-                                budget.record_turn(&usage);
+                                budget.record_call(
+                                    &usage,
+                                    CallFacts {
+                                        finish_reason: None,
+                                        wall_ms: call_ms(),
+                                    },
+                                );
                             }
                             turn_traces.push(ToolLoopTurnTrace {
                                 turn: trace_turn(iterations),
@@ -1658,9 +1683,17 @@ impl ToolLoop {
 
             total_usage.add(&turn_usage);
 
-            // LIFE-03: Record turn cost in budget tracker after LLM call.
+            // LIFE-03: Record turn cost in budget tracker after LLM call, with
+            // why it ended and how long it took (gap-1ba0ac).
             if let Some(budget) = &self.budget {
-                budget.record_turn(&turn_usage);
+                let finish_reason = response.extract_finish_reason_raw();
+                budget.record_call(
+                    &turn_usage,
+                    CallFacts {
+                        finish_reason: finish_reason.as_deref(),
+                        wall_ms: turn_duration_ms,
+                    },
+                );
             }
 
             // Parse tool calls from the response.

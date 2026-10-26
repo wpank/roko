@@ -968,14 +968,19 @@ impl GraphTaskDispatcher {
                 format!("best P(VS) {best:.2} below p_abandon {P_ABANDON}: the task is flagged"),
             )
         };
+        let runtime = self.feedback.self_model.as_deref();
+        let mode = runtime.map_or("off", |runtime| mode_name(runtime.settings().mode));
+        let acting = runtime.is_some_and(SelfModelRuntime::routes);
         tracing::warn!(
             plan_id = %plan_id,
             task_id = %task_id,
             attempt_key = %identity.attempt_key,
             action = %prediction.decision.action,
+            mode,
             spec_score = ?spec_score,
             best_p_vs = best,
-            "self-model: {subject}; the attempt runs on the ladder's choice"
+            "{}",
+            flag_words(&subject, mode, acting && refine)
         );
         let Some(tui) = &self.tui_bridge else {
             return;
@@ -1341,6 +1346,20 @@ fn prediction_candidate(forecast: &CandidateForecast) -> PredictionCandidate {
 }
 
 /// The mode's name in `[self_model] mode`.
+/// The line a self-model's refine or abandon flag about `subject` is logged with (6133,
+/// bug-bce0ed), by its `mode`. Only an active, calibrated self-model's refine request is `acted`
+/// on, by S07's plan-load gate; anything else is advice, and roko drops no task on it.
+fn flag_words(subject: &str, mode: &str, acted: bool) -> String {
+    let standing = if acted {
+        "a request S07's plan-load gate acts on"
+    } else {
+        "advice only: roko drops or rewrites no task on it"
+    };
+    format!(
+        "self-model ({mode} mode, {standing}): {subject}; the attempt runs on the ladder's choice"
+    )
+}
+
 const fn mode_name(mode: SelfModelMode) -> &'static str {
     match mode {
         SelfModelMode::Off => "off",
@@ -1920,6 +1939,25 @@ mod tests {
             assert_eq!(dispatcher.ladder_step(&spec, &task), u32::from(active));
             assert_eq!(dispatcher.self_model_climbed(&chain), active, "{mode:?}");
         }
+    }
+
+    /// bug-bce0ed: phase 4.2's shadow self-model logged "T1 is unlikely to pass on any rung …
+    /// action=abandon", which read as if roko gave up. Its line says the mode, and that a flag is
+    /// advice unless an active self-model's refine request goes to S07.
+    #[test]
+    fn a_shadow_abandon_says_it_is_advice() {
+        let subject = "T1 is unlikely to pass on any rung";
+        let shadow = flag_words(subject, "shadow", false);
+        assert_eq!(
+            shadow,
+            "self-model (shadow mode, advice only: roko drops or rewrites no task on it): T1 is \
+             unlikely to pass on any rung; the attempt runs on the ladder's choice"
+        );
+        let refine = flag_words("T1 needs a clearer spec", "active", true);
+        assert!(
+            refine.contains("a request S07's plan-load gate acts on"),
+            "{refine}"
+        );
     }
 
     /// 6133: a refine-spec forecast writes its action into the prediction row, and publishes a

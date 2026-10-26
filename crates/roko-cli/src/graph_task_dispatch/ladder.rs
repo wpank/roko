@@ -43,6 +43,16 @@ use crate::dispatch::rung_probe::{SkippedRung, skipped_rungs};
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
 use crate::runtime_feedback::homeostasis::HarnessDecision;
 
+/// What the refusal of a task the ladder routes says when every rung failed
+/// its probe ([`GraphTaskDispatcher::unroutable`]), by which its try settles
+/// as `all_rungs_skipped` (gap-b856d3).
+pub(super) const NO_RUNG_CAN_RUN: &str = "no rung of the routing ladder can run";
+
+/// Whether `error` is [`GraphTaskDispatcher::unroutable`]'s refusal.
+pub(super) fn refused_for_no_rung(error: &RokoError) -> bool {
+    matches!(error, RokoError::Rejected(message) if message.contains(NO_RUNG_CAN_RUN))
+}
+
 /// Agent-blamed failures on one rung before the task climbs to the next.
 pub(crate) const FAILURES_PER_RUNG: u32 = 2;
 
@@ -204,11 +214,13 @@ impl GraphTaskDispatcher {
             .map(SkippedRung::named)
             .collect();
         Some(RokoError::Rejected(format!(
-            "task `{}` was not run: no rung of the routing ladder can run, as every rung's model \
-             failed its tool-use probe at plan start: {}. roko does not send a task the ladder \
-             routes to a model outside it: fix those providers, or pin a model (`--model`, or \
-             the task's `model_hint`), then resume the plan. A probe verdict stands for a day \
-             (`.roko/learn/rung-probes.json`)",
+            "task `{}` was not run: {NO_RUNG_CAN_RUN}, as every rung's model failed its tool-use \
+             probe at plan start: {}. roko does not send a task the ladder routes to a model \
+             outside it: fix those providers, or pin a model (`--model`, or the task's \
+             `model_hint`), then resume the plan. A rung refused on its provider's billing is \
+             probed again when the next run starts, so recharge and resume; any other probe \
+             verdict stands for a day, and removing its model from \
+             `.roko/learn/rung-probes.json` probes it again now",
             task.id,
             rungs.join("; ")
         )))
@@ -1319,7 +1331,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
     /// gap-20301d: when every rung of the ladder failed its tool-use probe at
     /// plan start, a task the ladder routes is refused before any model call,
     /// its error naming each rung and why, rather than sent to a model the
-    /// ladder never names. A pinned task still runs.
+    /// ladder never names. Its try settles as `all_rungs_skipped`
+    /// (gap-b856d3). A pinned task still runs.
     #[tokio::test]
     async fn a_task_the_ladder_routes_is_refused_when_every_rung_failed_its_probe() {
         let temp = tempdir().expect("tempdir");
@@ -1342,8 +1355,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
             .await
             .skip_failed_rungs(&failed);
+        let runs_dir = temp.path().join(".roko/runs");
         let dispatcher =
-            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf());
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf())
+                .with_feedback(GraphFeedbackContext {
+                    runs_dir: Some(runs_dir.clone()),
+                    ..GraphFeedbackContext::default()
+                });
         let ctx = CellContext::new().with_run_id(RUN.to_string());
 
         let error = dispatcher
@@ -1356,6 +1374,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             "no rung of the routing ladder can run".to_string(),
             format!("cheap ({CHEAP} on batch-cli): insufficient_credits"),
             format!("top ({TOP} on batch-cli): insufficient_credits"),
+            "billing is probed again when the next run starts".to_string(),
         ] {
             assert!(message.contains(&named), "{named}: {message}");
         }
@@ -1373,6 +1392,40 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             .expect_err("its verify step fails");
         assert!(!matches!(error, RokoError::Rejected(_)), "{error}");
         assert_eq!(called_models(&temp), [TOP], "the pinned model ran it");
+
+        dispatcher.close_run_attempts(RUN);
+        let verdicts: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let settled: Vec<(&str, &str, &str, &str)> = verdicts
+            .iter()
+            .map(|verdict| {
+                (
+                    verdict["task_id"].as_str().unwrap_or_default(),
+                    verdict["outcome"].as_str().unwrap_or_default(),
+                    verdict["failure_class"]["kind"]
+                        .as_str()
+                        .unwrap_or_default(),
+                    verdict["blame"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                (
+                    task.id.as_str(),
+                    "all_rungs_skipped",
+                    "all_rungs_skipped",
+                    "harness"
+                ),
+                ("T-PINNED", "gate_failed", "gate_failed", "agent"),
+            ]
+        );
     }
 
     /// A settled turn-cap stop of `task` on the cheap rung. `substitute`

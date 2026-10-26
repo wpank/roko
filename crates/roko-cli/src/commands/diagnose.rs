@@ -1051,8 +1051,9 @@ fn describe_task(
             } else {
                 String::new()
             };
-            // Its checks changed the person's checkout, not its own tree
-            // (bug-b7d9ad).
+            // The person's checkout changed while it ran, not its own tree:
+            // through its checks or a command its agent ran (bug-b7d9ad,
+            // reg-d2deba).
             let written = (!task.checkout_written.is_empty()).then(|| {
                 let paths: Vec<String> = task
                     .checkout_written
@@ -1060,7 +1061,7 @@ fn describe_task(
                     .map(|path| format!("`{path}`"))
                     .collect();
                 format!(
-                    "its checks changed your checkout, not its own worktree: {}",
+                    "your checkout changed while it ran, not its own worktree: {}",
                     paths.join(", ")
                 )
             });
@@ -3095,8 +3096,8 @@ title = "Tidy the changelog"
         assert_eq!(t1.checkout_written, ["artifacts/ui/editor-idle.png"]);
         assert_eq!(
             t1.reason,
-            "completed; unverified: it changed nothing in its own tree, and its checks changed \
-             your checkout, not its own worktree: `artifacts/ui/editor-idle.png`"
+            "completed; unverified: it changed nothing in its own tree, and your checkout \
+             changed while it ran, not its own worktree: `artifacts/ui/editor-idle.png`"
         );
         let t2 = task(&report, "T2");
         assert!(t2.checkout_written.is_empty());

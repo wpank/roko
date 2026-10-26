@@ -12,7 +12,7 @@
 //! - `accept` → `WorktreeManager::accept_attempt`: commit the attempt and fold
 //!   it into its plan branch
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use roko_graph::workspace::{
     ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceAttemptId,
@@ -111,6 +111,14 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
         &self,
         attempt_id: &WorkspaceAttemptId,
     ) -> Result<WorkspaceLease, WorkspaceError> {
+        self.acquire_seeded(attempt_id, None).await
+    }
+
+    async fn acquire_seeded(
+        &self,
+        attempt_id: &WorkspaceAttemptId,
+        seed: Option<&Path>,
+    ) -> Result<WorkspaceLease, WorkspaceError> {
         let wt_id = Self::worktree_id(attempt_id);
 
         // Idempotent: if the attempt is already tracked, return it.
@@ -139,9 +147,11 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
             })?;
 
         // gap-6754ab: its first check builds incrementally from a warm copy
-        // of the repository checkout's build trees, not from nothing. Done
-        // outside the manager's lock, so sibling checkouts are not held up.
-        let source = self.repo_root.clone();
+        // of the repository checkout's build trees, not from nothing, or of
+        // those of the accepted checkout `seed` its task depends on, which
+        // already built that work (gap-b6b7a1). Done outside the manager's
+        // lock, so sibling checkouts are not held up.
+        let source = seed.map_or_else(|| self.repo_root.clone(), Path::to_path_buf);
         let checkout = handle.path.clone();
         let dirs = self.warm_build_dirs.clone();
         if let Err(error) = tokio::task::spawn_blocking(move || {

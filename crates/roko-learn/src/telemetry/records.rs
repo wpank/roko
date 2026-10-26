@@ -397,6 +397,11 @@ pub enum AttemptOutcome {
     /// steps: prompt assembly, or recording its spend in the plan's cost
     /// ledger.
     HarnessError,
+    /// Every rung of the routing ladder failed its tool-use probe at plan
+    /// start, so roko refused the task the ladder routes before any model
+    /// call, rather than send it to a model outside the ladder (gap-20301d,
+    /// gap-b856d3).
+    AllRungsSkipped,
     /// An attempt-open line with no verdict, derived offline, or the verdict
     /// a resume writes for an attempt a stopped process left in flight
     /// (bug-b7f6a8). Dispatch never writes it.
@@ -421,6 +426,7 @@ impl AttemptOutcome {
             | Self::WorkspaceError
             | Self::PromiseTerminated
             | Self::HarnessError
+            | Self::AllRungsSkipped
             | Self::Abandoned => Blame::Harness,
         }
     }
@@ -2575,6 +2581,7 @@ mod tests {
             (O::WorkspaceError, false, Blame::Harness, None),
             (O::PromiseTerminated, false, Blame::Harness, None),
             (O::HarnessError, true, Blame::Harness, None),
+            (O::AllRungsSkipped, false, Blame::Harness, None),
             (O::Abandoned, false, Blame::Harness, None),
         ];
         for (outcome, first_token_seen, blame, label) in cases {

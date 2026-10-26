@@ -1,0 +1,158 @@
+{
+  "argv": [
+    "vb",
+    "run",
+    "--experiment",
+    "PILOT-B",
+    "--run-id",
+    "fd-claude-s2-1",
+    "--stream",
+    "pilot",
+    "--arm",
+    "fd_claude",
+    "--model",
+    "claude-opus-5-5",
+    "--seeds",
+    "2",
+    "--line",
+    "BL0",
+    "--allow-network",
+    "--max-cost-usd",
+    "40",
+    "--results",
+    "/Users/will/.roko-bench/viability",
+    "--lock",
+    "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-ab11d067be1961d6b/benchmarks/viabilitybench/experiments/prereg.lock.json",
+    "--prereg-spec",
+    "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-ab11d067be1961d6b/tmp/cybernetic-harness/specs/S09-experiments.md",
+    "--transcripts"
+  ],
+  "arm": "fd_claude",
+  "base_url": "https://api.anthropic.com",
+  "caps": {
+    "command_timeout_s": 60.0,
+    "identical_calls": 5,
+    "input_tokens_per_attempt": 150000,
+    "input_tokens_per_task": 300000,
+    "max_output_tokens": 8192,
+    "model_calls_per_task": 30,
+    "observation_chars": 10000,
+    "turns_per_attempt": 12,
+    "turns_per_task": 50,
+    "usd_per_task": 5.0,
+    "wallclock_s": 1200
+  },
+  "config": {
+    "arm": {
+      "arm": {
+        "billed": false,
+        "harness": "claude-code",
+        "id": "fd_claude",
+        "label": "frontier·direct",
+        "line": "BL0",
+        "models_allow": [
+          "claude-opus-5-5"
+        ],
+        "runner": "run_cli"
+      },
+      "caps": {
+        "turns_per_task": 50,
+        "usd_per_task": 5.0,
+        "wallclock_s": 1200
+      },
+      "cli": {
+        "cache_write_ttl": "1h",
+        "credentials": "keychain",
+        "effort": "high",
+        "program": "claude"
+      },
+      "providers": {
+        "anthropic": {
+          "base_url": "https://api.anthropic.com"
+        }
+      },
+      "schema_version": "vb.arm/1"
+    },
+    "caps": {
+      "command_timeout_s": 60.0,
+      "identical_calls": 5,
+      "input_tokens_per_attempt": 150000,
+      "input_tokens_per_task": 300000,
+      "max_output_tokens": 8192,
+      "model_calls_per_task": 30,
+      "observation_chars": 10000,
+      "turns_per_attempt": 12,
+      "turns_per_task": 50,
+      "usd_per_task": 5.0,
+      "wallclock_s": 1200
+    },
+    "driver": "vb-driver-1.0.0",
+    "endpoint": {
+      "api_key_env": null,
+      "base_url": "https://api.anthropic.com",
+      "max_tokens_param": "max_completion_tokens",
+      "provider": "anthropic",
+      "timeout_s": 180.0
+    },
+    "line": "BL0",
+    "model": "claude-opus-5-5",
+    "price_snapshot_id": "prices-2026-09-28",
+    "prompt": {
+      "sha256": "37cd863121d51077e6d80be363a49ff59b5dc43dd83dfa64523dbc1c9724d994",
+      "version": "claude-code-1"
+    },
+    "stream": {
+      "id": "pilot",
+      "instances": [
+        "F1-l1-0001",
+        "F1-l1-0002",
+        "F1-l2-0001",
+        "F1-l2-0002",
+        "F1-l3-0001",
+        "F1-l3-0002",
+        "F1-l4-0001",
+        "F1-l4-0002",
+        "F1-l5-0001",
+        "F1-l5-0002",
+        "F4-l1-0001",
+        "F4-l1-0002",
+        "F4-l2-0001",
+        "F4-l2-0002",
+        "F4-l3-0001",
+        "F4-l3-0002",
+        "F4-l4-0001",
+        "F4-l4-0002",
+        "F4-l5-0001",
+        "F4-l5-0002"
+      ],
+      "spec_variant": "precise"
+    }
+  },
+  "config_hash": "sha256:277932f67221370dabd1216c6044b7a8af7bbeb5770dcd014370f6712a4cbf3e",
+  "dirty": false,
+  "experiment_id": "PILOT-B",
+  "harness_sha": "967340b5dbdb2e89ddbf96525a32fce9847d95e1",
+  "model": "claude-opus-5-5",
+  "network": true,
+  "offline": false,
+  "price_snapshot_id": "prices-2026-09-28",
+  "provider": "anthropic",
+  "proxy": null,
+  "run_id": "fd-claude-s2-1",
+  "runs": 20,
+  "schema_version": "vb.run_manifest/1",
+  "secret_file": "/Users/will/.config/viabilitybench/secret",
+  "seeds": [
+    2
+  ],
+  "started_at": "2026-10-21T00:11:24Z",
+  "stream": "pilot",
+  "suite": {
+    "hash": "sha256:630e4dcbeb4e77431e293a261b40cb5c629662a0975779674b586c835fe31173",
+    "id": "vb"
+  },
+  "tasks": 20,
+  "work_dir": "/Users/will/workspaces/4f9dda87bb7d8c53",
+  "worst_case_usd": 100.0,
+  "worst_task_usd": 5.0
+}

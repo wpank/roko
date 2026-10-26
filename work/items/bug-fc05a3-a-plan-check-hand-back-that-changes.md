@@ -75,3 +75,13 @@ Some options for the owner:
 
 The test in `[[verify]]` passes: a hand-back try that changes nothing, while the plan check still fails on its tree, is
 not settled `already_satisfied`.
+
+## Follow-ups
+
+1. **Start the hand-back's try a rung higher.** The try runs on the rung the lead task's own tries ended on, and
+   those tries passed an easier job. A cross-task try is harder than the task's first try: it must find the cause
+   in files it didn't write (phase 4's T6 lead, for bone drawn by T5's `Look.cpp` and T7's `Status.cpp`), from the
+   output of a whole-plan check rather than its own step, and fix them without breaking the checks of the tasks
+   that own them. Not done in bug-fc05a3, on the lead's call (2026-10-21).
+2. Bisect the plan branch's accepted commits to find the first commit at which the check fails, to name the cause
+   when the output names no file. It needs a build per commit tried.

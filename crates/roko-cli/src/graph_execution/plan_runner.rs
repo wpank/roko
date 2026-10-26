@@ -4390,56 +4390,47 @@ async fn run_one_plan(
     let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
     // Whether the tasks all passed, before the whole-plan check judged them.
     let tasks_succeeded = outcome.succeeded();
-    // A check that fails on files the plan's tasks changed is handed back to
+    // A check that fails once the plan's tasks all passed is handed back to
     // them, and the plan is checked again, a bounded number of times
     // (find-5bcba7).
     let mut handbacks: Vec<super::plan_handback::Handback> = Vec::new();
     let mut last_delivery: Option<String> = None;
-    // A failure whose last hand-back changed nothing, which goes back again
-    // without a check that would only fail the same way.
-    let mut unchanged: Option<super::plan_handback::FailedPlanCheck> = None;
     let outcome = loop {
-        let (failure, checked_outcome) = match unchanged.take() {
-            Some(failure) => (failure, PlanOutcome::Failed),
-            None => {
-                let checked = match ctx.batch {
-                    Some(batch) if outcome.succeeded() => {
-                        deliver_plan_to_batch(
-                            batch,
-                            plan,
-                            plan_checks,
-                            ctx.gate_env_passthrough,
-                            ctx.worktrees,
-                            ctx.delete_attempt_branches,
-                            &ctx.interrupt,
-                            &mut checkpoint,
-                            graph_tui_bridge,
-                            handbacks.len(),
-                        )
-                        .await?
-                    }
-                    None if outcome.succeeded() && !plan_checks.is_empty() => {
-                        check_plan_in_place(
-                            ctx.workdir,
-                            plan,
-                            plan_checks,
-                            ctx.gate_env_passthrough,
-                            &ctx.interrupt,
-                            &mut checkpoint,
-                            graph_tui_bridge,
-                        )
-                        .await?
-                    }
-                    _ => break outcome,
-                };
-                if checked.delivery_id.is_some() {
-                    last_delivery = checked.delivery_id;
-                }
-                let Some(failure) = checked.failed else {
-                    break checked.outcome;
-                };
-                (failure, checked.outcome)
+        let checked = match ctx.batch {
+            Some(batch) if outcome.succeeded() => {
+                deliver_plan_to_batch(
+                    batch,
+                    plan,
+                    plan_checks,
+                    ctx.gate_env_passthrough,
+                    ctx.worktrees,
+                    ctx.delete_attempt_branches,
+                    &ctx.interrupt,
+                    &mut checkpoint,
+                    graph_tui_bridge,
+                    handbacks.len(),
+                )
+                .await?
             }
+            None if outcome.succeeded() && !plan_checks.is_empty() => {
+                check_plan_in_place(
+                    ctx.workdir,
+                    plan,
+                    plan_checks,
+                    ctx.gate_env_passthrough,
+                    &ctx.interrupt,
+                    &mut checkpoint,
+                    graph_tui_bridge,
+                )
+                .await?
+            }
+            _ => break outcome,
+        };
+        if checked.delivery_id.is_some() {
+            last_delivery = checked.delivery_id;
+        }
+        let Some(failure) = checked.failed else {
+            break checked.outcome;
         };
         let rerun = HandbackRerun {
             run_id: &run_id,
@@ -4460,8 +4451,7 @@ async fn run_one_plan(
         .await?;
         match step {
             HandbackStep::Recheck => {}
-            HandbackStep::Unchanged => unchanged = Some(failure),
-            HandbackStep::Fail => break checked_outcome,
+            HandbackStep::Fail => break checked.outcome,
             HandbackStep::Stopped(reason) => {
                 interrupted_by = interrupted_by.or(Some(reason));
                 break PlanOutcome::Interrupted;
@@ -5289,31 +5279,36 @@ struct HandbackRerun<'a> {
 /// What a hand-back of a plan's failed check did ([`hand_back_plan_check`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HandbackStep {
-    /// The tasks it named ran again and passed: check the plan again.
+    /// Its try passed, the plan's check included: check the plan again.
     Recheck,
-    /// The tasks it named passed, but changed nothing: the check would fail
-    /// the same way, so the failure goes back to them again, while
-    /// hand-backs remain, without checking the plan.
-    Unchanged,
-    /// It was not handed back, or its tasks did not pass: the plan failed.
+    /// It was not handed back, or its try did not pass: the plan failed.
     Fail,
-    /// A stop request came while its tasks ran.
+    /// A stop request came while its try ran.
     Stopped(PlanRunInterrupt),
-    /// An operator cancelled the plan while its tasks ran.
+    /// An operator cancelled the plan while its try ran.
     Cancelled,
 }
 
-/// Hand plan `plan`'s failed whole-plan check `failure` back to the tasks
-/// whose files it names (find-5bcba7), and run them again, one at a time,
-/// each from the plan's accepted work with the failure as its feedback. A
-/// file belongs to the task that changed it last
-/// ([`super::plan_handback::file_owners`]).
+/// Hand plan `plan`'s failed whole-plan check `failure` back to its tasks
+/// (find-5bcba7): one attempt, from the plan's accepted work, with the
+/// failure as its feedback. The tasks it goes back to own the files its
+/// output names, or are every task that changed a file when it names none
+/// ([`super::plan_handback::implicated_tasks`]); a file belongs to the task
+/// that changed it last ([`super::plan_handback::file_owners`]).
+///
+/// The attempt is one, not one per task, since fixing the failure can take
+/// more than one task's files (bug-fc05a3): one of them runs it, a task whose
+/// own steps run the test that failed, else the one of the highest tier
+/// ([`super::plan_handback::lead_task`]). It may change all their files, and
+/// is judged by its own verify steps, theirs and the plan's check
+/// ([`super::plan_handback::handback_task`]). An attempt that changes nothing
+/// while the check fails is then a failure, not "already satisfied".
 ///
 /// It is not handed back once it was [`super::plan_handback::MAX_HANDBACKS`]
-/// times, under the rich topology, or when it names no file a task owns:
-/// the plan fails as it did. Their new attempts replace the tasks' results
-/// in `output` and their statuses in `statuses`, and the hand-back is added
-/// to `handbacks`. `Err` only when its tasks cannot be put in a graph.
+/// times, under the rich topology, when its step printed nothing, or when no
+/// task of the plan changed a file: the plan fails as it did. The try's attempts replace the task's
+/// result in `output` and its status in `statuses`, and the hand-back is
+/// added to `handbacks`. `Err` only when the try cannot be put in a graph.
 async fn hand_back_plan_check(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,
@@ -5324,11 +5319,11 @@ async fn hand_back_plan_check(
     output: &mut roko_graph::GraphOutput,
     statuses: &mut HashMap<String, roko_graph::engine::NodeStatus>,
 ) -> anyhow::Result<HandbackStep> {
-    use roko_graph::cells::task_executor::TaskGateVerdict;
     use roko_graph::engine::NodeStatus;
 
     use super::plan_handback::{
-        Handback, MAX_HANDBACKS, file_owners, handback_feedback, handed_tasks, named_files,
+        Handback, MAX_HANDBACKS, file_owners, handback_feedback, implicated_tasks, lead_task,
+        named_files,
     };
 
     let not_handed_back = |why: &str| -> anyhow::Result<HandbackStep> {
@@ -5348,51 +5343,59 @@ async fn hand_back_plan_check(
     if ctx.rich_topology {
         return not_handed_back("a hand-back runs only on the default topology");
     }
+    if failure.printed_nothing() {
+        return not_handed_back("its failed step printed nothing to go on");
+    }
     let repo = ctx.batch.map(super::batch::BatchIntegration::repo);
     let owners = file_owners(repo, plan, rerun.run_id).await;
     let files = named_files(&failure.output, &owners);
-    let tasks = handed_tasks(plan, &files);
-    if tasks.is_empty() {
-        return not_handed_back("its output names no file a task of the plan changed");
-    }
+    let tasks = implicated_tasks(plan, &owners, &files);
+    let Some(lead) = lead_task(plan, &tasks, failure) else {
+        return not_handed_back("no task of the plan changed a file");
+    };
+    let checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
+    let Some(try_task) = handback_try(plan, rerun, &lead, &tasks, checks, failure, &owners) else {
+        return not_handed_back(&format!("task {lead}'s definition could not be read"));
+    };
     let round = handbacks.len() + 1;
-    for task_id in &tasks {
-        let named: Vec<&str> = files
-            .iter()
-            .filter(|(_, owner)| *owner == task_id)
-            .map(|(path, _)| path.as_str())
-            .collect();
-        if let Some(feedback) = handback_feedback(failure, &named) {
-            ctx.graph_task_dispatcher
-                .hand_back(&plan.id, task_id, &failure.command, feedback);
-        }
+    if let Some(feedback) = handback_feedback(failure, &files, &tasks) {
+        ctx.graph_task_dispatcher
+            .hand_back(&plan.id, &lead, &failure.command, feedback);
     }
-    let named_list = files.keys().cloned().collect::<Vec<_>>().join(", ");
+    let named_list = if files.is_empty() {
+        "no file a task changed".to_string()
+    } else {
+        files.keys().cloned().collect::<Vec<_>>().join(", ")
+    };
     tracing::info!(
         plan_id = %plan.id,
         check = %failure.command,
         files = %named_list,
         tasks = %tasks.join(", "),
+        lead = %lead,
         round,
         "handing the plan's failed check back to its tasks"
     );
     ctx.graph_tui_bridge.log_event(
         "graph.plan_check_handback",
         &format!(
-            "plan '{}': its whole-plan check `{}` failed on {named_list}; handing it back to \
-             task(s) {} (hand-back {round} of at most {MAX_HANDBACKS})",
+            "plan '{}': its whole-plan check `{}` failed, naming {named_list}; handing it back \
+             to task {lead}, which may change the files of task(s) {} (hand-back {round} of at \
+             most {MAX_HANDBACKS})",
             plan.id,
             failure.command,
             tasks.join(", ")
         ),
     );
 
-    let ran = rerun_handed_back_tasks(ctx, plan, control, rerun, &tasks, statuses.clone()).await?;
+    let ran =
+        rerun_handed_back_tasks(ctx, plan, control, rerun, try_task, statuses.clone()).await?;
     let mut handback = Handback {
         round,
         check: failure.command.clone(),
         files,
         tasks: tasks.clone(),
+        lead: lead.clone(),
         result: String::new(),
     };
     statuses.extend(ran.statuses);
@@ -5406,107 +5409,153 @@ async fn hand_back_plan_check(
         handback.result = "cancelled".to_string();
         HandbackStep::Cancelled
     } else {
-        let results: Vec<_> = ran
-            .output
-            .as_ref()
-            .map(|rerun_output| {
-                rerun_output
-                    .node_results
-                    .iter()
-                    .filter(|result| tasks.contains(&result.node_id))
-                    .map(|result| {
-                        let verdict = rerun_output.gate_verdicts.get(&result.node_id).copied();
-                        (result.status, verdict)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let passed = results.len() == tasks.len()
-            && results
+        let passed = ran.output.as_ref().is_some_and(|rerun_output| {
+            rerun_output
+                .node_results
                 .iter()
-                .all(|(status, _)| *status == NodeStatus::Complete);
-        let unchanged = results
-            .iter()
-            .all(|(_, verdict)| *verdict == Some(TaskGateVerdict::AlreadySatisfied));
-        if !passed {
-            handback.result = "failed".to_string();
-            HandbackStep::Fail
-        } else if unchanged {
-            handback.result = "unchanged".to_string();
-            HandbackStep::Unchanged
-        } else {
+                .any(|result| result.node_id == lead && result.status == NodeStatus::Complete)
+        });
+        if passed {
             handback.result = "passed".to_string();
             HandbackStep::Recheck
+        } else if ctx.graph_task_dispatcher.changed_nothing(&plan.id, &lead) {
+            handback.result = "unchanged".to_string();
+            HandbackStep::Fail
+        } else {
+            handback.result = "failed".to_string();
+            HandbackStep::Fail
         }
     };
     match handback.result.as_str() {
         "passed" => ctx.graph_tui_bridge.log_event(
             "graph.plan_check_handback",
             &format!(
-                "plan '{}': task(s) {} passed after hand-back {round}; checking the plan again",
-                plan.id,
-                tasks.join(", ")
+                "plan '{}': task {lead} passed after hand-back {round}, the plan's check included; \
+                 checking the plan again",
+                plan.id
             ),
         ),
         "failed" => ctx.graph_tui_bridge.error(&format!(
-            "plan '{}': task(s) {} did not pass after hand-back {round} of its whole-plan check",
-            plan.id,
-            tasks.join(", ")
+            "plan '{}': task {lead} did not pass after hand-back {round} of its whole-plan check",
+            plan.id
         )),
-        "unchanged" => ctx.graph_tui_bridge.log_event(
-            "graph.plan_check_handback",
-            &format!(
-                "plan '{}': task(s) {} changed nothing after hand-back {round}, so the plan is not \
-                 checked again; the failure goes back to them while hand-backs remain",
-                plan.id,
-                tasks.join(", ")
-            ),
-        ),
+        "unchanged" => ctx.graph_tui_bridge.error(&format!(
+            "plan '{}': task {lead} changed nothing after hand-back {round} of its whole-plan \
+             check, which still fails; the check fails across the work of task(s) {}",
+            plan.id,
+            handback.tasks.join(", ")
+        )),
         _ => {}
     }
     handbacks.push(handback);
     Ok(step)
 }
 
-/// What running a hand-back's tasks again left ([`rerun_handed_back_tasks`]).
+/// Task `lead` of `plan` as a hand-back's try runs it, as the graph converter
+/// takes it (bug-fc05a3): its task as [`super::plan_handback::handback_task`]
+/// makes it, with the files of `tasks` (by `owners`), their verify steps and
+/// the plan's check `checks`, and without its dependencies, which passed.
+/// `None` when its definition cannot be read.
+fn handback_try(
+    plan: &crate::runner::plan_loader::Plan,
+    rerun: &HandbackRerun<'_>,
+    lead: &str,
+    tasks: &[String],
+    checks: &[crate::task_parser::VerifyStep],
+    failure: &super::plan_handback::FailedPlanCheck,
+    owners: &BTreeMap<String, String>,
+) -> Option<(String, roko_graph::PlanTaskInfo)> {
+    let (_, info) = rerun.tasks.iter().find(|(task_id, _)| task_id == lead)?;
+    let task: crate::task_parser::TaskDef =
+        serde_json::from_value(info.full_config_json.clone()).ok()?;
+    let others: Vec<&crate::task_parser::TaskDef> = plan
+        .tasks
+        .tasks
+        .iter()
+        .filter(|other| other.id != lead && tasks.contains(&other.id))
+        .collect();
+    let scope: BTreeMap<String, String> = owners
+        .iter()
+        .filter(|(_, owner)| tasks.contains(owner))
+        .map(|(path, owner)| (path.clone(), owner.clone()))
+        .collect();
+    let task = super::plan_handback::handback_task(&task, &others, checks, failure, &scope);
+    let mut info = info.clone();
+    info.depends_on.clear();
+    info.files.clone_from(&task.files);
+    info.description.clone_from(&task.description);
+    info.full_config_json = serde_json::to_value(&task).ok()?;
+    Some((lead.to_string(), info))
+}
+
+/// The retry budget of a hand-back's try (bug-fc05a3): its task's own budget,
+/// `budgets` when the run keeps live ones, but at most
+/// [`super::plan_handback::HANDBACK_RETRIES`] retries, and none once an
+/// attempt changed nothing, since the next would start from the same tree.
+struct HandbackRetries {
+    plan_id: String,
+    task_id: String,
+    budgets: Option<Arc<dyn roko_graph::cells::RetryBudgetSource>>,
+    dispatcher: Arc<crate::graph_task_dispatch::GraphTaskDispatcher>,
+}
+
+impl roko_graph::cells::RetryBudgetSource for HandbackRetries {
+    fn max_retries(
+        &self,
+        spec: &roko_graph::cells::TaskExecutionSpec,
+        ctx: &roko_graph::CellContext,
+    ) -> Option<u32> {
+        if self
+            .dispatcher
+            .changed_nothing(&self.plan_id, &self.task_id)
+        {
+            return Some(0);
+        }
+        let budget = self
+            .budgets
+            .as_ref()
+            .and_then(|budgets| budgets.max_retries(spec, ctx))
+            .unwrap_or(spec.max_retries);
+        Some(budget.min(super::plan_handback::HANDBACK_RETRIES))
+    }
+}
+
+/// What running a hand-back's try left ([`rerun_handed_back_tasks`]).
 struct HandbackRerunResult {
     /// The graph's result; `None` when it did not settle.
     output: Option<roko_graph::GraphOutput>,
-    /// The stop request that came while the tasks ran, if one did.
+    /// The stop request that came while the try ran, if one did.
     interrupted_by: Option<PlanRunInterrupt>,
-    /// Whether an operator cancelled the plan while they ran.
+    /// Whether an operator cancelled the plan while it ran.
     cancelled_by_tui: bool,
     /// The tasks' statuses as the live views last saw them.
     statuses: HashMap<String, roko_graph::engine::NodeStatus>,
 }
 
-/// Run `task_ids` of `plan` again, after a hand-back left each its feedback
-/// (find-5bcba7): a graph of those tasks alone, one at a time, through the
-/// run's task dispatcher, so each attempt runs, is checked and is accepted
-/// onto the plan branch as any other, within the task's retry budget. Its
-/// tasks' dependencies already passed. It is watched as the plan's graph is
-/// ([`FlowWatch`]), from the live views' last `statuses`.
+/// Run a hand-back's try, `try_task` of `plan` ([`handback_try`]), after the
+/// hand-back left it its feedback (find-5bcba7): a graph of that task alone,
+/// through the run's task dispatcher, so each attempt runs, is checked and is
+/// accepted onto the plan branch as any other, within [`HandbackRetries`]. It
+/// is watched as the plan's graph is ([`FlowWatch`]), from the live views'
+/// last `statuses`.
 async fn rerun_handed_back_tasks(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,
     control: &PlanControl,
     rerun: &HandbackRerun<'_>,
-    task_ids: &[String],
+    try_task: (String, roko_graph::PlanTaskInfo),
     statuses: HashMap<String, roko_graph::engine::NodeStatus>,
 ) -> anyhow::Result<HandbackRerunResult> {
     use roko_graph::cells::TaskExecutorCell;
     use roko_graph::engine::GraphEngine;
 
-    let tasks: Vec<(String, roko_graph::PlanTaskInfo)> = rerun
-        .tasks
-        .iter()
-        .filter(|(task_id, _)| task_ids.contains(task_id))
-        .map(|(task_id, info)| {
-            let mut info = info.clone();
-            info.depends_on.clear();
-            (task_id.clone(), info)
-        })
-        .collect();
+    let retries: Arc<dyn roko_graph::cells::RetryBudgetSource> = Arc::new(HandbackRetries {
+        plan_id: plan.id.clone(),
+        task_id: try_task.0.clone(),
+        budgets: rerun.live_budgets.cloned(),
+        dispatcher: Arc::clone(ctx.graph_task_dispatcher),
+    });
+    let tasks = [try_task];
     let mut graph = roko_graph::plan_to_graph(&plan.id, &plan.dir.display().to_string(), &tasks, 1)
         .map_err(|error| {
             anyhow!(
@@ -5518,10 +5567,9 @@ async fn rerun_handed_back_tasks(
     graph.policy.failure_strategy = roko_graph::FailureStrategy::SkipFailed;
     let mut registry = roko_graph::default_registry();
     let dispatcher = Arc::clone(ctx.task_dispatcher);
-    let budgets = rerun.live_budgets.cloned();
     registry.register("task-executor", move |config| {
         let cell = TaskExecutorCell::live(config, Arc::clone(&dispatcher));
-        Box::new(with_live_budgets(cell, budgets.as_ref()))
+        Box::new(cell.with_retry_budget(Arc::clone(&retries)))
     });
     let budget_dispatcher = Arc::clone(ctx.graph_task_dispatcher);
     let budget_plan_id = plan.id.clone();
@@ -10540,8 +10588,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
 
     /// A scripted provider like [`WRITES_NAMED_FILE_AGENT`] that, when its
     /// prompt carries a hand-back of the plan's whole-plan check
-    /// (find-5bcba7), runs `on_handback` instead, with `$name` set.
+    /// (find-5bcba7), runs `on_handback` instead, with `$name` and `$prompt`
+    /// set.
     fn handback_agent(on_handback: &str) -> String {
+        handback_agent_writing("printf '%s\\n' \"$name\" > \"$name.txt\"", on_handback)
+    }
+
+    /// [`handback_agent`] whose first attempts run `writes` in place of
+    /// writing their task's name to its file.
+    fn handback_agent_writing(writes: &str, on_handback: &str) -> String {
         format!(
             r#"#!/bin/sh
 set -eu
@@ -10550,7 +10605,7 @@ name=$(printf '%s' "$prompt" | sed -n 's/.*Write \([a-z]*\)\.txt.*/\1/p' | head 
 if printf '%s' "$prompt" | grep -q "the plan's whole-plan check"; then
   {on_handback}
 else
-  printf '%s\n' "$name" > "$name.txt"
+  {writes}
 fi
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"wrote the file"}}}}'
 printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{{"input_tokens":5,"output_tokens":10}}}}'
@@ -10651,6 +10706,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             );
             assert_eq!(handbacks[0]["round"], 1, "{mode}: {handbacks}");
             assert_eq!(handbacks[0]["tasks"], serde_json::json!(["T1"]), "{mode}");
+            assert_eq!(handbacks[0]["lead"], "T1", "{mode}");
             assert_eq!(
                 handbacks[0]["files"],
                 serde_json::json!({"alpha.txt": "T1"}),
@@ -10692,10 +10748,30 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         }
     }
 
-    /// find-5bcba7: hand-backs are bounded. A check that fails on the task's
-    /// file whatever the task does is handed back
-    /// [`super::super::plan_handback::MAX_HANDBACKS`] times, each attempt
-    /// passing the task's own check, and then the plan fails as before.
+    /// Plan `01-alpha`'s hand-backs in `repo`'s checkpoint, and how each
+    /// ended.
+    fn handback_results(repo: &Path) -> (serde_json::Value, Vec<String>) {
+        let checkpoint = checkpoint_json(repo, "01-alpha");
+        let handbacks = checkpoint["extensions"][crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]
+            ["value"]
+            .clone();
+        let results = handbacks
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter_map(|handback| handback["result"].as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (handbacks, results)
+    }
+
+    /// find-5bcba7: hand-backs are bounded. A check that the task's try
+    /// passes, but that fails again when the plan is checked, here one that
+    /// fails every other time it runs, is handed back
+    /// [`super::super::plan_handback::MAX_HANDBACKS`] times, and then the
+    /// plan fails as before.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_plan_check_is_handed_back_at_most_max_handbacks_times() {
         use super::super::plan_handback::MAX_HANDBACKS;
@@ -10706,8 +10782,14 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             } else {
                 "shared tree"
             };
+            let runs = tempfile::tempdir().expect("a counter's directory");
+            let count = runs.path().join("count");
             let dir = repo_with_handback_plan(
-                "echo 'error: alpha.txt is still wrong' >&2; exit 1",
+                &format!(
+                    "n=$(cat '{count}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '{count}'; \
+                     [ $((n % 2)) -eq 0 ] || {{ echo 'error: alpha.txt is still wrong' >&2; exit 1; }}",
+                    count = count.display()
+                ),
                 "printf 'fixed\\n' >> \"$name.txt\"",
             );
             let repo = dir.path();
@@ -10728,22 +10810,11 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
                 "{mode}"
             );
             assert_eq!(
-                attempt_outcomes(repo, "T1").len(),
-                1 + MAX_HANDBACKS,
+                attempt_outcomes(repo, "T1"),
+                vec!["passed"; 1 + MAX_HANDBACKS],
                 "{mode}"
             );
-            let checkpoint = checkpoint_json(repo, "01-alpha");
-            let handbacks = &checkpoint["extensions"]
-                [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];
-            let results: Vec<&str> = handbacks
-                .as_array()
-                .map(|handbacks| {
-                    handbacks
-                        .iter()
-                        .filter_map(|handback| handback["result"].as_str())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let (handbacks, results) = handback_results(repo);
             assert_eq!(
                 results,
                 vec!["passed"; MAX_HANDBACKS],
@@ -10765,70 +10836,192 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         }
     }
 
-    /// find-5bcba7: a hand-back whose task passes but changes nothing is
-    /// not checked again, since the check would fail the same way: the
-    /// failure goes back to the task again until the hand-backs run out. A
-    /// failure that names no file a task of the plan changed is not handed
-    /// back at all. Either way the plan fails as before.
+    /// bug-fc05a3: a hand-back's try is judged by the plan's check as well
+    /// as its own, and is retried at most
+    /// [`super::super::plan_handback::HANDBACK_RETRIES`] times. A check that
+    /// fails whatever the try changes, here on the seed's README, which no
+    /// output line ties to a task's file, ends the plan after that one
+    /// hand-back: the check would fail again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_plan_check_is_not_handed_back_to_no_purpose() {
-        use super::super::plan_handback::MAX_HANDBACKS;
+    async fn a_hand_back_whose_try_fails_ends_the_plan() {
+        use super::super::plan_handback::HANDBACK_RETRIES;
 
-        for (check, on_handback, task_runs, handed_back) in [
-            // T1 writes what it wrote before.
-            (
-                "grep -qx fixed alpha.txt || { echo 'error: alpha.txt is not fixed' >&2; exit 1; }",
-                "printf '%s\\n' \"$name\" > \"$name.txt\"",
-                1 + MAX_HANDBACKS,
-                Some("unchanged"),
-            ),
-            // The seed's README is no task's file.
-            (
+        for worktree_per_task in [false, true] {
+            let mode = format!("worktree per task: {worktree_per_task}");
+            let dir = repo_with_handback_plan(
                 "echo 'error: README.md is out of date' >&2; exit 1",
-                "printf 'fixed\\n' > \"$name.txt\"",
-                1,
-                None,
-            ),
-        ] {
-            for worktree_per_task in [false, true] {
-                let mode = format!("{check} (worktree per task: {worktree_per_task})");
-                let dir = repo_with_handback_plan(check, on_handback);
-                let repo = dir.path();
-                let params = GraphPlanRunParams {
-                    worktree_per_task,
-                    ..worktree_run_params(repo)
-                };
+                "printf 'fixed\\n' >> \"$name.txt\"",
+            );
+            let repo = dir.path();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
 
-                let exit_code = run_graph_plan_in_run(params, Some("run-no-purpose".into()))
-                    .await
-                    .expect("run the plan");
+            let exit_code = run_graph_plan_in_run(params, Some("run-try-fails".into()))
+                .await
+                .expect("run the plan");
 
-                assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
-                assert_eq!(
-                    crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
-                    Some(GraphCheckpointStatus::Failed),
-                    "{mode}"
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            let outcomes = attempt_outcomes(repo, "T1");
+            let tries = 1 + HANDBACK_RETRIES as usize;
+            assert_eq!(outcomes.len(), 1 + tries, "{mode}: {outcomes:?}");
+            assert!(
+                outcomes[1..].iter().all(|outcome| outcome == "gate_failed"),
+                "{mode}: {outcomes:?}"
+            );
+            let (handbacks, results) = handback_results(repo);
+            assert_eq!(results, ["failed"], "{mode}: {handbacks}");
+            assert_eq!(handbacks[0]["files"], serde_json::json!({}), "{mode}");
+            assert_eq!(handbacks[0]["tasks"], serde_json::json!(["T1"]), "{mode}");
+        }
+    }
+
+    /// bug-fc05a3 (Undertow phase 4, run c4fa953f: T7#2 settled
+    /// `already_satisfied` on a check that still failed, and was accepted as
+    /// an empty commit): a hand-back's try that changes nothing, while the
+    /// plan's check still fails on its tree, is not already satisfied. The
+    /// check is one of its verify steps, so the try fails; having changed
+    /// nothing, it is not retried, and the plan fails after that one
+    /// hand-back, `unchanged`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails() {
+        for worktree_per_task in [false, true] {
+            let mode = format!("worktree per task: {worktree_per_task}");
+            let dir = repo_with_handback_plan(
+                "grep -qx fixed alpha.txt || { echo 'error: alpha.txt is not fixed' >&2; exit 1; }",
+                ":",
+            );
+            let repo = dir.path();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-unchanged".into()))
+                .await
+                .expect("run the plan");
+
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            assert_eq!(
+                attempt_outcomes(repo, "T1"),
+                ["passed", "gate_failed"],
+                "{mode}"
+            );
+            let (handbacks, results) = handback_results(repo);
+            assert_eq!(results, ["unchanged"], "{mode}: {handbacks}");
+            if worktree_per_task {
+                // Nothing of the try reached the plan branch: it holds T1's
+                // first attempt alone.
+                let plan_branch = crate::orchestrator::worktree::format_branch_name("01-alpha");
+                let commits = git_stdout(
+                    repo,
+                    &["log", "--format=%H", &format!("main..{plan_branch}")],
                 );
-                let checkpoint = checkpoint_json(repo, "01-alpha");
-                let handbacks = &checkpoint["extensions"]
-                    [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];
-                let outcomes = attempt_outcomes(repo, "T1");
-                assert_eq!(
-                    outcomes.len(),
-                    task_runs,
-                    "{mode}: {outcomes:?} {handbacks}"
-                );
-                match handed_back {
-                    Some(result) => {
-                        let results: Vec<&str> = handbacks
-                            .as_array()
-                            .map(|all| all.iter().filter_map(|h| h["result"].as_str()).collect())
-                            .unwrap_or_default();
-                        assert_eq!(results, vec![result; MAX_HANDBACKS], "{mode}: {handbacks}");
-                    }
-                    None => assert!(handbacks.is_null(), "{mode}: {handbacks}"),
-                }
+                assert_eq!(commits.lines().count(), 1, "{mode}: {commits}");
             }
+        }
+    }
+
+    /// bug-fc05a3, Undertow phase 4's shape (run c4fa953f): two tasks each
+    /// draw a colour the plan's check forbids, and the check, which names
+    /// neither file, fails until both are fixed, so no try at one task's
+    /// files alone could pass it. The failure goes back as one try, which T2,
+    /// the last of the plan's equal tasks, runs: it may change both tasks'
+    /// files, the plan's check judges it, and the plan succeeds after that
+    /// one hand-back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failure_across_two_tasks_goes_back_as_one_try_at_both_files() {
+        for worktree_per_task in [false, true] {
+            let mode = format!("worktree per task: {worktree_per_task}");
+            let dir = repo_with_file_plans(
+                &["panel"],
+                Some(
+                    "if grep -q bone look.txt status.txt; then \
+                     echo 'error: the panel shows bone outside the chest' >&2; exit 1; fi",
+                ),
+            );
+            let repo = dir.path();
+            std::fs::write(
+                repo.join("plans/01-panel/tasks.toml"),
+                "[meta]\nplan = \"01-panel\"\nmax_parallel = 1\nskip_enrichment = true\n\n\
+                 [[meta.verify]]\ncommand = \"if grep -q bone look.txt status.txt; then echo 'error: \
+                 the panel shows bone outside the chest' >&2; exit 1; fi\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Write look.txt\"\ndescription = \"Write look.txt.\"\n\
+                 role = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\nfiles = [\"look.txt\"]\n\n\
+                 [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f look.txt\"\n\n\
+                 [[task]]\nid = \"T2\"\ntitle = \"Write status.txt\"\ndescription = \"Write status.txt.\"\n\
+                 role = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\nfiles = [\"status.txt\"]\n\n\
+                 [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f status.txt\"\n",
+            )
+            .expect("tasks.toml");
+            // Each task draws bone; a hand-back's try repaints every file
+            // its prompt names.
+            std::fs::write(
+                repo.join("agent.sh"),
+                handback_agent_writing(
+                    "printf 'bone\\n' > \"$name.txt\"",
+                    "for file in look.txt status.txt; do\n    \
+                     if printf '%s' \"$prompt\" | grep -q \"$file\"; then printf 'rose\\n' > \"$file\"; fi\n  \
+                     done",
+                ),
+            )
+            .expect("agent");
+            git_in(repo, &["commit", "-qam", "two tasks draw the panel"]);
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-panel".into()))
+                .await
+                .expect("run the plan");
+
+            assert_eq!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(attempt_outcomes(repo, "T1"), ["passed"], "{mode}");
+            assert_eq!(attempt_outcomes(repo, "T2"), ["passed", "passed"], "{mode}");
+            let checkpoint = checkpoint_json(repo, "01-panel");
+            let handbacks = &checkpoint["extensions"]
+                [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];
+            assert_eq!(
+                handbacks.as_array().map(Vec::len),
+                Some(1),
+                "{mode}: {handbacks}"
+            );
+            assert_eq!(handbacks[0]["files"], serde_json::json!({}), "{mode}");
+            assert_eq!(
+                handbacks[0]["tasks"],
+                serde_json::json!(["T1", "T2"]),
+                "{mode}"
+            );
+            assert_eq!(handbacks[0]["lead"], "T2", "{mode}");
+            assert_eq!(handbacks[0]["result"], "passed", "{mode}");
+            let (look, status) = if worktree_per_task {
+                let batch = "roko/batch/run-panel";
+                (
+                    git_stdout(repo, &["show", &format!("{batch}:look.txt")]),
+                    git_stdout(repo, &["show", &format!("{batch}:status.txt")]),
+                )
+            } else {
+                let read = |file: &str| {
+                    std::fs::read_to_string(repo.join(file))
+                        .expect("the panel's file")
+                        .trim()
+                        .to_string()
+                };
+                (read("look.txt"), read("status.txt"))
+            };
+            assert_eq!((look.as_str(), status.as_str()), ("rose", "rose"), "{mode}");
         }
     }
 

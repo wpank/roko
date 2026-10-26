@@ -1534,6 +1534,11 @@ pub fn format_dashboard_event(
             detail,
             ..
         } => (format!("[{plan_id}/{task_id}]"), "!", detail.clone()),
+        // A rung the probes skipped at plan start says so, and until when
+        // (gap-20301d).
+        DashboardEvent::RungSkipped {
+            plan_id, detail, ..
+        } => (format!("[{plan_id}]"), "!", detail.clone()),
         // A provider out of usage or unable to bill says why (bug-390e4b).
         DashboardEvent::ProviderExhausted {
             plan_id,

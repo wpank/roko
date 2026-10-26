@@ -39,6 +39,7 @@ use super::retry_feedback::LadderStanding;
 use super::try_allowance::{RungAllowance, RungBounds};
 use super::*;
 use crate::dispatch::model_routing::SELF_MODEL_LOOP;
+use crate::dispatch::rung_probe::{SkippedRung, skipped_rungs};
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
 use crate::runtime_feedback::homeostasis::HarnessDecision;
 
@@ -181,6 +182,36 @@ impl GraphTaskDispatcher {
             || is_express_task(&self.config, task)
             || task.model_hint.is_some()
             || task.hints.preferred_model.is_some()
+    }
+
+    /// Why an attempt at `task` is refused before its agent runs: every rung
+    /// of the routing ladder failed its tool-use probe at plan start, and the
+    /// ladder would route the task (gap-20301d). The router would pick a
+    /// model the ladder never names, as it picked glm-4.7 on an account out
+    /// of balance in the pilot's fenced check, so the task fails plainly
+    /// instead, naming each rung's reason. A pinned task, and one whose role
+    /// the ladder does not route, still run. The refusal is not retried; a
+    /// resume runs the task again.
+    pub(super) fn unroutable(&self, task: &TaskDef) -> Option<RokoError> {
+        let (ladder, failed) = self.factory.lost_ladder()?;
+        if self.model_pinned(task) {
+            return None;
+        }
+        let role = task.role.as_deref().unwrap_or("implementer");
+        ladder.start(role, task.tier_class(), task.hints.rung.as_deref())?;
+        let rungs: Vec<String> = skipped_rungs(&self.config, ladder, failed, &self.workdir)
+            .iter()
+            .map(SkippedRung::named)
+            .collect();
+        Some(RokoError::Rejected(format!(
+            "task `{}` was not run: no rung of the routing ladder can run, as every rung's model \
+             failed its tool-use probe at plan start: {}. roko does not send a task the ladder \
+             routes to a model outside it: fix those providers, or pin a model (`--model`, or \
+             the task's `model_hint`), then resume the plan. A probe verdict stands for a day \
+             (`.roko/learn/rung-probes.json`)",
+            task.id,
+            rungs.join("; ")
+        )))
     }
 
     /// The bounds M1's `decision` puts on `task`'s rungs: the rungs its θ
@@ -1282,6 +1313,65 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 ("agent", "cheap", "start", false),
             ]
         );
+    }
+
+    /// gap-20301d: when every rung of the ladder failed its tool-use probe at
+    /// plan start, a task the ladder routes is refused before any model call,
+    /// its error naming each rung and why, rather than sent to a model the
+    /// ladder never names. A pinned task still runs.
+    #[tokio::test]
+    async fn a_task_the_ladder_routes_is_refused_when_every_rung_failed_its_probe() {
+        let temp = tempdir().expect("tempdir");
+        let (fixture, task) = ladder_fixture(&temp).await;
+        let config = Arc::clone(&fixture.config);
+        let failed: BTreeMap<String, String> = fixture
+            .factory
+            .dispatcher()
+            .routing_ladder()
+            .expect("the fixture's ladder")
+            .rung_models()
+            .into_iter()
+            .map(|model| {
+                let reason = format!("insufficient_credits: batch-cli refused {model} (HTTP 402)");
+                (model, reason)
+            })
+            .collect();
+        assert_eq!(failed.len(), 2, "both rungs fail: {failed:?}");
+        drop(fixture);
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .skip_failed_rungs(&failed);
+        let dispatcher =
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf());
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("no rung can run the task");
+        assert!(matches!(error, RokoError::Rejected(_)), "{error}");
+        let message = error.to_string();
+        for named in [
+            "no rung of the routing ladder can run".to_string(),
+            format!("cheap ({CHEAP} on batch-cli): insufficient_credits"),
+            format!("top ({TOP} on batch-cli): insufficient_credits"),
+        ] {
+            assert!(message.contains(&named), "{named}: {message}");
+        }
+        assert!(
+            !temp.path().join("provider-models").exists(),
+            "no model ran the task"
+        );
+
+        let mut pinned = task.clone();
+        pinned.id = "T-PINNED".to_string();
+        pinned.model_hint = Some("batch-model".to_string());
+        let error = dispatcher
+            .dispatch(&make_spec(&pinned), Vec::new(), &ctx)
+            .await
+            .expect_err("its verify step fails");
+        assert!(!matches!(error, RokoError::Rejected(_)), "{error}");
+        assert_eq!(called_models(&temp), [TOP], "the pinned model ran it");
     }
 
     /// A settled turn-cap stop of `task` on the cheap rung. `substitute`

@@ -2460,6 +2460,9 @@ fn run_summary(
     let mut reasoning_cuts = Vec::<Value>::new();
     // The rungs the run said ran slow, as it went (gap-3217a0).
     let mut rung_slow = Vec::<Value>::new();
+    // The rungs the run skipped at plan start because their model failed its
+    // tool-use probe, the latest event of each plan and rung (gap-20301d).
+    let mut rungs_skipped = BTreeMap::<(String, String), Value>::new();
     // The providers the run went on without because they refused a call for
     // want of usage, an account they can't bill included, the latest refusal
     // of each (bug-390e4b).
@@ -2499,6 +2502,24 @@ fn run_summary(
                 "detail": data.get("detail"),
                 "at": event_time(value),
             }));
+        }
+        if kind == "rung_skipped" {
+            let data = event_data(value);
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            let rung = string_field(value, "rung").unwrap_or_default().to_string();
+            rungs_skipped.insert(
+                (plan_id.clone(), rung.clone()),
+                json!({
+                    "plan_id": plan_id,
+                    "rung": rung,
+                    "model": data.get("model"),
+                    "provider": data.get("provider"),
+                    "reason": data.get("reason"),
+                    "until_ms": data.get("until_ms"),
+                    "detail": data.get("detail"),
+                    "at": event_time(value),
+                }),
+            );
         }
         if kind == "reasoning_cut" {
             let data = event_data(value);
@@ -2712,6 +2733,7 @@ fn run_summary(
         "milestones": milestones,
         "reasoning_cuts": reasoning_cuts,
         "rung_slow": rung_slow,
+        "rungs_skipped": rungs_skipped.into_values().collect::<Vec<_>>(),
         "provider_exhausted": provider_exhausted.into_values().collect::<Vec<_>>(),
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
@@ -4475,6 +4497,54 @@ mod tests {
         assert_eq!(cuts[0]["reasoning_tokens"], 12_288);
         assert_eq!(cuts[0]["saved_secs"], 550.0);
         assert_eq!(cuts[0]["reask"], "acted");
+    }
+
+    /// gap-20301d: a run's summary lists the rungs it skipped at plan start
+    /// because their model failed its tool-use probe, the latest event of
+    /// each plan and rung, as a resumed process says it again.
+    #[tokio::test]
+    async fn a_runs_summary_lists_its_skipped_rungs() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "s1").unwrap();
+        let skipped = |until: i64| json!({"type":"rung_skipped","run_id":"s1","plan_id":"p1","rung":"cheap","model":"gpt-oss-120b","provider":"cerebras","reason":"insufficient_credits: cerebras refused the request (HTTP 402): payment required","until_ms":until,"detail":"rung cheap (gpt-oss-120b on cerebras) is skipped until 20:33: its tool-use probe failed"});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"s1","timestamp_ms":1,"plan_id":"p1"}),
+                skipped(1_000),
+                skipped(2_000),
+                json!({"type":"run.completed","run_id":"s1","timestamp_ms":3,"outcome":"succeeded"}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("s1".into()))
+            .await
+            .unwrap();
+        let rungs = summary["rungs_skipped"].as_array().expect("rungs_skipped");
+        assert_eq!(rungs.len(), 1, "{summary}");
+        assert_eq!(rungs[0]["plan_id"], "p1");
+        assert_eq!(rungs[0]["rung"], "cheap");
+        assert_eq!(rungs[0]["model"], "gpt-oss-120b");
+        assert_eq!(rungs[0]["provider"], "cerebras");
+        assert_eq!(rungs[0]["until_ms"], 2_000, "the latest event");
+        assert!(
+            rungs[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("(HTTP 402)")),
+            "{summary}"
+        );
     }
 
     /// gap-3217a0: a run's summary lists each rung's tries from the run's own

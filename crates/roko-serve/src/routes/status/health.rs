@@ -330,6 +330,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::SpecGateStep { .. } => "spec_gate_step",
         DashboardEvent::ReasoningCut { .. } => "reasoning_cut",
         DashboardEvent::RungSlow { .. } => "rung_slow",
+        DashboardEvent::RungSkipped { .. } => "rung_skipped",
         DashboardEvent::ProviderExhausted { .. } => "provider_exhausted",
         DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
         DashboardEvent::PlaybookWritten { .. } => "playbook_written",
@@ -363,6 +364,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::SpecGateStep { plan_id, .. }
         | DashboardEvent::ReasoningCut { plan_id, .. }
         | DashboardEvent::RungSlow { plan_id, .. }
+        | DashboardEvent::RungSkipped { plan_id, .. }
         | DashboardEvent::ProviderExhausted { plan_id, .. }
         | DashboardEvent::KnowledgeWritten { plan_id, .. }
         | DashboardEvent::PlaybookWritten { plan_id, .. }

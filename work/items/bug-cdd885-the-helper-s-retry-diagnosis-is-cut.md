@@ -66,6 +66,20 @@ The fallback diagnosis was reworked by bug-3e3d08; this is the model path.
    what it expected", not only "type mismatch".
 3. Add the test `a_long_diagnosis_ends_on_a_whole_sentence`.
 
+### Design (roko-learnguard; the lead approved it on 2026-10-26)
+
+- **The limit:** `DIAGNOSIS_CHAR_LIMIT` goes from 320 to 600. Phase 5's two-sentence diagnoses run about 350 to 450
+  characters, so they now stand whole.
+- **The cut:** `normalize_diagnosis` keeps as many whole sentences as fit, up to two.
+  - When even the first sentence is longer than the limit, it is cut at its last word boundary and ends with "…".
+  - So a diagnosis ends on a sentence or on a marked cut, never mid-word.
+- **The prompt:** it moves into `diagnosis_prompt` and asks which file and line, or which test or check, failed, what
+  it found against what it expected, and what else fails. The compiler-only "type mismatch" goes.
+- **Tests:**
+  - `a_long_diagnosis_ends_on_a_whole_sentence`: phase 5's T4#2 shape stands whole; with two long sentences only
+    the first is kept; one over-long sentence ends with "…" on a word boundary;
+  - `the_diagnosis_prompt_asks_what_failed_against_what_it_expected`.
+
 ## Done when
 
 - The `[[verify]]` passes.

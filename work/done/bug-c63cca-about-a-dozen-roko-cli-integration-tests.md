@@ -2,7 +2,7 @@
 id = "bug-c63cca"
 kind = "bug"
 title = "About a dozen roko-cli integration tests pass only with a real claude CLI on PATH, so they fail on CI"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/tests"]
 created = 2026-10-11
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "8e82c1f75"
 source = "CI-like local sweep 2026-10-11 (roko-90)"
 discovered_from = "PR #85 CI (cost_dedup)"
 anchors = ["crates/roko-cli/tests/common/mod.rs::run_sample_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::preflight_provider_for_model"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-2a31bc", "bug-13bbe9", "
 
 [[verify]]
 command = '''grep -q 'fn with_mock_agents' crates/roko-cli/tests/common/mod.rs && env -i HOME="$(mktemp -d)" USER="$USER" LOGNAME="$USER" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" PATH="$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$(mktemp -d)" CARGO_INCREMENTAL=0 SKIP_FRONTEND_BUILD=1 CI=true cargo test -p roko-cli --no-fail-fast --test cost_dedup --test default_engine --test doctor --test graph_plan_callers --test phase0_wiring --test phase1_protocols --test smoke --test worktree_task_diff -- --exact default_engine_does_real_work doctor_human_output_contains_v2_abstractions doctor_human_output_succeeds_for_bootstrapped_workspace doctor_json_output_contains_v2_abstractions item_03_episode_logger_appends_memory_log item_04_plan_runner_reports_non_zero_agent_calls item_06_plan_run_persists_learning_feedback phase0_cascade_router_persists_after_plan_run phase0_episodes_still_logged run_plan_executes_through_graph_engine single_task_plan_emits_one_efficiency_event_per_attempt worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing'''
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T14:22:40Z"
+commit = "8e82c1f75"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T10:26:11Z"
+forced = false
+evidence = "8e82c1f75 adds Isolated::with_mock_agents to tests/common. It puts the existing mock agent (MOCK_CLAUDE_SCRIPT) first on PATH as claude, codex and gemini; the mock now answers --version, reads its prompt and echoes --model. These use it: init_workspace, run_sample_plan, run_roko_isolated, graph_plan_callers::run_roko (now isolated, its own shims gone), worktree_task_diff::run_plan, and every doctor spawn in doctor.rs and phase1_protocols.rs. So on any machine, roko init writes the Claude CLI provider and model, and the plan runs' preflight no longer falls back to the built-in claude-sonnet-4-6 and ANTHROPIC_API_KEY. The doctor's shared_credentials_none and provider_usable checks find a credential. Three tests had other causes. item_03 failed on the spec gate (HF2 refuses its `true` check), not on claude; its roko.toml now sets [spec_quality] mode = off. worktree_task_that_fails_verify failed on bug-ee2752: the helper call after the failed verify ran the file-writing task provider in the operator's checkout. Its helper calls and default_model now go to a second model on the mock, and model_hint pins its task. bug-ee2752's check moved to the ignored a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone, which fails with ?? feature.txt; bug-ee2752's verify runs it with --include-ignored. plan_run_log_file_records_one_bracketed_run now gets past the preflight and fails only because run.started's plan_ids is [], which it has been since 40e48440b; that is bug-bd261a, filed and left out of this verify. Proof: before the change all 13 failed under env -i (no keys, no claude, scratch HOME, CI=true). After it, work.py verify bug-c63cca passes: 12 tests under env -i. Every test in cost_dedup, default_engine, doctor, graph_plan_callers, phase0_wiring, phase1_protocols, smoke (item_01 skipped), worktree_task_diff, cli_fallback and spawn_isolation passes both under env -i and in the session environment, except plan_run_log_file_records_one_bracketed_run, which fails the same way in both (bug-bd261a). cargo +nightly fmt --all changes nothing, and cargo clippy -p roko-cli --no-deps -- -D warnings is clean."
 +++
 
 ## Problem

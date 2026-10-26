@@ -647,8 +647,8 @@ def summarize(run_dir: Path) -> str:
                    f"{sum(1 for row in rows if row['before']['hard_fail'])} task(s) had one before, "
                    f"{sum(1 for row in rows if (row['after'] or row['before'])['hard_fail'])} after; added: "
                    + (", ".join(f"{fail} on {n} task(s)" for fail, n in sorted(gained.items())) or "none")
-                   + ". A round is kept when the score does not drop (`refine`'s guard), even one that adds a hard "
-                   "fail.")
+                   + ". A round that would add a hard fail is rejected, even one that raises the score (`refine`'s "
+                   "guard, bug-d0906c).")
     out.append(f"- **Per-task budget:** ${budget:.2f} (S07 §4.3), held before every call and reserved on the ledger "
                f"for each task; at most {config['max_tokens']} output tokens a call.")
     if errors:

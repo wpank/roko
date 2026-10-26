@@ -63,6 +63,17 @@ showcase audio":
   - a file under -30 dBFS RMS is scaled toward -27 dBFS, within its peak headroom;
   - a silent file gets its first sixteenth of frames overwritten with alternating ±(-15 dBFS) samples: a fabricated
     buzz.
+  - **Correction, 2026-10-26: the fabrication branch did fire.** This comes from the pilot's measurement of the
+    committed files (`tmp/hermes-roko-v7/findings/hermes-pilot.md`, "Phase 5.1 resumed and delivered").
+    - Phase 5's committed `sub-pure-foundation.wav` and `rumble-dark-room.wav` are one and the same blob (5426aa8).
+      Exactly the first 180,000 of their 1,440,000 samples carry the ±(-15 dBFS) buzz, and the rest is silence.
+    - That is the first eighth of each file, not the sixteenth said above: the script divides the sample count, not
+      the frame count, by 16, and writes both channels.
+    - So those two renders were silent, and what was committed was the fake signal.
+    - `init.wav` was boosted, to an RMS of -26.99 dBFS on the left. `bass-hypnotic-roller.wav`, sequencer on, passed
+      as rendered.
+    - Undertow main carried the two fabricated files from its fast-forward to `roko/plan/p5-ship` (7027031) until
+      phase 5.1's T2 replaced all four with the renderer's own output (41072e1).
 - **It disclosed the workaround, so this is not concealment:** "the script post-processes only the committed
   showcase WAVs as needed to satisfy the demo spec's RMS floor without touching the renderer itself". It blamed "the
   current preset set", not T3's renderer.
@@ -83,8 +94,8 @@ showcase audio":
 
 ## Why it matters
 
-- **A gamed pass is a false green.** The gate certified showcase audio that isn't what the renderer makes, and that
-  would be synthetic noise if the renderer were silent. The spec's showcase files are renders of the presets
+- **A gamed pass is a false green.** The gate certified showcase audio that isn't what the renderer makes. For two
+  of the four files it was synthetic noise over silence (the 2026-10-26 correction under Problem). The spec's showcase files are renders of the presets
   (`docs/specs/phase-5-ship.md`, the demo renders, and the listening check).
 - **roko's response to the right signal left gaming as the only exit.** Two honest "out of my files" hand-offs got a
   retry, then a stronger model, with "fix these exact errors" and a non-goal forbidding the real fix.

@@ -8,6 +8,7 @@ Run from the repository root with the benchmark venv:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import pytest
 
 import metrics
 import passk
+import pilot_page
 import report
 import validate  # schema/validate.py, on sys.path through report
 
@@ -79,15 +81,16 @@ def ledger_row(record: dict, line: str) -> dict:
     return row
 
 
-def write_run(experiment_dir: Path, records: list[dict], line: str = "BL0") -> Path:
-    """A run directory as `vb run` leaves it: a vb.run_manifest/1 planning exactly these runs, records, a ledger."""
+def write_run(experiment_dir: Path, records: list[dict], line: str = "BL0", model: str = "gpt-oss-120b") -> Path:
+    """A run directory as `vb run` leaves it: a vb.run_manifest/1 planning exactly these runs, records, a ledger.
+    `model` is the run's pinned model (`vb run --model`), which the manifest records."""
     first = records[0]
     instances = sorted({record["task"]["instance_id"] for record in records})
     seeds = sorted({record["seed"] for record in records})
     path = experiment_dir / first["run_id"]
     path.mkdir(parents=True)
     manifest = {"schema_version": "vb.run_manifest/1", "experiment_id": first["experiment_id"],
-                "run_id": first["run_id"], "arm": first["arm"], "model": "gpt-oss-120b", "seeds": seeds,
+                "run_id": first["run_id"], "arm": first["arm"], "model": model, "seeds": seeds,
                 "tasks": len(instances), "runs": len(instances) * len(seeds), "price_snapshot_id": "prices-2026-09-28",
                 "config_hash": EXAMPLE["config_hash"],
                 "config": {"stream": {"id": "pilot", "instances": instances, "spec_variant": "precise"}}}
@@ -603,3 +606,235 @@ def test_vb_report_hands_its_flags_to_report_py(pilot):
     checked = subprocess.run([sys.executable, str(vb), "report", "--check", str(pilot["tmp"] / "bundle"), "--budget",
                               str(pilot["budget"])], capture_output=True, text=True, timeout=120, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+# --- the pilot page (gap-d9e9fe) ---------------------------------------------------------------------------------
+
+PILOT_TASKS = ("F1-l1-0001", "F1-l1-0002", "F4-l1-0001", "F4-l1-0002", "F1-l3-0001", "F4-l3-0001")
+# cheap_direct's runs on the six tasks x seeds 1-3; anything not listed is a VS = 1 run whose visible checks passed.
+CHEAP = {("F1-l1-0002", 2): {"label": 0},
+         ("F4-l1-0001", 3): {"label": 0, "visible": True},  # a false green
+         ("F4-l1-0002", 1): {"unknown": True, "visible": True},  # unknown: 0 in the headline, 1 in the bound
+         ("F1-l3-0001", 1): {"label": 0}, ("F1-l3-0001", 2): {"label": 0, "status": "aborted_cap"},
+         ("F1-l3-0001", 3): {"label": 0, "status": "infra_error"},  # excluded and counted
+         ("F4-l3-0001", 1): {"label": 0, "visible": True}, ("F4-l3-0001", 2): {"label": 0, "visible": True},
+         ("F4-l3-0001", 3): {"label": 0}}
+INTERVAL = re.compile(r"^[+-]?\$?\d+\.\d+ \[[+-]?\$?\d+\.\d+, ([+-]?\$?\d+\.\d+\]|∞\))[†‡]*")
+RUN_LINK = re.compile(r"\[([A-Za-z0-9._-]+)\]\(\1/\)")
+
+
+def pilot_record(experiment: str, instance: str, seed: int, **kw) -> dict:
+    record = run_record(instance, seed, **kw)
+    record.update(experiment_id=experiment, record_id=f"sha256:{experiment}/{record['run_id']}/{instance}/{seed}")
+    return record
+
+
+def pilot_manifest(directory: Path, experiment: str, blocks: list[tuple[str, str, str]]) -> None:
+    """A vb.experiment/1 manifest: each block (id, arm file, model) on PILOT_TASKS x seeds 1-3."""
+    tables = "".join(f'\n[[block]]\nid = "{block}"\nstream = "pilot"\narm = "{arm}"\nmodel = "{model}"\nseeds = "1-3"\n'
+                     f'line = "BL0"\ninstances = {json.dumps(list(PILOT_TASKS))}\n' for block, arm, model in blocks)
+    (directory / f"{experiment.lower()}.toml").write_text(
+        f'schema_version = "vb.experiment/1"\nid = "{experiment}"\nrequires_lock = false\nrequires_live = []\n'
+        f'order = {{ kind = "as_listed" }}\n{tables}')
+
+
+@pytest.fixture
+def pilot_sources(tmp_path: Path) -> dict:
+    """Two summary bundles on one suite, as `vb report --bundle` writes them: PILOT-T-A's cheap_direct (one run,
+    seeds 1-3) and PILOT-T-B's fd_claude (a run per seed); PILOT-T-B's manifest also plans roko_fixed, which has no
+    run. PILOT-T-A's bundle holds a verifier-CI record covering five of the six tasks."""
+    results, experiments = tmp_path / "results", tmp_path / "experiments"
+    experiments.mkdir()
+    cheap = [pilot_record("PILOT-T-A", instance, seed, run_id="cd-1", **CHEAP.get((instance, seed), {}))
+             for instance in PILOT_TASKS for seed in (1, 2, 3)]
+    write_run(results / "PILOT-T-A", cheap)
+    for seed in (1, 2, 3):
+        claude = [pilot_record("PILOT-T-B", instance, seed, run_id=f"fc-s{seed}", arm="fd_claude", cost=0.3,
+                               billed=False, vendor=0.31 if seed == 1 else 0.3, model="claude-opus-5-5",
+                               label=0 if (instance, seed) == ("F4-l3-0001", 2) else 1) for instance in PILOT_TASKS]
+        write_run(results / "PILOT-T-B", claude, model="claude-opus-5-5")
+    pilot_manifest(experiments, "PILOT-T-A", [("cheap-direct", "cheap_direct", "gpt-oss-120b")])
+    pilot_manifest(experiments, "PILOT-T-B", [("roko-fixed", "roko_fixed", "gpt-oss-120b"),
+                                              ("fd-claude", "fd_claude", "claude-opus-5-5")])
+    bundles = {}
+    for experiment in ("PILOT-T-A", "PILOT-T-B"):
+        bundles[experiment] = tmp_path / experiment.lower()
+        assert report.main(["--experiment", experiment, "--results", str(results), "--bundle",
+                            str(bundles[experiment]), "--out", str(tmp_path / f"{experiment}.json")]) == 0
+    cells = [{"cell": task, "family": task[:2].lower(), "latent": "v1", "level": int(task[4]), "seed": 1,
+              "problems": [], "errors": []} for task in PILOT_TASKS[:5]]
+    (bundles["PILOT-T-A"] / "verifier-ci.json").write_text(json.dumps(
+        {"schema_version": "vb.verifier_ci/1", "cells": cells, "green": 5, "secret": "sha256:fixture",
+         "levels": [1, 3], "seeds": [1, 2], "latents": ["v1"], "seconds": 1.5}))
+    budget = budget_file(tmp_path / "budget.toml", {"BL0": 10, "BL8": 8}, "\n[programme]\nstop_usd = 400\n")
+    return {"tmp": tmp_path, "results": results, "experiments": experiments, "bundles": bundles, "budget": budget,
+            "out": tmp_path / "pilot"}
+
+
+def make_pilot(sources: dict, *extra: str) -> tuple[str, dict]:
+    argv = ["--pilot", *map(str, sources["bundles"].values()), "--bundle", str(sources["out"]), "--experiments",
+            str(sources["experiments"]), "--budget", str(sources["budget"]), "--b", "200", *extra]
+    assert report.main(argv) == 0
+    return (sources["out"] / "REPORT.md").read_text(), json.loads((sources["out"] / "metrics.json").read_text())
+
+
+def page_tables(page: str) -> dict[str, list[dict[str, str]]]:
+    """Each markdown table on the page under its section heading, as rows of {column: cell}."""
+    tables: dict[str, list[dict[str, str]]] = {}
+    section, header = "", None
+    for line in page.splitlines():
+        if line.startswith("## "):
+            section, header = line[3:], None
+        elif line.startswith("|") and not line.startswith("|---"):
+            cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", line)[1:-1]]
+            if header is None:
+                header = cells
+                tables.setdefault(section, [])
+            else:
+                tables[section].append(dict(zip(header, cells, strict=True)))
+        elif not line.startswith("|"):
+            header = None if not line.strip() else header
+    return tables
+
+
+def test_pilot_page_has_intervals_and_run_ids(pilot_sources, capsys):
+    page, doc = make_pilot(pilot_sources)
+    out = pilot_sources["out"]
+    runs = {path.name for path in out.iterdir() if path.is_dir()}
+    assert runs == {"cd-1", "fc-s1", "fc-s2", "fc-s3"} and (out / "verifier-ci.json").is_file()
+    assert "**pilot, descriptive: two Python families (F1, F4), 6 tasks × 3 seeds, not pre-registered.**" in page
+
+    # Every estimate in the arm, level and contrast tables shows its interval, and every row its runs.
+    tables = page_tables(page)
+    estimates = {"VS rate", "VS, unknown = 1", "pass^3", "$/VS, U′ (BCa)", "$/VS, R (BCa)",
+                 "\\|U′ − R\\| / R (BCa)", "false-green rate", "all levels", "ℓ1", "ℓ3"}
+    shown = 0
+    for section in ("Arms, all levels", "By level ℓ", "Paired contrasts"):
+        assert tables[section], section
+        for row in tables[section]:
+            pending = any("pending" in cell for cell in row.values())
+            for column, cell in row.items():
+                if column in estimates and re.match(r"[+-]?\$?\d", cell):
+                    assert INTERVAL.match(cell), f"{section}: {column} = {cell!r} has no interval"
+                    shown += 1
+            linked = RUN_LINK.findall(row["runs"])
+            assert pending or linked, f"{section}: a row without run ids: {row}"
+            assert set(linked) <= runs
+    assert shown >= 30  # 12 in the arm table, 17 by level, 8 contrasts
+    arms = {row["arm"]: row for row in tables["Arms, all levels"]}
+    assert arms["**cheap_direct**"]["VS rate"].startswith("0.50 [")  # (1 + 2/3 + 2/3 + 2/3 + 0 + 0) / 6
+    assert arms["**cheap_direct**"]["runs kept / planned"] == "17 / 18"  # the infra_error run is excluded
+    assert arms["**cheap_direct**"]["cap-censored · infra_error · leak_suspected"].startswith("1 · 1 · 0: ")
+    assert "F1-l3-0001 seed 3 infra_error in [cd-1](cd-1/)" in arms["**cheap_direct**"][
+        "cap-censored · infra_error · leak_suspected"]
+    assert arms["**cheap_direct**"]["VS, unknown = 1"].startswith("0.56 [")  # F4-l1-0002 is then 3 of 3
+    assert INTERVAL.match(arms["**fd_claude**"]["$/VS, R (BCa)"])
+    assert arms["**fd_claude**"]["spend, U′ / billed"] == "$5.4000 / $0.0000"
+    assert arms["**roko_fixed**"]["runs kept / planned"] == "0 / 18"
+    assert arms["**roko_fixed**"]["VS rate"] == "pending (seeds 1, 2, 3)"
+
+    # The pending arm and its seeds; the cost ratios against fd_claude, pending for roko_fixed.
+    assert "`PILOT-T-B` block `roko-fixed` (roko_fixed, gpt-oss-120b): **pending**, 0 of 18 planned runs; seeds 1, 2, 3." \
+        in page
+    contrasts = {row["contrast"]: row for row in tables["Paired contrasts"]}
+    assert INTERVAL.match(contrasts["$/VS ratio, cheap_direct ÷ fd_claude (BCa)"]["all levels"])
+    assert contrasts["$/VS ratio, roko_fixed ÷ fd_claude (BCa)"]["all levels"] == "pending: roko_fixed pending"
+    assert contrasts["VS rate, roko_fixed − cheap_direct"]["all levels"] == "pending: roko_fixed pending"
+
+    # The false greens, F4's first, each with its run and record; the verifier-CI record; the open decision; D3.
+    listed = [(item["instance_id"], item["seed"], item["run_id"]) for item in doc["false_greens"]]
+    assert sorted(listed) == [("F4-l1-0001", 3, "cd-1"), ("F4-l1-0002", 1, "cd-1"), ("F4-l3-0001", 1, "cd-1"),
+                              ("F4-l3-0001", 2, "cd-1")]
+    assert page.index("**F4: 4 false greens**") < page.index("## Verifier CI")
+    for instance, seed, run_id in listed:
+        assert f"| cheap_direct | {instance} | {instance[4]} | {seed} | completed | [{run_id}]({run_id}/) |" in page
+    assert "green cells F1 3/3, F4 2/2" in page and "Tasks with no CI cell: F4-l3-0001." in page
+    assert "dec-3d5714" in page and "over-covers" in page
+    assert "D3's bar is shown for context only; the pilot does not test H1." in page and "Y = 0.3" in page
+
+    # metrics.json: every number is a valid MetricRecord with run ids in the bundle; every estimate has its interval.
+    assert doc["experiment_id"] == pilot_page.PILOT_ID and doc["experiments"] == ["PILOT-T-A", "PILOT-T-B"]
+    estimate = re.compile(r"^(vs_rate|pass_hat_3|usd_per_vs|false_green_rate|cost_gap_ur)(_unknown_as_1|_vendor)?$|"
+                          r"_(diff|ratio)$")
+    for row in doc["records"]:
+        assert validate.validate("metric-record", row) == [] and set(row["run_ids"]) <= runs
+        if estimate.search(row["metric"]) and row["value"] is not None:
+            assert row["ci_method"].startswith("paired_bootstrap_") and len(row["ci"]) == 2, row
+            assert row["ci"][0] <= row["value"] <= row["ci"][1] or row["metric"].startswith("pass_hat"), row
+    ratio = next(row for row in doc["records"] if row["metric"] == "usd_per_vs_ratio" and "ladder" not in row)
+    assert ratio["experiment_id"] == pilot_page.PILOT_ID and ratio["arms"] == ["cheap_direct", "fd_claude"]
+    assert ratio["run_ids"] == ["cd-1", "fc-s1", "fc-s2", "fc-s3"] and ratio["ci_method"] == "paired_bootstrap_bca"
+    capsys.readouterr()
+    assert report.main(["--check", str(out), "--budget", str(pilot_sources["budget"])]) == 0, capsys.readouterr().out
+
+
+def test_pilot_bootstrap_scores_each_task_draw_apart():
+    """A replicate that draws one task twice scores it as two tasks: pass^3 per draw, never pooled by task id."""
+    cell = pilot_page.Cell("PILOT-T-A", "cheap_direct", None, "")
+    rows = [pilot_record("PILOT-T-A", "F4-l1-0001", seed, run_id="cd-1", label=int(seed != 3)) for seed in (1, 2, 3)]
+    units = pilot_page._units({cell: rows})
+    sizes = pilot_page._sizes(units)
+    s1, s2, s3 = units
+    bag = [s1, s1, s1, s3, s3, s2]  # the task drawn twice: seeds (1, 1, 1), then (3, 3, 2)
+    draws = pilot_page._draws(bag, sizes)
+    assert [[unit["seed"] for unit in draw] for draw in draws] == [[1, 1, 1], [3, 3, 2]]
+    assert pilot_page.pass_k_of(cell, 3)(draws) == 0.5  # 1 and 0; pooled by task id it would be C(4,3)/C(6,3)
+    assert pilot_page.vs_rate_of(cell)(draws) == pytest.approx(2 / 3)  # (3/3 + 1/3) / 2
+    with pytest.raises(pilot_page.PilotError, match="not whole task draws"):
+        pilot_page._draws([s1, s2], sizes)
+    # On the data the estimate is passk's own; every replicate sees whole draws of three seeds.
+    got = pilot_page.interval(units, pilot_page.pass_k_of(cell, 3), b=300, seed=1)
+    assert got.estimate == 0.0 and got.method == "percentile" and got.low == 0.0 and got.high <= 1.0
+    # A ratio with no VS in some replicates: those count as unbounded and are counted.
+    usd = pilot_page.interval(units, pilot_page.usd_per_vs_of(cell), ratio=True, undefined=pilot_page.UNBOUNDED,
+                              b=2000, seed=1)
+    assert usd.estimate == pytest.approx(0.02 * 3 / 2) and usd.undefined > 0 and usd.fallback
+
+
+def test_pilot_refuses_two_suites_and_lists_the_superseded_bundle(pilot_sources, capsys):
+    """An earlier pilot on another suite (Pilot A before its re-tune) is refused, and listed when superseded."""
+    old = pilot_sources["tmp"] / "pilot-t-old"
+    records = [pilot_record("PILOT-T-OLD", instance, seed, run_id="cd-old", **CHEAP.get((instance, seed), {}))
+               for instance in PILOT_TASKS for seed in (1, 2, 3)]
+    for record in records:
+        record["suite"] = {**record["suite"], "hash": "sha256:older"}
+    write_run(pilot_sources["results"] / "PILOT-T-OLD", records)
+    assert report.main(["--experiment", "PILOT-T-OLD", "--results", str(pilot_sources["results"]), "--bundle",
+                        str(old), "--out", str(pilot_sources["tmp"] / "old.json")]) == 0
+    capsys.readouterr()
+    argv = ["--pilot", str(pilot_sources["bundles"]["PILOT-T-B"]), str(old), "--bundle", str(pilot_sources["out"]),
+            "--experiments", str(pilot_sources["experiments"]), "--budget", str(pilot_sources["budget"]), "--b", "50"]
+    assert report.main(argv) == 1
+    assert "the bundles ran 2 suites" in capsys.readouterr().err and not pilot_sources["out"].exists()
+
+    # Named with --superseded, it is listed with its runs and suite, and no number uses it; through `vb report`.
+    vb = report.VB_ROOT / "driver" / "vb.py"
+    done = subprocess.run([sys.executable, str(vb), "report", "--pilot", *map(str, pilot_sources["bundles"].values()),
+                           "--superseded", str(old), "--note", "roko_fixed waits for its provider (a test note)",
+                           "--bundle", str(pilot_sources["out"]), "--experiments", str(pilot_sources["experiments"]),
+                           "--budget", str(pilot_sources["budget"]), "--b", "50"],
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    page = (pilot_sources["out"] / "REPORT.md").read_text()
+    assert "- **Not merged:** " in page and "suite `sha256:older`" in page and "it ran another suite" in page
+    assert "cheap_direct × seeds 1, 2, 3 (18 runs: cd-old)" in page
+    assert "- roko_fixed waits for its provider (a test note)" in page
+    assert "cd-old" not in json.dumps(json.loads((pilot_sources["out"] / "metrics.json").read_text())["records"])
+
+
+def test_check_holds_a_merged_pilot_bundle_to_its_experiments(pilot_sources, capsys):
+    make_pilot(pilot_sources)
+    out, budget = pilot_sources["out"], str(pilot_sources["budget"])
+    capsys.readouterr()
+
+    rewrite_json(out / "metrics.json", lambda doc: doc.update(experiments=["PILOT-T-A"]))
+    assert report.main(["--check", str(out), "--budget", budget]) == 1
+    printed = capsys.readouterr().out
+    assert 'experiments ["PILOT-T-A"] are not the bundle\'s runs\' ["PILOT-T-A", "PILOT-T-B"]' in printed
+    assert "experiment PILOT has no runs in the bundle" in printed  # without the merge, the contrasts' id is foreign
+
+    rewrite_json(out / "metrics.json", lambda doc: doc.update(experiments=["PILOT-T-A", "PILOT-T-B"]))
+    assert report.main(["--check", str(out), "--budget", budget]) == 0
+    rewrite_json(out / "metrics.json", lambda doc: doc.pop("experiments"))
+    assert report.main(["--check", str(out), "--budget", budget]) == 1
+    assert "experiment PILOT has no runs in the bundle" in capsys.readouterr().out

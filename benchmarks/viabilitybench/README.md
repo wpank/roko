@@ -56,6 +56,7 @@ benchmarks/viabilitybench/
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
+  analysis/pilot_page.py                                    # vb report --pilot: the pilot's one page (reports/pilot/)
   analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
   analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
   analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
@@ -244,6 +245,14 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
   and the budget (`analysis/report.py` has the rules).
+- **The pilot page** (`vb report --pilot`, `analysis/pilot_page.py`, gap-d9e9fe). `vb report --pilot
+  reports/pilot_a_recal reports/pilot_b --superseded reports/pilot_a --bundle reports/pilot` merges the pilots'
+  bundles on one suite, pairing runs by (task, seed), into `reports/pilot/`: the runs, a `metrics.json` holding every
+  number with its run ids, and `REPORT.md`. Each arm gets its VS rate, pass^3, $/VS (U′, and R beside it), false
+  greens, censoring and spend, overall and by level, and each pair of arms its $/VS ratio and VS and pass^3
+  differences. Every estimate carries a 95% paired bootstrap interval (S09 §4.1, B = 10,000). Arms and seeds that the
+  experiment manifests plan but that have no runs are listed as pending. A bundle on another suite is listed as not
+  merged. Rebuild the page into an empty directory when a pending arm lands.
 
 ## Schemas
 

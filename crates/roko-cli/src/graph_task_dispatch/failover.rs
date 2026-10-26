@@ -621,6 +621,11 @@ impl GraphTaskDispatcher {
             self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
             self.budget_ledger
                 .settle(&spec.plan_id, None, refused_cost_usd)?;
+            // The attempt's verdict counts it beside the call that runs
+            // (bug-8bcd98).
+            if let Some(progress) = progress {
+                progress.call_refused(refused_cost_usd);
+            }
             refused_calls += 1;
             self.write_side_call_rows(
                 spec,
@@ -2096,6 +2101,131 @@ exit 1
         assert_eq!(costs[0]["model"], "api-model-1");
         let cost = costs[0]["cost_usd"].as_f64().expect("cost_usd");
         assert!((cost - answered_usd).abs() < 1e-9, "{}", costs[0]);
+    }
+
+    /// bug-8bcd98: in run 7b8cb121, T2#1's verdict billed $0.0354 while its
+    /// calls cost $0.2430: glm-4.7 worked until z.ai's 429 failed it over,
+    /// and the verdict counted only the model that ran after. The routed
+    /// model here reads a file, then its provider answers 429 past the tool
+    /// loop's retries, and a backup model finishes the try. The verdict
+    /// carries the refused call's cost beside the billed one, and the two
+    /// add up to the try's `call_cost` events and to the plan's spend.
+    #[tokio::test]
+    async fn a_failed_over_try_s_verdict_counts_its_refused_calls() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        std::fs::write(workdir.join("notes.txt"), "notes\n").expect("seed notes");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &temp.path().join("claude-calls.log"));
+        // The routed model's read: 100k tokens in and 1k out, $0.102 at $1
+        // and $2 a million.
+        let mut read = tool_call_turn(
+            "call-read",
+            "read_file",
+            serde_json::json!({ "path": "notes.txt" }),
+        );
+        read["usage"] = serde_json::json!({
+            "prompt_tokens": 100_000,
+            "completion_tokens": 1_000,
+            "total_tokens": 101_000
+        });
+        let tries = roko_agent::retry::RetryPolicy::default().max_attempts as usize;
+        let mut routed = vec![read];
+        routed.extend(std::iter::repeat_with(|| rate_limited_turn(1)).take(tries));
+        let (routed_url, routed_requests) = spawn_openai_mock(routed);
+        // The backup's answer: 10k in and 500 out, $0.011 at the same rates.
+        let mut answer = final_turn("finished on the backup");
+        answer["model"] = serde_json::json!("backup-1");
+        answer["usage"] = serde_json::json!({
+            "prompt_tokens": 10_000,
+            "completion_tokens": 500,
+            "total_tokens": 10_500
+        });
+        let (backup_url, _backup_requests) = spawn_openai_mock(vec![answer]);
+        let mut config = failover_config(&claude, &routed_url, &["backup-model"]);
+        config.agent.default_model = "api-model".to_string();
+        let mut backup_api = config.providers["mock_api"].clone();
+        backup_api.base_url = Some(backup_url);
+        config
+            .providers
+            .insert("backup_api".to_string(), backup_api);
+        let mut backup = config.models["api-model"].clone();
+        backup.provider = "backup_api".to_string();
+        backup.slug = "backup-1".to_string();
+        config.models.insert("backup-model".to_string(), backup);
+        for model in ["api-model", "backup-model"] {
+            let profile = config.models.get_mut(model).expect("configured model");
+            profile.cost_input_per_m = Some(1.0);
+            profile.cost_output_per_m = Some(2.0);
+        }
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let runs_dir = workdir.join(".roko/runs");
+        let dispatcher = make_bare_dispatcher(config, &workdir)
+            .await
+            .with_plan_budget(1.0, 0.5, false)
+            .with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(hub.sender()))
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let spec = make_spec(&task);
+        let run = "refused-spend";
+        dispatcher
+            .dispatch(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await
+            .expect("the backup finishes the try");
+        assert_eq!(
+            routed_requests.lock().len(),
+            1 + tries,
+            "the read, then 429s"
+        );
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        drop(dispatcher);
+
+        let verdicts = jsonl_rows_where(&runs_dir.join(run).join("attempts.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.verdict/1"
+        })
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(
+            verdict["executed"]["model_dispatched"], "backup-1",
+            "{verdict}"
+        );
+        // A call's cost is an f32: equal to about seven digits.
+        let usd = |field: &str| verdict["cost"][field].as_f64().unwrap_or(f64::NAN);
+        assert!((usd("billed_usd") - 0.011).abs() < 1e-6, "{verdict}");
+        assert!((usd("refused_usd") - 0.102).abs() < 1e-6, "{verdict}");
+
+        // Every call the try made reached the hub with its cost, and they
+        // add up to the verdict's billed and refused calls, as the plan's
+        // budget counted them.
+        let mut calls = Vec::new();
+        while let Ok(envelope) = events.try_recv() {
+            if let DashboardEvent::CallCost {
+                model, cost_usd, ..
+            } = envelope.payload
+            {
+                calls.push((model, cost_usd.expect("a priced call")));
+            }
+        }
+        let models: Vec<&str> = calls.iter().map(|(model, _)| model.as_str()).collect();
+        assert_eq!(models, ["api-model-1", "backup-1"], "{calls:?}");
+        let calls_usd: f64 = calls.iter().map(|(_, usd)| usd).sum();
+        assert!((calls_usd - 0.113).abs() < 1e-6, "{calls:?}");
+        assert!((spent - 0.113).abs() < 1e-6, "plan spend {spent}");
     }
 
     #[tokio::test]

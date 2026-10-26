@@ -13,11 +13,14 @@ updated = 2026-10-26
 last_verified = 2026-10-26
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask; plugin-wow's finding on 6059db44 (tmp/hermes-roko-v7/findings/plugin-wow.md)"
 discovered_from = "agent:run-analyst (round v7)"
-anchors = ["crates/roko-agent/src/tool_loop/mod.rs::run_inner", "crates/roko-cli/src/graph_task_dispatch/call_cost.rs::MeteredCalls", "crates/roko-learn/src/telemetry/records.rs::AttemptCost", "crates/roko-learn/src/feedback_service.rs::model_call_cost_record"]
+anchors = ["crates/roko-agent/src/tool_loop/mod.rs::run_inner", "crates/roko-cli/src/graph_task_dispatch/call_cost.rs::MeteredCalls", "crates/roko-learn/src/telemetry/records.rs::AttemptCost", "crates/roko-learn/src/telemetry/records.rs::plus_refused", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::call_refused", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::record_refused_spend", "crates/roko-learn/src/feedback_service.rs::model_call_cost_record"]
 links = { depends_on = [], blocks = [], related = ["gap-36f3fb", "bug-dceafd", "gap-5cfa9c", "gap-1ba0ac", "gap-ece700"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'refused_usd' crates/roko-learn/src/telemetry/records.rs && grep -rqw 'fn a_call_that_fails_writes_its_call_cost_row' crates/roko-cli/src && cargo test -p roko-cli --lib a_call_that_fails_writes_its_call_cost_row"
+
+[[verify]]
+command = "grep -rqw 'fn a_failed_over_try_s_verdict_counts_its_refused_calls' crates/roko-cli/src && cargo test -p roko-cli --lib a_failed_over_try_s_verdict_counts_its_refused_calls && cargo test -p roko-learn --lib a_try_s_spend_counts_its_refused_calls"
 +++
 
 ## Problem
@@ -90,6 +93,26 @@ run-analyst checked it over round v7 (`tmp/hermes-roko-v7/run-analyst`).
    sum.
 3. **Killed tries:** leave them to roko-recovery's item. It is expected that a resume or serve's settling writes the
    abandoned try's cost row from its `call_cost` events.
+
+## Progress (roko-speed, 2026-10-26)
+
+- **Part 2 (the verdict), built:**
+  - A verdict's `cost.refused_usd` is what the try's calls cost that a provider refused part-way before failover
+    moved the try on, or before it called the same model again. Older rows lack it, and it is absent when no call was
+    refused.
+  - The attempt's progress sums each refused call as `run_bridge_with_failover` settles it, so the error paths count
+    it too. The attempt records the sum on settle.
+  - `AttemptCost::plus_refused` gives the try's spend. The attempt_settled event's `cost_usd`, the audit lottery's
+    run spend and the TUI's attempt metric use it.
+  - `rung_stats` leaves it out on purpose: refused calls count on the refused model's row, from the cost rows
+    (gap-5cfa9c).
+  - Test: `a_failed_over_try_s_verdict_counts_its_refused_calls`. The routed model reads a file ($0.102), then 429s
+    past the loop's retries; a backup finishes ($0.011). Billed plus refused equals the try's `call_cost` sum and
+    the plan's spend.
+- **Part 1 (failed calls' rows), to do:** it builds on roko-effort's gap-1ba0ac, which adds
+  `CallAllowance::record_finished_call(…, CallFacts { finish_reason, wall_ms })` and `wall_ms` on `call_cost`. A
+  failed call goes through the same path with zero usage, unless the stream tally has some, and an `outcome`.
+- **Part 3** is roko-recovery's, as bug-b7f6a8.
 
 ## Done when
 

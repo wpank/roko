@@ -965,28 +965,19 @@ impl GraphTaskDispatcher {
             .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
     }
 
-    /// Fit `task`'s declared line ranges in files an earlier task of its
-    /// plan changed to those files in `workdir`, the attempt's checkout
-    /// (bug-7ff055): the planner guessed them before the files changed.
+    /// Fit `task`'s declared line ranges to its files in `workdir`, the
+    /// attempt's checkout, on every try (bug-7ff055, bug-fa22cc): the planner
+    /// wrote them before the plan's work, and an earlier task, or the task's
+    /// own last try, whose checkout a retry reuses, may have changed a file
+    /// since. Phase 5.1's T2#1 cut `tools/render-demos.sh` from 121 lines to
+    /// 43, and T2#2 to #4 died on its declared `1-121` before any model call.
     fn fit_declared_ranges(&self, spec: &TaskExecutionSpec, task: &mut TaskDef, workdir: &Path) {
-        let ranged = task.context.as_ref().is_some_and(|context| {
-            context
-                .read_files
-                .iter()
-                .any(|read_file| read_file.lines.is_some())
-        });
-        if !ranged || task.depends_on.is_empty() {
-            return;
-        }
-        let Some(plan) = self.read_plan(spec) else {
-            return;
-        };
-        for fitted in crate::plan_policy::fit_ranges_to_earlier_changes(task, &plan, workdir) {
+        for fitted in crate::plan_policy::fit_ranges_to_checkout(task, workdir) {
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
                 %fitted,
-                "fitted a declared line range to a file an earlier task changed"
+                "fitted a declared line range to the file in the try's checkout"
             );
         }
     }

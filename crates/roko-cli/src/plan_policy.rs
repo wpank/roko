@@ -852,42 +852,30 @@ pub fn validate_plan_context(
     issues
 }
 
-/// Fit `task`'s declared line ranges in files an earlier task of `plan`
-/// changes to those files as `workspace_root` holds them, once that task has
-/// run (bug-7ff055). The planner wrote the ranges before the files changed: a
-/// range that runs past the end of its file is cut at the file's last line,
-/// and one that covers the whole file or starts past its end becomes an
-/// unranged entry, which shows the file within the context budget
-/// ([`fit_range`]). A range in a file no earlier task changes, or a malformed
-/// one, is left for [`render_declared_context`] to refuse. Returns one line
-/// per range it changed, for the log.
-pub(crate) fn fit_ranges_to_earlier_changes(
-    task: &mut TaskDef,
-    plan: &TasksFile,
-    workspace_root: &Path,
-) -> Vec<String> {
-    let task_by_id = plan
-        .tasks
-        .iter()
-        .map(|task| (task.id.as_str(), task))
-        .collect::<HashMap<_, _>>();
-    let changed_earlier = transitive_dependency_outputs(task, &task_by_id);
+/// Fit `task`'s declared line ranges to its files as `workspace_root`, a
+/// try's checkout, holds them ([`fit_range`]), whichever task changed them
+/// (bug-fa22cc). The planner wrote the ranges before the plan's work: an
+/// earlier task may have changed a file since (bug-7ff055), and so may the
+/// task's own last try, whose checkout a retry reuses, as phase 5.1's T2#1
+/// rewrote `tools/render-demos.sh` from 121 lines to 43 and T2#2 to #4 died
+/// on `1-121`. A malformed range is left for [`render_declared_context`] to
+/// refuse. Returns one line per range it changed, for the log.
+pub(crate) fn fit_ranges_to_checkout(task: &mut TaskDef, workspace_root: &Path) -> Vec<String> {
     let Some(context) = task.context.as_mut() else {
         return Vec::new();
     };
     context
         .read_files
         .iter_mut()
-        .filter(|read_file| changed_earlier.contains(&read_file.path))
         .filter_map(|read_file| fit_range(read_file, workspace_root))
         .collect()
 }
 
 /// Fit `plan`'s declared line ranges in files no earlier task of the plan
 /// changes to those files as `workspace_root` holds them (gap-b95913), the
-/// way [`fit_ranges_to_earlier_changes`] fits the others once their task has
-/// run: the planner guessed how long the file is. Returns one line per range
-/// it changed, naming its task.
+/// way [`fit_ranges_to_checkout`] fits every range of a try: the planner
+/// guessed how long the file is. Returns one line per range it changed,
+/// naming its task.
 pub(crate) fn fit_ranges_to_files(plan: &mut TasksFile, workspace_root: &Path) -> Vec<String> {
     let changed_earlier: Vec<HashSet<String>> = {
         let task_by_id = plan
@@ -916,30 +904,21 @@ pub(crate) fn fit_ranges_to_files(plan: &mut TasksFile, workspace_root: &Path) -
     fitted
 }
 
-/// Fit `read_file`'s line range to its file as `workspace_root` holds it. A
-/// range that covers the whole file, from its first line to its end or past
-/// it, and one that starts past the end, become an unranged entry: the whole
-/// file as it is when the prompt is built, within the context budget, so a
-/// try on a tree where the file has grown sees its new lines (bug-c5f406).
-/// Any other range that runs past the end is cut at the file's last line. A
-/// range inside the file, or a malformed one, is left alone. Returns what
+/// Fit `read_file`'s line range to its file as `workspace_root` holds it
+/// ([`fit_line_range`]): a range that runs past the end of the file is cut at
+/// its last line, and one that starts past it, or runs from line 1 past it,
+/// becomes an unranged entry, which shows the file within the context budget.
+/// A range inside the file, or a malformed one, is left alone. Returns what
 /// changed, for the log.
 fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> {
     let range = read_file.lines.clone()?;
     let relative = validate_repo_relative_path(&read_file.path).ok()?;
-    let (start, end) = parse_line_range(&range, usize::MAX).ok()?;
-    if start == 0 || end.is_some_and(|end| start > end) {
-        return None;
-    }
     let content = std::fs::read_to_string(workspace_root.join(relative)).ok()?;
     let line_count = content.lines().count();
-    let whole = start == 1 && end.is_none_or(|end| end >= line_count);
-    let lines = if whole || start > line_count {
-        None
-    } else if end.is_some_and(|end| end > line_count) {
-        Some(format!("{start}-{line_count}"))
-    } else {
-        return None;
+    let lines = match fit_line_range(&range, line_count).ok()? {
+        FittedRange::Within(..) => return None,
+        FittedRange::Cut(start, end) => Some(format!("{start}-{end}")),
+        FittedRange::Whole => None,
     };
     let change = format!(
         "`{range}` of `{}` ({line_count} lines) became {}",
@@ -955,8 +934,10 @@ fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> 
 
 /// Render exact, line-numbered context for prompt assembly. Unlike preflight,
 /// dispatch has no future-output exception: every dependency should already be
-/// materialized in the attempt worktree, and the dispatcher has fitted ranges
-/// in files an earlier task changed ([`fit_ranges_to_earlier_changes`]).
+/// materialized in the attempt worktree. The dispatcher has fitted the ranges
+/// to the files there ([`fit_ranges_to_checkout`]), and a range past the end
+/// of its file is fitted here too, never refused ([`fit_line_range`],
+/// bug-fa22cc).
 pub fn render_declared_context(
     task: &TaskDef,
     workspace_root: &Path,
@@ -1009,17 +990,11 @@ pub fn render_declared_context(
             .map_err(|error| format!("read context file `{}`: {error}", read_file.path))?;
         let lines = content.lines().collect::<Vec<_>>();
         let mut ranges = Vec::<(usize, usize)>::new();
-        if let Some(range) = read_file.lines.as_deref() {
-            let (start, end) = parse_line_range(range, lines.len())?;
-            let end = end.unwrap_or(lines.len());
-            if start == 0 || start > end || end > lines.len() {
-                return Err(format!(
-                    "line range `{range}` is outside `{}` ({} lines)",
-                    read_file.path,
-                    lines.len()
-                ));
-            }
+        // A range past the end of the file is fitted to it, never refused
+        // (bug-fa22cc): the file changed since the plan was written.
+        if let Some((start, end)) = fitted_lines(read_file, lines.len())? {
             if end.saturating_sub(start).saturating_add(1) > policy.max_range_lines {
+                let range = read_file.lines.as_deref().unwrap_or_default();
                 return Err(format!(
                     "line range `{range}` exceeds the {} line context limit",
                     policy.max_range_lines
@@ -1123,9 +1098,7 @@ pub fn render_declared_files(
         // (bug-c5f406). A range that starts further in is a part the planner
         // chose.
         let mut past_range = None;
-        if let Some(range) = read_file.lines.as_deref() {
-            let (start, end) = parse_line_range(range, total)?;
-            let end = end.unwrap_or(total);
+        if let Some((start, end)) = fitted_lines(read_file, total)? {
             ranges.push((start, end));
             if start == 1 && end < total {
                 past_range = Some((end + 1, total));
@@ -1465,6 +1438,59 @@ fn depends_on_transitively(
 
 fn normalize_verify_command(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A declared read's line range fitted to its file (bug-fa22cc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FittedRange {
+    /// Lines `start..=end`, inside the file as declared.
+    Within(usize, usize),
+    /// Lines `start..=end`: the declared range ran past the file's end and
+    /// is cut at its last line.
+    Cut(usize, usize),
+    /// The whole file: the declared range started past its end, or ran from
+    /// line 1 past it.
+    Whole,
+}
+
+/// `range`, a declared read's line range, fitted to a file of `line_count`
+/// lines (bug-fa22cc). A range past the end was written for the file as it
+/// was before a task, or the task's own last try, changed it: one that starts
+/// past the end, or runs from line 1 past it, reads the whole file, and
+/// another one that runs past the end is cut at the last line. `Err` for a
+/// malformed range: no numbers, line 0, or an end before its start.
+fn fit_line_range(range: &str, line_count: usize) -> Result<FittedRange, String> {
+    let (start, end) = parse_line_range(range, usize::MAX)?;
+    if end.is_some_and(|end| start > end) {
+        return Err("the range ends before it starts".to_string());
+    }
+    let end = end.unwrap_or(line_count);
+    Ok(if start > line_count || (start == 1 && end > line_count) {
+        FittedRange::Whole
+    } else if end > line_count {
+        FittedRange::Cut(start, line_count)
+    } else {
+        FittedRange::Within(start, end)
+    })
+}
+
+/// The lines `read_file`'s declared range shows of its file of `line_count`
+/// lines, fitted to it ([`fit_line_range`]): `None` without a range, or for
+/// one that shows the whole file. `Err` names a malformed range.
+fn fitted_lines(read_file: &ReadFile, line_count: usize) -> Result<Option<(usize, usize)>, String> {
+    let Some(range) = read_file.lines.as_deref() else {
+        return Ok(None);
+    };
+    match fit_line_range(range, line_count) {
+        Ok(FittedRange::Within(start, end) | FittedRange::Cut(start, end)) => {
+            Ok(Some((start, end)))
+        }
+        Ok(FittedRange::Whole) => Ok(None),
+        Err(reason) => Err(format!(
+            "invalid line range `{range}` of `{}`: {reason}",
+            read_file.path
+        )),
+    }
 }
 
 pub(crate) fn parse_line_range(
@@ -1874,8 +1900,9 @@ mod tests {
     /// bug-7ff055: a range the planner guessed in a file an earlier task
     /// changes passes the plan check, and at dispatch fits the file as that
     /// task left it: cut at its last line, or the whole file when it starts
-    /// past the end. The same range in a file no earlier task changes is
-    /// still refused, by both.
+    /// past the end. The plan check still refuses the same range in a file
+    /// no earlier task changes, but since bug-fa22cc a try fits it to its
+    /// checkout too, and prompt assembly never refuses a range past the end.
     #[test]
     fn ranges_in_files_an_earlier_task_changes_fit_the_file() {
         let root = tempdir().expect("root");
@@ -1916,7 +1943,7 @@ mod tests {
         // T1 ran and left the file 17 lines long.
         write_lines(root.path(), "src/out.py", 17, 12);
         let mut dispatched = plan.tasks[1].clone();
-        let fitted = fit_ranges_to_earlier_changes(&mut dispatched, &plan, root.path());
+        let fitted = fit_ranges_to_checkout(&mut dispatched, root.path());
         assert_eq!(fitted.len(), 2, "{fitted:?}");
         let ranges = dispatched
             .context
@@ -1939,7 +1966,9 @@ mod tests {
             "{rendered}"
         );
 
-        // The same range in a file no earlier task changes is refused.
+        // The plan check refuses the same range in a file no earlier task
+        // changes; a try fits it, and so does prompt assembly when no try
+        // did.
         let mut strict = plan.clone();
         strict.tasks[1]
             .context
@@ -1947,13 +1976,78 @@ mod tests {
             .expect("context")
             .read_files = vec![guessed("src/other.py", "5-25")];
         assert_eq!(range_issues(&strict).len(), 1);
-        let mut unchanged = strict.tasks[1].clone();
-        assert!(fit_ranges_to_earlier_changes(&mut unchanged, &strict, root.path()).is_empty());
-        let error = render_declared_context(&unchanged, root.path(), PlanExecutionPolicy::normal())
-            .expect_err("a range past a file no earlier task changes");
+        let unchanged = strict.tasks[1].clone();
+        let rendered =
+            render_declared_context(&unchanged, root.path(), PlanExecutionPolicy::normal())
+                .expect("a range past the end renders fitted");
         assert!(
-            error.contains("is outside `src/other.py` (17 lines)"),
-            "{error}"
+            rendered.contains("lines=\"5-17\" total=\"17\""),
+            "{rendered}"
+        );
+        let mut fitted_task = unchanged.clone();
+        assert_eq!(
+            fit_ranges_to_checkout(&mut fitted_task, root.path()),
+            ["`5-25` of `src/other.py` (17 lines) became `5-17`"]
+        );
+    }
+
+    /// bug-fa22cc: a declared range is fitted to its file as it is now. One
+    /// inside the file stays; one that runs past the end is cut at the last
+    /// line; one that starts past the end, or runs from line 1 past it, as
+    /// phase 5.1's `1-121` of a script T2#1 had cut to 43 lines did, reads the
+    /// whole file. Only a malformed range is refused.
+    #[test]
+    fn a_range_past_the_end_fits_the_file() {
+        for (range, fitted) in [
+            ("1-43", Ok(FittedRange::Within(1, 43))),
+            ("5-20", Ok(FittedRange::Within(5, 20))),
+            ("5-", Ok(FittedRange::Within(5, 43))),
+            ("1-121", Ok(FittedRange::Whole)),
+            ("44-60", Ok(FittedRange::Whole)),
+            ("50-", Ok(FittedRange::Whole)),
+            ("5-121", Ok(FittedRange::Cut(5, 43))),
+            ("9-3", Err("the range ends before it starts".to_string())),
+            ("0-3", Err("line numbers are one-based".to_string())),
+            ("lines", Err("expected START-END or START-".to_string())),
+        ] {
+            assert_eq!(fit_line_range(range, 43), fitted, "{range}");
+        }
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("tools")).expect("tools");
+        write_lines(root.path(), "tools/render-demos.sh", 43, 12);
+        let mut task = unranged_task(&[]);
+        task.context.as_mut().expect("context").read_files = vec![ReadFile {
+            path: "tools/render-demos.sh".into(),
+            lines: Some("1-121".into()),
+            why: "the script the task rewrites".into(),
+        }];
+        let rendered = render_declared_context(&task, root.path(), PlanExecutionPolicy::normal())
+            .expect("the whole file renders");
+        assert!(
+            rendered.contains("lines=\"1-43\" total=\"43\""),
+            "{rendered}"
+        );
+        let files = render_declared_files(
+            &task,
+            root.path(),
+            PlanExecutionPolicy::normal(),
+            100_000,
+            &[],
+        )
+        .expect("the prompt's declared files");
+        assert!(files.contains("    43 | // line 43"), "{files}");
+        assert!(!files.contains("not shown: read_file them"), "{files}");
+        assert_eq!(
+            fit_ranges_to_checkout(&mut task, root.path()),
+            ["`1-121` of `tools/render-demos.sh` (43 lines) became the whole file"]
+        );
+        // A malformed range still fails the try, naming the file.
+        task.context.as_mut().expect("context").read_files[0].lines = Some("9-3".into());
+        let error = render_declared_context(&task, root.path(), PlanExecutionPolicy::normal())
+            .expect_err("a reversed range");
+        assert_eq!(
+            error,
+            "invalid line range `9-3` of `tools/render-demos.sh`: the range ends before it starts"
         );
     }
 
@@ -1961,10 +2055,11 @@ mod tests {
     /// `1-254`, the planner's `1-260` cut to the file's length when the plan
     /// was written. Its third try ran on a kept tree where the file had 290
     /// lines, and its prompt showed lines 1-247 and named 248-254 only. A
-    /// range that covers its whole file when the plan is written now becomes
-    /// the whole file, shown as it is when the prompt is built; a plan
-    /// written with such a range names the lines past it, with any cut's; a
-    /// part the planner chose stays as it is.
+    /// range from line 1 past the file's end when the plan is written now
+    /// becomes the whole file (bug-fa22cc's fit), shown as it is when the
+    /// prompt is built; a range from line 1 that the file has grown past
+    /// names the lines past it, with any cut's; a part the planner chose
+    /// stays as it is.
     #[test]
     fn a_grown_file_shows_or_names_the_lines_past_its_planned_range() {
         let root = tempdir().expect("root");
@@ -1986,13 +2081,11 @@ mod tests {
         let mut plan = tasks(reader);
         assert_eq!(
             fit_ranges_to_files(&mut plan, root.path()),
-            [
-                "T1: `1-10` of `src/a.rs` (10 lines) became the whole file",
-                "T1: `1-12` of `src/b.rs` (10 lines) became the whole file",
-            ]
+            ["T1: `1-12` of `src/b.rs` (10 lines) became the whole file"]
         );
 
-        // A try's tree, where each file has grown to 15 lines.
+        // A try's tree, where each file has grown to 15 lines: the range the
+        // plan kept names the lines past it, and the whole file shows them.
         for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
             write_lines(root.path(), path, 15, 12);
         }
@@ -2000,30 +2093,26 @@ mod tests {
         let room = policy.max_declared_context_bytes;
         let shown = render_declared_files(&plan.tasks[0], root.path(), policy, room, &[])
             .expect("the fitted plan renders");
-        for whole in ["src/a.rs", "src/b.rs"] {
-            assert!(
-                shown.contains(&format!("path=\"{whole}\" lines=\"1-15\" total=\"15\"")),
-                "{shown}"
-            );
-        }
         assert!(
-            shown.contains("path=\"src/c.rs\" lines=\"3-6\" total=\"15\""),
+            shown.contains("path=\"src/a.rs\" lines=\"1-10\" total=\"15\""),
             "{shown}"
         );
-        assert!(!shown.contains("not shown: read_file them]"), "{shown}");
-
-        // A plan written with the file's own range names the lines past it.
-        let mut written = plan.tasks[0].clone();
-        written.context.as_mut().expect("context").read_files =
-            vec![planned("src/a.rs", "1-10"), planned("src/c.rs", "3-6")];
-        let shown = render_declared_files(&written, root.path(), policy, room, &[])
-            .expect("the written plan renders");
-        assert!(shown.contains("lines=\"1-10\" total=\"15\""), "{shown}");
         assert!(
             shown.contains("[src/a.rs lines 11-15 not shown: read_file them]\n"),
             "{shown}"
         );
-        assert!(!shown.contains("[src/c.rs"), "{shown}");
+        assert!(
+            shown.contains("path=\"src/b.rs\" lines=\"1-15\" total=\"15\""),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("path=\"src/c.rs\" lines=\"3-6\" total=\"15\""),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("[src/b.rs") && !shown.contains("[src/c.rs"),
+            "{shown}"
+        );
 
         // Lines an anchor shows past the range are not named.
         let text = (1..=30)
@@ -2033,7 +2122,7 @@ mod tests {
             })
             .collect::<String>();
         std::fs::write(root.path().join("src/a.rs"), text).expect("write source");
-        let mut anchored = written.clone();
+        let mut anchored = plan.tasks[0].clone();
         let context = anchored.context.as_mut().expect("context");
         context.read_files = vec![planned("src/a.rs", "1-10")];
         context.symbols = vec!["exact:Grown".into()];
@@ -2047,6 +2136,7 @@ mod tests {
 
         // T2#3's cut: the note names the lines past the range with its own.
         write_lines(root.path(), "src/a.rs", 290, 12);
+        let mut written = plan.tasks[0].clone();
         written.context.as_mut().expect("context").read_files = vec![planned("src/a.rs", "1-254")];
         let short = render_declared_files(&written, root.path(), policy, 4_000, &[])
             .expect("the cut renders");

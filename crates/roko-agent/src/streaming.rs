@@ -241,6 +241,12 @@ pub fn response_timeout(wait: Duration) -> LlmError {
 /// the loop asks again as for a reply cut at the output limit.
 pub const REASONING_LIMIT_FINISH: &str = "reasoning_limit";
 
+/// The finish reason of a streamed call roko's tool loop cut because one of
+/// its tool calls' arguments stopped being a JSON object (bug-af5c20),
+/// followed by `: <tool>: <why>`. The cut call is not run, and the loop asks
+/// again.
+pub const MALFORMED_TOOL_ARGUMENTS_FINISH: &str = "malformed_tool_arguments";
+
 /// The finish reason of a stream that ended without naming one. It
 /// normalises to `FinishReason::Error("unknown")`, never to `Stop`, so a
 /// cut connection or a missing finish reason does not read as a normal end

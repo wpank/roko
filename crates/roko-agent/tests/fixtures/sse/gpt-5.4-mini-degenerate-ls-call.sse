@@ -1,0 +1,1275 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_02059371c27791c5016adfab59f34087d2b0e8db6cb63aa465","object":"response","model":"gpt-5.4-mini-2026-03-17","status":"in_progress"},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_02059371c27791c5016adfab59f34087d2b0e8db6cb63aa465","object":"response","model":"gpt-5.4-mini-2026-03-17","status":"in_progress"},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"rs_02059371c27791c5016adfab5a778c87d284c524d52056360f","type":"reasoning","content":[],"encrypted_content":"gAAAA-redacted-in-the-fixture","summary":[]},"output_index":0,"sequence_number":2}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"rs_02059371c27791c5016adfab5a778c87d284c524d52056360f","type":"reasoning","content":[],"encrypted_content":"gAAAA-redacted-in-the-fixture","summary":[]},"output_index":0,"sequence_number":3}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","type":"function_call","status":"in_progress","arguments":"","call_id":"call_8eRpnKG4kdgt6M6d3KXhYjPF","name":"ls"},"output_index":1,"sequence_number":4}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":5}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"path","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":6}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\":","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":7}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\".","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":8}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\",\"","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":9}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"}","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":10}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"ંડ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":11}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"ાવ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":12}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" to","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":13}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"=","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":14}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"functions","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":15}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":".l","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":16}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"s","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":17}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":18}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" 大发分分彩","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":19}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"result","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":20}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" to","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":21}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"=","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":22}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"functions","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":23}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":".l","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":24}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"s","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":25}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":26}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" 彩神争霸app","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":27}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" to","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":28}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"=","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":29}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"functions","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":30}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":".l","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":31}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"s","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":32}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":33}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"్ద","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":34}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"్వ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":35}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" is","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":36}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" not","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":37}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" valid","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":38}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"?","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":39}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" let's","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":40}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" just","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":41}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" do","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":42}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":".","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":43}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":44}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" \n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":45}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":46}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\t","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":47}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" \n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":48}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":49}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":50}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":51}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":52}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":53}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":54}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":55}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":56}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":57}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":58}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":59}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":60}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":61}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":62}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":63}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":64}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":65}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":66}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":67}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":68}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":69}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":70}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":71}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":72}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":73}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":74}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":75}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":76}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":77}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":78}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":79}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":80}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":81}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":82}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":83}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":84}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":85}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":86}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":87}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":88}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":89}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":90}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":91}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":92}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":93}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":94}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":95}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":96}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":97}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":98}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":99}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":100}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":101}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":102}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":103}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":104}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":105}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":106}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":107}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":108}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":109}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":110}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":111}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":112}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":113}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":114}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":115}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":116}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":117}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":118}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":119}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":120}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":121}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":122}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":123}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":124}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":125}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":126}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":127}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":128}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":129}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":130}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":131}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":132}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":133}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":134}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":135}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":136}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":137}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":138}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":139}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":140}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":141}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":142}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":143}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":144}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":145}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":146}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":147}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":148}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":149}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":150}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":151}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":152}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":153}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":154}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":155}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":156}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":157}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":158}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":159}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":160}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":161}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":162}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":163}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":164}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":165}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":166}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":167}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":168}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":169}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":170}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":171}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":172}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":173}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":174}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":175}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":176}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":177}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":178}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":179}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":180}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":181}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":182}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":183}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":184}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":185}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":186}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":187}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":188}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":189}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":190}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":191}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":192}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":193}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":194}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":195}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":196}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":197}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":198}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":199}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":200}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":201}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":202}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":203}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":204}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":205}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":206}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":207}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":208}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":209}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":210}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":211}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":212}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":213}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":214}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":215}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":216}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":217}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":218}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":219}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":220}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":221}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":222}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":223}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":224}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":225}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":226}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":227}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":228}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":229}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":230}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":231}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":232}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":233}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":234}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":235}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":236}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":237}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":238}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":239}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":240}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":241}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":242}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":243}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":244}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":245}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":246}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":247}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":248}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":249}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":250}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":251}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":252}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":253}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":254}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":255}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":256}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":257}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":258}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":259}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":260}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":261}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":262}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":263}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":264}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":265}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":266}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":267}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":268}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":269}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":270}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":271}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":272}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":273}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":274}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":275}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":276}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":277}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":278}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":279}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":280}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":281}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":282}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"  \n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":283}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":284}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":285}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":286}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":287}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":288}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":289}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":290}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":291}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":292}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":293}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":294}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":295}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":296}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":297}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":298}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":299}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":300}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":301}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":302}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":303}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":304}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":305}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":306}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":307}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":308}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":309}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":310}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":311}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":312}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":313}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":314}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":315}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":316}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":317}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":318}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":319}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":320}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":321}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":322}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":323}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":324}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":325}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":326}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":327}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":328}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":329}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":330}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":331}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":332}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":333}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":334}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":335}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":336}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":337}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":338}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":339}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":340}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":341}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":342}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":343}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":344}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":345}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":346}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":347}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":348}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":349}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":350}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":351}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":352}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":353}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":354}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":355}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":356}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":357}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":358}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":359}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":360}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":361}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":362}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":363}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":364}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":365}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":366}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":367}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":368}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":369}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":370}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":371}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":372}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":373}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":374}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":375}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":376}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":377}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":378}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":379}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":380}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":381}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":382}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":383}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":384}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":385}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":386}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":387}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":388}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":389}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":390}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":391}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":392}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":393}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":394}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":395}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":396}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":397}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":398}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":399}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":400}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":401}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":402}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":403}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":404}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":405}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":406}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":407}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":408}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":409}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":410}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":411}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":412}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":413}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":414}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":415}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":416}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":417}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":418}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":419}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":420}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":421}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":422}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\n","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":423}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" ","item_id":"fc_02059371c27791c5016adfab5aa65887d2b865c4580958328d","output_index":1,"sequence_number":424}
+

@@ -52,6 +52,7 @@ use roko_serve::runtime::{names_run, short_run_id};
 use serde::{Deserialize, Serialize};
 
 use crate::graph_execution::delivery::{DELIVERY_CHECKS_EXTENSION, DeliveryCheck};
+use crate::graph_task_dispatch::micro_usd_to_usd;
 use crate::runner::plan_loader::Plan;
 use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
 use crate::task_accept;
@@ -692,10 +693,6 @@ fn abandoned_cost(attempt: &InterruptedAttempt) -> AttemptCost {
     }
 }
 
-fn micro_usd_to_usd(micro_usd: u64) -> f64 {
-    micro_usd as f64 / 1_000_000.0
-}
-
 /// Build the [`GATE_VERDICT_EXTENSION`] entry for `summary`.
 fn gate_verdict_extension(summary: &GateVerdictSummary) -> Result<CheckpointExtension> {
     let value = serde_json::to_value(summary).context("serialize gate verdict summary")?;
@@ -976,6 +973,16 @@ const fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+/// What settling `holds` charges, in millionths of one USD: each hold's
+/// finished calls, and its call in flight at its estimate (bug-b7f6a8).
+fn hold_charge(holds: &[CommittedHold]) -> u64 {
+    holds.iter().fold(0_u64, |total, hold| {
+        total
+            .saturating_add(hold.spent_micro_usd)
+            .saturating_add(hold.in_flight_micro_usd)
+    })
+}
+
 /// Versioned metadata that makes an Activity JSONL file safe to resume.
 ///
 /// The manifest is the checkpoint's only commit point (gap-dc1d16). Each
@@ -1156,11 +1163,7 @@ impl GraphCostLedgerCheckpoint {
             return Ok(None);
         }
         let holds = std::mem::take(&mut state.holds);
-        let charged = holds.iter().fold(0_u64, |total, hold| {
-            total
-                .saturating_add(hold.spent_micro_usd)
-                .saturating_add(hold.in_flight_micro_usd)
-        });
+        let charged = hold_charge(&holds);
         let settled = SettledHolds {
             spent_before_micro_usd: state.spent_micro_usd,
             released_micro_usd: state.reserved_micro_usd,
@@ -1172,6 +1175,15 @@ impl GraphCostLedgerCheckpoint {
         state.reserved_micro_usd = 0;
         write_cost_ledger_atomic(&self.path, state)?;
         Ok(Some(settled))
+    }
+
+    /// What the plan has spent with the holds the ledger records settled as
+    /// [`Self::settle_dead_holds`] settles them, in millionths of one USD:
+    /// the spend a resume carries (bug-b7f6a8).
+    fn settled_spend_micro_usd(&self) -> u64 {
+        self.identity
+            .spent_micro_usd
+            .saturating_add(hold_charge(&self.identity.holds))
     }
 
     /// Load the ledger at `path` for `manifest`'s checkpoint, with the cost a
@@ -3524,6 +3536,18 @@ pub struct ResumePreview {
     pub restored_tasks: Vec<String>,
     /// Tasks that would run.
     pub tasks_to_run: Vec<String>,
+    /// Why the checkpoint cannot resume, without the flags that would change
+    /// what a run does with it (bug-b7f6a8); `None` when it resumes.
+    pub cause: Option<String>,
+    /// Tasks the checkpoint's committed records hold outputs for: the ones a
+    /// resume replays, or, when it cannot resume, the ones a run that starts
+    /// over runs again (bug-b7f6a8). Empty when its records cannot be read.
+    pub recorded_tasks: Vec<String>,
+    /// What the checkpoint's run spent, in millionths of one USD, with the
+    /// attempts a stopped process left at what a resume settles them at
+    /// (bug-b7f6a8): what a resume carries into the plan's budget. `None`
+    /// when its cost ledger cannot be read.
+    pub spent_micro_usd: Option<u64>,
 }
 
 impl ResumePreview {
@@ -3581,6 +3605,7 @@ impl ResumePreview {
     /// The checkpoint cannot resume: `--force-resume` archives it, otherwise
     /// the run stops.
     fn unusable(mut self, force_resume: bool, reason: impl std::fmt::Display) -> Self {
+        self.cause = Some(reason.to_string());
         (self.action, self.reason) = if force_resume {
             (
                 ResumeAction::Archive,
@@ -3597,10 +3622,54 @@ impl ResumePreview {
 
     /// The run stops even with `--force-resume`.
     fn refused(mut self, reason: impl std::fmt::Display) -> Self {
+        self.cause = Some(reason.to_string());
         self.action = ResumeAction::Refuse;
         self.reason = Some(format!("{reason}; use --fresh"));
         self
     }
+
+    /// This preview, with the tasks the committed records of `manifest`'s
+    /// checkpoint at `paths` hold outputs for, read without matching them to
+    /// the plan's graph: what a run that starts over runs again
+    /// (bug-b7f6a8).
+    fn recording(
+        mut self,
+        paths: &GraphCheckpointPaths,
+        manifest: &GraphCheckpointManifest,
+    ) -> Self {
+        if let Some(replayer) = committed_replayer(paths, manifest) {
+            self.recorded_tasks = self
+                .tasks_to_run
+                .iter()
+                .filter(|task| replayer.lookup(task, 0).is_some())
+                .cloned()
+                .collect();
+        }
+        self
+    }
+}
+
+/// The records `manifest`'s generation committed to the Activity log at
+/// `paths`, less the ones it refused, without checking them against a graph;
+/// `None` when they cannot be read.
+fn committed_replayer(
+    paths: &GraphCheckpointPaths,
+    manifest: &GraphCheckpointManifest,
+) -> Option<ActivityReplayer> {
+    let log = std::fs::read(&paths.activities).ok()?;
+    let committed = manifest.committed.as_ref();
+    let len = committed.map_or_else(
+        || complete_records_len(&log),
+        |committed| committed.activity_bytes,
+    );
+    let prefix = log.get(..usize::try_from(len).ok()?)?;
+    let records = activity_records(prefix, &manifest.plan_id, &manifest.run_id)
+        .collect::<std::io::Result<Vec<_>>>()
+        .ok()?;
+    let refused = committed
+        .map(|committed| committed.refused_records.clone())
+        .unwrap_or_default();
+    ActivityReplayer::from_records(records, &refused).ok()
 }
 
 /// Report what `plan run` would do with `plan`'s Graph checkpoint, without
@@ -3639,7 +3708,11 @@ pub fn preview_plan_resume(
         .enumerate()
         .map(|(index, task)| (task.id.as_str(), index))
         .collect();
-    for tasks in [&mut preview.restored_tasks, &mut preview.tasks_to_run] {
+    for tasks in [
+        &mut preview.restored_tasks,
+        &mut preview.tasks_to_run,
+        &mut preview.recorded_tasks,
+    ] {
         tasks.sort_by_key(|task| position.get(task.as_str()).copied());
     }
     Ok(preview)
@@ -3727,6 +3800,9 @@ fn preview_graph_checkpoint(
         reason: None,
         restored_tasks: Vec::new(),
         tasks_to_run: task_nodes.clone(),
+        cause: None,
+        recorded_tasks: Vec::new(),
+        spent_micro_usd: None,
     };
 
     let manifest = if paths.manifest.exists() {
@@ -3761,28 +3837,41 @@ fn preview_graph_checkpoint(
     };
     let matched = match checkpoint_match(&manifest, plan_id, &identity, &paths) {
         Ok(matched) => matched,
-        Err(reason) => return Ok(preview.unusable(force_resume, reason)),
+        Err(reason) => {
+            return Ok(preview
+                .unusable(force_resume, reason)
+                .recording(&paths, &manifest));
+        }
     };
     if !paths.activities.is_file() || !paths.costs.is_file() {
-        return Ok(preview.unusable(
-            force_resume,
-            "the manifest references a missing Activity log or cost ledger",
-        ));
+        return Ok(preview
+            .unusable(
+                force_resume,
+                "the manifest references a missing Activity log or cost ledger",
+            )
+            .recording(&paths, &manifest));
     }
     let ledger = match GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
         Ok(ledger) => ledger,
-        Err(error) => return Ok(preview.unusable(force_resume, format!("{error:#}"))),
+        Err(error) => {
+            return Ok(preview
+                .unusable(force_resume, format!("{error:#}"))
+                .recording(&paths, &manifest));
+        }
     };
+    preview.spent_micro_usd = Some(ledger.settled_spend_micro_usd());
     // A resume selects the generation the manifest names, so only its
-    // committed records count here, less the ones the resume refuses.
+    // committed records count here, less the ones the resume refuses. Records
+    // it cannot select are not trusted to name passed tasks either.
     let selected = match select_generation(&paths, &manifest, &ledger.identity, graph) {
         Ok(selected) => selected,
         Err(error) => return Ok(preview.refused(format!("{error:#}"))),
     };
-    let (restored, to_run) = task_nodes
+    let (restored, to_run): (Vec<String>, Vec<String>) = task_nodes
         .into_iter()
         .partition(|node| selected.replayer.lookup(node, 0).is_some());
     preview.action = ResumeAction::Resume;
+    preview.recorded_tasks.clone_from(&restored);
     preview.restored_tasks = restored;
     preview.tasks_to_run = to_run;
     if matched == FingerprintMatch::Legacy {
@@ -4281,6 +4370,8 @@ depends_on = ["T1"]
         assert_eq!(preview.status, Some(GraphCheckpointStatus::Failed));
         assert_eq!(preview.restored_tasks, ["T1"]);
         assert_eq!(preview.tasks_to_run, ["T2"]);
+        assert_eq!(preview.recorded_tasks, ["T1"]);
+        assert_eq!((preview.cause, preview.spent_micro_usd), (None, Some(0)));
         assert_eq!(files(), before);
 
         let fresh = ResumeOptions {
@@ -4531,6 +4622,14 @@ depends_on = ["T1"]
                 .as_deref()
                 .is_some_and(|reason| reason.contains("graph has changed"))
         );
+        // It says why without the flags, and names the task its run passed,
+        // which a run that starts over runs again (bug-b7f6a8).
+        assert_eq!(
+            preview.cause.as_deref(),
+            Some("the converted plan graph has changed")
+        );
+        assert_eq!(preview.recorded_tasks, ["T1"]);
+        assert!(preview.restored_tasks.is_empty());
         let forced = ResumeOptions {
             force_resume: true,
             ..ResumeOptions::default()
@@ -4785,6 +4884,11 @@ depends_on = ["T1"]
             .expect("persist the hold");
         // The process stops: nothing settles the hold.
         drop(checkpoint);
+        // A preview says what a resume carries, and settles nothing.
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.action, ResumeAction::Resume);
+        assert_eq!(preview.spent_micro_usd, Some(221_000));
 
         let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
             .expect("an attempt left in flight resumes");

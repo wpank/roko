@@ -146,6 +146,9 @@ impl Default for GraphPlanBudgetPolicy {
 pub struct GraphPlanBudgetSnapshot {
     /// Provider-reported or locally priced spend recorded for the plan.
     pub spent_usd: f64,
+    /// Of it, what earlier processes of a resumed run spent, which the plan
+    /// took over from its checkpoint (bug-b7f6a8).
+    pub carried_usd: f64,
     /// Capacity currently reserved by admitted provider calls.
     pub reserved_usd: f64,
     /// Configured ceiling, or `None` when plan cost is unlimited.
@@ -174,6 +177,9 @@ struct PlanBudgetState {
     /// The spend a resumed run restored from the plan's `costs.json`: an
     /// earlier process of the run announced the alerts it passed.
     restored_micro_usd: u64,
+    /// The same spend, which a raised ceiling keeps: what earlier processes
+    /// of the run spent, as the run's report says it (bug-b7f6a8).
+    carried_micro_usd: u64,
     /// The `budget.alert_at_percent` thresholds announced so far (backlog
     /// 2116).
     alerted_percent: Vec<u8>,
@@ -564,6 +570,7 @@ impl GraphPlanBudgetLedger {
                 entry.insert(PlanBudgetState {
                     spent_micro_usd: checkpoint.spent_micro_usd(),
                     restored_micro_usd: checkpoint.spent_micro_usd(),
+                    carried_micro_usd: checkpoint.spent_micro_usd(),
                     raised_ceiling_micro_usd: checkpoint.raised_ceiling_micro_usd(),
                     checkpoint: Some(checkpoint),
                     ..PlanBudgetState::default()
@@ -594,6 +601,7 @@ impl GraphPlanBudgetLedger {
 
         GraphPlanBudgetSnapshot {
             spent_usd: micro_usd_to_usd(spent_micro_usd),
+            carried_usd: micro_usd_to_usd(state.map_or(0, |state| state.carried_micro_usd)),
             reserved_usd: micro_usd_to_usd(reserved_micro_usd),
             ceiling_usd: policy.ceiling_micro_usd.map(micro_usd_to_usd),
             exhausted,
@@ -1773,7 +1781,8 @@ fn usd_to_micro_usd(value: f64) -> u64 {
     (value * MICRO_USD_PER_USD).round() as u64
 }
 
-fn micro_usd_to_usd(value: u64) -> f64 {
+/// `value` millionths of one USD, in USD.
+pub(crate) fn micro_usd_to_usd(value: u64) -> f64 {
     value as f64 / MICRO_USD_PER_USD
 }
 

@@ -326,20 +326,36 @@ pub struct PromptPlanResult {
 
 /// The run a plan's Graph checkpoint records (bug-cbdb6b): what a run that
 /// starts the plan over sets aside, and what a resume continues.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointRun {
     /// The run's id.
     pub run_id: String,
     /// How the run stands: `failed`, `interrupted`, `cancelled`, `running`
     /// (it stopped without saying), `succeeded` or `unverified`.
     pub status: String,
-    /// Tasks whose recorded outputs a resume replays.
+    /// Tasks the checkpoint recorded as passed: the ones a resume replays,
+    /// or, when a resume cannot continue it, the ones a run that starts over
+    /// runs again (bug-b7f6a8).
     pub passed_tasks: Vec<String>,
     /// Tasks a resume runs.
     pub tasks_left: Vec<String>,
     /// Whether a resume would continue the run: it stopped part way, with
     /// tasks passed and tasks left, and its checkpoint still fits the plan.
     pub resumable: bool,
+    /// Whether a resume continues the checkpoint at all, however far its run
+    /// got (bug-b7f6a8). When it does not, because the checkpoint no longer
+    /// fits the plan or cannot be read, a resume is refused with `reason`,
+    /// and only a run that starts over runs the plan.
+    pub continues: bool,
+    /// Why a resume cannot continue it, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What the run spent before it stopped, in USD, which a resume carries
+    /// into the plan's budget: its finished model calls, and the attempts a
+    /// stopped process left at what a resume settles them at (bug-b7f6a8).
+    /// `None` when its cost ledger cannot be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_usd: Option<f64>,
 }
 
 /// Run `run_id` as people see it (bug-cbdb6b).
@@ -371,7 +387,7 @@ fn trailing_uuid(run_id: &str) -> Option<&str> {
 }
 
 /// What [`CliRuntime::restore_checkpoint_run`] did (bug-cbdb6b).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RestoredCheckpoint {
     /// The run whose checkpoint is the plan's current one again.
     pub restored: CheckpointRun,

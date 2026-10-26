@@ -2470,9 +2470,18 @@ fn run_summary(
     // want of usage, an account they can't bill included, the latest refusal
     // of each (bug-390e4b).
     let mut provider_exhausted = BTreeMap::<String, Value>::new();
+    // What earlier processes of the run spent, by plan, the latest each plan
+    // said as it resumed (bug-b7f6a8).
+    let mut carried = BTreeMap::<String, f64>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if kind == "budget_carried"
+            && let Some(carried_usd) = decimal(value, "carried_usd")
+        {
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            carried.insert(plan_id, carried_usd);
+        }
         if kind == "provider_exhausted" {
             let data = event_data(value);
             let provider = string_field(value, "provider")
@@ -2723,6 +2732,10 @@ fn run_summary(
         "cost_usd": summary["metrics"]["cost_usd"],
         // The part of it side calls spent, by role (bug-11e54b).
         "side_call_usd": summary["metrics"]["side_call_usd"],
+        // What earlier processes of the run spent before a restart, which the
+        // budgets of the plans it resumed count beside `cost_usd`
+        // (bug-b7f6a8).
+        "carried_usd": carried.values().sum::<f64>(),
         "tasks": {
             "total": tasks.len(),
             "passed": passed,
@@ -4201,6 +4214,55 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-b7f6a8: a run that resumed plans says what earlier processes of
+    /// its run spent, which its plans' budgets count, beside what it spent
+    /// itself: the latest each plan said, summed over its plans. A run that
+    /// resumed nothing carried nothing.
+    #[tokio::test]
+    async fn a_resumed_runs_summary_says_what_its_plans_carried() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let carried = |plan_id: &str, usd: f64| json!({"type":"budget_carried","run_id":"r1","timestamp_ms":2,"plan_id":plan_id,"carried_usd":usd,"settled_usd":0.0});
+        write_rows(
+            &index("r1"),
+            &[
+                json!({"type":"run.started","run_id":"r1","timestamp_ms":1}),
+                carried("p1", 0.5),
+                carried("p2", 0.125),
+                carried("p1", 0.25),
+                json!({"type":"run.completed","run_id":"r1","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.05}),
+            ],
+        );
+        write_rows(
+            &index("r2"),
+            &[
+                json!({"type":"run.started","run_id":"r2","timestamp_ms":1}),
+                json!({"type":"run.completed","run_id":"r2","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.05}),
+            ],
+        );
+        for (run_id, carried_usd) in [("r1", 0.375), ("r2", 0.0)] {
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            assert_eq!(summary["cost_usd"], 0.05, "{summary}");
+            assert_eq!(summary["carried_usd"], carried_usd, "{summary}");
+        }
     }
 
     /// bug-b9df52: the spec gate's checks fail on the base by design, so a

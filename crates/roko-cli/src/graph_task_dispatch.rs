@@ -102,6 +102,7 @@ mod watchdog;
 mod wiring;
 
 pub use attempt_workspace::{AWAITING_APPROVAL_PHASE, record_review};
+pub(crate) use budget::micro_usd_to_usd;
 pub use budget::{
     GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
     plan_ceiling_micro_usd,

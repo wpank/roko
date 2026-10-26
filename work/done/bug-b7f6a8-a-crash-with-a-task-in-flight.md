@@ -2,7 +2,7 @@
 id = "bug-b7f6a8"
 kind = "bug"
 title = "A crash with a task in flight makes its plan unresumable: every CLI resume fails closed on the dead attempt's budget hold, and serve's resume (MCP, REST) silently starts the plan over, reruns its passed tasks and still answers that it resumed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_checkpoint", "roko-serve/plans"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "2ca53cb61"
 source = "round-v7 roko-recovery kill matrix (tmp/hermes-roko-v7/findings/roko-recovery.md, tmp/hermes-roko-v7/roko-recovery/runs/roko-main-4d22b94e8), the lead's ask"
 discovered_from = "agent:roko-recovery (round v7, 4d22b94e8)"
 anchors = ["crates/roko-cli/src/graph_checkpoint.rs::validate_cost_ledger_state", "crates/roko-cli/src/graph_checkpoint.rs::GraphCostLedgerCheckpoint::load", "crates/roko-cli/src/graph_checkpoint.rs::prepare_graph_checkpoint_for_run", "crates/roko-cli/src/graph_checkpoint.rs::record_interrupted_attempts", "crates/roko-cli/src/serve_runtime.rs::checkpoint_run_of", "crates/roko-serve/src/routes/plans/run_control.rs::start_plan_run_with", "crates/roko-serve/src/routes/plans/run_control.rs::resume_plan"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-8bcd98", "gap-36f3fb", "
 [[verify]]
 command = "grep -rqw 'fn resume_settles_a_dead_attempts_budget_hold' crates/roko-cli/src && grep -rqw 'fn a_resume_that_cannot_continue_is_refused_with_its_reason' crates/roko-serve/src && cargo test -p roko-cli --lib resume_settles_a_dead_attempts_budget_hold && cargo test -p roko-serve --lib a_resume_that_cannot_continue_is_refused_with_its_reason"
 
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:31:55Z"
+commit = "4cfc6be60"
+by = "roko-recovery (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "L"
+claimed_at = "2026-10-26T12:05:15Z"
+forced = false
+evidence = "Merged 5e9af6682 (branch work/bug-b7f6a8; interim a85290f66): the plan budget commits each attempt's hold with every call it admits and records, and a resume under the runner lock settles the holds a stopped process left: finished calls billed, the call in flight estimated, an explicit abandoned verdict (blame harness, failure_class process_stopped, cost billed/estimated) and a learn/costs.jsonl row per dead attempt; a ledger from before holds were kept is released with a warning; serve answers 409 cannot_resume for a resume it cannot continue (only fresh starts over); CheckpointRun gains continues, reason, spent_usd and real passed_tasks, MCP plan_run resumes.left_usd, a budget_carried event, the run summary carried_usd and the CLI report plan_budgets[].carried_usd; the self-model ingest reads an explicit abandoned verdict as no verdict. Follow-up 4cfc6be60 (the lead's heads-up on bb6b73/2a5566): a refused dispatch's calls are marked booked on the hold, so a crash charges each call once with bug-8bcd98 parts 1-2, and the abandoned verdict carries them as refused_usd. Post-merge verify on 4cfc6be60: both greps find the tests; resume_settles_a_dead_attempts_budget_hold, a_resume_that_cannot_continue_is_refused_with_its_reason and a_crash_after_a_refused_dispatch_charges_each_call_once pass; lib suites roko-cli 4045 passed (8 ignored, share test skipped), roko-core 2049, roko-serve 1086, roko-learn 1405 + latency_health_persistence_round_trip failed once under cargo load (a fixed 250 ms wait for a debounced save; 5 of 5 passed on rerun of the same binary). Branch at 85d16339f: nightly fmt; clippy --workspace -D warnings clean. One hold commit costs 0.49 ms (measure_a_hold_commit: 400 commits, 3 holds in flight, no fsync). Evidence (harness, not a verify; tmp/ is local): tmp/hermes-roko-v7/roko-recovery/runs/fix-4f829cc10, every kill point on both paths with cli-resume and serve-mcp-resume: check.py --only E1,E2,E3,E5 passes 88 of 88 (40 of 88 failed on 4d22b94e8, at a, a', b, c' and d3); c-verify's trigger missed (today's gate skips a check the try's hand-off passed, gap-6df2bf), so its row is vacuous. At a' the dead T2#1 settles abandoned at $0.082 ($0.041 billed + $0.041 estimated), only T2 reruns, the plan ledger, attempts.jsonl and learn/costs.jsonl all read $0.287, and serve's resumes says continues, spent $0.164, $1.836 left of $2. Follow-up p3: gap-d0c5d9 (the kill matrix into tools/crash_matrix with a fast CI subset)."
 +++
 
 ## Problem

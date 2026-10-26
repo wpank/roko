@@ -801,12 +801,32 @@ def parse_mix(text: str) -> dict[str, int]:
 
 WORKTREE_SKIP = re.compile(r"^work/|(?:^|/)(?:target|node_modules)(?:/|$)")
 
+# How long one worktree's `git status` may take (bug-54880c): after the 2026-10-26 reboot, git blocked for minutes on
+# a stale fsmonitor socket in other sessions' worktrees, and every `next` and `claim` waited for it.
+WORKTREE_STATUS_TIMEOUT_S = float(os.environ.get("WORK_GIT_STATUS_TIMEOUT_S") or 10)
 
-def worktree_changes() -> dict[str, str]:
+
+def worktree_status(path: Path, timeout: float | None = None) -> list[str] | None:
+    """The uncommitted and untracked files of the worktree at `path`, or None when git does not answer within
+    `timeout` seconds (default WORKTREE_STATUS_TIMEOUT_S; the stuck git is killed). Read-only: git takes none of its
+    optional locks, so it writes no index, and asks no fsmonitor daemon."""
+    try:
+        status = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", str(path),
+                                 "status", "--porcelain", "-z", "--no-renames"], capture_output=True, text=True,
+                                timeout=WORKTREE_STATUS_TIMEOUT_S if timeout is None else timeout).stdout
+    except subprocess.TimeoutExpired:
+        return None
+    return [e[3:].rstrip("/") for e in status.split("\0") if len(e) > 3]
+
+
+def worktree_changes(unknown: list | None = None) -> dict[str, str]:
     """{path: "<worktree> (<branch>)"} for the files the repo's other worktrees are changing (gap-d1f787): each
     worktree's commits since its merge-base with this checkout's HEAD, plus its uncommitted and untracked files. The
     main checkout's commits are the trunk, so only its uncommitted files count. Files under work/ (items and views)
-    and build output are left out. Read-only: it runs git diff and status in each worktree, several at a time."""
+    and build output are left out. Read-only: it runs git diff and status in each worktree, several at a time.
+
+    A worktree whose `git status` times out (bug-54880c) still counts its commits, but its uncommitted files are
+    unknown, not clean: it is named on stderr, and its label is appended to `unknown` when given."""
     from concurrent.futures import ThreadPoolExecutor
 
     me, main, head = REPO.resolve(), main_root().resolve(), git("rev-parse", "HEAD").strip()
@@ -821,20 +841,24 @@ def worktree_changes() -> dict[str, str]:
     def scan(w):
         path = Path(w["worktree"])
         if not path.is_dir() or path.resolve() == me:
-            return w, set()
+            return w, set(), True
         files = set()
         if path.resolve() != main and head and w.get("HEAD") and (w.get("branch") in unmerged or "detached" in w):
             files.update(git("diff", "--name-only", f"{head}...{w['HEAD']}").splitlines())  # since the merge-base
-        status = subprocess.run(["git", "-C", str(path), "status", "--porcelain", "-z", "--no-renames"],
-                                capture_output=True, text=True).stdout
-        files.update(e[3:].rstrip("/") for e in status.split("\0") if len(e) > 3)
-        return w, {f for f in files if f and not WORKTREE_SKIP.search(f)}
+        status = worktree_status(path)
+        files.update(status or ())
+        return w, {f for f in files if f and not WORKTREE_SKIP.search(f)}, status is not None
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         scanned = list(pool.map(scan, entries))
     busy = {}
-    for w, files in scanned:
+    for w, files, checked in scanned:
         label = f"{Path(w['worktree']).name} ({w.get('branch', '').removeprefix('refs/heads/') or 'detached'})"
+        if not checked:
+            print(f"worktree {label} at {w['worktree']}: unknown (git status timed out after "
+                  f"{WORKTREE_STATUS_TIMEOUT_S:g}s); its uncommitted files are not checked", file=sys.stderr)
+            if unknown is not None:
+                unknown.append(label)
         for f in sorted(files):
             busy.setdefault(f, label)
     return busy
@@ -953,7 +977,8 @@ def cmd_claim(a):
             renew_claims(a, claims, session)
             return
         live = {k: c for k, c in claims.items() if not c["stale"]}
-        worktrees = {} if a.ignore_worktrees else worktree_changes()
+        unchecked = []  # worktrees whose git status timed out (bug-54880c): their uncommitted files are unknown
+        worktrees = {} if a.ignore_worktrees else worktree_changes(unchecked)
         refused = []  # every claimable item is claimed; the refused ones are listed at the end
         for iid in a.ids:
             it = idx.get(iid)
@@ -988,6 +1013,9 @@ def cmd_claim(a):
             log_event("claim", iid, session=session, executor=a.executor, via=a.via, branch=a.branch, by=a.by,
                       size=size, claimed_at=rec["claimed_at"], force=True if a.force else None)
             print(f"claimed {iid} for {a.by} ({size or 'unsized'}: live for {claim_ttl_hours(rec)} h unless renewed)")
+            if unchecked:
+                print(f"{iid}: its files were not checked against {len(unchecked)} worktree(s) whose git status timed "
+                      f"out: {', '.join(unchecked)}", file=sys.stderr)
     if refused:
         sys.exit("\n".join(refused))
 

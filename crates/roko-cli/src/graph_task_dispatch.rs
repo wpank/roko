@@ -350,6 +350,10 @@ pub struct GraphTaskDispatcher {
             std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         >,
     >,
+    /// The checkout of each task's latest accepted attempt, by
+    /// `"{plan_id}/{task_id}"`, with the order it was accepted in: a task that
+    /// depends on it warms its build trees from there (gap-b6b7a1).
+    accepted_checkouts: parking_lot::Mutex<HashMap<String, (u64, PathBuf)>>,
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
@@ -461,6 +465,7 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             checkout_writes: parking_lot::Mutex::default(),
+            accepted_checkouts: parking_lot::Mutex::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),
             depths: verify_depth::Depths::default(),
@@ -1309,8 +1314,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .as_ref()
             .filter(|_| scratch.is_none());
         let lease = if let Some(provider) = provider {
+            // A task that depends on another starts from its accepted work:
+            // its build trees come warm from that checkout (gap-b6b7a1).
+            let seed = self.dependency_checkout(&spec.plan_id, &task);
             let lease = provider
-                .acquire(&attempt_id)
+                .acquire_seeded(&attempt_id, seed.as_deref())
                 .await
                 .map_err(|e| RokoError::Agent {
                     backend: "worktree-isolation".to_string(),

@@ -5432,13 +5432,15 @@ mod tests {
         assert_eq!((checks.kept, checks.total), (2, 2), "{checks:?}");
         assert_eq!(checks.documents, ["docs/specs/widget.md"]);
         let written = TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("plan");
-        assert!(
-            written.tasks[0].verify.iter().any(
-                |step| step.command == "tools/spec.sh widget spin && tools/spec.sh widget stop"
-            ),
-            "{:?}",
-            written.tasks[0].verify
-        );
+        // gap-77220d: each check's command in a step of its own.
+        let commands: Vec<&str> = written.tasks[0]
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        for command in ["tools/spec.sh widget spin", "tools/spec.sh widget stop"] {
+            assert!(commands.contains(&command), "{command}: {commands:?}");
+        }
     }
 
     /// bug-96115c: a request that names its final check gets a plan whose

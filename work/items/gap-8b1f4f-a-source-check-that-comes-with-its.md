@@ -41,6 +41,19 @@ check.
   nothing would have asked for it.
 - The person added it back by hand.
 
+## Evidence: the phase-4.3 replay after gap-4dd77d (2026-10-26, roko-planner)
+
+- A $0 replay of 4.3's write on Undertow 2ac4b36 (`tmp/hermes-roko-v7/roko-planner/replay-p43`: a fake planner
+  answers with the as-written draft, then the re-ask's draft) on gap-4dd77d's binary kept the re-ask's draft, with T1
+  raised to integrative: "Source checks: 16 of 17 kept as verify steps, 1 dropped with a reason".
+- The one dropped is SC15, P4.3.15 (`tools/spec.sh 4 display 'P4.07*'`), with the draft's reason "The hazard-stripes
+  regression is not a task-specific change in this phase; it is covered by the plan's final check
+  `tools/check.sh --plugin`". So the path this item describes is now the live one.
+- `assign_runs` gave it no step because `owner_of` found no owner. Its command's word `display` doesn't match T2's
+  `plugin/ui/Displays.cpp`, whose stem is `displays`, and nothing in T2's text names P4.3.15.
+- gap-4dd77d's test `a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised` pins (16 kept, 1 dropped,
+  0 missing, 17) for now. This item's fix should turn it into 17 kept.
+
 ## Why it matters
 
 - The checks a spec gives a task are how a task's own try catches its regressions. Moved to the plan's final

@@ -202,6 +202,7 @@ fn gemini_model(slug: &str) -> ModelProfile {
         provider: "gemini".to_string(),
         slug: slug.to_string(),
         context_window: 1_048_576,
+        compact_at_tokens: None,
         max_output: Some(65_536),
         supports_tools: true,
         supports_thinking: true,

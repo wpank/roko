@@ -87,6 +87,20 @@ watchdog cancels the whole try.
    `max_output_tokens` capped: as is, with `parallel_tool_calls: false`, and with `strict: true` on `ls`. If one
    knob removes the glitch at a measurable base rate, adopt it for Responses calls. `strict` needs schemas with
    every property required, optional ones nullable.
+   - **Replayed as is, 10 times (2026-10-26 20:55, $0.021): not reproducible at n=10 as a runaway.** The variants
+     were not run: the lead's gate was at least 3 of 10.
+     - 8 of 10 answered `{"path":"."}`.
+     - 2 of 10 derailed at the same point as the recorded call. After `{"path":"."` the model wrote `,"`, a second key
+       the schema forbids (`additionalProperties: false`, `path` its only property).
+       - #4 ended `…}]}]} }]}]} to=functions.ls  大发快三有error? Wait need valid JSON. Let's use simple. I accidentally
+         malformed. "}`: the routing leak, a glitch token and the model's own commentary. 155 characters.
+       - #5 ended `…}**ignore**},{" … :[{"path":".","path":"."}]}`. 85 characters.
+       - Both are syntactically valid JSON with nonsense keys, and neither collapsed into whitespace.
+     - Read: the derail begins with a key outside the tool's schema. Strict decoding would forbid that key and would
+       stop the derail there; 10 tries per variant can't show it at a 2-in-10 base rate. Records:
+       `tmp/hermes-roko-v7/roko-effort/responses/checks/replay-asis-20261026-205538/` (`replays.jsonl`, the tee's log).
+   - The guard in steps 1–3 should therefore also treat a key the tool's schema forbids as malformed, when the
+     schema says `additionalProperties: false`: both replayed derails were valid JSON.
 
 ## Done when
 

@@ -2019,6 +2019,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // commands for, runs those commands.
                 let stuck = runnable::problems(&parsed, workdir_ref, &probe);
                 repairs.extend(source_checks::apply_runs(&mut parsed, &checks, &stuck));
+                // gap-8b1f4f: a check that comes with its own command is never
+                // dropped, so its task runs it below.
+                repairs.extend(source_checks::refuse_drops(&mut parsed, &checks));
                 // bug-72dc0d: each source check whose command roko knows runs in
                 // the task that owns it, whatever command the planner wrote.
                 let stuck = runnable::problems(&parsed, workdir_ref, &probe);
@@ -5178,7 +5181,8 @@ mod tests {
     /// put T1's four regression checks back, at 5 verify steps on a focused
     /// task (limit 4), and roko threw it away on PLAN_TIER_SIZE and wrote
     /// the draft that lacked them. The regeneration is now kept, with T1
-    /// raised to integrative.
+    /// raised to integrative; the P4.07 it dropped to the plan's final check
+    /// runs in T2 (gap-8b1f4f), so it keeps all 17.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised() {
@@ -5246,11 +5250,10 @@ mod tests {
             .source_checks
             .expect("the spec's checks are reported");
         assert!(checks.regenerated, "{checks:?}");
-        // The regeneration keeps 16 and drops P4.07 with a reason, where the
-        // draft kept 12 and left 5 in no step.
+        // The draft kept 12 and left 5 in no step.
         assert_eq!(
             (checks.kept, checks.dropped, checks.missing, checks.total),
-            (16, 1, 0, 17),
+            (17, 0, 0, 17),
             "{checks:?}"
         );
     }

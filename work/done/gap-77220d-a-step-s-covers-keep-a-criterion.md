@@ -2,7 +2,7 @@
 id = "gap-77220d"
 kind = "gap"
 title = "A step's covers keep a criterion twice when two source checks map to it (phase 5's T1: [\"AC1\", \"AC1\"]), and assign_runs joins a task's missing checks into one && step even with room for more, against rule 3"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "09a8f162e"
 source = "round-v7-roko-planner#phase-5-replay"
 discovered_from = "agent:roko-planner (round v7, phase 5 $0 replay on roko 4d22b94e8)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::normalize_covers", "crates/roko-cli/src/plan_generate/source_checks.rs::assign_runs"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-72dc0d", "bug-59782c"], 
 
 [[verify]]
 command = "grep -rqw 'fn missing_checks_get_steps_of_their_own_and_covers_stay_unique' crates/roko-cli/src && cargo test -p roko-cli --lib -- missing_checks_get_steps_of_their_own_and_covers_stay_unique"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T21:09:47Z"
+commit = "b3c2b4746"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged b3c2b4746 (branch 0522d8de1; main merged in at 9b9db9caa). Post-merge verify in main at b3c2b4746: the grep finds the test and missing_checks_get_steps_of_their_own_and_covers_stay_unique passes, with a_summary_naming_its_spec_is_planned_with_the_specs_checks (2 of 2). Branch: plan_generate and plan_policy 194/194; roko-cli lib 4042 passed, 2 failed (graph_execution::plan_runner::tests::frozen_learning_*, failing on main since 754f45ebd); nightly fmt; clippy -p roko-cli -D warnings clean. normalize_covers keeps each criterion once per step (phase 5's T1 and T8 had AC1 two and three times); assign_runs gives each missing command a step of its own while the task has room, each with its own covers and expect, the rest joining the last one at the limit."
 +++
 
 ## Problem

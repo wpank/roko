@@ -74,6 +74,14 @@ const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itse
 const LESSON_NOTE: &str = "When you finish, end your final message with one line, `Lesson: <one \
      sentence about this repository that a later task should know>`, or `Lesson: none`.";
 
+/// Appended before [`LESSON_NOTE`] to the user prompt of a task with authored verify steps and
+/// files (bug-3b3bb6): a try that cannot fix a failure inside its files says where the cause is,
+/// in a line roko reads, rather than work around it, and roko hands the failure to the task that
+/// owns that file.
+const BLOCKED_NOTE: &str = "If what fails is caused in a file outside this task's `files`, do not \
+     work around it in your files: put a line `Blocked: <path> — <why>` before your `Lesson:` \
+     line, naming that file, and roko hands the failure to the task that owns it.";
+
 /// Appended to the user prompt of a task that sets `research_before_edit` (gap-404fdb).
 const RESEARCH_BEFORE_EDIT_NOTE: &str = "\n## Before You Edit\nResearch first: find the code that \
      already does something like this task (search for the types, functions and files it names), \
@@ -2507,9 +2515,14 @@ impl PromptAssembler {
                 user_prompt.push_str(PINNED_STEP_NOTE);
                 user_prompt.push('\n');
             }
+            // A try blocked outside its files says where (bug-3b3bb6).
+            user_prompt.push('\n');
+            if !task.files.is_empty() {
+                user_prompt.push_str(BLOCKED_NOTE);
+                user_prompt.push('\n');
+            }
             // Only a verified pass writes knowledge: ask for its lesson
             // (backlog 4215).
-            user_prompt.push('\n');
             user_prompt.push_str(LESSON_NOTE);
             user_prompt.push('\n');
         }
@@ -4243,6 +4256,11 @@ mod tests {
         let verified = prompt_for(&task());
         assert!(verified.contains(LESSON_NOTE), "{verified}");
         assert!(verified.contains("`Lesson: none`"), "{verified}");
+        // bug-3b3bb6: a task that changes files is asked to say where a
+        // cause outside them is, before its lesson.
+        assert!(!task().files.is_empty());
+        let blocked = verified.find(BLOCKED_NOTE).expect("the Blocked: note");
+        assert!(blocked < verified.find(LESSON_NOTE).expect("the lesson note"));
 
         let mut unverified = task();
         unverified.verify.clear();

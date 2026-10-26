@@ -115,6 +115,10 @@ showcase audio":
 
 ## Current state
 
+- **2026-10-26, roko-exact: the roko side, (b) to (d) of the plan, is built** (see Design). It covers the `Blocked:`
+  line, the prompt note, the hand-back to the owner's files and checks on the same rung, and the stop for a file no
+  task changes. Plan item (a), the implementer template's rule and its verify test, follows roko-ladder's gap-744bd0.
+  Plan item (5), the planning side, is open.
 - The ladder climbs after a rung's failed tries, whether or not the failures were identical and the hand-off named
   an outside cause.
 - A verified pass's `Lesson:` is admitted to knowledge as stated.
@@ -142,6 +146,42 @@ showcase audio":
    then carries it.
 6. **The kept lesson:** see bug-2ad4fa (admission from a failed or cancelled run, a retire command, retrieval and
    `deprecated`). The pilot has removed `runtime_3c3b9654100195f1` from Undertow's store by hand.
+
+## Design
+
+roko-exact, 2026-10-26. This covers the roko side, (b) to (d) of the plan. The template rule, (a), goes in after
+roko-ladder's gap-744bd0 lands, beside its rule 1 and without rewording it.
+
+- **The line.** `roko_agent::tool_loop::stated_blocker(text)` reads the last line of a final message that starts
+  with `Blocked:`, after any list, quote or emphasis mark.
+  - The path is the first word, with quotes and closing punctuation removed. It must have a `/` or a `.`, so
+    `Blocked: none` states nothing.
+  - The why follows a dash or a colon.
+- **The prompt.** `BLOCKED_NOTE` sits before `LESSON_NOTE`, for a task with verify steps and files: "If what fails
+  is caused in a file outside this task's `files`, do not work around it in your files: put a line `Blocked: <path> —
+  <why>` before your `Lesson:` line, naming that file, and roko hands the failure to the task that owns it."
+- **The tool loop's send-back (bug-cbbaa8)** doesn't send back a hand-off that states a blocker. The try ends, and
+  roko acts on the line.
+- **After a red try** (`dispatch`, before it settles), `note_blocked_try` maps the line's path to the plan's tasks:
+  `plan_handback::declared_owners` of `<plan_dir>/tasks.toml`, matched as `named_files` matches a path (the longest
+  path named wins). The cases (`graph_task_dispatch/blocked.rs::classify`):
+  - **Another task's file** (`HandBack`): the task's next tries run widened (`blocked_task`). They add:
+    - the owner's files;
+    - the owner's verify steps, after the task's own, with covers and expect cleared and each command once;
+    - a description that leads with "A try of this task ended with `Blocked: <path>`: the cause of its failure is in
+      `<path>`, task <owner>'s file: <why>. This try may change task <owner>'s files too (…), and task <owner>'s
+      checks judge it with this task's own. Fix the cause where it is. Never change what a check measures …".
+
+    `task_for_try` applies the widening where both dispatch paths decode the task, so the prompt, the scope screen,
+    acceptance and the checks all see it. The blocked try does not count on its rung (`note_ladder_outcome` skips
+    it), so the task doesn't climb. The next try's feedback starts with what the line meant
+    (`RetryFeedbackBook::note_pending`).
+  - **A file the try may change already** (`InScope`): the next try's feedback says so, and the try counts as usual.
+  - **No task's file**, or a third distinct owner (`Stop`): the try settles as it failed, and `dispatch` returns
+    `Rejected`, which the cell never retries. The person reads "task T3 is blocked: its try says the cause of its
+    failure is in `vendor/lib.txt`, which no task of plan demo changes: … Change that file, or replan the task with
+    it, and resume the plan".
+  - **Without a readable plan:** the line can't be placed, and the try counts as any red try.
 
 ## Done when
 

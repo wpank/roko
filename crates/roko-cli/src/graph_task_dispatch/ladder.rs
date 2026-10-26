@@ -706,6 +706,12 @@ impl GraphTaskDispatcher {
             self.tries.lock().infra_runs.remove(&task_key);
             return false;
         }
+        // A try handed back for a blocker in another task's file is not the
+        // rung's failure: the task's next try runs on the same rung, with
+        // that task's files (bug-3b3bb6).
+        if self.take_uncounted_try(&task_key) {
+            return false;
+        }
         let verdict = &settled.verdict;
         let Some(ladder) = verdict.ladder.as_ref() else {
             return false;

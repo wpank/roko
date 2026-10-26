@@ -361,6 +361,12 @@ pub enum DashboardEvent {
         /// How long the call took, in ms; `None` when the loop did not say.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wall_ms: Option<u64>,
+        /// How the call ended (bug-8bcd98): `ok` when it returned a response;
+        /// for one that failed past the loop's retries, `timeout`,
+        /// `rate_limited`, `refused` or `error`, its usage what it streamed,
+        /// else nothing. `None` on a row from before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
     },
     /// The plan-load spec gate started (gap-6a319c): before any task runs,
     /// it scores the plans' tasks and, with `[spec_quality] red_on_base`,

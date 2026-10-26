@@ -279,11 +279,15 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    // Each task gets two warnings: PLAN_012 for naming its model by an
+    // alias, and PLAN_041 because a `model_hint` pins the model past the
+    // routing ladder (on by default) however it is spelled; the full name
+    // clears only the first.
     assert!(
-        stdout.contains("3 diagnostics in 1 plan"),
+        stdout.contains("6 diagnostics in 1 plan"),
         "unexpected stdout: {stdout}"
     );
-    assert!(stdout.contains("PLAN_012"), "missing PLAN_012: {stdout}");
+    assert_eq!(stdout.matches("PLAN_012").count(), 3, "{stdout}");
     assert!(
         stdout.contains("uses model alias 'haiku'; prefer the full name 'claude-haiku-4-5'"),
         "missing haiku alias warning: {stdout}"
@@ -296,6 +300,16 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
         stdout.contains("uses model alias 'opus'; prefer the full name 'claude-opus-4-6'"),
         "missing opus alias warning: {stdout}"
     );
+    assert_eq!(stdout.matches("PLAN_041").count(), 3, "{stdout}");
+    for (task, alias) in [("T1", "haiku"), ("T2", "sonnet"), ("T3", "opus")] {
+        assert!(
+            stdout.contains(&format!(
+                "task '{task}' sets model_hint = '{alias}', which pins a model and bypasses the \
+                 routing ladder"
+            )),
+            "missing PLAN_041 for {task}: {stdout}"
+        );
+    }
 }
 
 #[test]
@@ -324,14 +338,24 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    // PLAN_009 for the unknown model, and PLAN_041 because the hint still
+    // pins the task's model past the routing ladder (on by default).
     assert!(
-        stdout.contains("1 diagnostics in 1 plan"),
+        stdout.contains("2 diagnostics in 1 plan"),
         "unexpected stdout: {stdout}"
     );
     assert!(stdout.contains("PLAN_009"), "missing PLAN_009: {stdout}");
     assert!(
         stdout.contains("uses model 'definitely-not-a-model' which is not configured in roko.toml"),
         "missing original mystery-model warning: {stdout}"
+    );
+    assert!(stdout.contains("PLAN_041"), "missing PLAN_041: {stdout}");
+    assert!(
+        stdout.contains(
+            "task 'T1' sets model_hint = 'definitely-not-a-model', which pins a model and \
+             bypasses the routing ladder"
+        ),
+        "missing PLAN_041 pin warning: {stdout}"
     );
 }
 

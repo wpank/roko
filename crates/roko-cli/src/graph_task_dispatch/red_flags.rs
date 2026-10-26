@@ -146,6 +146,17 @@ impl GraphTaskDispatcher {
         // First, so the attempt's changed files are kept whatever the screen
         // decides (`take_changed_files`).
         let diff = self.attempt_diff(spec, task, attempt_key, workdir).await;
+        // Whether it changed anything, for a hand-back's retry budget
+        // (`changed_nothing`, bug-fc05a3).
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        if diff
+            .as_ref()
+            .is_some_and(|diff| diff.changes.is_empty() && diff.sibling_paths.is_empty())
+        {
+            self.unchanged_tries.lock().insert(task_key);
+        } else {
+            self.unchanged_tries.lock().remove(&task_key);
+        }
         // DP1 keys a green attempt's audit draw on the tree it left.
         if let (Some(diff), Some(audit)) = (&diff, self.attempts.audit()) {
             audit.note_trees(attempt_key, diff.base(), diff.result());

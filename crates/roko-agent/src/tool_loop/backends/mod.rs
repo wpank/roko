@@ -680,6 +680,7 @@ mod tests {
             tier: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
         };
         let backend = create_tool_loop_backend(
             &provider,

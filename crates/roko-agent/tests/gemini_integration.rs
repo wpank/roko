@@ -234,6 +234,7 @@ fn gemini_model(slug: &str) -> ModelProfile {
         tier: None,
         temperature: None,
         seed: None,
+        reasoning_effort: None,
     }
 }
 

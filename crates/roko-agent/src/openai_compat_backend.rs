@@ -445,9 +445,12 @@ impl OpenAiCompatLlmBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
-            LlmError::Provider(ProviderError::RequestRefused { status, .. }) => {
-                crate::provider::error_classify::refusal_class(*status)
-            }
+            LlmError::Provider(ProviderError::RequestRefused {
+                status, message, ..
+            }) => crate::provider::error_classify::refusal_class(
+                *status,
+                &message.to_ascii_lowercase(),
+            ),
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -669,6 +672,12 @@ impl OpenAiCompatLlmBackend {
                 }
             }
             for (key, value) in &self.extra_body_params {
+                // Chat completions refuses a reasoning effort beside function
+                // tools for the GPT-5.4 family: it reasons with tools only on
+                // the Responses API (bug-29014c).
+                if key == crate::provider::openai_compat::REASONING_EFFORT && tools.is_some() {
+                    continue;
+                }
                 body_obj.insert(key.clone(), value.clone());
             }
         }
@@ -1401,6 +1410,42 @@ mod tests {
         let opted_out = body(&opted_out.with_stream_usage(false), true);
         assert_eq!(opted_out["stream"], true);
         assert!(opted_out.get("stream_options").is_none(), "{opted_out}");
+    }
+
+    /// bug-29014c: chat completions refuses `reasoning_effort` beside function
+    /// tools for the GPT-5.4 family ("Function tools with reasoning_effort
+    /// are not supported"), so a request with tools leaves it out, streamed
+    /// or not, and a request without them carries it.
+    #[test]
+    fn reasoning_effort_goes_only_on_requests_without_function_tools() {
+        let backend =
+            OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini").with_extra_body_params(
+                Map::from_iter([("reasoning_effort".to_string(), Value::from("medium"))]),
+            );
+        let body = |tools: Value, stream: bool| -> Value {
+            let body = backend
+                .build_body(
+                    &[serde_json::json!({"role": "user", "content": "hello"})],
+                    &RenderedTools::JsonArray(tools),
+                    &SessionState::default(),
+                    stream,
+                )
+                .expect("build body");
+            serde_json::from_slice(&body).expect("request body json")
+        };
+        let echo = serde_json::json!([{
+            "type": "function",
+            "function": {"name": "echo", "parameters": {"type": "object"}}
+        }]);
+
+        for stream in [false, true] {
+            let with_tools = body(echo.clone(), stream);
+            assert!(with_tools.get("tools").is_some(), "{with_tools}");
+            assert!(with_tools.get("reasoning_effort").is_none(), "{with_tools}");
+            let without_tools = body(serde_json::json!([]), stream);
+            assert!(without_tools.get("tools").is_none(), "{without_tools}");
+            assert_eq!(without_tools["reasoning_effort"], "medium");
+        }
     }
 
     /// bug-d0b8b8: a text tool format's block joins the system message, or
@@ -2795,9 +2840,8 @@ mod tests {
     /// provider's own words, and not as a network error. OpenAI's 400 on
     /// reasoning_effort in phase 4's run 16fc88ae came out as "network error:
     /// http 400: {…}", class `provider_error:unknown`. A 401 stays an auth
-    /// failure, a 403 is the key's, a 404 an unknown model, a 400 about the
-    /// context a context overflow, and a transport error or a timeout stays
-    /// what it was.
+    /// failure, a 404 is an unknown model, a 400 about the context a context
+    /// overflow, and a transport error or a timeout stays what it was.
     #[test]
     fn a_providers_4xx_refusal_reads_as_a_refusal_not_a_network_error() {
         use crate::provider::error_classify::classify_failure_text;
@@ -2839,14 +2883,21 @@ mod tests {
         );
         assert_eq!(class(&err), "auth_failure");
 
+        // A 403 is "you may not do this", most often scoped to the model: a
+        // refusal, unless its words say the credential itself is bad
+        // (bug-80f0d0).
         let no_access = r#"{"error":{"message":"Project `proj_1` does not have access to model `gpt-5.4`","code":"model_not_found"}}"#;
         let err = classify_http_error(HttpPostError::http(403, no_access), "openai");
-        assert_eq!(class(&err), "auth_failure", "{err}");
+        assert_eq!(class(&err), "request_refused", "{err}");
         assert!(
             err.to_string()
                 .contains("does not have access to model `gpt-5.4`"),
             "{err}"
         );
+        let revoked = r#"{"error":{"message":"Invalid API key: this key has been revoked.","code":"invalid_api_key"}}"#;
+        let err = classify_http_error(HttpPostError::http(403, revoked), "openai");
+        assert_eq!(class(&err), "auth_failure", "{err}");
+        assert!(err.to_string().contains("has been revoked"), "{err}");
 
         let no_model = r#"{"error":{"message":"The model `gpt-5.4-minii` does not exist or you do not have access to it.","code":"model_not_found"}}"#;
         let err = classify_http_error(HttpPostError::http(404, no_model), "openai");

@@ -112,7 +112,8 @@ impl CmakeCommands {
             note,
             ". It has no `Cargo.toml`, so no verify step runs `cargo`. Configure with `{}`, build \
              with `{}`, and run the tests whose names match with `{} <name>`. A check whose \
-             command the request gives runs that command, unchanged.",
+             command the request gives runs that command alone and unchanged, with no `grep -q` \
+             before it.",
             self.configure(None),
             self.build(None),
             self.test()
@@ -289,6 +290,8 @@ anti_patterns = [
     "Do NOT create new files. Modify crates/roko-core/src/types.rs only.",
 ]
 
+# A check you write yourself: a grep for what the task adds, then the gate.
+# A check whose command the source gives runs that command alone, unguarded.
 [[task.verify]]
 phase = "compile"
 command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs && cargo check -p roko-core"
@@ -374,6 +377,8 @@ anti_patterns = [
     "Do NOT add a new library target. Add gain.cpp to the existing one.",
 ]
 
+# A check you write yourself: a grep for what the task adds, then the gate.
+# A check whose command the source gives runs that command alone, unguarded.
 [[task.verify]]
 phase = "compile"
 command = "grep -q 'class GainStage' src/gain.h && {CONFIGURE} && {BUILD}"

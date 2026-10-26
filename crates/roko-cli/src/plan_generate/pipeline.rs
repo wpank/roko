@@ -809,9 +809,10 @@ fn hidden_output_regeneration_prompt(task_prompt: &str, plan: &str, hidden: &[St
          output, so when one fails neither the retry nor the person can see why:\n{}\n\n\
          ```toml\n{plan}\n```\n\n\
          Rewrite each of those checks to run its test command on its own, with no pipe, \
-         redirection or test count around it. To make one fail before its task is done, name \
-         the new tests in the command (and in the task's description), or put a `grep -q` for \
-         them before it. Keep the rest of the plan as it is. Output the complete plan as a \
+         redirection or test count around it: a check whose command the source gives runs that \
+         command alone, unchanged. To make one of your own checks fail before its task is done, \
+         name the new tests in the command (and in the task's description), or put a `grep -q` \
+         for them before it. Keep the rest of the plan as it is. Output the complete plan as a \
          single ```toml fenced block, followed only by the ```accept:accept/<file> blocks of \
          the tests it pins.",
         hidden.join("\n")

@@ -219,7 +219,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 3. **One check per acceptance criterion**: Give each acceptance criterion its own verify step that names it in `covers`, so a failure says which criterion broke. One command may cover several criteria when one run checks them all (one test file). Keep the steps of different criteria separate, never chained into one command with `&&`: the first failure of a chain hides the rest. A task has at least one verify step and at most its tier's limit below. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
-6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). Never check a count of tests: correct work with a different number of tests fails it.
+6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step you write yourself checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). A check whose command the source gives is not yours to guard: the source wrote that command to check the task's work, so its step runs it alone and unchanged, with nothing before it (`tools/check.sh feature-x`, never `grep -q 'feature_x' tests/feature_x_test.cpp && tools/check.sh feature-x`). Never check a count of tests: correct work with a different number of tests fails it.
 7. **Say what you don't know**: When the source leaves a choice open that changes the outcome (a limit, a format, which caller wins), write it in the task's `open_questions` instead of guessing; such a plan will not run until it is answered. Leave `open_questions` empty when nothing is open.
 8. **A check sees its own task's work**: every verify step reads a file its task writes (one of its `files`), or runs code built from them. A step that reads only files no task of the plan writes is decided before the plan runs: it fails and no task can make it pass, or it passes and checks nothing. Generation runs such steps and sends the plan back, and `roko plan validate` reports them (PLAN_054, PLAN_055).
 9. **A check passes when its task ends**: a task's checks run before the tasks that wait for it, so a check needs only files that exist, that its task writes, or that a task it depends on writes. A check that needs later work, a file a later task writes or a test suite whose tests later tasks add, belongs to that later task or to the plan's own check (`[[meta.verify]]`). Generation sends back a check that needs a later task's file, and `roko plan validate` reports it (PLAN_058).
@@ -284,6 +284,8 @@ anti_patterns = [
     "Do NOT create new files. Modify crates/roko-core/src/types.rs only.",
 ]
 
+# A check you write yourself: a grep for what the task adds, then the gate.
+# A check whose command the source gives runs that command alone, unguarded.
 [[task.verify]]
 phase = "compile"
 command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs && cargo check -p roko-core"
@@ -855,6 +857,76 @@ mod template_tests {
                 "{command}"
             );
         }
+    }
+
+    /// gap-343a23: round v7's phase-3 re-plan (op 3b13af5f) put a `grep -q`
+    /// guard before the spec's own command on all 7 steps, as rule 6 and the
+    /// source-check block taught for any check, and roko stripped every one
+    /// (bug-56a806). The guard is now taught for the planner's own checks
+    /// only: rule 6, the first example plan (in a CMake workspace's prompt
+    /// too, which Undertow's planner reads) and the source-check block each
+    /// say a source's command runs alone, unguarded.
+    #[test]
+    fn the_planner_is_told_not_to_guard_a_source_check() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for needle in [
+            "a `fail_on_base` step you write yourself checks what the task adds",
+            "A check whose command the source gives is not yours to guard",
+            "its step runs it alone and unchanged, with nothing before it \
+             (`tools/check.sh feature-x`, never `grep -q 'feature_x' tests/feature_x_test.cpp \
+             && tools/check.sh feature-x`)",
+            "# A check whose command the source gives runs that command alone, unguarded.",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+        let cmake = tempfile::tempdir().expect("tempdir");
+        std::fs::write(cmake.path().join("CMakeLists.txt"), "project(x)\n").expect("cmake");
+        let localized = build_generator_system_prompt(cmake.path());
+        for needle in [
+            "A check whose command the source gives is not yours to guard",
+            "# A check you write yourself: a grep for what the task adds, then the gate.\n\
+             # A check whose command the source gives runs that command alone, unguarded.\n\
+             [[task.verify]]\nphase = \"compile\"\ncommand = \"grep -q 'class GainStage'",
+            "A check whose command the request gives runs that command alone and unchanged, with \
+             no `grep -q` before it.",
+        ] {
+            assert!(localized.contains(needle), "the CMake prompt says {needle}");
+        }
+
+        let check = |id: &str, text: &str, run: Option<&str>| source_checks::SourceCheck {
+            id: id.into(),
+            text: text.into(),
+            run: run.map(Into::into),
+            plan_level: false,
+            regression: false,
+        };
+        let given = check(
+            "SC1",
+            "P3.01: steps start on the grid",
+            Some("tools/spec.sh 3 sequencer 'P3.01*'"),
+        );
+        let block = source_checks::planner_block(std::slice::from_ref(&given), "The spec states");
+        assert!(
+            block.contains(
+                "Put no `grep -q`, file test or other command before or after it, not even to \
+                 make it fail on the unchanged code"
+            ),
+            "{block}"
+        );
+        assert!(
+            !block.contains("put a `grep -q`"),
+            "no guard advice: {block}"
+        );
+
+        let prose = check("SC2", "the pattern survives a reset", None);
+        let mixed = source_checks::planner_block(&[given, prose], "The spec states");
+        let unguarded = mixed
+            .find("Put no `grep -q`")
+            .expect("the given commands' rule");
+        let guarded = mixed
+            .find("For a check with no command given, name a test the task writes")
+            .expect("the guard, for a check with no command");
+        assert!(unguarded < guarded, "{mixed}");
     }
 
     /// 3222: the generator prompt teaches `[task.accept]`: the section, the

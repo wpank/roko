@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::ProviderKind;
+use crate::agent::{ProviderKind, ReasoningEffort};
 use crate::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 
 use super::agent::{default_context_window, default_tool_format, default_true};
@@ -757,9 +757,29 @@ pub struct ModelProfile {
     /// (gap-13bbbd).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// Reasoning effort (`"low"`, `"medium"`, `"high"`, `"max"`) sent as
+    /// `reasoning_effort` with each request to this model that carries no
+    /// function tools, when it is an OpenAI reasoning model (the GPT-5 family
+    /// and the o-series) on an OpenAI-compatible provider: chat completions
+    /// refuses it beside tools for the GPT-5.4 family. `None` sends the
+    /// request's effort, else `[agent] default_effort` (bug-29014c).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl ModelProfile {
+    /// This profile with the reasoning effort `effort` names, when it names
+    /// none of its own (bug-29014c): a request's effort, or `[agent]
+    /// default_effort`. A label that is none of roko's levels
+    /// ([`ReasoningEffort::from_label`]) leaves it unset.
+    #[must_use]
+    pub fn with_reasoning_effort_or(mut self, effort: &str) -> Self {
+        if self.reasoning_effort.is_none() {
+            self.reasoning_effort = ReasoningEffort::from_label(effort);
+        }
+        self
+    }
+
     /// This profile as `provider` bills it: one that names no cache-read rate
     /// takes its input rate when the provider bills cached input at that rate
     /// ([`ProviderConfig::bills_cached_input_at_input_rate`]), where the

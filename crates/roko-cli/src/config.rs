@@ -1264,6 +1264,8 @@ pub struct ModelProfileLayer {
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<roko_core::ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<roko_core::config::schema::OpenAiApi>,
 }
 
 impl ModelProfileLayer {
@@ -1319,6 +1321,7 @@ impl ModelProfileLayer {
             temperature: overlay.temperature.or(self.temperature),
             seed: overlay.seed.or(self.seed),
             reasoning_effort: overlay.reasoning_effort.or(self.reasoning_effort),
+            api: overlay.api.or(self.api),
         }
     }
 
@@ -1362,6 +1365,7 @@ impl ModelProfileLayer {
             temperature: self.temperature,
             seed: self.seed,
             reasoning_effort: self.reasoning_effort,
+            api: self.api,
         })
     }
 }

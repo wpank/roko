@@ -2080,6 +2080,215 @@ mod tests {
         }
     }
 
+    /// A server that answers `count` OpenAI Responses requests "ok", after
+    /// encrypted reasoning, as one JSON answer or as a stream, as each asks,
+    /// and keeps each request's path and body.
+    fn spawn_capturing_responses_server(
+        count: usize,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set read timeout");
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut chunk).expect("read request");
+                    assert!(n > 0, "request closed early");
+                    buf.extend_from_slice(&chunk[..n]);
+                    let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("content length");
+                    if buf.len() >= end + 4 + length {
+                        break (head, buf[end + 4..end + 4 + length].to_vec());
+                    }
+                };
+                let path = head
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body).expect("json request body");
+                let streamed = body["stream"] == serde_json::json!(true);
+                captured
+                    .lock()
+                    .expect("capture lock")
+                    .push((path, body.clone()));
+
+                let reasoning = serde_json::json!({
+                    "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc",
+                });
+                let message = serde_json::json!({
+                    "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                    "content": [{ "type": "output_text", "text": "ok", "annotations": [] }],
+                });
+                let answer = serde_json::json!({
+                    "id": "resp_1", "object": "response", "status": "completed",
+                    "model": body["model"], "output": [reasoning, message],
+                    "usage": {
+                        "input_tokens": 11, "output_tokens": 9,
+                        "output_tokens_details": { "reasoning_tokens": 8 },
+                    },
+                });
+                let wire = if streamed {
+                    let mut wire = String::from(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: \
+                         close\r\n\r\n",
+                    );
+                    for event in [
+                        serde_json::json!({ "type": "response.created",
+                                            "response": { "id": "resp_1" } }),
+                        serde_json::json!({ "type": "response.in_progress",
+                                            "response": { "id": "resp_1" } }),
+                        serde_json::json!({ "type": "response.output_item.added",
+                                            "item": { "type": "reasoning", "id": "rs_1" } }),
+                        serde_json::json!({ "type": "response.output_item.done",
+                                            "item": reasoning }),
+                        serde_json::json!({ "type": "response.output_item.added", "item": {
+                            "type": "message", "id": "msg_1", "role": "assistant",
+                            "content": [] } }),
+                        serde_json::json!({ "type": "response.output_text.delta",
+                                            "item_id": "msg_1", "delta": "ok" }),
+                        serde_json::json!({ "type": "response.output_item.done",
+                                            "item": message }),
+                        serde_json::json!({ "type": "response.completed", "response": answer }),
+                    ] {
+                        let kind = event["type"].as_str().unwrap_or_default().to_string();
+                        wire.push_str(&format!("event: {kind}\ndata: {event}\n\n"));
+                    }
+                    wire
+                } else {
+                    let answer = answer.to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                };
+                stream.write_all(wire.as_bytes()).expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+        (format!("http://{addr}"), requests, handle)
+    }
+
+    /// gap-1ba0ac: a model whose `[models.*] api` is `responses` is called
+    /// through OpenAI's Responses API, answered and streamed: statelessly,
+    /// with its effort as `reasoning.effort` beside its function tools, and
+    /// its answer, reasoning tokens and all, reads as any other.
+    #[tokio::test]
+    async fn a_gpt5_tool_loop_reasons_on_the_responses_api() {
+        use roko_core::config::schema::OpenAiApi;
+
+        let (base_url, requests, server) = spawn_capturing_responses_server(2);
+        let mut config = RokoConfig::default();
+        config.agent.default_effort = "medium".to_string();
+        // Its own provider id: the process-wide rate limiter is shared.
+        config.providers.insert(
+            "responses-openai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(format!("{base_url}/v1")),
+                api_key_env: Some("PATH".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "gpt-5-4-mini".to_string(),
+            ModelProfile {
+                provider: "responses-openai".to_string(),
+                slug: "gpt-5.4-mini".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                api: Some(OpenAiApi::Responses),
+                ..ModelProfile::default()
+            },
+        );
+        let workdir = tempdir().expect("tempdir");
+
+        for streamed in [false, true] {
+            let options = AgentOptions {
+                timeout_ms: Some(5_000),
+                name: "responses-agent".to_string(),
+                working_dir: Some(workdir.path().to_path_buf()),
+                immune_root: Some(workdir.path().to_path_buf()),
+                ..AgentOptions::default()
+            };
+            let agent =
+                create_agent_for_model(&config, "gpt-5-4-mini", options).expect("create agent");
+            let result = if streamed {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                result
+            } else {
+                agent.run(&prompt("hello"), &Context::now()).await
+            };
+            let text = result.output.body.as_text().unwrap_or_default();
+            assert!(result.success, "streamed: {streamed}: {text}");
+            assert_eq!(text, "ok", "streamed: {streamed}");
+            assert_eq!(
+                (result.usage.output_tokens, result.usage.reasoning_tokens),
+                (9, 8),
+                "streamed: {streamed}"
+            );
+        }
+        server.join().expect("server thread");
+
+        let requests = requests.lock().expect("capture lock");
+        assert_eq!(requests.len(), 2);
+        for ((path, body), streamed) in requests.iter().zip([false, true]) {
+            assert_eq!(path, "/v1/responses");
+            assert_eq!(
+                body["stream"].as_bool().unwrap_or(false),
+                streamed,
+                "{body}"
+            );
+            assert_eq!(body["store"], false, "{body}");
+            assert_eq!(
+                body["reasoning"],
+                serde_json::json!({ "effort": "medium" }),
+                "{body}"
+            );
+            let tools = body["tools"].as_array().expect("function tools");
+            assert!(!tools.is_empty(), "{body}");
+            for tool in tools {
+                assert_eq!(tool["type"], "function", "{tool}");
+                assert_eq!(tool["strict"], false, "{tool}");
+                assert!(tool.get("function").is_none(), "{tool}");
+            }
+            for chat_only in ["messages", "reasoning_effort", "stream_options"] {
+                assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+            }
+        }
+    }
+
     /// gap-b0d514: `[agent.data_llm]` builds its boundary from a model roko
     /// calls over an API, and refuses a model it does not know or cannot call.
     #[test]
@@ -2180,6 +2389,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
         config

@@ -2342,6 +2342,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// gap-5c3347: a try's spend reaches the hub as each model call returns,
     /// not only when the try settles: one `call_cost` per call, priced at its
     /// model's rates, with the attempt's spend so far growing with each.
+    /// gap-1ba0ac: each also says what its reasoning cost, why it ended and
+    /// how long it took.
     #[tokio::test]
     async fn a_running_try_reports_its_spend_per_model_call() {
         use roko_core::DashboardEvent;
@@ -2360,7 +2362,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             turn["usage"] = serde_json::json!({
                 "prompt_tokens": 1_000 * call,
                 "completion_tokens": 100,
-                "total_tokens": 1_000 * call + 100
+                "total_tokens": 1_000 * call + 100,
+                "completion_tokens_details": { "reasoning_tokens": 10 * call }
             });
         }
         let (base_url, _requests) = spawn_openai_mock(turns);
@@ -2384,6 +2387,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         // The calls' costs, in the order the hub published them, and where
         // the attempt's settlement came.
         let mut calls = Vec::new();
+        let mut reasoning = Vec::new();
         let mut settled_after = None;
         while let Ok(envelope) = events.try_recv() {
             match envelope.payload {
@@ -2396,10 +2400,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                     output_tokens,
                     cost_usd,
                     attempt_cost_usd,
+                    reasoning_tokens,
+                    finish_reason,
+                    wall_ms,
                     ..
                 } => {
                     assert_eq!((task_id.as_str(), attempt), (task.id.as_str(), 1));
                     assert_eq!(model, "api-model-1");
+                    assert!(wall_ms.is_some(), "call {call} says how long it took");
                     calls.push((
                         call,
                         input_tokens,
@@ -2407,6 +2415,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                         cost_usd,
                         attempt_cost_usd,
                     ));
+                    reasoning.push((reasoning_tokens, finish_reason));
                 }
                 DashboardEvent::AttemptSettled { .. } => settled_after = Some(calls.len()),
                 _ => {}
@@ -2417,6 +2426,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             settled_after,
             Some(3),
             "every call's cost came before the try settled"
+        );
+        assert_eq!(
+            reasoning,
+            [
+                (10, Some("tool_calls".to_string())),
+                (20, Some("tool_calls".to_string())),
+                (30, Some("stop".to_string())),
+            ]
         );
         let mut total = 0.0;
         for (n, (call, input, output, cost, so_far)) in (1_u32..).zip(&calls) {

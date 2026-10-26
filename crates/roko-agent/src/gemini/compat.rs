@@ -146,6 +146,7 @@ mod tests {
             temperature: None,
             seed: None,
             reasoning_effort: None,
+            api: None,
         }
     }
 

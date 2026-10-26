@@ -95,6 +95,7 @@ pub mod observer;
 pub mod ollama;
 pub mod openai_agent;
 pub mod openai_compat_backend;
+mod openai_responses;
 pub mod openclaw;
 pub mod parity_matrix;
 pub mod perplexity;

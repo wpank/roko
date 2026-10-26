@@ -837,6 +837,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -948,6 +949,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1049,6 +1051,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1131,6 +1134,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1368,6 +1372,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
         config.models.insert(
@@ -1409,6 +1414,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1627,6 +1633,7 @@ mod tests {
                 temperature: None,
                 seed: None,
                 reasoning_effort: None,
+                api: None,
             },
         );
 

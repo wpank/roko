@@ -4,7 +4,7 @@ kind = "bug"
 title = "A terminal plan run gets two unrelated run ids, graph-<plan>-<uuid> for its records and graph-<uuid> for its events, prints neither, and serve's summary answers only the events id"
 status = "open"
 triage = "verified"
-severity = "p3"
+severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
@@ -84,3 +84,4 @@ Evidence: `tmp/hermes-roko-v6/dogfood-will/logs/run4-summary-*.json` (the 404s a
   - The events id's summary keeps saying `running` (with the dead run's cost), and `/api/dashboard/runs` lists it
     `observed`. This holds at every kill point of the kill matrix on 4d22b94e8 (`tmp/hermes-roko-v7/roko-recovery/`).
   - bug-df0e79 (p2, dead CLI runs read as running) depends on this item. Worth raising to p2.
+- 2026-10-26 (the lead, round v7): raised to p2 with bug-df0e79, which depends on it.

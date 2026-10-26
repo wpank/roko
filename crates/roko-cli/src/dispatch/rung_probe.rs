@@ -9,9 +9,12 @@
 //! immune boundary judge it. A model that makes the call passes; a blank
 //! answer, an error, a text answer, or no answer within [`PROBE_TIMEOUT_MS`]
 //! fails. Verdicts are kept in `.roko/learn/rung-probes.json` and reused for
-//! [`PROBE_TTL_MS`], so a day of runs costs one probe per rung. A CLI or ACP
-//! harness brings its own tools and is not probed. The plan runner then skips
-//! the rungs whose fresh probe failed ([`RoutingLadder::without_models`]).
+//! [`PROBE_TTL_MS`], so a day of runs costs one probe per rung. A failure on
+//! the provider's billing or usage window ([`billing_refusal`]) stands only
+//! within its run: a recharge fixes it at once, so the next run or resume
+//! probes it again (bug-374384). A CLI or ACP harness brings its own tools and
+//! is not probed. The plan runner then skips the rungs whose standing probe
+//! failed ([`RoutingLadder::without_models`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -99,15 +102,51 @@ impl RungProbes {
             .get(model)
             .filter(|probe| now_ms.saturating_sub(probe.probed_at_ms) < PROBE_TTL_MS)
     }
+
+    /// `model`'s verdict, when it still stands at `now_ms` in the run that
+    /// started at `run_started_ms`: it is [fresh](Self::fresh), and a failure
+    /// on its provider's billing or usage window was probed in this run
+    /// (bug-374384).
+    #[must_use]
+    pub fn standing(&self, model: &str, now_ms: i64, run_started_ms: i64) -> Option<&RungProbe> {
+        self.fresh(model, now_ms)
+            .filter(|probe| !probe.billing() || probe.probed_at_ms >= run_started_ms)
+    }
+}
+
+impl RungProbe {
+    /// Whether the probe failed on its provider's billing or usage window
+    /// ([`billing_refusal`]).
+    #[must_use]
+    pub fn billing(&self) -> bool {
+        !self.passed && billing_refusal(&self.reason)
+    }
+}
+
+/// Whether a probe failed on its provider's billing or usage window: an HTTP
+/// 402 or another billing refusal (`insufficient_credits`, z.ai's 1113, an
+/// insufficient balance) or an exhausted plan (`provider_exhausted`). A
+/// recharge or the window's reset fixes it at once, so its verdict stands only
+/// within the run that probed it (gap-c96097, bug-374384).
+#[must_use]
+pub fn billing_refusal(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    reason.starts_with("insufficient_credits")
+        || reason.starts_with("provider_exhausted")
+        || roko_agent::provider::error_classify::is_billing_message(&reason)
 }
 
 /// Probe each runnable rung model of `ladder` that roko's tool loop drives
-/// and that has no fresh verdict, save the verdicts, and return the models
-/// whose fresh probe failed, with why.
+/// and whose verdict no longer stands in the run that started at
+/// `run_started_ms` ([`RungProbes::standing`]), save the verdicts, and return
+/// the models whose standing probe failed, with why. So a billing failure
+/// from an earlier run is probed again once a run, and a rung whose provider
+/// was recharged runs (bug-374384).
 pub async fn probe_ladder(
     config: &RokoConfig,
     ladder: &RoutingLadder,
     workdir: &Path,
+    run_started_ms: i64,
 ) -> BTreeMap<String, String> {
     let path = RungProbes::path(workdir);
     let mut probes = RungProbes::load(&path);
@@ -119,7 +158,7 @@ pub async fn probe_ladder(
         .collect();
     let stale: Vec<&String> = models
         .iter()
-        .filter(|model| probes.fresh(model, now_ms).is_none())
+        .filter(|model| probes.standing(model, now_ms, run_started_ms).is_none())
         .collect();
     if !stale.is_empty() {
         let verdicts =
@@ -145,7 +184,7 @@ pub async fn probe_ladder(
     models
         .into_iter()
         .filter_map(|model| {
-            let probe = probes.fresh(&model, now_ms)?;
+            let probe = probes.standing(&model, now_ms, run_started_ms)?;
             (!probe.passed).then(|| (model, probe.reason.clone()))
         })
         .collect()
@@ -164,9 +203,13 @@ pub struct SkippedRung {
     /// Why its probe failed, in the probe's own words.
     pub reason: String,
     /// When its verdict stops standing and the rung is probed again (unix
-    /// ms); `None` when the probe cache does not say when it was probed.
+    /// ms); `None` for a billing failure, which the next run probes again,
+    /// and when the probe cache does not say when it was probed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<i64>,
+    /// The probe failed on the provider's billing or usage window
+    /// ([`billing_refusal`]): the next run probes the rung again (bug-374384).
+    pub billing: bool,
 }
 
 impl SkippedRung {
@@ -182,37 +225,59 @@ impl SkippedRung {
 
     /// The rung's line in a run's readout, beside the rungs that ran: "cheap
     /// (gpt-oss-120b on cerebras): skipped until 20:33, its tool-use probe
-    /// failed: …".
+    /// failed: …; to probe it again now, …".
     #[must_use]
     pub fn line(&self) -> String {
         format!(
-            "{} ({} on {}): skipped{}, its tool-use probe failed: {}",
+            "{} ({} on {}): skipped{}, its tool-use probe failed: {}; {}",
             self.rung,
             self.model,
             self.provider,
             self.until(),
-            self.reason
+            self.reason,
+            self.way_out()
         )
     }
 
     /// The finding in plain words: "rung cheap (gpt-oss-120b on cerebras) is
     /// skipped until 20:33: its tool-use probe failed: …; a task that would
-    /// start on it starts on the next rung that runs".
+    /// start on it starts on the next rung that runs; to probe it again now,
+    /// …".
     #[must_use]
     pub fn detail(&self) -> String {
         let until = self.until();
         format!(
             "rung {} ({} on {}) is skipped{until}: its tool-use probe failed: {}; a task that \
-             would start on it starts on the next rung that runs",
-            self.rung, self.model, self.provider, self.reason
+             would start on it starts on the next rung that runs; {}",
+            self.rung,
+            self.model,
+            self.provider,
+            self.reason,
+            self.way_out()
         )
     }
 
-    /// ` until 20:33`, or nothing when the probe's time is unknown.
+    /// ` until 20:33`; ` for this run` for a billing failure, which the next
+    /// run probes again; nothing when the probe's time is unknown.
     fn until(&self) -> String {
+        if self.billing {
+            return " for this run".to_string();
+        }
         self.until_ms
             .map(|until_ms| format!(" until {}", local_until(until_ms)))
             .unwrap_or_default()
+    }
+
+    /// How to have the rung probed again before its verdict lapses.
+    fn way_out(&self) -> String {
+        if self.billing {
+            "the next run probes it again, so recharge the account and run again".to_string()
+        } else {
+            format!(
+                "to probe it again now, remove `{}` from .roko/learn/{PROBES_FILE}",
+                self.model
+            )
+        }
     }
 
     /// This rung's `rung_skipped` event for the run's plan `plan_id`.
@@ -225,6 +290,7 @@ impl SkippedRung {
             provider: self.provider.clone(),
             reason: self.reason.clone(),
             until_ms: self.until_ms,
+            billing: self.billing,
             detail: self.detail(),
         }
     }
@@ -233,7 +299,7 @@ impl SkippedRung {
 /// The rungs of `ladder` that the failed probes `failed` skip, by model with
 /// why, as [`probe_ladder`] returns them: one per rung whose model failed,
 /// with the model's provider and until when the verdict saved at `workdir`
-/// stands.
+/// stands, which a billing failure does only for this run.
 #[must_use]
 pub fn skipped_rungs(
     config: &Arc<RokoConfig>,
@@ -249,9 +315,11 @@ pub fn skipped_rungs(
     let mut skipped = Vec::new();
     for (model, reason) in failed {
         let provider = resolver.resolve(model).provider_id;
+        let billing = billing_refusal(reason);
         let until_ms = probes
             .models
             .get(model)
+            .filter(|_| !billing)
             .map(|probe| probe.probed_at_ms.saturating_add(PROBE_TTL_MS));
         for rung in ladder.rungs_running(model) {
             skipped.push(SkippedRung {
@@ -260,6 +328,7 @@ pub fn skipped_rungs(
                 provider: provider.clone(),
                 reason: reason.clone(),
                 until_ms,
+                billing,
             });
         }
     }
@@ -414,37 +483,101 @@ mod tests {
     use super::*;
 
     /// gap-20301d: a skipped rung's readout line and event detail say which
-    /// rung, on which model and provider, until when, and why.
+    /// rung, on which model and provider, until when, why, and how to probe
+    /// it again now (bug-374384): a billing failure stands for this run only.
     #[test]
     fn a_skipped_rung_says_why_and_until_when() {
-        let mut rung = SkippedRung {
+        let until_ms = chrono::Utc::now().timestamp_millis() + 3_600_000;
+        let until = local_until(until_ms);
+        let refused = SkippedRung {
+            rung: "mid".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            provider: "openai".to_string(),
+            reason: "request_refused: openai refused the request (HTTP 400)".to_string(),
+            until_ms: Some(until_ms),
+            billing: false,
+        };
+        assert_eq!(
+            refused.line(),
+            format!(
+                "mid (gpt-5.4-mini on openai): skipped until {until}, its tool-use probe failed: \
+                 request_refused: openai refused the request (HTTP 400); to probe it again now, \
+                 remove `gpt-5.4-mini` from .roko/learn/rung-probes.json"
+            )
+        );
+        assert_eq!(
+            refused.detail(),
+            format!(
+                "rung mid (gpt-5.4-mini on openai) is skipped until {until}: its tool-use probe \
+                 failed: request_refused: openai refused the request (HTTP 400); a task that \
+                 would start on it starts on the next rung that runs; to probe it again now, \
+                 remove `gpt-5.4-mini` from .roko/learn/rung-probes.json"
+            )
+        );
+        let billed = SkippedRung {
             rung: "cheap".to_string(),
             model: "gpt-oss-120b".to_string(),
             provider: "cerebras".to_string(),
             reason: "insufficient_credits: cerebras refused the request (HTTP 402)".to_string(),
             until_ms: None,
+            billing: true,
         };
         assert_eq!(
-            rung.line(),
-            "cheap (gpt-oss-120b on cerebras): skipped, its tool-use probe failed: \
-             insufficient_credits: cerebras refused the request (HTTP 402)"
-        );
-        rung.until_ms = Some(chrono::Utc::now().timestamp_millis() + 3_600_000);
-        let until = local_until(rung.until_ms.expect("until"));
-        assert_eq!(
-            rung.detail(),
-            format!(
-                "rung cheap (gpt-oss-120b on cerebras) is skipped until {until}: its tool-use \
-                 probe failed: insufficient_credits: cerebras refused the request (HTTP 402); a \
-                 task that would start on it starts on the next rung that runs"
-            )
+            billed.line(),
+            "cheap (gpt-oss-120b on cerebras): skipped for this run, its tool-use probe failed: \
+             insufficient_credits: cerebras refused the request (HTTP 402); the next run probes \
+             it again, so recharge the account and run again"
         );
         let roko_core::DashboardEvent::RungSkipped {
-            plan_id, detail, ..
-        } = rung.event("p1")
+            plan_id,
+            until_ms,
+            billing,
+            detail,
+            ..
+        } = billed.event("p1")
         else {
             panic!("a rung_skipped event");
         };
-        assert_eq!((plan_id.as_str(), detail), ("p1", rung.detail()));
+        assert_eq!(
+            (plan_id.as_str(), until_ms, billing, detail),
+            ("p1", None, true, billed.detail())
+        );
+    }
+
+    /// bug-374384: a failure on the provider's billing or usage window stands
+    /// only within the run that probed it; any other failure, and a pass,
+    /// for a day.
+    #[test]
+    fn a_billing_failure_stands_only_in_its_run() {
+        let probe = |passed: bool, reason: &str, probed_at_ms: i64| RungProbe {
+            passed,
+            reason: reason.to_string(),
+            probed_at_ms,
+        };
+        let probes = RungProbes {
+            models: [
+                (
+                    "billed-before",
+                    probe(false, "unknown: z.ai: insufficient balance (1113)", 100),
+                ),
+                (
+                    "billed-in-run",
+                    probe(false, "insufficient_credits: http 402", 200),
+                ),
+                (
+                    "blank-before",
+                    probe(false, "empty_response: reasoning only", 100),
+                ),
+                ("passed-before", probe(true, "", 100)),
+            ]
+            .into_iter()
+            .map(|(model, probe)| (model.to_string(), probe))
+            .collect(),
+        };
+        let standing = |model: &str| probes.standing(model, 300, 150).is_some();
+        assert!(!standing("billed-before"), "probed again in this run");
+        assert!(standing("billed-in-run"));
+        assert!(standing("blank-before"));
+        assert!(standing("passed-before"));
     }
 }

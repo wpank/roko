@@ -207,8 +207,10 @@ impl GraphTaskDispatcher {
             "task `{}` was not run: no rung of the routing ladder can run, as every rung's model \
              failed its tool-use probe at plan start: {}. roko does not send a task the ladder \
              routes to a model outside it: fix those providers, or pin a model (`--model`, or \
-             the task's `model_hint`), then resume the plan. A probe verdict stands for a day \
-             (`.roko/learn/rung-probes.json`)",
+             the task's `model_hint`), then resume the plan. A rung refused on its provider's \
+             billing is probed again when the next run starts, so recharge and resume; any \
+             other probe verdict stands for a day, and removing its model from \
+             `.roko/learn/rung-probes.json` probes it again now",
             task.id,
             rungs.join("; ")
         )))
@@ -1355,6 +1357,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             "no rung of the routing ladder can run".to_string(),
             format!("cheap ({CHEAP} on batch-cli): insufficient_credits"),
             format!("top ({TOP} on batch-cli): insufficient_credits"),
+            "billing is probed again when the next run starts".to_string(),
         ] {
             assert!(message.contains(&named), "{named}: {message}");
         }

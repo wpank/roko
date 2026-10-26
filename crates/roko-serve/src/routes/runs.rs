@@ -2519,6 +2519,7 @@ fn run_summary(
                     "provider": data.get("provider"),
                     "reason": data.get("reason"),
                     "until_ms": data.get("until_ms"),
+                    "billing": data.get("billing"),
                     "detail": data.get("detail"),
                     "at": event_time(value),
                 }),

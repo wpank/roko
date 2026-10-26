@@ -3697,8 +3697,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
         mid_api.base_url = Some(base_url);
         let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+        let run_started_ms = chrono::Utc::now().timestamp_millis();
 
-        let failed = probe_ladder(&config, &ladder, temp.path()).await;
+        let failed = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
         assert_eq!(requests.lock().len(), 1, "one probe, of the one API rung");
         let reason = failed.get("mid-1").expect("the mid rung failed its probe");
         assert!(reason.contains("empty_response"), "{reason}");
@@ -3715,7 +3716,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert!(!probe.passed);
         assert!(probe.reason.contains("empty_response"), "{probe:?}");
 
-        let again = probe_ladder(&config, &ladder, temp.path()).await;
+        let again = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
         assert_eq!(again, failed);
         assert_eq!(requests.lock().len(), 1, "the fresh verdict is reused");
     }
@@ -3755,8 +3756,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
         mid_api.base_url = Some(base_url);
         let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+        let run_started_ms = chrono::Utc::now().timestamp_millis();
 
-        let failed = probe_ladder(&config, &ladder, temp.path()).await;
+        let failed = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
         assert_eq!(
             requests.lock().len(),
             1,
@@ -3771,6 +3773,79 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         );
         let cached = RungProbes::load(&RungProbes::path(temp.path()));
         assert_eq!(&cached.models["mid-1"].reason, reason);
+    }
+
+    /// bug-374384: a rung whose cached probe failed on its provider's
+    /// billing before this run is probed again once in the run. The provider
+    /// now answers with the probe's tool call (the account was recharged), so
+    /// the rung runs and the cache says so. A second probe in the same run
+    /// reads that verdict with no call, and a billing failure probed in this
+    /// run stands for the run.
+    #[tokio::test]
+    async fn a_rung_refused_on_billing_before_this_run_is_probed_again() {
+        use crate::dispatch::RoutingLadder;
+        use crate::dispatch::rung_probe::{RungProbe, RungProbes, probe_ladder};
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "probe-1",
+                "echo",
+                serde_json::json!({ "text": "roko rung probe" }),
+            ),
+            final_turn("done"),
+        ]);
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &temp.path().join("claude-models.log"));
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+        mid_api.base_url = Some(base_url);
+        let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+        let run_started_ms = chrono::Utc::now().timestamp_millis();
+        let path = RungProbes::path(temp.path());
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        let billed = |probed_at_ms: i64| {
+            let probe = RungProbe {
+                passed: false,
+                reason: "insufficient_credits: mid_api refused the request (HTTP 402): payment \
+                         required"
+                    .to_string(),
+                probed_at_ms,
+            };
+            let probes = RungProbes {
+                models: [("mid-1".to_string(), probe)].into(),
+            };
+            std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+        };
+        // An earlier run's verdict, an hour old.
+        billed(run_started_ms - 3_600_000);
+
+        let failed = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
+        assert!(failed.is_empty(), "the recharged rung runs: {failed:?}");
+        let probed = requests.lock().len();
+        assert!(probed >= 1, "the rung was probed again");
+        let cached = RungProbes::load(&path);
+        assert!(cached.models["mid-1"].passed, "{cached:?}");
+
+        let again = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(requests.lock().len(), probed, "this run's verdict stands");
+
+        // A billing failure this run probed stands for the run.
+        billed(run_started_ms + 1);
+        let refused = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
+        assert!(
+            refused
+                .get("mid-1")
+                .is_some_and(|reason| reason.contains("(HTTP 402)")),
+            "{refused:?}"
+        );
+        assert_eq!(requests.lock().len(), probed, "no probe");
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

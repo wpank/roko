@@ -165,6 +165,14 @@ What a cap on a resume means (the lead's question): the whole run, dead and resu
   - bug-4026d8's fsync will lengthen each commit, and the lock holds while it runs. Measure again then: if a synced
     commit runs to milliseconds on a 3-wide run, commit the holds off the lock (the latest state wins) rather than
     making a call wait.
+- **The rule a crash settles by, with bug-8bcd98 and the bench's bug-bb6b73 and bug-2a5566:** each call is booked
+  once, at what is known of it. An estimate is used only for the call in flight, whose outcome nothing knows.
+  - bug-8bcd98 part 1: the tool loop records a call that failed, at what it streamed, else $0. That ends the
+    hold's call in flight, so a crash after it charges no estimate.
+  - Part 2: failover books a refused dispatch on the plan. The hold then marks its calls so far as booked
+    (`booked_micro_usd`), so a resume charges only the calls since, and the `abandoned` verdict carries the booked
+    part as `refused_usd`.
+  - Test: `a_crash_after_a_refused_dispatch_charges_each_call_once` (roko-cli).
 - The pilot's live resume (round v7, `tmp/hermes-roko-v7/findings/hermes-pilot.md`, 11:09–11:25) matches kill point c.
 - Reproduce one kill point at zero cost:
   `cd tmp/hermes-roko-v7/roko-recovery && python3 harness/matrix.py --scenarios a-stream-t2 --paths serve --out runs/dev && python3 harness/show.py runs/dev/a-stream-t2-serve`.

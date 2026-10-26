@@ -56,6 +56,7 @@ mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod best_try;
+mod blocked;
 mod budget;
 mod call_cost;
 mod check_output;
@@ -336,6 +337,14 @@ pub struct GraphTaskDispatcher {
     /// ([`Self::changed_nothing`]): a hand-back's try is not retried after one
     /// (bug-fc05a3).
     unchanged_tries: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// The hand-backs each task's tries (`"{plan_id}/{task_id}"`) got for
+    /// blockers in other tasks' files (bug-3b3bb6): its next tries run
+    /// widened by them ([`blocked::blocked_task`]).
+    blocked: parking_lot::Mutex<HashMap<String, blocked::BlockedHandBacks>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) whose last try was handed back for a
+    /// blocker in another task's file: it does not count on its rung
+    /// (bug-3b3bb6).
+    uncounted_tries: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Durable attempt identity per run: ordinals, and the run's
     /// `attempts.jsonl` writer (see [`Self::open_attempt`]).
     attempts: AttemptBook,
@@ -463,6 +472,8 @@ impl GraphTaskDispatcher {
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             handed_back: parking_lot::Mutex::default(),
             unchanged_tries: parking_lot::Mutex::default(),
+            blocked: parking_lot::Mutex::default(),
+            uncounted_tries: parking_lot::Mutex::default(),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             checkout_writes: parking_lot::Mutex::default(),
@@ -965,6 +976,95 @@ impl GraphTaskDispatcher {
             .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
     }
 
+    /// `spec`'s task as this try runs it: its definition, widened by the
+    /// hand-backs its tries got for blockers in other tasks' files
+    /// ([`blocked::blocked_task`], bug-3b3bb6).
+    fn task_for_try(&self, spec: &TaskExecutionSpec) -> Result<TaskDef> {
+        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
+            RokoError::Planning(format!(
+                "decode task definition for `{}`: {error}",
+                spec.title
+            ))
+        })?;
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        let Some(handed) = self.blocked.lock().get(&key).cloned() else {
+            return Ok(task);
+        };
+        Ok(match self.read_plan(spec) {
+            Some(plan) => blocked::blocked_task(task, &plan, &handed),
+            None => task,
+        })
+    }
+
+    /// What the final message of `dispatch`, a red try of `task`, says of a
+    /// blocker outside the task's files (bug-3b3bb6). A blocker in another
+    /// task's file widens the task's next tries to that task's files and
+    /// checks, and this try does not count on its rung; the next try's
+    /// feedback says what the line meant.
+    fn note_blocked_try(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) -> blocked::BlockedTry {
+        let output = dispatch.result.output.body.as_text().unwrap_or_default();
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        // An earlier try's mark the ladder never read counts for nothing.
+        self.uncounted_tries.lock().remove(&key);
+        let handed = self.blocked.lock().get(&key).cloned().unwrap_or_default();
+        let plan = self.read_plan(spec);
+        let blocked_try = blocked::classify(&spec.plan_id, plan.as_ref(), task, &output, &handed);
+        match &blocked_try {
+            blocked::BlockedTry::HandBack {
+                blocker,
+                path,
+                owner,
+            } => {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %path,
+                    %owner,
+                    why = %blocker.why,
+                    "a try is blocked by another task's file; the task's next try may change \
+                     that task's files, and its checks judge it"
+                );
+                self.blocked
+                    .lock()
+                    .entry(key.clone())
+                    .or_default()
+                    .owners
+                    .push((owner.clone(), path.clone(), blocker.clone()));
+                self.uncounted_tries.lock().insert(key);
+            }
+            blocked::BlockedTry::Stop { reason, .. } => tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                %reason,
+                "a try is blocked by a file roko cannot hand it to; the task stops"
+            ),
+            blocked::BlockedTry::InScope(blocker) => tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                path = %blocker.path,
+                "a try says it is blocked by a file its task may change"
+            ),
+            blocked::BlockedTry::None => {}
+        }
+        if let Some(note) = blocked::feedback_note(&blocked_try) {
+            self.gate_retry_context
+                .note_pending(&spec.plan_id, &task.id, &note);
+        }
+        blocked_try
+    }
+
+    /// Whether `task_key`'s last try was handed back for a blocker in
+    /// another task's file, which then does not count on its rung
+    /// (bug-3b3bb6). Asking clears it.
+    fn take_uncounted_try(&self, task_key: &str) -> bool {
+        self.uncounted_tries.lock().remove(task_key)
+    }
+
     /// Fit `task`'s declared line ranges to its files in `workdir`, the
     /// attempt's checkout, on every try (bug-7ff055, bug-fa22cc): the planner
     /// wrote them before the plan's work, and an earlier task, or the task's
@@ -1151,12 +1251,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // (gap-ca1c92).
         let allowance = budget_reservation.allowance(&self.budget_ledger);
 
-        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
-            RokoError::Planning(format!(
-                "decode task definition for `{}`: {error}",
-                spec.title
-            ))
-        })?;
+        let task = self.task_for_try(spec)?;
         let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
         self.admit_task_budget(spec, &task, &task_spend_key, ctx)?;
 
@@ -2210,6 +2305,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
         attempt.record_scope_findings(report.scope_findings);
         attempt.record_verify_depth(report.verify_depth);
         let verification = report.result;
+        // A red try that states a blocker outside its task's files
+        // (bug-3b3bb6): another task's file hands the failure back to that
+        // task's files and checks, on the same rung; a file no task of the
+        // plan changes stops the task for the person.
+        let blocked_try = if verification.is_err() {
+            self.note_blocked_try(spec, &task, &dispatch)
+        } else {
+            blocked::BlockedTry::None
+        };
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
         attempt.record_helper_calls(
@@ -2257,6 +2361,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                             roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
                         )
                         .await;
+                }
+                // A rejection is never retried: the person has to act.
+                if let blocked::BlockedTry::Stop { reason, .. } = blocked_try {
+                    return Err(RokoError::Rejected(reason));
                 }
                 return Err(error);
             }

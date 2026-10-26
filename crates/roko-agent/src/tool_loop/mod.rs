@@ -101,7 +101,7 @@ pub mod result_msg;
 pub use agent_wrapper::{MultimodalInputFormat, ToolLoopAgent};
 pub use backends::OpenAiCompatBackend;
 pub use checkpoint::Checkpoint;
-pub use hand_off::{HAND_OFF_TURNS_LEFT, HandOff, HandOffCheck};
+pub use hand_off::{HAND_OFF_TURNS_LEFT, HandOff, HandOffCheck, StatedBlocker, stated_blocker};
 pub use max_iter::DEFAULT_MAX_ITERATIONS;
 pub use prune::DEFAULT_CONTEXT_TOKEN_LIMIT;
 
@@ -2115,8 +2115,12 @@ impl ToolLoop {
                 // with turns left, is told what they say and goes on in the
                 // same run, its turns the try's (bug-cbbaa8). A reply cut at
                 // the output limit did not hand back: it ends the run as
-                // before, and one with no work behind it fails below.
-                let hands_back = !hit_length_limit && (!blank || !all_calls.is_empty());
+                // before, and one with no work behind it fails below. One
+                // that states a blocker outside its task's files ends the run,
+                // for roko to hand the failure on (bug-3b3bb6).
+                let hands_back = !hit_length_limit
+                    && (!blank || !all_calls.is_empty())
+                    && hand_off::stated_blocker(&final_text).is_none();
                 if hands_back
                     && let Some(note) = self.send_back(ctx, iterations, event_tx.as_ref()).await
                 {
@@ -4438,6 +4442,29 @@ mod tests {
             })
             .collect();
         assert_eq!(results, [true, false]);
+    }
+
+    /// bug-3b3bb6: a model that hands back with a `Blocked:` line says the
+    /// cause of its failure lies in a file outside its task's: the run ends
+    /// there, its checks not asked, so roko can hand the failure to the task
+    /// that owns that file instead of sending the model back to work around
+    /// it.
+    #[tokio::test]
+    async fn a_hand_off_that_states_a_blocker_ends_the_run() {
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::answer(
+                "The renders are too quiet.\nBlocked: tools/render/main.cpp — it renders init \
+                 at -33 dBFS\nLesson: none",
+            ),
+        ]);
+        let check = ScriptedChecks::new(usize::MAX, 2);
+        let (out, _) = run_scripted_hand_offs(&backend, Arc::clone(&check), 25).await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(backend.calls(), 2, "a tool turn and the hand-off");
+        assert_eq!(check.runs.load(Ordering::SeqCst), 0);
+        assert!(out.final_text.contains("Blocked: tools/render/main.cpp"));
     }
 
     /// bug-cbbaa8: the check bounds how many times the model goes back, and

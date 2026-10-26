@@ -83,12 +83,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let started_at = Instant::now();
 
         // ── Task + dispatch context ──────────────────────────────────────
-        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
-            RokoError::Planning(format!(
-                "decode task definition for `{}`: {error}",
-                spec.title
-            ))
-        })?;
+        let task = self.task_for_try(spec)?;
         // Only the batch dispatch path builds scratch_dir workspaces (9135).
         if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
             return Err(RokoError::Rejected(format!(

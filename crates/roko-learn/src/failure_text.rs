@@ -22,8 +22,7 @@ const DETAIL_LINES: usize = 8;
 /// case, for the error that line belongs to.
 const LEAD_LINES: usize = 3;
 
-/// The most failure lines printed before the first case that an excerpt
-/// keeps.
+/// The most failure lines printed outside any case that an excerpt keeps.
 const LEAD_FAILURES: usize = 3;
 
 /// The most summary lines an excerpt keeps.
@@ -214,12 +213,14 @@ pub fn failed_cases(output: &str) -> Vec<FailedCase> {
     parse(output).1
 }
 
-/// The failure lines `output` printed before its first case, such as CTest's
-/// `***Failed` line for the binary it ran, and its failing cases
-/// ([`failed_cases`]).
+/// The failure lines `output` printed outside any case, and its failing
+/// cases ([`failed_cases`]). A line outside a case is one printed before the
+/// first case, or CTest's line for a test binary that failed
+/// (`23/28 Test #23: spec_p5_demos ...***Failed`), which ends the case before
+/// it: the binary that printed it is done.
 fn parse(output: &str) -> (Vec<String>, Vec<FailedCase>) {
     let lines: Vec<&str> = output.lines().collect();
-    let mut before = Vec::new();
+    let mut loose = Vec::new();
     let mut cases: Vec<FailedCase> = Vec::new();
     let mut open: Option<FailedCase> = None;
     let mut index = 0;
@@ -243,9 +244,14 @@ fn parse(output: &str) -> (Vec<String>, Vec<FailedCase>) {
         {
             continue;
         }
+        if is_ctest_failure(line) {
+            cases.extend(open.take().filter(|case| !case.failures.is_empty()));
+            loose.push(line.trim_end().to_string());
+            continue;
+        }
         let Some(case) = open.as_mut() else {
             if cases.is_empty() {
-                before.push(line.trim_end().to_string());
+                loose.push(line.trim_end().to_string());
             }
             continue;
         };
@@ -264,7 +270,56 @@ fn parse(output: &str) -> (Vec<String>, Vec<FailedCase>) {
         });
     }
     cases.extend(open.filter(|case| !case.failures.is_empty()));
-    (before, cases)
+    (loose, cases)
+}
+
+/// Whether `line` is CTest's line for a test binary that failed:
+/// `23/28 Test #23: spec_p5_demos ...***Failed    0.29 sec`.
+fn is_ctest_failure(line: &str) -> bool {
+    line.contains(" Test #") && (line.contains("***Failed") || line.contains("***Exception"))
+}
+
+/// The lines of `output` that say what failed, for a hand-back to read names
+/// from (bug-32f73a): the failure lines outside any case, such as CTest's
+/// line for each failed test binary, then each failing case's header and its
+/// failures with the lines under them; without failing cases, each failure
+/// line with the lines under it. A warning, build progress or a runner's
+/// summary is never one of them: phase 5's rehearsal sent a failure to the
+/// task whose file a clang warning named.
+#[must_use]
+pub fn failure_lines(output: &str) -> Vec<String> {
+    let (loose, cases) = parse(output);
+    if cases.is_empty() {
+        let lines: Vec<&str> = output.lines().collect();
+        let mut kept = Vec::new();
+        let mut index = 0;
+        while index < lines.len() {
+            let line = lines[index];
+            index += 1;
+            if !is_failure_line(line) || is_summary_line(line) {
+                continue;
+            }
+            kept.push(line.trim_end().to_string());
+            let detail: Vec<String> = lines[index..]
+                .iter()
+                .take_while(|next| !ends_detail(next))
+                .take(DETAIL_LINES)
+                .map(|next| next.trim_end().to_string())
+                .collect();
+            index += detail.len();
+            kept.extend(detail);
+        }
+        return kept;
+    }
+    let mut kept = loose;
+    for case in cases {
+        kept.push(case.header);
+        for failure in case.failures {
+            kept.push(failure.line);
+            kept.extend(failure.detail);
+        }
+    }
+    kept
 }
 
 /// The case header at `index` of `lines`, and how many lines it spans.
@@ -306,8 +361,8 @@ fn ends_detail(line: &str) -> bool {
 /// `budget` characters; `None` when no line of it says that something
 /// failed.
 ///
-/// With failing cases, it keeps the failure lines printed before the first
-/// case, such as CTest's `***Failed` line, then each case's header and first
+/// With failing cases, it keeps the failure lines printed outside any case,
+/// such as CTest's `***Failed` lines, then each case's header and first
 /// failure with the lines under it. As far as the budget goes, each case then
 /// gets one `also:` line for each further failure that something tells
 /// apart, and the runner's summary closes it. The first case shows even past
@@ -316,12 +371,12 @@ fn ends_detail(line: &str) -> bool {
 /// failure line, without build progress.
 #[must_use]
 pub fn failure_excerpt(output: &str, budget: usize) -> Option<String> {
-    let (before, cases) = parse(output);
+    let (loose, cases) = parse(output);
     if cases.is_empty() {
         return plain_excerpt(output, budget);
     }
     let cost = |line: &str| line.chars().count() + 1;
-    let mut lines: Vec<String> = before.into_iter().take(LEAD_FAILURES).collect();
+    let mut lines: Vec<String> = loose.into_iter().take(LEAD_FAILURES).collect();
     let mut used: usize = lines.iter().map(|line| cost(line)).sum();
     let blocks: Vec<(Vec<String>, Vec<String>)> = cases
         .iter()

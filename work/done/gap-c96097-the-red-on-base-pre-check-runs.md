@@ -2,7 +2,7 @@
 id = "gap-c96097"
 kind = "gap"
 title = "The red-on-base pre-check runs before the rung probes and its cache key includes roko's build: it hit its cache in 2 of 15 round-v7 runs, and run 16fc88ae pre-checked for 134 s, then died in 7 s on a refusal the probe also got"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/spec_gate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "bb0af5a61"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-cli/src/spec_red_on_base.rs::CACHE_VERSION", "crates/roko-cli/src/spec_red_on_base.rs::cache_key"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-e02ec4", "gap-618a75", "
 
 [[verify]]
 command = "grep -rqw 'fn the_rung_probes_run_before_the_red_on_base_pre_check' crates/roko-cli/src && grep -rqw 'fn a_new_roko_build_reuses_the_pre_check_cache' crates/roko-cli/src && cargo test -p roko-cli --lib the_rung_probes_run_before_the_red_on_base_pre_check && cargo test -p roko-cli --lib a_new_roko_build_reuses_the_pre_check_cache"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:04:45Z"
+commit = "bb0af5a61"
+forced = false
+evidence = "bb0af5a61: unrunnable_ladder (plan_runner.rs) probes the routing ladder before the spec gate with plan start's probes and 24 h cache, under their conditions; when every rung's model failed its probe and the ladder routes every task (none pinned by --model, model_hint or preferred_model) the run stops there in the probes' own words, before the red-on-base pre-check runs a step. spec_red_on_base: CACHE_VERSION = red-on-base/2 (the check's semantics, bumped by hand; roko's build left the key) and the base keyed by its tree (<sha>^{tree}). Verify: the_rung_probes_run_before_the_red_on_base_pre_check (every rung's cached probe refused: the run errs with each rung's reason and the pre-check's marker is never written; a pinned task, --model or --no-budget lets it go on) and a_new_roko_build_reuses_the_pre_check_cache (no build in the key; an empty commit, same tree, reuses the decided check) pass; spec_red_on_base:: and spec_gate:: 15/15; nightly fmt and clippy -p roko-cli -D warnings clean."
 +++
 
 ## Problem
@@ -71,6 +79,35 @@ nearly every roko change, which in a dogfood round is every run. A doomed run sh
    semantics change, as the entry format already is.
 3. Optional and harder: key on the trees of the paths the steps read, not the base commit, so config-only commits
    hit. Leave it out if it can't be made safe.
+
+## Design
+
+roko-exact, 2026-10-26, with the lead's call on the key.
+
+1. **Probe first.** Before the plan-load spec gate, whose red-on-base pre-check builds and runs the tasks' steps on
+   the base, `run_graph_plan_body` probes the routing ladder with plan start's own probes
+   (`rung_probe::probe_ladder`, under the same conditions: `[routing.ladder] probe`, no `--no-budget`, not FAST).
+   Their verdicts stand for 24 h, so the probe at plan start reads them again and probes nothing twice.
+   - When every rung's model failed its probe and the ladder routes every task of the run, the run stops there,
+     in the probes' own words: "no rung of the routing ladder can run, so no task of this run can start: mid-1:
+     request_refused: …".
+   - A task pinned to a model (`--model`, `model_hint`, `preferred_model`), or one the ladder has no start rung
+     for, can still run, so then the run goes on. gap-20301d (roko-ladder) refuses the ladder's own tasks at
+     dispatch.
+   - The probe at plan start is unchanged; gap-20301d edits it.
+   - **Billing refusals don't stop it.** Some rungs fail on their provider's billing or usage window: an HTTP 402,
+     z.ai's 1113, an insufficient balance, or an exhausted plan (`billing_refusal`). The person's fix there is to
+     recharge and run again, and a day-old cached verdict must not block that. So the early stop leaves such a run
+     to the probe at plan start.
+   - This is the lead's call with gap-20301d. Its billing re-probe isn't on main yet. Once a shared "usable rungs
+     now" check exists, the early stop should run after it.
+2. **The cache key.** `CACHE_VERSION` becomes `red-on-base/2`: the entry format and what the check does with a
+   step. It is bumped by hand when how the check runs a step or reads its result changes. roko's build leaves the
+   key, so a new build reuses what an earlier one decided.
+   - The base enters as its tree (`<sha>^{tree}`), not the commit, so a commit that changes no file still hits.
+   - The rest stays: the steps (command, timeout, expect), the cargo mode, the step environment, the plan
+     directory's other files, the 12 h time-to-live and `--fresh`.
+3. **Left out:** keying on the trees of the paths the steps read (Plan point 3). A config-only commit still misses.
 
 ## Done when
 

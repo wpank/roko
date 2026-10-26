@@ -64,11 +64,13 @@
 //!
 //! The cache (gap-e02ec4). With [`RedOnBaseOptions::cache`], a task whose
 //! runs decided it (`fail` or `pass`) keeps them in the workspace's
-//! `.roko/cache/red-on-base/` for 12 hours, keyed by the base, the task's
-//! steps, what the check does with cargo steps, the plan directory's other
-//! files and this roko's build. A later check of an unchanged task reuses
-//! them and runs nothing ([`TaskCheck::cached`]); its outcome is worked out
-//! again from them, so what other tasks write still counts.
+//! `.roko/cache/red-on-base/` for 12 hours, keyed by the base's tree, the
+//! task's steps, what the check does with cargo steps, the plan directory's
+//! other files and the check's own version, which a change to how it runs a
+//! step or reads its result bumps; not roko's build (gap-c96097). A later
+//! check of an unchanged task reuses them and runs nothing
+//! ([`TaskCheck::cached`]); its outcome is worked out again from them, so
+//! what other tasks write still counts.
 //! [`RedOnBaseOptions::fresh`] runs every task again.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -121,14 +123,11 @@ const POLL: Duration = Duration::from_millis(20);
 /// How long a decided result stays in the cache (gap-e02ec4).
 const CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
-/// What every cache key starts with: the entry format and this roko's build,
-/// so that a new roko runs every task again.
-const CACHE_VERSION: &str = concat!(
-    "red-on-base/1 ",
-    env!("CARGO_PKG_VERSION"),
-    "+",
-    env!("ROKO_GIT_HASH")
-);
+/// What every cache key starts with: the entry format and what the check does
+/// with a step. Bump it by hand when how the check runs a step or reads its
+/// result changes. roko's build is not part of it, so a new build reuses what
+/// an earlier one decided (gap-c96097).
+const CACHE_VERSION: &str = "red-on-base/2";
 
 /// The most files, and bytes, of a plan directory a cache key reads; a
 /// larger plan's results are not cached.
@@ -1305,13 +1304,15 @@ struct CachedRuns {
 }
 
 /// The cache key of `steps` run on base `sha`: a digest of what their runs
-/// depend on that the check knows. That is the base; each step's command (a
+/// depend on that the check knows. That is the base's tree, so a commit that
+/// changes no file keeps the results (gap-c96097); each step's command (a
 /// pinned test's by its source, since its command names the scratch
 /// directory), timeout and `expect`; what the check does with cargo steps;
 /// the files of `plan_dir` other than `tasks.toml`, which the base checkout
 /// gets a copy of; the environment the steps get ([`check_environment`]);
-/// and this roko's build. `None` when the plan directory cannot be read or
-/// is too large to digest.
+/// and what the check does with a step ([`CACHE_VERSION`]). `None` when the
+/// base's tree cannot be read, or the plan directory cannot be read or is
+/// too large to digest.
 fn cache_key(
     sha: &str,
     steps: &[Step],
@@ -1325,7 +1326,17 @@ fn cache_key(
         digest.update(part);
     };
     add(CACHE_VERSION.as_bytes());
-    add(sha.as_bytes());
+    let tree = git_ok(
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{sha}^{{tree}}"),
+        ],
+        root,
+    )
+    .ok()?;
+    add(tree.trim().as_bytes());
     add(format!("{cargo:?}").as_bytes());
     for (name, value) in check_environment() {
         add(name.as_bytes());
@@ -2804,5 +2815,55 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         let fresh = check_plans(&[plan], &repo, &options).expect("check the plan");
         assert!(fresh.checks.iter().all(|check| !check.cached), "{fresh:?}");
         assert_eq!(runs(), 16);
+    }
+
+    /// gap-c96097: a pre-check one roko build decided is reused by the next.
+    /// The cache key carries the check's own version, not roko's build, and
+    /// the base's tree, not its commit, so a new base commit that changes no
+    /// file runs nothing again. Round v7's 8 builds over 15 runs hit the
+    /// cache twice, and phase 4's second run ran its 14 plugin steps again
+    /// on the same base, for 108 s.
+    #[test]
+    fn a_new_roko_build_reuses_the_pre_check_cache() {
+        assert!(
+            !CACHE_VERSION.contains(env!("CARGO_PKG_VERSION"))
+                && !CACHE_VERSION.contains(env!("ROKO_GIT_HASH")),
+            "{CACHE_VERSION}"
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ran = temp.path().join("ran.log");
+        let red = format!("echo T1 >> {}; test -f greet.sh", ran.display());
+        let plan = warm_plan(&[("T1", &red)]);
+        let (plan, repo, scratch) = warm_repo(temp.path(), &plan, &[]);
+        let options = RedOnBaseOptions {
+            timeout: Some(Duration::from_secs(30)),
+            scratch: Some(scratch),
+            cache: true,
+            ..RedOnBaseOptions::default()
+        };
+        let runs = || {
+            std::fs::read_to_string(&ran)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+
+        let first = check_plans(&[plan.clone()], &repo, &options).expect("check the plan");
+        assert!(first.checks.iter().all(|check| !check.cached), "{first:?}");
+        assert_eq!(runs(), 2);
+
+        run_git(
+            &repo,
+            &[
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "a commit that changes no file",
+            ],
+        );
+        let second = check_plans(&[plan], &repo, &options).expect("check the plan");
+        assert!(second.checks.iter().all(|check| check.cached), "{second:?}");
+        assert_eq!(runs(), 2, "nothing ran again");
     }
 }

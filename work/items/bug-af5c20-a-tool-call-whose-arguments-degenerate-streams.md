@@ -72,10 +72,16 @@ watchdog cancels the whole try.
 1. **Detect.** A stream guard beside `guard_reasoning` validates each tool call's argument text as it streams.
    Anything outside the JSON grammar stops the call:
    - a raw control character inside a JSON string (JSON forbids unescaped U+0000–U+001F, and models escape newlines
-     in real arguments; this case broke within its first ~150 characters);
+     in real arguments);
    - non-whitespace after the top-level value closes;
    - a first non-whitespace character that isn't `{`;
    - a whitespace run of more than 2 KB, or arguments past a size cap (256 KB), as backstops.
+   - **As built:** the recording's whitespace falls outside strings, where JSON allows it. Its key string
+     `}ંડાવ … do.{` closed, and the whitespace that followed is legal between tokens. So no control character
+     trips, and the 2 KB backstop alone would cut it only after about 2,200 characters. The guard therefore takes a
+     whitespace run of more than 256 characters outside strings as malformed: JSON a model writes, pretty-printed or
+     not, never needs a tenth of that. That cuts the recording at character 381. Inside a string, a run of spaces
+     still gets 2 KB.
 2. **End the call.** The guard sends `Done` with a new finish reason, `malformed_tool_arguments`, and drops the
    stream, which closes the connection and stops the billing.
 3. **Retry once.** The loop throws the turn away without running its broken call. It tells the model its last tool
@@ -99,8 +105,8 @@ watchdog cancels the whole try.
      - Read: the derail begins with a key outside the tool's schema. Strict decoding would forbid that key and would
        stop the derail there; 10 tries per variant can't show it at a 2-in-10 base rate. Records:
        `tmp/hermes-roko-v7/roko-effort/responses/checks/replay-asis-20261026-205538/` (`replays.jsonl`, the tee's log).
-   - The guard in steps 1–3 should therefore also treat a key the tool's schema forbids as malformed, when the
-     schema says `additionalProperties: false`: both replayed derails were valid JSON.
+   - Both replayed derails were short, valid JSON, so the guard leaves them be. The tool runs on its `path`, or
+     refuses the stray keys, and the model goes on either way. Only the runaway needed cutting.
 
 ## Done when
 

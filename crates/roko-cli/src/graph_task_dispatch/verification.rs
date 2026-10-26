@@ -11,6 +11,19 @@ use super::turn_policy::head_and_tail;
 use super::*;
 use crate::runner::promise_tracker::PromiseTracker;
 
+/// What a re-run of a task's verify steps found
+/// ([`GraphTaskDispatcher::rerun_verify_steps`]), which replaces the first
+/// run's.
+struct StepsRerun {
+    failures: Vec<String>,
+    timed_out: bool,
+    step_outcomes: Vec<(String, bool)>,
+    ran_steps: Vec<(String, roko_core::Verdict)>,
+    preexisting_filtered: bool,
+    skipped: Vec<String>,
+    step_verdicts: Vec<VerifyStepVerdict>,
+}
+
 /// The most error patterns a prompt carries without M1, θ₀'s
 /// `error_patterns_k`.
 const PROMPT_ERROR_PATTERN_LIMIT: usize = 5;
@@ -655,166 +668,32 @@ impl GraphTaskDispatcher {
                         // Re-run verify steps with a fresh failures list.
                         // P2-LRN-6 Loop 1: Also collect retry outcomes to replace
                         // the original step_outcomes with post-fix results.
-                        let mut retry_failures: Vec<String> = Vec::new();
-                        let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
-                        let mut retry_ran_steps: Vec<(String, roko_core::Verdict)> = Vec::new();
-                        let mut retry_skipped: Vec<String> = Vec::new();
-                        let mut retry_step_verdicts: Vec<VerifyStepVerdict> = Vec::new();
-                        let mut retry_timed_out = false;
-                        let mut retry_preexisting_filtered = false;
-                        let _verifying = self.in_flight.begin_verify(&verify_key);
-                        for (i, (step_label, step)) in steps.iter().enumerate() {
-                            let shown = crate::task_accept::prompt_command(&step.command);
-                            if !retry_failures.is_empty() {
-                                retry_skipped.push(format!("{step_label} (`{shown}`)"));
-                                retry_step_verdicts.push(skipped_step_verdict(i, step));
-                                continue;
-                            }
-                            // P2-TUI-4: Notify the TUI of the post-fix re-run.
-                            if let Some(tui) = &self.tui_bridge {
-                                tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
-                            }
-                            let live =
-                                self.live_check_output(spec, task, attempt_ordinal, step_label);
-                            let mut retry_gate = ShellGate::verify_step(&step.command)
-                                .with_timeout_ms(step.timeout_ms)
-                                .with_name(step_label)
-                                .with_phase(&step.phase);
-                            if let Some(live) = &live {
-                                retry_gate = retry_gate.with_output_sink(live.sink());
-                            }
-                            let step_scope =
-                                sibling_settle::StepScope::of(step, &effective_workdir);
-                            let reading = self
-                                .unless_stopped(
-                                    spec,
-                                    task,
-                                    step_label,
-                                    self.in_flight.begin_step(&sibling_settle::StepRead {
-                                        plan_id: &spec.plan_id,
-                                        task_id: &task.id,
-                                        label: step_label,
-                                        workdir: &effective_workdir,
-                                        scope: &step_scope,
-                                        limit: sibling_wait,
-                                    }),
-                                )
-                                .await?;
-                            if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
-                                return Err(cancelled);
-                            }
-                            // The re-run builds like the first run, so it
-                            // queues on the same compile lock, and a stop
-                            // ends that wait or keeps it from starting once
-                            // it holds the lock (bug-c33c6e, bug-3a3968).
-                            let Some(mut retry_verdict) = verify_step_locked(
-                                &retry_gate,
+                        let rerun = self
+                            .rerun_verify_steps(
+                                spec,
+                                task,
+                                &steps,
+                                attempt_key,
+                                attempt_ordinal,
+                                &effective_workdir,
                                 &gate_signal,
                                 &gate_ctx,
-                                &effective_workdir,
-                                self.config.gates.compile_concurrency,
-                                step,
-                                &spec.plan_id,
-                                &task.id,
-                                &self.stopping,
+                                &verify_key,
+                                sibling_wait,
+                                unchanged_tree,
+                                "auto-fix",
                             )
-                            .await
-                            else {
-                                return Err(verify_cancelled(spec, task, step_label));
-                            };
-                            drop(retry_gate);
-                            if let Some(live) = live {
-                                live.finish().await;
-                            }
-                            let exit_code = step_exit_code(&retry_verdict);
-                            if !retry_verdict.passed {
-                                if let Some(cancelled) = self.stopped_verify(spec, task, step_label)
-                                {
-                                    return Err(cancelled);
-                                }
-                                drop(reading);
-                                if let Some(judgement) = self
-                                    .judge_against_baseline(
-                                        spec,
-                                        task,
-                                        attempt_key,
-                                        &effective_workdir,
-                                        step_label,
-                                        step,
-                                        &retry_verdict,
-                                        unchanged_tree,
-                                    )
-                                    .await
-                                {
-                                    retry_preexisting_filtered |= baseline_verify::apply(
-                                        &mut retry_verdict,
-                                        judgement,
-                                        &spec.plan_id,
-                                        &task.id,
-                                    );
-                                }
-                            }
-                            retry_verdict = bench_verify::judge_bench_step(
-                                &self.workdir,
-                                &spec.plan_id,
-                                &task.id,
-                                &step.phase,
-                                retry_verdict,
-                            );
-                            tracing::info!(
-                                plan_id = %spec.plan_id,
-                                task_id = %task.id,
-                                step = i,
-                                gate = %retry_verdict.gate,
-                                passed = retry_verdict.passed,
-                                duration_ms = retry_verdict.duration_ms,
-                                "P1-CLI-2: post-fix verify step completed"
-                            );
-                            // P2-LRN-6 Loop 1: Record retry step outcome.
-                            retry_step_outcomes.push((step.phase.clone(), retry_verdict.passed));
-                            gate_learning::record_gate_verdict_metrics(
-                                self.metrics.as_deref(),
-                                &step.phase,
-                                &retry_verdict,
-                            );
-
-                            // P2-TUI-4: Forward post-fix verdict to the TUI.
-                            if let Some(tui) = &self.tui_bridge {
-                                tui.gate_result_with_output(
-                                    &spec.plan_id,
-                                    &task.id,
-                                    &retry_verdict.gate,
-                                    retry_verdict.passed,
-                                    Some(&published_gate_output(shown, &retry_verdict)),
-                                );
-                            }
-                            if !retry_verdict.passed {
-                                retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
-                                retry_failures.push(step_failure(
-                                    step_label,
-                                    shown,
-                                    step,
-                                    &retry_verdict,
-                                ));
-                            }
-                            retry_step_verdicts.push(ran_step_verdict(
-                                i,
-                                step,
-                                &retry_verdict,
-                                exit_code,
-                            ));
-                            retry_ran_steps.push((step.phase.clone(), retry_verdict));
-                        }
+                            .await?;
                         // Replace the original failure list and step outcomes with
                         // the post-fix results. The retry outcomes are the ground
                         // truth for gate threshold EMA updates (P2-LRN-6 Loop 1).
-                        failures = retry_failures;
-                        timed_out = retry_timed_out;
-                        step_outcomes = retry_step_outcomes;
-                        ran_steps = retry_ran_steps;
-                        preexisting_filtered = retry_preexisting_filtered;
-                        skipped_steps = retry_skipped;
-                        *step_verdicts = retry_step_verdicts;
+                        failures = rerun.failures;
+                        timed_out = rerun.timed_out;
+                        step_outcomes = rerun.step_outcomes;
+                        ran_steps = rerun.ran_steps;
+                        preexisting_filtered = rerun.preexisting_filtered;
+                        skipped_steps = rerun.skipped;
+                        *step_verdicts = rerun.step_verdicts;
                         blocked_by_sibling = None;
                     }
                     Ok(outcome) => {
@@ -835,6 +714,52 @@ impl GraphTaskDispatcher {
                         );
                     }
                 }
+            }
+
+            // gap-56f761: when the tree the try ended with ranks behind the
+            // best one its own checks saw, that tree is put back and the
+            // steps judge it instead.
+            let mut kept_within = None;
+            if !failures.is_empty()
+                && !unchanged_tree
+                && !promise_terminated
+                && let Some(note) = self
+                    .restore_checked_best(
+                        spec,
+                        task,
+                        attempt_key,
+                        &effective_workdir,
+                        &steps,
+                        &step_outcomes,
+                        &ran_steps,
+                    )
+                    .await
+            {
+                let rerun = self
+                    .rerun_verify_steps(
+                        spec,
+                        task,
+                        &steps,
+                        attempt_key,
+                        attempt_ordinal,
+                        &effective_workdir,
+                        &gate_signal,
+                        &gate_ctx,
+                        &verify_key,
+                        sibling_wait,
+                        unchanged_tree,
+                        "best checked tree",
+                    )
+                    .await?;
+                failures = rerun.failures;
+                timed_out = rerun.timed_out;
+                step_outcomes = rerun.step_outcomes;
+                ran_steps = rerun.ran_steps;
+                preexisting_filtered = rerun.preexisting_filtered;
+                skipped_steps = rerun.skipped;
+                *step_verdicts = rerun.step_verdicts;
+                blocked_by_sibling = None;
+                kept_within = Some(note);
             }
 
             // gap-85f102: the opt-in LLM judge, once every step passed. A
@@ -945,7 +870,7 @@ impl GraphTaskDispatcher {
                     });
                 // The task's best try so far, whose files the next try starts
                 // from when this one got less far (gap-fefdf5, gap-54089d).
-                let kept = self
+                let kept_across = self
                     .settle_best_try(
                         spec,
                         task,
@@ -956,6 +881,11 @@ impl GraphTaskDispatcher {
                         progress,
                     )
                     .await;
+                // What roko kept within the try comes first (gap-56f761).
+                let kept = match (kept_within, kept_across) {
+                    (Some(within), Some(across)) => Some(format!("{within}\n\n{across}")),
+                    (within, across) => within.or(across),
+                };
                 // The diagnosis feeds the retry prompt, so it stays inline but
                 // is bounded by `timeouts.llm_call_secs`; on timeout the retry
                 // proceeds with the raw gate output alone.
@@ -1135,6 +1065,175 @@ impl GraphTaskDispatcher {
         at: &str,
     ) -> Option<RokoError> {
         self.is_stopping().then(|| verify_cancelled(spec, task, at))
+    }
+
+    /// Run `task`'s verify `steps` again, as the first run did, in the
+    /// attempt's checkout: after an auto-fix applied (P1-CLI-2), and on the
+    /// best tree the try's own checks saw (gap-56f761); `why` names which.
+    /// What the re-run found replaces the first run's.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn rerun_verify_steps(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        steps: &[(String, crate::task_parser::VerifyStep)],
+        attempt_key: &str,
+        attempt_ordinal: u32,
+        effective_workdir: &Path,
+        gate_signal: &Signal,
+        gate_ctx: &Context,
+        verify_key: &str,
+        sibling_wait: std::time::Duration,
+        unchanged_tree: bool,
+        why: &str,
+    ) -> Result<StepsRerun> {
+        let mut retry_failures: Vec<String> = Vec::new();
+        let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
+        let mut retry_ran_steps: Vec<(String, roko_core::Verdict)> = Vec::new();
+        let mut retry_skipped: Vec<String> = Vec::new();
+        let mut retry_step_verdicts: Vec<VerifyStepVerdict> = Vec::new();
+        let mut retry_timed_out = false;
+        let mut retry_preexisting_filtered = false;
+        let _verifying = self.in_flight.begin_verify(verify_key);
+        for (i, (step_label, step)) in steps.iter().enumerate() {
+            let shown = crate::task_accept::prompt_command(&step.command);
+            if !retry_failures.is_empty() {
+                retry_skipped.push(format!("{step_label} (`{shown}`)"));
+                retry_step_verdicts.push(skipped_step_verdict(i, step));
+                continue;
+            }
+            // P2-TUI-4: Notify the TUI of the post-fix re-run.
+            if let Some(tui) = &self.tui_bridge {
+                tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
+            }
+            let live = self.live_check_output(spec, task, attempt_ordinal, step_label);
+            let mut retry_gate = ShellGate::verify_step(&step.command)
+                .with_timeout_ms(step.timeout_ms)
+                .with_name(step_label)
+                .with_phase(&step.phase);
+            if let Some(live) = &live {
+                retry_gate = retry_gate.with_output_sink(live.sink());
+            }
+            let step_scope = sibling_settle::StepScope::of(step, effective_workdir);
+            let reading = self
+                .unless_stopped(
+                    spec,
+                    task,
+                    step_label,
+                    self.in_flight.begin_step(&sibling_settle::StepRead {
+                        plan_id: &spec.plan_id,
+                        task_id: &task.id,
+                        label: step_label,
+                        workdir: effective_workdir,
+                        scope: &step_scope,
+                        limit: sibling_wait,
+                    }),
+                )
+                .await?;
+            if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
+                return Err(cancelled);
+            }
+            // The re-run builds like the first run, so it
+            // queues on the same compile lock, and a stop
+            // ends that wait or keeps it from starting once
+            // it holds the lock (bug-c33c6e, bug-3a3968).
+            let Some(mut retry_verdict) = verify_step_locked(
+                &retry_gate,
+                gate_signal,
+                gate_ctx,
+                effective_workdir,
+                self.config.gates.compile_concurrency,
+                step,
+                &spec.plan_id,
+                &task.id,
+                &self.stopping,
+            )
+            .await
+            else {
+                return Err(verify_cancelled(spec, task, step_label));
+            };
+            drop(retry_gate);
+            if let Some(live) = live {
+                live.finish().await;
+            }
+            let exit_code = step_exit_code(&retry_verdict);
+            if !retry_verdict.passed {
+                if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
+                    return Err(cancelled);
+                }
+                drop(reading);
+                if let Some(judgement) = self
+                    .judge_against_baseline(
+                        spec,
+                        task,
+                        attempt_key,
+                        effective_workdir,
+                        step_label,
+                        step,
+                        &retry_verdict,
+                        unchanged_tree,
+                    )
+                    .await
+                {
+                    retry_preexisting_filtered |= baseline_verify::apply(
+                        &mut retry_verdict,
+                        judgement,
+                        &spec.plan_id,
+                        &task.id,
+                    );
+                }
+            }
+            retry_verdict = bench_verify::judge_bench_step(
+                &self.workdir,
+                &spec.plan_id,
+                &task.id,
+                &step.phase,
+                retry_verdict,
+            );
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                step = i,
+                gate = %retry_verdict.gate,
+                passed = retry_verdict.passed,
+                duration_ms = retry_verdict.duration_ms,
+                rerun = why,
+                "verify step completed on the re-run"
+            );
+            // P2-LRN-6 Loop 1: Record retry step outcome.
+            retry_step_outcomes.push((step.phase.clone(), retry_verdict.passed));
+            gate_learning::record_gate_verdict_metrics(
+                self.metrics.as_deref(),
+                &step.phase,
+                &retry_verdict,
+            );
+
+            // P2-TUI-4: Forward post-fix verdict to the TUI.
+            if let Some(tui) = &self.tui_bridge {
+                tui.gate_result_with_output(
+                    &spec.plan_id,
+                    &task.id,
+                    &retry_verdict.gate,
+                    retry_verdict.passed,
+                    Some(&published_gate_output(shown, &retry_verdict)),
+                );
+            }
+            if !retry_verdict.passed {
+                retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
+                retry_failures.push(step_failure(step_label, shown, step, &retry_verdict));
+            }
+            retry_step_verdicts.push(ran_step_verdict(i, step, &retry_verdict, exit_code));
+            retry_ran_steps.push((step.phase.clone(), retry_verdict));
+        }
+        Ok(StepsRerun {
+            failures: retry_failures,
+            timed_out: retry_timed_out,
+            step_outcomes: retry_step_outcomes,
+            ran_steps: retry_ran_steps,
+            preexisting_filtered: retry_preexisting_filtered,
+            skipped: retry_skipped,
+            step_verdicts: retry_step_verdicts,
+        })
     }
 
     /// `wait`, unless `task`'s plan run begins to stop first: then the

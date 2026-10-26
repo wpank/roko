@@ -13,6 +13,12 @@
 //! place, as before (ties go to the latest), and so does a try that got
 //! nowhere with no better try before it.
 //!
+//! Within one try, the tree its own checks saw is kept each time they run,
+//! the agent's `run_tests` and the hand-off check alike (gap-56f761). When the
+//! tree the try ends with ranks behind the best of them, as a last edit after
+//! the try's time bound can make it, that tree is put back and the gate
+//! judges it ([`GraphTaskDispatcher::restore_checked_best`]).
+//!
 //! The best try is kept beside the plan's Graph checkpoint as well
 //! ([`retry_feedback::BestTry`]). A resumed run re-attaches the checkout an
 //! earlier process kept, which holds the last try's tree, so a task's first
@@ -27,7 +33,9 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
+use chrono::TimeZone;
 use roko_gate::BuildSystem;
+use roko_std::tool::builtin::task_checks::{CheckRun, read_check_runs, task_check_runs_path};
 
 use super::diff_snapshot::{git_bytes, git_line, is_roko_state, parse_raw_diff, snapshot_tree};
 use super::retry_feedback::{BestTry, StepProgress};
@@ -225,20 +233,16 @@ impl GraphTaskDispatcher {
 }
 
 impl BestTry {
-    /// Whether this try got less far than `best` (gap-54089d): it passed
-    /// fewer verify steps, or as many and, in the same first failing step,
-    /// fewer assertions, or as many and fewer test cases. Any other two tries
-    /// tie, and a tie goes to the latest.
+    /// Whether this try got less far than `best` ([`Reach::behind`]).
     fn behind(&self, best: &Self) -> bool {
-        match self.passed.len().cmp(&best.passed.len()) {
-            Ordering::Less => true,
-            Ordering::Greater => false,
-            Ordering::Equal => match (&self.progress, &best.progress) {
-                (Some(this), Some(best)) if this.step == best.step => {
-                    (this.assertions, this.cases) < (best.assertions, best.cases)
-                }
-                _ => false,
-            },
+        self.reach().behind(&best.reach())
+    }
+
+    /// How far this try got.
+    fn reach(&self) -> Reach {
+        Reach {
+            passed: self.passed.len(),
+            progress: self.progress.clone(),
         }
     }
 
@@ -251,6 +255,167 @@ impl BestTry {
                 .as_ref()
                 .is_some_and(|progress| progress.cases > 0 || progress.assertions > 0)
     }
+}
+
+/// How far a tree got by a task's checks: the steps it passed, and its
+/// progress in the first one it failed (gap-54089d, gap-56f761).
+#[derive(Debug, Clone)]
+struct Reach {
+    passed: usize,
+    progress: Option<StepProgress>,
+}
+
+impl Reach {
+    /// Whether this tree got less far than `best` (gap-54089d): it passed
+    /// fewer steps, or as many and, in the same first failing step, fewer
+    /// assertions, or as many and fewer test cases. Any other two tie, and a
+    /// tie goes to the latest.
+    fn behind(&self, best: &Self) -> bool {
+        match self.passed.cmp(&best.passed) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => match (&self.progress, &best.progress) {
+                (Some(this), Some(best)) if this.step == best.step => {
+                    (this.assertions, this.cases) < (best.assertions, best.cases)
+                }
+                _ => false,
+            },
+        }
+    }
+
+    /// How far the tree of `run`, a run of a try's own checks, got.
+    fn of_run(run: &CheckRun) -> Self {
+        Self {
+            passed: run.passed.len(),
+            progress: run
+                .failed
+                .as_ref()
+                .map(|failed| StepProgress::of(&failed.label, &failed.output)),
+        }
+    }
+
+    /// How far the tree a try of `task` ended with got by the task's own
+    /// checks, its authored verify steps, as the gate ran them (`steps`,
+    /// `step_outcomes`, `ran_steps`): those that passed in order, and the
+    /// first that failed. `None` for a task with no checks.
+    fn of_gate(
+        task: &TaskDef,
+        steps: &[(String, crate::task_parser::VerifyStep)],
+        step_outcomes: &[(String, bool)],
+        ran_steps: &[(String, roko_core::Verdict)],
+    ) -> Option<Self> {
+        let checks = task.verify.len();
+        if checks == 0 {
+            return None;
+        }
+        let mut passed = 0;
+        for (index, (_, ok)) in step_outcomes.iter().enumerate().take(checks) {
+            if *ok {
+                passed += 1;
+                continue;
+            }
+            let output = ran_steps
+                .get(index)
+                .and_then(|(_, verdict)| verdict.detail.as_deref())
+                .unwrap_or_default();
+            return Some(Self {
+                passed,
+                progress: Some(StepProgress::of(&steps.get(index)?.0, output)),
+            });
+        }
+        Some(Self {
+            passed,
+            progress: None,
+        })
+    }
+
+    /// This reach in words, of `total` checks: "0 of 4 checks passed, then 1
+    /// test case and 140 assertions in `verify[0:test]`".
+    fn words(&self, total: usize) -> String {
+        match &self.progress {
+            None => format!("all {total} checks passed"),
+            Some(progress) if progress.cases > 0 || progress.assertions > 0 => format!(
+                "{} of {total} checks passed, then {} in `{}`",
+                self.passed,
+                reached(progress),
+                progress.step
+            ),
+            Some(progress) => format!(
+                "{} of {total} checks passed, then nothing counted in `{}`",
+                self.passed, progress.step
+            ),
+        }
+    }
+}
+
+impl GraphTaskDispatcher {
+    /// Put back the best tree the try's own checks saw (gap-56f761) when the
+    /// tree the try ended with ranks behind it ([`Reach::behind`]): the gate
+    /// judged `task`'s `steps` on the final tree as `step_outcomes` and
+    /// `ran_steps`, and the attempt `attempt_key`'s checks recorded their
+    /// runs beside its checks file, the agent's `run_tests` and the hand-off
+    /// check alike. Ties go to the latest run. Only a task's own checkout
+    /// `workdir` is ever restored. Returns the note the next try's feedback
+    /// carries; `None` when nothing was put back.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn restore_checked_best(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        workdir: &Path,
+        steps: &[(String, crate::task_parser::VerifyStep)],
+        step_outcomes: &[(String, bool)],
+        ran_steps: &[(String, roko_core::Verdict)],
+    ) -> Option<String> {
+        self.workspace_provider.as_ref()?;
+        let ended = Reach::of_gate(task, steps, step_outcomes, ran_steps)?;
+        let runs = read_check_runs(&task_check_runs_path(&self.workdir, attempt_key));
+        let (run, best) = runs
+            .iter()
+            .map(|run| (run, Reach::of_run(run)))
+            .reduce(|best, run| if run.1.behind(&best.1) { best } else { run })?;
+        if !ended.behind(&best) {
+            return None;
+        }
+        let now = snapshot_tree(workdir).await?;
+        if now == run.tree {
+            return None;
+        }
+        let paths = restore_tree(workdir, &now, &run.tree).await?;
+        // Trees that differ only in roko's own state hold the same work.
+        if paths.is_empty() {
+            return None;
+        }
+        let at = local_time(run.at_ms);
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            at = %at,
+            files = paths.len(),
+            "the try ended on a tree worse than one its own checks saw: roko put that tree \
+             back, and the checks judge it"
+        );
+        if let Some(tui) = &self.tui_bridge {
+            tui.checked_tree_restored(&spec.plan_id, &task.id, &at, &paths);
+        }
+        let total = task.verify.len();
+        Some(format!(
+            "Kept by roko: this try's own checks saw a better tree at {at} than the one it ended \
+             with: {}, against {}. Its later edits made the tree worse, so roko put the {at} tree \
+             back, and the checks judged that tree. Start from it.",
+            best.words(total),
+            ended.words(total),
+        ))
+    }
+}
+
+/// `at_ms`, Unix milliseconds, as local time of day: `05:32:54`.
+fn local_time(at_ms: i64) -> String {
+    chrono::Local
+        .timestamp_millis_opt(at_ms)
+        .single()
+        .map_or_else(|| at_ms.to_string(), |at| at.format("%H:%M:%S").to_string())
 }
 
 impl StepProgress {
@@ -451,7 +616,7 @@ mod tests {
     use crate::graph_execution::WorktreeExecutionWorkspaceProvider;
     use crate::graph_task_dispatch::diff_snapshot::tests::git;
     use crate::graph_task_dispatch::tests::{
-        make_spec, make_test_dispatcher_with, no_auto_fix, verify_step,
+        make_spec, make_test_dispatcher_with, no_auto_fix, tool_call_turn, verify_step,
     };
     use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
 
@@ -607,6 +772,18 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         resumable: bool,
         verify: Vec<crate::task_parser::VerifyStep>,
     ) -> (Arc<GraphTaskDispatcher>, TaskExecutionSpec) {
+        dispatcher_configured(repo, worktrees, script, resumable, verify, no_auto_fix).await
+    }
+
+    /// [`dispatcher_with`], with `configure` run on its config.
+    async fn dispatcher_configured(
+        repo: &tempfile::TempDir,
+        worktrees: &Path,
+        script: &str,
+        resumable: bool,
+        verify: Vec<crate::task_parser::VerifyStep>,
+        configure: impl FnOnce(&mut RokoConfig),
+    ) -> (Arc<GraphTaskDispatcher>, TaskExecutionSpec) {
         let provider = Arc::new(WorktreeExecutionWorkspaceProvider::new(
             WorktreeManager::new(WorktreeConfig {
                 repo_root: repo.path().to_path_buf(),
@@ -620,7 +797,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         let (dispatcher, mut task) = make_test_dispatcher_with(
             repo,
             script,
-            no_auto_fix,
+            configure,
             GraphFeedbackContext {
                 runs_dir: Some(repo.path().join(".roko/runs")),
                 ..GraphFeedbackContext::default()
@@ -901,6 +1078,139 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             "told",
             "try 3's prompt says roko restored try 1"
         );
+    }
+
+    /// One verify step in phase 3's shape for a try judged on its checked
+    /// tree: with a.txt `good` doctest counts 1 of 2 cases and 140 of 149
+    /// assertions passing, and with `broken` the build fails, as a
+    /// compiler's error, with nothing counted.
+    const CHECKED_STEP: &str = "case \"$(cat a.txt 2>/dev/null)\" in \
+        good) printf '[doctest] test cases: 2 | 1 passed | 1 failed | 0 skipped\\n[doctest] \
+        assertions: 149 | 140 passed | 9 failed |\\n'; exit 1 ;; \
+        broken) echo \"sequencer.cpp:12:5: error: no member named 'load' in \
+        'undertow::Pattern'\" >&2; exit 2 ;; \
+        *) exit 1 ;; esac";
+
+    /// gap-56f761, the shape of Undertow phase 3's T1#1 (run 7b8cb121): the
+    /// try's own checks see 140 of its step's 149 assertions pass, then its
+    /// last edit breaks the build, and the gate would judge only that tree.
+    /// roko puts back the tree its checks saw, the gate judges that one, and
+    /// the next try starts from it, its prompt saying so.
+    #[tokio::test]
+    async fn a_try_is_judged_on_its_best_checked_tree_when_its_last_edit_is_worse() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let write = |content: &str| serde_json::json!({ "path": "a.txt", "content": content });
+        let read = serde_json::json!({ "path": "a.txt" });
+        let (base_url, requests) = crate::graph_task_dispatch::tests::spawn_openai_mock(vec![
+            // Try 1: a good tree its checks see, then a last edit that breaks it.
+            tool_call_turn("w1", "write_file", write("good\n")),
+            tool_call_turn("c1", "run_tests", serde_json::json!({ "build": "checks" })),
+            tool_call_turn("r1", "read_file", read.clone()),
+            tool_call_turn("w2", "write_file", write("broken\n")),
+            crate::graph_task_dispatch::tests::final_turn("done"),
+            // Try 2: what its checkout holds.
+            tool_call_turn("r2", "read_file", read),
+            crate::graph_task_dispatch::tests::final_turn("done"),
+        ]);
+        let verify = vec![verify_step("test", CHECKED_STEP)];
+        let helpers = crate::graph_task_dispatch::tests::VERIFY_PROVIDER;
+        let (dispatcher, spec) =
+            dispatcher_configured(&repo, worktrees.path(), helpers, false, verify, |config| {
+                no_auto_fix(config);
+                api_implementer(config, &base_url);
+            })
+            .await;
+        let spec = pinned(spec, "api-model");
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("try 1 still fails its step, at 140 of 149");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("try 2 fails it the same");
+
+        let requests = requests.lock();
+        let said = |index: usize| {
+            requests
+                .get(index)
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        };
+        let try_two = said(5);
+        assert!(
+            try_two.contains("this try's own checks saw a better tree"),
+            "try 2's prompt says what roko kept: {try_two}"
+        );
+        assert!(try_two.contains("140 assertions"), "{try_two}");
+        let read_back = requests
+            .get(6)
+            .and_then(|request| request["messages"].as_array())
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["tool_call_id"] == "r2")
+                    .map(|message| message["content"].to_string())
+            })
+            .unwrap_or_default();
+        assert!(
+            read_back.contains("good") && !read_back.contains("broken"),
+            "try 2 starts from the checked tree: {read_back}"
+        );
+    }
+
+    /// `spec` with its task pinned to `model`, the hint dispatch reads from
+    /// the task itself.
+    fn pinned(mut spec: TaskExecutionSpec, model: &str) -> TaskExecutionSpec {
+        let mut task: TaskDef = serde_json::from_str(&spec.task_def_json).expect("the task");
+        task.model_hint = Some(model.to_string());
+        spec.task_def_json = serde_json::to_string(&task).expect("the task");
+        spec.model_hint = task.model_hint;
+        spec
+    }
+
+    /// `config` with `api-model`, an OpenAI-compatible model at `base_url`,
+    /// for a task that names it as its model, the helper calls still on the
+    /// fake CLI, and no hand-off check, so a try ends when its agent hands
+    /// back.
+    fn api_implementer(config: &mut RokoConfig, base_url: &str) {
+        config.providers.insert(
+            "mock_api".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::OpenAiCompat,
+                base_url: Some(base_url.to_string()),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(crate::graph_task_dispatch::tests::FIXTURE_PROVIDER_TIMEOUT_MS),
+                ..roko_core::config::schema::ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "api-model".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "mock_api".to_string(),
+                slug: "api-model-1".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
+                ..roko_core::config::schema::ModelProfile::default()
+            },
+        );
+        // Helper calls go to the fake CLI, which may then be chosen for them.
+        config
+            .models
+            .get_mut("stream-model")
+            .expect("the fake CLI's model")
+            .supports_tools = true;
+        config.routing.fast_task_model = "stream-model".to_string();
+        config.gates.hand_off_continues = 0;
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
     }
 
     /// gap-54089d: a resumed task whose tries all failed its one step starts

@@ -327,8 +327,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         );
 
         // ── Provider invocation ──────────────────────────────────────────
-        // gap-770cb5: the agent can run its task's checks mid-try.
-        let left_checks = self.leave_task_checks(&task, &attempt_key);
+        // gap-770cb5: the agent can run its task's checks mid-try. They stay
+        // until the try is judged, which reads their runs (gap-56f761).
+        let _left_checks = self.leave_task_checks(&task, &attempt_key);
         attempt.dispatch_started();
         progress.call_started(
             crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
@@ -346,7 +347,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             )
             .await;
         attempt.dispatch_ended();
-        drop(left_checks);
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
             // The stall watchdog, the conductor or a stopping plan run

@@ -2,7 +2,7 @@
 id = "gap-fd9dfb"
 kind = "gap"
 title = "CLAUDE.md and docs/v3/26-HTTP-API.md don't document roko safety release or /api/safety/controls"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs"]
 created = 2026-10-02
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "70966c554"
 source = "backlog wave reports 2026-10-02 (PK01 gap-625195)"
 discovered_from = "gap-625195 (backlog tasks 1104-1106)"
 anchors = ["CLAUDE.md", "docs/v3/26-HTTP-API.md"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["find-d05b5e", "gap-171238", 
 
 [[verify]]
 command = "grep -q 'roko safety release' CLAUDE.md && grep -q 'roko safety controls' CLAUDE.md && grep -qF '`/api/safety/controls`' docs/v3/26-HTTP-API.md && grep -qF '/api/safety/controls/{agent_id}/release' docs/v3/26-HTTP-API.md"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:27:42Z"
+commit = "70966c554"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T16:06:46Z"
+forced = false
+evidence = "70966c554. CLAUDE.md: the Utilities row `roko safety controls/release` (c1a537d2e), which predated tool controls (gap-a2787f) and find-d05b5e and lacked the string the verify looks for, is now two rows: `roko safety controls` (agents denied before dispatch, tools refused in the workspace) and `roko safety release <agent> --reason <why>` (an agent control, or a tool control with --tool/--scope, with an audit line carrying by, reason and via; only a person releases one: the default bash policy refuses the command and it exits 1 under the variables roko sets on its agents and checks). docs/v3/26-HTTP-API.md section 8.27, renamed Safety Observability and Controls, documents GET /api/safety/controls (ledger, total, controls, reason, each control field, the 7-day expiry of decision 1107, older controls with no expiry, 500 on an unreadable ledger) and POST /api/safety/controls/{agent_id}/release (reason body, the authenticated principal or local-api, permission config:edit with agent tokens refused, a percent-encoded slash in the id, the audit line and its via, the response, 404 and 400), checked against routes/safety.rs, route_permissions.rs, rbac_middleware.rs, middleware.rs, commands/safety.rs, immune_evidence.rs and safety/bash.rs; a paragraph after the table points to the CLI for tool controls, which have no route. The verify now checks both CLI rows and both route paths (its old second half, grep -q controls, matched any use of the word): it fails on main 754f45ebd and passes at 70966c554. Docs only, no cargo run. Filed gap-171238 (docs/v3/28-CLI.md has no section for roko safety, effects, showcase, audit or demo) and gap-2c1b76 (the serve scope guards check hand-kept lists, so eleven mutating routes, the safety release among them, resolve to write:unclassified)."
 +++
 
 ## Problem

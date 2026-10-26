@@ -621,6 +621,11 @@ impl GraphTaskDispatcher {
             self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
             self.budget_ledger
                 .settle(&spec.plan_id, None, refused_cost_usd)?;
+            // Its calls are on the plan's books now, so a resume after a
+            // crash charges the try only for its calls since (bug-b7f6a8).
+            if let Some(allowance) = allowance {
+                allowance.book_recorded_calls();
+            }
             // The attempt's verdict counts it beside the call that runs
             // (bug-8bcd98).
             if let Some(progress) = progress {

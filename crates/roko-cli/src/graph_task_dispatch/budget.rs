@@ -385,6 +385,7 @@ impl PlanBudgetState {
                 Some(CommittedHold {
                     attempt_key: self.hold_attempts.get(&id).cloned(),
                     spent_micro_usd: held.spent_micro_usd,
+                    booked_micro_usd: held.booked_micro_usd,
                     in_flight: held.in_flight,
                     in_flight_micro_usd: if held.in_flight {
                         held.in_flight_micro_usd
@@ -435,6 +436,10 @@ struct AttemptHold {
     /// What the call in flight is expected to cost: the hold's last call,
     /// else the plan's costliest so far.
     in_flight_micro_usd: u64,
+    /// Of `spent_micro_usd`, what the plan's books hold already: the calls of
+    /// the dispatches failover settled as refused (bug-8bcd98). A resume after
+    /// a crash charges the attempt only for the rest (bug-b7f6a8).
+    booked_micro_usd: u64,
 }
 
 /// A raise of a plan's budget ceiling that the plan ledger applied (backlog
@@ -1003,6 +1008,23 @@ impl GraphPlanBudgetLedger {
         }
     }
 
+    /// Mark the calls hold `hold` of `plan_id` recorded so far as on the
+    /// plan's books: failover settled their dispatch as refused (bug-8bcd98).
+    /// The checkpoint keeps the mark, so a resume after a crash charges the
+    /// attempt only for its calls since, and never one of them twice
+    /// (bug-b7f6a8). A failure is kept as the ledger's persistence error.
+    fn book_recorded_calls(&self, plan_id: &str, hold: u64) {
+        let mut plans = self.plans.lock();
+        let Some(state) = plans.get_mut(plan_id) else {
+            return;
+        };
+        let Some(held) = state.holds.get_mut(&hold) else {
+            return;
+        };
+        held.booked_micro_usd = held.spent_micro_usd;
+        let _ = state.persist("a refused dispatch's calls");
+    }
+
     /// Name the attempt hold `hold` of `plan_id` belongs to, once it opens,
     /// and commit it, so a resume after a crash settles that attempt
     /// (bug-b7f6a8). A failure is kept as the ledger's persistence error.
@@ -1144,6 +1166,13 @@ impl AttemptAllowance {
     /// the attempt then stopped for its plan's budget.
     pub(super) fn refusal(&self) -> Option<String> {
         self.refusal.lock().clone()
+    }
+
+    /// The calls the attempt recorded so far are on the plan's books:
+    /// failover settled their dispatch as refused (bug-8bcd98), so a resume
+    /// after a crash does not charge them again (bug-b7f6a8).
+    pub(super) fn book_recorded_calls(&self) {
+        self.ledger.book_recorded_calls(&self.plan_id, self.hold);
     }
 }
 
@@ -1888,6 +1917,96 @@ mod tests {
         assert!(settled["holds"].is_null());
         assert_eq!(settled["spent_micro_usd"], 82_000);
         assert_eq!(settled["reserved_micro_usd"], 0);
+    }
+
+    /// bug-b7f6a8 with bug-8bcd98: a crash books each call of a try once, at
+    /// what is known of it. The try's first dispatch made a call, then failed
+    /// on a rate limit, which its tool loop records at a known $0, and
+    /// failover settled that dispatch as refused, on the plan's books. The
+    /// next dispatch's call was in flight when the process stopped. The
+    /// resume charges the try for that call alone, at its estimate: neither
+    /// the refused dispatch's calls again, nor an estimate for the call that
+    /// failed.
+    #[test]
+    fn a_crash_after_a_refused_dispatch_charges_each_call_once() {
+        let dir = tempdir().expect("tempdir");
+        let mut graph = roko_graph::Graph::new(roko_graph::GraphMetadata {
+            name: "plan-a".to_string(),
+            ..roko_graph::GraphMetadata::default()
+        });
+        graph
+            .add_node(roko_graph::Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
+            })
+            .expect("node");
+        let prepare = || {
+            crate::graph_checkpoint::prepare_graph_checkpoint(
+                dir.path(),
+                None,
+                "plan-a",
+                1,
+                &graph,
+                false,
+                false,
+            )
+        };
+        let mut checkpoint = prepare().expect("checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        let committed = || -> serde_json::Value {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
+                    .expect("parse manifest");
+            manifest["committed"].clone()
+        };
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        ledger
+            .attach_checkpoint("plan-a", checkpoint.take_cost_ledger())
+            .expect("attach the ledger");
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false);
+        let reservation = ledger.reserve("plan-a", policy).expect("reserve");
+        reservation.bind_attempt("run-1:plan-a:task-1:1");
+        let allowance = reservation
+            .allowance(&ledger)
+            .expect("a ceiling gives the attempt an allowance");
+
+        // The first dispatch: a call that answered, then one a rate limit
+        // failed, which is in flight no longer.
+        assert_eq!(allowance.refuse_call(), None);
+        allowance.record_call(0.1, true);
+        assert_eq!(allowance.refuse_call(), None);
+        allowance.record_call(0.0, true);
+        assert!(committed()["holds"][0]["in_flight"].is_null());
+        // Failover settles it as refused, on the plan's books.
+        ledger
+            .settle("plan-a", None, 0.1)
+            .expect("settle the refused dispatch");
+        allowance.book_recorded_calls();
+        // The next dispatch's call is in flight, at the plan's costliest call,
+        // when the process stops.
+        assert_eq!(allowance.refuse_call(), None);
+        let stopped = committed();
+        assert_eq!(stopped["spent_micro_usd"], 100_000);
+        assert_eq!(stopped["holds"][0]["booked_micro_usd"], 100_000);
+        assert_eq!(stopped["holds"][0]["in_flight_micro_usd"], 100_000);
+        // The process stops: nothing settles or releases the hold.
+        std::mem::forget(reservation);
+        drop(allowance);
+        drop(ledger);
+        drop(checkpoint);
+
+        let resumed = prepare().expect("an attempt left in flight resumes");
+        let settled = resumed.settled_holds().expect("the hold is settled");
+        assert_eq!(
+            settled.charged_micro_usd, 100_000,
+            "the call in flight alone"
+        );
+        assert_eq!(resumed.restored_spend_micro_usd(), 200_000);
     }
 
     /// What committing a hold costs, per call (bug-b7f6a8): each admitted and

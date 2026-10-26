@@ -1,7 +1,7 @@
 //! A task's checks, left for its agent's `run_tests` with `build: "checks"`
 //! (gap-770cb5), while the attempt's dispatch runs.
 
-use roko_std::tool::builtin::task_checks::{TaskCheck, task_checks_path};
+use roko_std::tool::builtin::task_checks::{TaskCheck, task_check_runs_path, task_checks_path};
 
 use super::*;
 
@@ -19,13 +19,17 @@ pub(super) fn checks_of(task: &TaskDef) -> Vec<TaskCheck> {
         .collect()
 }
 
-/// The checks file an attempt left in the workspace; removed when dropped,
-/// as the attempt's dispatch ends.
-pub(super) struct LeftChecks(Option<PathBuf>);
+/// The checks file an attempt left in the workspace, and the record of its
+/// checks' runs beside it (gap-56f761); both removed when dropped, once the
+/// attempt is judged.
+pub(super) struct LeftChecks {
+    checks: Option<PathBuf>,
+    runs: Option<PathBuf>,
+}
 
 impl Drop for LeftChecks {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
+        for path in [self.checks.take(), self.runs.take()].into_iter().flatten() {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -39,10 +43,17 @@ impl GraphTaskDispatcher {
     /// without the mode, as before.
     pub(super) fn leave_task_checks(&self, task: &TaskDef, attempt_key: &str) -> LeftChecks {
         if task.verify.is_empty() {
-            return LeftChecks(None);
+            return LeftChecks {
+                checks: None,
+                runs: None,
+            };
         }
         let checks = checks_of(task);
         let path = task_checks_path(&self.workdir, attempt_key);
+        // Runs an earlier process of the same attempt recorded are not this
+        // dispatch's.
+        let runs = task_check_runs_path(&self.workdir, attempt_key);
+        let _ = std::fs::remove_file(&runs);
         let written = serde_json::to_vec(&checks)
             .map_err(std::io::Error::other)
             .and_then(|bytes| {
@@ -52,10 +63,16 @@ impl GraphTaskDispatcher {
                 std::fs::write(&path, bytes)
             });
         match written {
-            Ok(()) => LeftChecks(Some(path)),
+            Ok(()) => LeftChecks {
+                checks: Some(path),
+                runs: Some(runs),
+            },
             Err(error) => {
                 tracing::debug!(%error, "the task's checks were not left for run_tests");
-                LeftChecks(None)
+                LeftChecks {
+                    checks: None,
+                    runs: None,
+                }
             }
         }
     }

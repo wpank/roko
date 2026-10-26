@@ -1733,8 +1733,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             Some(attempt.live_tool_calls()),
         );
 
-        // gap-770cb5: the agent can run its task's checks mid-try.
-        let left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
+        // gap-770cb5: the agent can run its task's checks mid-try. They stay
+        // until the try is judged, which reads their runs (gap-56f761).
+        let _left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
         attempt.dispatch_started();
         attempt.record_effort(request.effort.clone());
         let started_at = Instant::now();
@@ -1772,7 +1773,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let dispatch_result =
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
-        drop(left_checks);
         if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
             attempt.record_continues(continues);
         }

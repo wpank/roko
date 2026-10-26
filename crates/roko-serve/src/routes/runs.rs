@@ -319,24 +319,27 @@ async fn get_run_summary(
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
     let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
     // gap-3217a0: how each rung did, from the run's own records, and whether
-    // a higher rung beat a lower one.
+    // a higher rung beat a lower one; bug-b7d9ad: the tries whose checks
+    // changed the person's own checkout instead of their worktree.
     let workdir = state.workdir.clone();
     let io_run_id = run_id.to_string();
-    let rungs = blocking_io(move || {
+    let (rungs, checkout_written) = blocking_io(move || {
         let layout = roko_fs::RokoLayout::for_project(&workdir);
         let dir = layout.runs_dir().join(&io_run_id);
         let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
         // A rung's refused calls count on it (gap-5cfa9c).
-        Ok(
+        Ok((
             roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
                 std::slice::from_ref(&records),
                 &layout.learn_dir().join("costs.jsonl"),
             ),
-        )
+            records.checkout_writes(),
+        ))
     })
     .await?;
     summary["rungs"] = json!(rungs.rows);
     summary["misordered"] = json!(rungs.misordered.map(|misorder| misorder.line));
+    summary["checkout_written"] = json!(checkout_written);
     // gap-8409d0: an ended run's summary says where its verified work is, so a
     // chat host can tell its person what changed and how to take it.
     if summary["active"] == Value::Bool(false) {
@@ -4546,6 +4549,91 @@ mod tests {
             rungs[0]["reason"]
                 .as_str()
                 .is_some_and(|reason| reason.contains("(HTTP 402)")),
+            "{summary}"
+        );
+    }
+
+    /// bug-b7d9ad: a run's summary names the tries whose checks changed the
+    /// person's own checkout instead of their worktree, with the paths, from
+    /// their verdicts' `checkout_written` findings; a try without one is not
+    /// named.
+    #[tokio::test]
+    async fn a_runs_summary_names_the_checks_that_changed_the_checkout() {
+        use roko_learn::telemetry::records::{
+            AttemptKey, AttemptOutcome, SCOPE_CHECKOUT_WRITTEN, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord, ScopeFinding};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "w1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"w1","timestamp_ms":1,"plan_id":"p4"}),
+                json!({"type":"run.completed","run_id":"w1","timestamp_ms":3,"outcome":"unverified"}),
+            ],
+        );
+        let verdict = |task: &str, outcome, findings: Vec<ScopeFinding>| {
+            let identity = AttemptIdentity::new(&AttemptKey::new("w1", "p4", task, 1));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.set_scope_findings(findings);
+            let mut line = json!({
+                "schema_version": VERDICT_SCHEMA,
+                "record_id": format!("r-{task}"),
+                "seq": 1,
+                "ts": "2026-10-26T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (
+                line.as_object_mut(),
+                serde_json::to_value(&verdict).unwrap(),
+            ) {
+                line.extend(fields);
+            }
+            line
+        };
+        let written = |path: &str| ScopeFinding {
+            path: path.to_string(),
+            kind: SCOPE_CHECKOUT_WRITTEN.to_string(),
+        };
+        write_rows(
+            &state.layout.runs_dir().join("w1").join("attempts.jsonl"),
+            &[
+                verdict("T1", AttemptOutcome::Passed, Vec::new()),
+                verdict(
+                    "T2",
+                    AttemptOutcome::Unverified,
+                    vec![
+                        written("artifacts/ui/editor-idle.png"),
+                        written("artifacts/ui/editor-playing.png"),
+                    ],
+                ),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("w1".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            summary["checkout_written"],
+            json!([{
+                "plan_id": "p4",
+                "task_id": "T2",
+                "attempt": 1,
+                "paths": ["artifacts/ui/editor-idle.png", "artifacts/ui/editor-playing.png"],
+            }]),
             "{summary}"
         );
     }

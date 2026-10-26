@@ -9,12 +9,30 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/worktree"]
 created = 2026-10-21
-updated = 2026-10-21
+updated = 2026-10-26
 last_verified = 2026-10-21
 source = "round-v7 rehearsal p41 (roko-ladder), the lead's ask"
 discovered_from = "agent:roko-ladder (round v7 rehearsal p41)"
-anchors = ["crates/roko-cli/src/orchestrator/worktree/build_trees.rs::relocate", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs::write_keeping_times"]
+anchors = ["crates/roko-cli/src/orchestrator/worktree/build_trees.rs::relocate", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs::write_keeping_times", "crates/roko-cli/src/graph_task_dispatch/checkout_writes.rs::CheckoutState", "crates/roko-cli/src/graph_task_dispatch/verification.rs::screen_and_verify"]
 links = { depends_on = [], blocks = [], related = ["gap-6754ab", "bug-40bf59"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn checks_that_write_into_the_persons_checkout_say_so' crates/roko-cli/src && cargo test -p roko-cli --lib -- checks_that_write_into_the_persons_checkout_say_so"
+
+[[verify]]
+command = "grep -rqw 'fn a_checkout_state_names_what_changed' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_checkout_state_names_what_changed"
+
+[[verify]]
+command = "grep -rqw 'fn the_checkout_warning_says_how_to_drop_or_keep_the_changes' crates/roko-cli/src && cargo test -p roko-cli --lib -- the_checkout_warning_says_how_to_drop_or_keep_the_changes"
+
+[[verify]]
+command = "grep -rqw 'fn rokos_own_writes_in_the_checkout_raise_no_checkout_flag' crates/roko-cli/src && cargo test -p roko-cli --lib -- rokos_own_writes_in_the_checkout_raise_no_checkout_flag"
+
+[[verify]]
+command = "grep -rqw 'fn graph_report_names_the_checkout_a_tasks_checks_changed' crates/roko-cli/src && cargo test -p roko-cli --lib -- graph_report_names_the_checkout_a_tasks_checks_changed"
+
+[[verify]]
+command = "grep -rqw 'fn a_runs_summary_names_the_checks_that_changed_the_checkout' crates/roko-serve/src && cargo test -p roko-serve --lib -- a_runs_summary_names_the_checks_that_changed_the_checkout"
 +++
 
 ## Problem
@@ -47,17 +65,23 @@ Round v7 rehearsal p41 (`tmp/hermes-roko-v7/roko-ladder/rehearsals/p41/`, run `2
 ## Plan
 
 Undertow has since moved its checks to run-time paths (Undertow ceac70e), so its spec no longer bakes the checkout
-into the binary. roko's side is detection, since any project can compile a path in:
-- Before an attempt's checks run, note the person's checkout's state (`git status --porcelain`, untracked files
-  included).
-- After the checks, compare. If the checkout gained changes while the attempt's worktree did not, that is a red
-  flag: say so in the attempt's records and on the hub, naming the files. Don't settle the attempt
-  `already_satisfied` on a run that wrote into the person's checkout.
-- Optionally, make a compiled-in path rebuild: when relocating changes the definitions a target compiles with (a
-  `*_DEFINES` line of its `flags.make`), or a generated source or header, give that file a fresh mtime so make
-  rebuilds just those objects.
+into the binary. roko's side is detection (the lead's design call, 2026-10-26):
+- Snapshot the person's checkout (`git status --porcelain -z --untracked-files=all`, each path with its size and
+  mtime) before and after an attempt's checks, when the attempt runs outside it. Leave out what roko itself writes
+  during a run: `.roko/`, the plan's own directory, and nested checkouts such as worktrees.
+- Anything that changed while the checks ran is a red flag:
+  - a warning diagnosis on the hub saying the run changed the person's checkout, which paths, how to drop them
+    (`git -C <checkout> checkout -- <paths>`, `git -C <checkout> clean -f -- <new files>`) or keep them, and the other
+    tasks that ran meanwhile, any of which may have written them;
+  - the paths as `checkout_written` scope findings in the attempt's verdict;
+  - an attempt that changed nothing settles `unverified`, not `already_satisfied`. Its checks may have tested the
+    person's checkout, and unverified costs no retry: a path compiled into the build is not the agent's to fix.
+- Plan level: the run summary (`checkout_written`), `roko diagnose` and the end of `roko plan run` (and its plan's
+  `graph.plan_unverified` event) name the task as unverified with the paths.
+- Prevention, making the objects compiled with the checkout's path rebuild after the clone, is gap-184cba.
 
 ## Done when
 
-An attempt whose checks change the person's checkout instead of its own worktree says so, on the hub and in its
-records, and is not settled `already_satisfied`. Checked by the tests in `[[verify]]`.
+An attempt whose checks change the person's checkout instead of its own worktree says so, on the hub, in its records
+and at the plan level, and is not settled `already_satisfied`; a clean run of plans that live in the checkout raises
+no flag. Checked by the tests in `[[verify]]`.

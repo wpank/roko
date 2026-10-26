@@ -2,7 +2,7 @@
 id = "bug-af5c20"
 kind = "bug"
 title = "A tool call whose arguments degenerate streams until the stall watchdog cancels the try: gpt-5.4-mini on the Responses API emitted an ls call with its own routing tokens (to=functions.ls) and 34k characters of whitespace for 300 s; nothing checks the argument stream, so the try dies as a stall and bills the whole stream"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool_loop"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "ae79ee4a2"
 source = "round v7 roko-effort, gap-1ba0ac's follow-up A/B (p5-ship T1, reasoning-on arm, 2026-10-26), the lead's ask"
 discovered_from = "agent:roko-effort (round v7, gap-1ba0ac A/B)"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::guard_reasoning", "crates/roko-agent/src/tool_loop/mod.rs::send_turn_streaming", "crates/roko-agent/src/openai_responses.rs::ResponsesTurn"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-1ba0ac", "gap-f3f950"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_malformed_tool_argument_stream_is_cut_and_asked_again' crates/roko-agent/src && cargo test -p roko-agent --lib -- a_malformed_tool_argument_stream_is_cut_and_asked_again"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T21:12:19Z"
+commit = "32d22bc8b"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T19:58:56Z"
+forced = false
+evidence = "Merged into local main as 32d22bc8b (round v7 roko-effort, the lead's yes to steps 1-3). Post-merge verify on main's tree at 32d22bc8b: nightly fmt; the targeted tests, among them the [[verify]] test a_malformed_tool_argument_stream_is_cut_and_asked_again, argument_scan_cuts_what_json_cannot_hold, the_recorded_degenerate_ls_call_is_cut_within_a_few_hundred_characters (the recording's first 420 argument deltas through the Responses parser, cut at character 381) and two_malformed_tool_argument_streams_in_a_row_end_the_run_as_a_provider_glitch; clippy -D warnings on roko-core, -agent, -learn, -cli, -serve and -acp; check --tests. Lib suites, 0 failures: roko-acp 237, roko-agent 2419, roko-cli 4047, roko-core 2049, roko-learn 1406, roko-serve 1086. Step 5's replay, as-is 10 times for $0.021: no runaway; 2 of 10 derailed at the recorded point, as short, valid JSON. That is below the lead's 3-of-10 gate, so the variants were not run (1928be1fe)."
 +++
 
 ## Problem

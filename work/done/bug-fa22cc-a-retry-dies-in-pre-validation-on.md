@@ -2,7 +2,7 @@
 id = "bug-fa22cc"
 kind = "bug"
 title = "A retry dies in pre-validation on a declared line range its own last try made stale: phase 5.1's T2#2-#4 each ended in about 100 ms on `1-121` of tools/render-demos.sh, which T2#1 had rewritten to 43 lines, and T2 was exhausted with no model call"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "386923f40"
 source = "round-v7 lead (Undertow phase 5.1 live run 814a7340)"
 discovered_from = "agent:team-lead (round v7, phase 5.1)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::fit_declared_ranges", "crates/roko-cli/src/plan_policy.rs::render_declared_context"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-5e361a", "bug-c5f406", "
 
 [[verify]]
 command = "grep -rqw 'fn a_try_fits_declared_ranges_to_its_checkout' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_try_fits_declared_ranges_to_its_checkout"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:00:35Z"
+commit = "386923f40"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+model = "claude-opus-5-5"
+forced = false
+evidence = "386923f40: every try fits its declared line ranges to the files in its own checkout (plan_policy::fit_ranges_to_checkout, run by graph_task_dispatch::fit_declared_ranges on every try, whichever task changed the file); fit_line_range makes a range from line 1 past the end, or one that starts past it, the whole file, and cuts another one past the end at the last line; render_declared_context and render_declared_files fit a range past the end instead of failing the try (only a malformed range fails, naming its file); the plan check at load is unchanged. Verify: a_try_fits_declared_ranges_to_its_checkout passes (a try whose checkout holds a 43-line tools/render-demos.sh declared as 1-121 runs and its prompt shows the whole script; 4-30 of a 10-line file shows lines 4-10). chain27 on main 1cf3cf3fe + the fix: the verify test 1/1; plan_policy::, dispatch::prompt_builder, graph_task_dispatch::attempt:: and generated_draft_repairs_total_ranges_and_read_files 96/97, the one failure my new test's own assertion (the declared files' intro says 'not shown'), corrected; plan_handback:: and plan_runner's hand-back tests 17/17; nightly fmt and clippy -D warnings clean on roko-cli. chain28 on 386923f40: plan_policy:: and the verify test 15/15, fmt clean."
 +++
 
 ## Problem

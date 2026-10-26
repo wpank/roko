@@ -2,7 +2,7 @@
 id = "bug-374384"
 kind = "bug"
 title = "A rung whose probe failed on billing stays skipped for a day after a recharge: probe_ladder trusts every fresh verdict, so a resume after recharging z.ai or Cerebras is still skipped or refused (gap-20301d, gap-c96097)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "e7a860dc0"
 source = "round-v7-lead#billing-reprobe"
 discovered_from = "agent:team-lead and agent:roko-exact (round v7, 2026-10-26: gap-20301d merged without the billing re-probe the lead asked for)"
 anchors = ["crates/roko-cli/src/dispatch/rung_probe.rs::probe_ladder", "crates/roko-cli/src/graph_execution/plan_runner.rs::billing_refusal", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::unroutable"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-20301d", "gap-c96097", "
 
 [[verify]]
 command = "grep -rqw 'fn a_rung_refused_on_billing_before_this_run_is_probed_again' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_rung_refused_on_billing_before_this_run_is_probed_again a_billing_failure_stands_only_in_its_run"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T16:33:08Z"
+commit = "ff946c3dd"
+forced = false
+evidence = "ff946c3dd: probe_ladder takes the run's start time, and RungProbes::standing keeps a fresh verdict except a billing failure (rung_probe::billing_refusal, moved from plan_runner: insufficient_credits, provider_exhausted, is_billing_message for a 402, z.ai's 1113, an insufficient balance) probed before this run, which is probed again: one probe per run per rung, gap-c96097's early stop first and the plan-start skip reading that run's verdict. A skipped rung says how to probe it again now: a billing failure 'skipped for this run ... the next run probes it again, so recharge the account and run again' (rung_skipped billing: true, no until_ms), any other 'remove <model> from .roko/learn/rung-probes.json'; the all-rungs refusal says both. Red at 15:47 on the old rule: a_rung_refused_on_billing_before_this_run_is_probed_again (a cached 402 from an hour before the run stayed trusted) and a_billing_failure_stands_only_in_its_run failed; green: the recharged provider's rung is probed again and runs, a second probe in the run makes no call, a billing failure probed in this run stands. Checked together on work/ladder-stack-test with main merged in (e7a860dc0, 2026-10-26): the four items' tests and their neighbours pass (18), roko-cli lib 4022/0 (share_run_scrubs_output_text_and_prompt skipped), roko-core 2049/0, roko-learn 1404/0, roko-serve 1084/0; clippy -D warnings (roko-core, roko-learn, roko-serve, roko-cli) and nightly fmt clean; CARGO_INCREMENTAL=0."
 +++
 
 ## Problem

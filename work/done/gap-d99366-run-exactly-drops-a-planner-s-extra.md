@@ -2,14 +2,15 @@
 id = "gap-d99366"
 kind = "gap"
 title = "run_exactly drops a planner's extra test chained after a spec command (tools/spec.sh 2 lfo 'P2.01*' && ctest -R extra keeps only the spec command) instead of moving it to a step of its own"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-20
-updated = 2026-10-20
-last_verified = 2026-10-20
+updated = 2026-10-21
+last_verified = 2026-10-21
+last_verified_rev = "031269ad4"
 source = "review:roko-planner-2 of bug-56a806 (e87ec04e3)"
 discovered_from = "agent:roko-planner-2 (round v7 review)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::run_exactly"]
@@ -17,6 +18,19 @@ links = { depends_on = [], blocks = [], related = ["bug-56a806"], supersedes = [
 
 [[verify]]
 command = "grep -qw 'fn a_planners_extra_test_gets_its_own_step' crates/roko-cli/src/plan_generate/source_checks.rs && cargo test -p roko-cli --lib -- a_planners_extra_test_gets_its_own_step"
+
+[closed]
+at = 2026-10-21
+at_ts = "2026-10-21T08:58:24Z"
+commit = "031269ad4"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-21T08:11:00Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "031269ad4: source_checks::run_exactly takes the tier step limit (as assign_runs does; pipeline: policy.tier_size_limits(task.tier_class()).max_verify_steps). When a step it cuts to the source's commands was a plain && chain, the commands that are no source command and run more than a grep, a file test or a build (extra_tests: and_parts + is_shallow) become a step of their own right after it, with the step's phase, covers, timeout, scope and expect, while the task has room; one another step already runs joins it; at the limit they are dropped and the repair line says so; a pipe or || keeps the old cut; [[meta.verify]] unchanged. Verify: a_planners_extra_test_gets_its_own_step passes. cargo test -p roko-cli --lib plan_generate: 169 passed (bug-56a806's a_step_runs_the_spec_commands_exactly, steps_run_the_source_commands_alone_and_once, a_step_running_a_checks_command_keeps_it included); --test plan_validation 38 passed; --test plan_validate 23 passed, 2 failed (the known bug-2a31bc); clippy -p roko-cli -D warnings clean; nightly fmt clean."
 +++
 
 ## Problem

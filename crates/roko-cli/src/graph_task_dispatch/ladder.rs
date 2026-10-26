@@ -538,8 +538,9 @@ impl GraphTaskDispatcher {
                 reasoning: verdict.usage.tokens_reasoning,
             },
             // What the plan's budget counted: a CLI agent's own figure, else
-            // the provider's charge, else the snapshot's price.
-            cost_usd: cost.vendor_usd.or(cost.billed_usd).or(cost.api_equiv_usd),
+            // the provider's charge, else the snapshot's price, and the calls
+            // a provider refused before failover (bug-8bcd98).
+            cost_usd: cost.plus_refused(cost.vendor_usd.or(cost.billed_usd).or(cost.api_equiv_usd)),
             duration_ms: timing
                 .settled_at
                 .zip(timing.attempt_started_at)

@@ -672,12 +672,11 @@ pub(super) fn audit_task(task: &TaskDef) -> AuditTask {
 }
 
 /// What an attempt's model calls cost, in USD: their API-equivalent price,
-/// else the vendor's or the billed figure.
+/// else the vendor's or the billed figure, and the calls a provider refused
+/// before failover (bug-8bcd98).
 fn attempt_usd(verdict: &AttemptVerdictRecord) -> f64 {
     let cost = &verdict.cost;
-    cost.api_equiv_usd
-        .or(cost.vendor_usd)
-        .or(cost.billed_usd)
+    cost.plus_refused(cost.api_equiv_usd.or(cost.vendor_usd).or(cost.billed_usd))
         .unwrap_or(0.0)
         .max(0.0)
 }

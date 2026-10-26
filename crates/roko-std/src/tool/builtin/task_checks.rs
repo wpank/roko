@@ -78,6 +78,15 @@ pub struct CheckRun {
     pub tree: String,
     /// The labels of the checks that passed, in order.
     pub passed: Vec<String>,
+    /// The command of each check that passed, in `passed`'s order
+    /// (gap-6df2bf): what the gate compares its own steps with before it takes
+    /// their pass from this run. A record written before has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
+    /// How long each check that passed ran, in milliseconds, in `passed`'s
+    /// order; empty when the run did not time them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ms: Vec<u64>,
     /// The check that did not pass, when one did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<FailedCheck>,
@@ -243,29 +252,41 @@ pub async fn run_checks(
 fn record_run(path: &Path, checks: &[TaskCheck], outcome: &ChecksOutcome, tree: String) {
     use std::io::Write;
 
-    let labels = |ran: &[(String, f64)]| -> Vec<String> {
-        ran.iter().map(|(label, _)| label.clone()).collect()
+    let timed = |ran: &[(String, f64)]| -> (Vec<String>, Vec<u64>) {
+        ran.iter()
+            .map(|(label, secs)| {
+                let ms = Duration::try_from_secs_f64(*secs).map_or(0, |took| {
+                    u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
+                });
+                (label.clone(), ms)
+            })
+            .unzip()
     };
-    let (passed, failed) = match outcome {
-        ChecksOutcome::Passed(ran) => (labels(ran), None),
+    let (passed, ms, failed) = match outcome {
+        ChecksOutcome::Passed(ran) => {
+            let (passed, ms) = timed(ran);
+            (passed, ms, None)
+        }
         ChecksOutcome::Failed {
             index,
             stdout,
             stderr,
             passed,
             ..
-        } => (
-            labels(passed),
-            Some(FailedCheck {
+        } => {
+            let (passed, ms) = timed(passed);
+            let failed = FailedCheck {
                 label: checks[*index].label.clone(),
                 output: format!("{}\n{}", tail(stdout), tail(stderr)),
-            }),
-        ),
+            };
+            (passed, ms, Some(failed))
+        }
         ChecksOutcome::TimedOut { index, limit } => (
             checks[..*index]
                 .iter()
                 .map(|check| check.label.clone())
                 .collect(),
+            Vec::new(),
             Some(FailedCheck {
                 label: checks[*index].label.clone(),
                 output: format!("did not finish within {} s", limit.as_secs()),
@@ -273,6 +294,13 @@ fn record_run(path: &Path, checks: &[TaskCheck], outcome: &ChecksOutcome, tree: 
         ),
         ChecksOutcome::NotRun(_) => return,
     };
+    // The checks that passed are the first ones: a run stops at the first
+    // that does not.
+    let commands = checks
+        .iter()
+        .take(passed.len())
+        .map(|check| check.command.clone())
+        .collect();
     let at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
@@ -282,6 +310,8 @@ fn record_run(path: &Path, checks: &[TaskCheck], outcome: &ChecksOutcome, tree: 
         at_ms,
         tree,
         passed,
+        commands,
+        ms,
         failed,
     };
     let written = serde_json::to_string(&run)

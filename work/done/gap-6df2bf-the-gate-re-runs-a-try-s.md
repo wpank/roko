@@ -2,7 +2,7 @@
 id = "gap-6df2bf"
 kind = "gap"
 title = "The gate re-runs a try's verify steps on a tree its own run_tests already passed: 36 round-v7 tries re-ran 11.2 min of checks (up to 100 s a try on the plugin phases)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "059d85430"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::run_verify_steps", "crates/roko-std/src/tool/builtin/task_checks.rs::read_check_runs", "crates/roko-cli/src/graph_task_dispatch/best_try.rs::BestTries"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-56f761", "gap-770cb5"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_green_run_tests_on_the_final_tree_is_not_run_again' crates/roko-cli/src && cargo test -p roko-cli --lib a_green_run_tests_on_the_final_tree_is_not_run_again"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T12:16:34Z"
+commit = "059d85430"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T11:44:56Z"
+forced = false
+evidence = "059d85430: run_checks (roko-std) records each passed check's command and milliseconds with the run's tree (CheckRun::commands, CheckRun::ms). Before run_verify_steps runs a try's steps, self_checked (best_try.rs) takes the newest run of the try's own checks (run_tests or the hand-off check) on the tree the checkout holds now, when every check it ran passed; a step whose label and command it passed settles as passed without running, shown as 'passed in this try's own checks at HH:MM:SS, on this tree: not run again', its verdict row self_checked: true with the run's duration. Rungs, rewritten commands, a changed tree, a red newest run and an unchanged-tree probe run as before. Verify: a_green_run_tests_on_the_final_tree_is_not_run_again passes (green run on the final tree: the step doesn't run, self_checked, 1500 ms; another command under the label, or a tree edited after the run: it runs); graph_task_dispatch:: 490/490, roko-std task_checks and roko-learn telemetry::records pass; nightly fmt and clippy -p roko-cli -p roko-std -p roko-learn -D warnings clean."
 +++
 
 ## Problem
@@ -67,6 +80,31 @@ JUCE plugin step takes 5–100 s even on a warm tree, and phase 5's checks are p
 There is one design choice. A step can read files outside git, such as `build/` or `artifacts/`. If the tree id
 doesn't cover them, either include their hashes or keep this to steps that read only tracked files. That stays
 correct.
+
+## Design
+
+roko-exact, 2026-10-26: the lead's call (reuse a green record for the same tree and commands, and say so).
+
+1. **Record what the gate needs.** `run_checks` (roko-std) already records each run's tree (gap-56f761). It now also
+   records, for each check it passed, the check's command and its seconds: `CheckRun::commands` and
+   `CheckRun::secs`, in `passed`'s order. Records written before carry neither, so they settle nothing.
+2. **Reuse at the gate.** Before `run_verify_steps` runs a try's steps, it takes the newest run of the try's own
+   checks whose tree is the tree the try ends with. That is the agent's `run_tests` with `build: "checks"`, or the
+   hand-off check, and the tree is the same `snapshot_tree` id 56f761 ranks by. The run must have passed every
+   check it ran.
+   - Each step whose label and command that run passed settles as passed from it, and no command runs. The hub
+     shows it passed with "passed in this try's own checks at 12:04:31, on this tree: not run again". Its verdict
+     row says `self_checked: true` and carries the run's duration.
+   - Every other step runs as before: a workspace rung, a step whose command the focused mode rewrote, or one that
+     run didn't reach.
+   - A try whose final tree differs, or whose newest run on it failed a check, runs every step.
+3. **Only roko's runs count.** The records are the ones `run_checks` wrote for this attempt's key. An agent's own
+   bash runs never count.
+4. **What the tree covers.** The tree id holds the tracked and unignored files. What a step reads under ignored
+   paths, such as build trees, counts as it was at the self-check. The gate would read the same build trees in the
+   same checkout, and the plan's check and the delivery's regression check run on the integrated tree regardless.
+5. **Unchanged.** An unchanged-tree probe still runs its steps, since its result decides `already_satisfied`. So do
+   the plan check and the delivery regression check.
 
 ## Done when
 

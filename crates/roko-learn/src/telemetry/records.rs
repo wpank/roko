@@ -520,6 +520,11 @@ pub struct VerifyStepVerdict {
     pub skipped: bool,
     /// Why the step was skipped, e.g. `fail_fast`.
     pub skip_reason: Option<String>,
+    /// Whether the gate took the step's pass from the try's own checks of
+    /// the tree it ends with instead of running it again (gap-6df2bf); its
+    /// `duration_ms` is then that run's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub self_checked: bool,
     /// Whether the person the work is for confirmed the outcome: a passed
     /// `confirm` rung (9137). It is a person's judgement, kept apart from
     /// the machine checks, which routing and audits read as such.

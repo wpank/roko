@@ -2227,6 +2227,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             timed_out: false,
             skipped: false,
             skip_reason: None,
+            self_checked: false,
             confirmed_by_user: false,
         }];
         let setup = AttemptSetup {

@@ -4,12 +4,12 @@ kind = "bug"
 title = "A terminal plan run gets two unrelated run ids, graph-<plan>-<uuid> for its records and graph-<uuid> for its events, prints neither, and serve's summary answers only the events id"
 status = "open"
 triage = "verified"
-severity = "p3"
+severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-26
 last_verified = 2026-10-17
 source = "round-v6-dogfood-will#R4-2"
 discovered_from = "agent:dogfood-will (round v6 run 4, 2026-10-17)"
@@ -77,3 +77,11 @@ split.
 
 Evidence: `tmp/hermes-roko-v6/dogfood-will/logs/run4-summary-*.json` (the 404s and the 200s),
 `tmp/hermes-roko-v6/dogfood-will/evidence/run4/`.
+
+- 2026-10-26 (roko-recovery, round v7): **the second id also hides a dead CLI run's end.**
+  - When `roko serve` settles a dead CLI run (bug-dceafd), it closes the manifest under `graph-<plan>-<uuid>` and
+    writes `run_completed` to that id's index. That index doesn't exist, because the events are under `graph-<uuid>`.
+  - The events id's summary keeps saying `running` (with the dead run's cost), and `/api/dashboard/runs` lists it
+    `observed`. This holds at every kill point of the kill matrix on 4d22b94e8 (`tmp/hermes-roko-v7/roko-recovery/`).
+  - bug-df0e79 (p2, dead CLI runs read as running) depends on this item. Worth raising to p2.
+- 2026-10-26 (the lead, round v7): raised to p2 with bug-df0e79, which depends on it.

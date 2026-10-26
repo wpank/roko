@@ -94,3 +94,17 @@ Recommended: 1 and 3. Option 2 alone would still call z.ai once a day.
     error_class=Exhausted consecutive_failures=4".
 - The diagnosis text itself is bug-3e3d08. The helper's whole-catalog prompt is bug-5b04d3. Choosing the
   distiller's model is gap-f1dd0c.
+- **A second occurrence: 2026-10-26, phase 4.3 (run 3752b8ff).** T2#1's retry-diagnosis helper went to glm-4.7 on
+  z.ai again.
+  - `roko.log.2026-10-26`, 14:37:02.108Z: "creating agent … glm-4.7 … api.z.ai".
+  - 14:37:02.717Z: "provider circuit opened … provider=zai error_class=Exhausted consecutive_failures=5",
+    `cooldown_until_ms` 15:07:02Z.
+  - `learn/costs.jsonl`: role `helper`, glm-4.7 on zai, 14:37:02.726Z, 615 ms, $0, 0 tokens.
+  - `learn/provider-health.json` puts z.ai's last success at 2026-10-21T03:58Z.
+- **So T2#2 got roko's fallback diagnosis**: "The primary error is [doctest] test cases: 4 | 2 passed | 2 failed |
+  0 skipped. The retry should focus on the failing code path for …".
+  - Its prompt log: `.roko/prompt-logs/p4-3-the-editor-s-finish-T2-1793025422990.txt`.
+  - The feedback log line still says `has_enriched_diagnosis=true`.
+- **T2#3 got a specific one.** With z.ai's circuit open, T2#2's helper call (14:40:28Z) went to gpt-5.4-mini ($0.0027,
+  1.0 s), and its diagnosis named `head_test.cpp` lines 73, 77 and 87. T2#3 passed.
+- Evidence: `tmp/hermes-roko-v7/findings/run-analyst.md`, section 9.

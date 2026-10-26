@@ -2,14 +2,15 @@
 id = "bug-f831b3"
 kind = "bug"
 title = "run_tests reads forge's summary as unittest's, so a forge run counts its suite line as a passed test and never counts a failure; pytest and go results carry no counts"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 size = "S"
 subsystem = ["roko-std/tools"]
 created = 2026-10-21
-updated = 2026-10-21
-last_verified = 2026-10-21
+updated = 2026-10-26
+last_verified = 2026-10-26
+last_verified_rev = "bc99049a0"
 source = "bug-83d420 fix (2026-10-21)"
 discovered_from = "bug-83d420"
 anchors = ["crates/roko-std/src/tool/builtin/run_tests.rs::read_counts"]
@@ -17,6 +18,18 @@ links = { depends_on = [], blocks = [], related = ["bug-83d420", "bug-1f8db7"], 
 
 [[verify]]
 command = "grep -rqw 'fn forge_pytest_and_go_summaries_are_read' crates/roko-std/src && cargo test -p roko-std --lib forge_pytest_and_go_summaries_are_read"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T14:28:47Z"
+commit = "bc99049a0"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T10:26:20Z"
+forced = false
+evidence = "crates/roko-std/src/tool/builtin/run_tests.rs: read_counts now chains forge_counts, pytest_counts and go_counts (new), and unittest_counts uses a new unittest_ran helper that requires `test`/`tests` then `in` after the number, so forge's `Ran N tests for …`/`Ran N test suite(s) in …` lines no longer count as unittest passes. New test forge_pytest_and_go_summaries_are_read covers a failing forge suite (1 passed/1 failed, not 3/0), three forge suites summing to 6 not 9, a pytest `N passed, N failed` line, and go's `--- PASS:`/`--- FAIL:`/`--- SKIP:` lines (top-level only, non-verbose runs left uncounted). `grep -rqw 'fn forge_pytest_and_go_summaries_are_read' crates/roko-std/src && cargo test -p roko-std --lib forge_pytest_and_go_summaries_are_read` passes at bc99049a0 (1 passed; 0 failed). `cargo +nightly fmt --all` and `cargo clippy --workspace --no-deps -- -D warnings` both clean."
 +++
 
 ## Problem

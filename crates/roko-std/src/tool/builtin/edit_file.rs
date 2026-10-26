@@ -14,8 +14,12 @@ use super::sandbox::{require_string, require_within_worktree};
 /// Canonical `snake_case` name.
 pub const NAME: &str = "edit_file";
 
-/// Human-readable description sent to the LLM.
-pub const DESCRIPTION: &str = "Replace an exact string in a file with a new string.";
+/// Human-readable description sent to the LLM. Every turn re-sends the
+/// whole conversation, so it asks for the edits a model already knows in one
+/// turn (gap-b46c16).
+pub const DESCRIPTION: &str = "Replace an exact string in a file with a new string. Every turn \
+    re-sends the whole conversation, so make the edits you already know in one turn: several in \
+    one file with multi_edit, edits to several files as several calls in one reply.";
 
 /// Build the [`ToolDef`] for `edit_file`.
 #[must_use]

@@ -32,6 +32,8 @@ use roko_core::tool::ToolDef;
 
 pub mod apply_patch;
 pub mod bash;
+pub mod checkout_state;
+pub mod checkout_tree;
 mod child_group;
 pub mod edit_file;
 pub mod exit_plan_mode;
@@ -45,6 +47,7 @@ pub mod read_file;
 pub mod run_tests;
 pub mod sandbox;
 pub mod task_agent;
+pub mod task_checks;
 pub mod todo_write;
 pub mod web_fetch;
 pub mod web_search;

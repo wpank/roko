@@ -114,6 +114,18 @@ pub(crate) enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Show how each rung of the model ladder did over the workspace's runs
+    /// (gap-3217a0): tries, verified passes, time per try and per verified
+    /// pass, model-time share and cost, and whether a higher rung beats a
+    /// lower one.
+    Rungs {
+        /// Read only the newest N runs (default: every run).
+        #[arg(long)]
+        runs: Option<usize>,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Show failure patterns, most frequent first (read-only).
     Patterns {
         /// Working directory (default: cwd).
@@ -352,6 +364,30 @@ fn display_cost_precise(cost_usd: f64, input_tokens: u64, output_tokens: u64) ->
     }
 }
 
+/// `roko learn rungs`: how each rung did over the workspace's newest `runs`
+/// runs, or every run (gap-3217a0).
+fn cmd_learn_rungs(workdir: &Path, runs: Option<usize>, json: bool) -> Result<i32> {
+    let layout = roko_fs::RokoLayout::for_project(workdir);
+    let records = roko_learn::telemetry::rung_stats::load_runs(&layout.runs_dir(), runs);
+    let report = roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+        &records,
+        &layout.learn_dir().join("costs.jsonl"),
+    );
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(EXIT_SUCCESS);
+    }
+    if report.rows.is_empty() {
+        println!("No settled tries in {} run(s).", report.runs.len());
+        return Ok(EXIT_SUCCESS);
+    }
+    println!("Rungs over {} run(s):", report.runs.len());
+    for line in report.lines() {
+        println!("  {line}");
+    }
+    Ok(EXIT_SUCCESS)
+}
+
 pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
     let json = cli.json;
 
@@ -368,6 +404,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::Playbooks { workdir }
         | LearnCmd::Sections { workdir }
         | LearnCmd::Patterns { workdir, .. }
+        | LearnCmd::Rungs { workdir, .. }
         | LearnCmd::Reflections { workdir, .. }
         | LearnCmd::Tools { workdir }
         | LearnCmd::FeedbackProof { workdir }
@@ -506,6 +543,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Patterns { workdir, graduate } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_patterns(&wd, graduate, json)
+        }
+        LearnCmd::Rungs { runs, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_rungs(&wd, runs, json)
         }
         LearnCmd::Reflections { workdir, limit } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));

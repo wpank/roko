@@ -62,8 +62,12 @@ pub(super) fn create_tool_loop_agent(
         .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone())
+        // A streamed call waits its provider's `timeout_ms` for a response,
+        // not the attempt's timeout (bug-5e597a).
+        .with_request_timeout_ms(provider.timeout_ms)
         .with_optional_data_llm(options.data_llm.clone())
-        .with_optional_turn_budget(options.turn_budget.clone());
+        .with_optional_turn_budget(options.turn_budget.clone())
+        .with_optional_hand_off_check(options.hand_off_check.clone());
 
     let name = if options.name.is_empty() {
         format!("anthropic-tool-loop:{}", model.slug)
@@ -592,6 +596,12 @@ impl AnthropicMessagesBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::RequestRefused {
+                status, message, ..
+            }) => crate::provider::error_classify::refusal_class(
+                *status,
+                &message.to_ascii_lowercase(),
+            ),
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -913,6 +923,12 @@ impl LlmBackend for AnthropicMessagesBackend {
 
     fn backend_id(&self) -> &'static str {
         "claude_api"
+    }
+
+    /// The API stops thinking at the budget the request sets, so roko's
+    /// tool loop does not stop such a reply for its reasoning (gap-f3f950).
+    fn reasoning_budget(&self) -> Option<u32> {
+        self.thinking_budget
     }
 }
 

@@ -106,6 +106,12 @@ impl GeminiNativeBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::RequestRefused {
+                status, message, ..
+            }) => crate::provider::error_classify::refusal_class(
+                *status,
+                &message.to_ascii_lowercase(),
+            ),
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -750,6 +756,7 @@ mod tests {
             provider: "gemini".to_string(),
             slug: "gemini-3.1-pro-preview".to_string(),
             context_window: 1_048_576,
+            compact_at_tokens: None,
             max_output: Some(8_192),
             supports_tools: true,
             supports_thinking: true,
@@ -782,6 +789,8 @@ mod tests {
             tier: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
+            api: None,
         }
     }
 

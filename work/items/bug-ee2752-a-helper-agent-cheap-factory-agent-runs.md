@@ -9,15 +9,15 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-26
+last_verified = 2026-10-26
 source = "tmp/hermes-roko-v5/findings/roko-delivery.md (roko-delivery, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: testing bug-74164c"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::CheapFactoryAgent", "crates/roko-cli/src/graph_task_dispatch.rs::cheap_agent", "crates/roko-cli/tests/worktree_task_diff.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "cargo test -p roko-cli --test worktree_task_diff worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing"
+command = "grep -qw 'fn a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone' crates/roko-cli/tests/worktree_task_diff.rs && cargo test -p roko-cli --test worktree_task_diff -- --include-ignored"
 +++
 
 ## Problem
@@ -47,8 +47,21 @@ between it and the person's files.
 ## Plan
 
 Run helper calls in a scratch directory (or the attempt's checkout), never in the operator's checkout; or refuse
-CLI providers as helper models. Then the test passes as written.
+CLI providers as helper models. Then remove the `#[ignore]` from
+`a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone`, which passes as written.
 
 ## Done when
 
-`cargo test -p roko-cli --test worktree_task_diff` passes with a scratch `HOME`.
+`cargo test -p roko-cli --test worktree_task_diff -- --include-ignored` passes with a scratch `HOME`, and
+`a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone` is no longer ignored.
+
+## Notes
+
+- 2026-10-26 (bug-c63cca): `worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing` no longer shows
+  this bug. To check gap-415c54's behaviour on any machine, its helper calls and `default_model` now go to a second
+  model on the tests' mock agent, which writes nothing, and its task names its own model (`model_hint = "fake"`). This
+  bug's check moved to the new `a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone`: the original
+  fixture, with the task's provider as the only model. It is `#[ignore]`d until this is fixed, and the verify runs it
+  with `--include-ignored`. Reproduced by hand on 15335e2f9 with no keys and no `claude`. With the original fixture,
+  the provider's second call runs in the repository root and leaves `?? feature.txt`. With the mock helper, that call
+  goes to the mock (model `claude-haiku-4-5`), still with the operator's checkout as its working directory.

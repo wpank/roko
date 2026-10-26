@@ -270,6 +270,15 @@ impl ToolSchema {
     pub const fn as_value(&self) -> &serde_json::Value {
         &self.0
     }
+
+    /// Whether the schema declares the argument `name`.
+    #[must_use]
+    pub fn declares(&self, name: &str) -> bool {
+        self.0
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|properties| properties.contains_key(name))
+    }
 }
 
 impl Default for ToolSchema {

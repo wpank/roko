@@ -83,7 +83,9 @@ pub(crate) enum PlanCmd {
         /// With `--spec-quality`: first run each implementer task's verify
         /// steps twice on a clean checkout of its base commit, so the scores
         /// count SQ06 (red on base) and find HF3 (a check that already
-        /// passes). No step runs in this checkout.
+        /// passes). No step runs in this checkout. It also warns about a
+        /// check whose runner or Python module this machine lacks
+        /// (PLAN_060).
         #[arg(long, requires = "spec_quality")]
         dynamic: bool,
         /// With `--dynamic`: the commit to check every plan against (default:
@@ -107,6 +109,12 @@ pub(crate) enum PlanCmd {
         /// against a one-commit snapshot of itself.
         #[arg(long, requires = "dynamic")]
         fixture: bool,
+        /// With `--dynamic`: run every task's steps on the base again. Without
+        /// it, a task whose base, steps and plan files have not changed since a
+        /// check in the last 12 hours that decided it reuses that check's runs
+        /// (`.roko/cache/red-on-base/`).
+        #[arg(long, requires = "dynamic")]
+        fresh: bool,
     },
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
@@ -265,6 +273,11 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// roko.toml does the same for every run.
         #[arg(long)]
         no_holdout: bool,
+        /// Run no audits (decision 7103): no green attempt is drawn for a
+        /// deep audit, for this run alone, so audits spend nothing. `[audit]
+        /// enabled = false` in roko.toml does the same for every run.
+        #[arg(long)]
+        no_audit: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk
         /// is below `resources.min_free_disk_mb`. Use with caution: the plan
         /// may fail mid-run if disk space is exhausted.
@@ -1044,6 +1057,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             timeout,
             scratch,
             fixture,
+            fresh,
         } => {
             let workdir = resolve_workdir(cli);
             // Read-only lint: skip the lock when a server owns the workspace;
@@ -1054,12 +1068,19 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 workdir.join(&dir)
             };
-            // 3214: `--dynamic` proves each task's checks red on the base.
+            // 3214: `--dynamic` proves each task's checks red on the base;
+            // gap-d21da9: and runs what can tell whether the tasks the score
+            // leaves out can pass.
+            // gap-e02ec4: an unchanged task's decided runs are reused unless
+            // `--fresh`; a fixture's snapshot base is new each time.
             let dynamic = dynamic.then(|| roko_cli::spec_red_on_base::RedOnBaseOptions {
                 base,
                 timeout: timeout.map(std::time::Duration::from_secs),
                 scratch,
                 fixture,
+                unscored: true,
+                cache: !fixture,
+                fresh,
                 ..Default::default()
             });
             let exit = cmd_plan_validate(
@@ -1254,6 +1275,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             no_budget,
             frozen_learning,
             no_holdout,
+            no_audit,
             force,
             dangerously_skip_permissions,
             log_file,
@@ -1399,6 +1421,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                          = true there, or stop the server first"
                     );
                 }
+                if no_audit {
+                    anyhow::bail!(
+                        "--no-audit cannot be used when a server owns this workspace: the \
+                         server runs the plan under its own config; set [audit] enabled = false \
+                         there, or stop the server first"
+                    );
+                }
                 return roko_cli::serve_client::run_plan_via_server(
                     &wd,
                     &resolved_plans_dir,
@@ -1443,6 +1472,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     no_budget,
                     frozen_learning,
                     no_holdout,
+                    no_audit,
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.as_deref(),
@@ -1714,6 +1744,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
                 max_usd,
+                // bug-60ad88: every task reads the file the plan comes from.
+                source_path: from_file.as_deref(),
                 ..roko_cli::plan_generate::PlanRequest::new(
                     roko_cli::plan_generate::PlanSource::Text {
                         text: &source_text,
@@ -2316,6 +2348,14 @@ pub(crate) async fn cmd_resume(
     max_tasks: usize,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    // A Graph run's id names its plan's checkpoint, current or set aside by a
+    // run that started the plan over (bug-cbdb6b).
+    if let Some(id) = run_id.as_deref()
+        && !workdir.join(format!(".roko/state/{id}.json")).exists()
+        && let Some(plan_id) = roko_cli::graph_checkpoint::plan_of_run(&workdir, id)
+    {
+        return resume_graph_run(cli, &workdir, &plan_id, id, max_tasks).await;
+    }
     let snapshot = if let Some(ref id) = run_id {
         // Try a named checkpoint, then the authoritative unified snapshot,
         // then the legacy executor only when the unified file is absent.
@@ -2388,6 +2428,7 @@ pub(crate) async fn cmd_resume(
         no_budget: false,
         frozen_learning: false,
         no_holdout: false,
+        no_audit: false,
         force: false,
         dangerously_skip_permissions: false,
         log_file: None,
@@ -2397,6 +2438,73 @@ pub(crate) async fn cmd_resume(
         screenshot_dir: None,
         batch_size: None,
         // Neither flag: the resumed run follows `[runner] worktree_per_task`.
+        worktree_per_task: false,
+        no_worktree_per_task: false,
+        rich_topology: false,
+        promote: None,
+        max_parallel_plans: None,
+        fail_fast: false,
+    };
+    cmd_plan(cli, plan_cmd).await
+}
+
+/// `roko resume <run>` for Graph run `run_id` of plan `plan_id`: put back
+/// the run's checkpoint if a run that started the plan over set it aside,
+/// then resume the plan (bug-cbdb6b).
+async fn resume_graph_run(
+    cli: &Cli,
+    workdir: &Path,
+    plan_id: &str,
+    run_id: &str,
+    max_tasks: usize,
+) -> Result<i32> {
+    let plans_dir = super::super::resolve_plans_dir(workdir, None);
+    let plans = roko_cli::runner::plan_loader::load_plans(&plans_dir)?;
+    let Some(plan) = plans.iter().find(|plan| plan.id == plan_id) else {
+        eprintln!(
+            "error: run {run_id} is a run of plan '{plan_id}', which is not under {}",
+            plans_dir.display()
+        );
+        return Ok(1);
+    };
+    let restored = {
+        // No run may hold the workspace while its checkpoint files move.
+        let _runner = roko_cli::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+        roko_cli::graph_checkpoint::restore_set_aside_checkpoint(workdir, plan, run_id)?
+    };
+    if !cli.quiet {
+        if let Some(set_aside) = &restored.set_aside {
+            println!("{}", set_aside.describe(workdir));
+        }
+        for line in restored.restored.describe(workdir) {
+            println!("{line}");
+        }
+    }
+    let plan_cmd = PlanCmd::Run {
+        plans_dir: plan.dir.clone(),
+        engine: PlanEngine::default(),
+        resume_plan: Some(workdir.join(".roko/state/graph")),
+        workdir: Some(workdir.to_path_buf()),
+        approval: false,
+        no_tui: false,
+        max_retries: None,
+        max_tasks,
+        dry_run: false,
+        fresh: false,
+        force_resume: false,
+        budget_override: None,
+        no_budget: false,
+        frozen_learning: false,
+        no_holdout: false,
+        no_audit: false,
+        force: false,
+        dangerously_skip_permissions: false,
+        log_file: None,
+        skip_preflight: false,
+        screenshots: false,
+        screenshot_interval: 60,
+        screenshot_dir: None,
+        batch_size: None,
         worktree_per_task: false,
         no_worktree_per_task: false,
         rich_topology: false,
@@ -2789,7 +2897,12 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> O
         .ok()
         .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
         .unwrap_or_default();
-    roko_cli::graph_execution::plan_runner::apply_run_switches(&mut config, false, no_holdout);
+    roko_cli::graph_execution::plan_runner::apply_run_switches(
+        &mut config,
+        false,
+        no_holdout,
+        false,
+    );
     let config = config.spec_quality;
     let files = match plan_validate::collect_tasks_files(plans_dir) {
         Ok(files) => files,
@@ -2839,6 +2952,24 @@ struct ValidateJson<'a> {
 }
 
 /// The workspace's own `roko.toml`, when it has one.
+/// `plan validate --dynamic`'s red-on-base check of `files`, run as the
+/// plan-load gate runs it: its steps get the environment `plan run` gives
+/// checks, `config`'s `[gates] env_passthrough` and `strip_env` included
+/// (bug-718016).
+fn validate_red_on_base(
+    files: &[PathBuf],
+    workdir: &Path,
+    options: &roko_cli::spec_red_on_base::RedOnBaseOptions,
+    config: Option<&RokoConfig>,
+) -> Result<roko_cli::spec_red_on_base::RedOnBaseReport> {
+    let _check_run = roko_core::child_env::begin_check_run(
+        config
+            .map(|config| config.gates.check_env_settings())
+            .unwrap_or_default(),
+    );
+    roko_cli::spec_red_on_base::check_plans(files, workdir, options)
+}
+
 fn workspace_roko_toml(workdir: &Path) -> Result<Option<RokoConfig>> {
     let config_path = workdir.join("roko.toml");
     if !config_path.is_file() {
@@ -2920,8 +3051,13 @@ pub(crate) fn cmd_plan_validate(
         .as_ref()
         .map(crate::commands::config_cmd::configured_models);
 
-    let report =
-        plan_validate::validate_plans_dir_with_workdir(dir, models.as_ref(), Some(workdir))?;
+    // gap-ff78e1: `--dynamic` asks whether the checks can run on this
+    // machine; the rest reports a plan the same way on every machine.
+    let report = if dynamic.is_some() {
+        plan_validate::validate_plans_dir_on_this_machine(dir, models.as_ref(), workdir)?
+    } else {
+        plan_validate::validate_plans_dir_with_workdir(dir, models.as_ref(), Some(workdir))?
+    };
 
     // Cross-plan crate overlap analysis (#195).
     let overlaps = match roko_cli::runner::plan_loader::load_plans(dir) {
@@ -2953,7 +3089,12 @@ pub(crate) fn cmd_plan_validate(
             if !spec_config.red_on_base_cargo {
                 options.cargo = roko_cli::spec_red_on_base::CargoSteps::Skip;
             }
-            match roko_cli::spec_red_on_base::check_plans(files, workdir, &options) {
+            // gap-e02ec4: the base checkouts keep, and start from, the build
+            // trees `[gates] warm_build_dirs` names.
+            options.warm_build_dirs = config
+                .as_ref()
+                .and_then(|config| config.gates.warm_build_dirs.clone());
+            match validate_red_on_base(files, workdir, &options, config.as_ref()) {
                 Ok(report) => Some(report),
                 Err(error) => {
                     use roko_cli::spec_red_on_base::Interrupted;
@@ -3348,6 +3489,7 @@ async fn cmd_plan_run_engine(
     no_budget: bool,
     frozen_learning: bool,
     no_holdout: bool,
+    no_audit: bool,
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
     log_file: Option<&std::path::Path>,
@@ -3435,6 +3577,7 @@ async fn cmd_plan_run_engine(
         frozen_learning,
         // `--no-holdout` runs it in maximize mode (decision 4115).
         no_holdout,
+        no_audit,
         metrics: None,
         outbound_floor: None,
     };
@@ -3462,6 +3605,102 @@ fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> b
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Set in [`validate_dynamic_steps_get_the_gates_env_passthrough`]'s
+    /// child process, whose environment holds it, to the value its step
+    /// expects.
+    const PASSTHROUGH_PROBE: &str = "UNDERTOW_VALIDATE_PROBE";
+
+    /// bug-718016: `plan validate --dynamic` runs each step with the
+    /// environment `plan run` gives checks, so a variable `[gates]
+    /// env_passthrough` names reaches it. The check runs in a child test
+    /// process that holds the variable, since a test may not set its own
+    /// environment.
+    #[test]
+    fn validate_dynamic_steps_get_the_gates_env_passthrough() {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "commands::plan::tests::validate_dynamic_passthrough_child",
+                "--nocapture",
+            ])
+            .env(PASSTHROUGH_PROBE, "seen")
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+    }
+
+    /// Run by [`validate_dynamic_steps_get_the_gates_env_passthrough`] only:
+    /// a task whose check passes only when it sees the probe passes on the
+    /// base when `[gates] env_passthrough` names the probe, and does not
+    /// when the config leaves it out.
+    #[test]
+    fn validate_dynamic_passthrough_child() {
+        if std::env::var_os(PASSTHROUGH_PROBE).is_none() {
+            return;
+        }
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("plans/p")).expect("plan dir");
+        std::fs::write(
+            repo.join("plans/p/tasks.toml"),
+            format!(
+                "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Probe\"\n\
+                 description = \"Probe.\"\nrole = \"implementer\"\nfiles = [\"probe.txt\"]\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = 'test \"${PASSTHROUGH_PROBE}\" = seen'\n"
+            ),
+        )
+        .expect("write the plan");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko-test@localhost",
+                ])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let scratch = temp.path().join("checkouts");
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        let options = roko_cli::spec_red_on_base::RedOnBaseOptions {
+            timeout: Some(std::time::Duration::from_secs(30)),
+            scratch: Some(scratch),
+            ..Default::default()
+        };
+        let files = [repo.join("plans/p/tasks.toml")];
+        let outcome = |config: Option<&RokoConfig>| {
+            let report = validate_red_on_base(&files, &repo, &options, config).expect("check");
+            report.checks[0].outcome
+        };
+
+        let mut config = RokoConfig::default();
+        config.gates.env_passthrough = vec![PASSTHROUGH_PROBE.to_string()];
+        assert_eq!(
+            outcome(Some(&config)),
+            roko_cli::spec_red_on_base::Outcome::Pass
+        );
+        assert_ne!(outcome(None), roko_cli::spec_red_on_base::Outcome::Pass);
+    }
 
     #[test]
     fn read_executor_state_returns_none_without_snapshot() {

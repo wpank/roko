@@ -208,6 +208,10 @@ pub enum RuntimeAdmissionPath {
     /// The candidate duplicated a stored entry of its kind, which the
     /// observation confirmed instead.
     Duplicate,
+    /// The candidate repeated an entry a person retired (bug-2ad4fa), which
+    /// absorbed it: nothing was stored or confirmed, and the retirement
+    /// ledger counts the relearning.
+    RepeatsRetired,
     /// No candidate could be built from the observation.
     NoCandidate,
 }
@@ -361,7 +365,14 @@ impl RuntimeKnowledgeLifecycle {
         let (candidate_entry_id, admission_path, admission_similarity, source_trust) =
             self.admit_runtime_candidate(&observation, candidate.as_ref())?;
 
-        let context_ids = clean_ids(&observation.context_entry_ids);
+        // Only committed, unretired entries gain from an observation: a run's
+        // uncommitted ones gain nothing from the run that wrote them, which
+        // has not delivered yet (bug-2ad4fa).
+        let confirmable = confirmable_ids(&self.knowledge_store)?;
+        let context_ids = clean_ids(&observation.context_entry_ids)
+            .into_iter()
+            .filter(|id| confirmable.contains(id))
+            .collect::<Vec<_>>();
         let id_refs = context_ids.iter().map(String::as_str).collect::<Vec<_>>();
         let retrieved_reinforcements = self.knowledge_store.reinforce_batch(
             &id_refs,
@@ -400,9 +411,19 @@ impl RuntimeKnowledgeLifecycle {
                 | RuntimeAdmissionPath::FullAdmitted
                 | RuntimeAdmissionPath::Duplicate
         );
+        // The candidate this observation admitted counts its own pass, even
+        // in a run's uncommitted batch; a stored entry it repeated counts only
+        // when it may be confirmed.
+        let admitted = matches!(
+            admission_path,
+            RuntimeAdmissionPath::LightAdmitted | RuntimeAdmissionPath::FullAdmitted
+        );
         let promotion_updates = if self.config.promote_context_entries {
             let mut promotion_ids = context_ids;
-            if candidate_is_stored && let Some(id) = candidate_entry_id.as_ref() {
+            if candidate_is_stored
+                && let Some(id) = candidate_entry_id.as_ref()
+                && (admitted || confirmable.contains(id))
+            {
                 promotion_ids.push(id.clone());
             }
             promote_runtime_entries(&self.knowledge_store, &promotion_ids, &observation)?
@@ -677,12 +698,23 @@ impl RuntimeKnowledgeLifecycle {
                 .knowledge_store
                 .find_similar_entry(candidate, RUNTIME_DUPLICATE_SIMILARITY)?
         {
-            return Ok((
-                Some(existing.id),
-                RuntimeAdmissionPath::Duplicate,
-                similarity,
-                source_trust,
-            ));
+            // A lesson a person retired absorbs its repeat, and the ledger
+            // counts the relearning (bug-2ad4fa).
+            let path = if existing.deprecated {
+                let recorded = self.knowledge_store.record_relearning(
+                    &existing.id,
+                    &observation.episode_id,
+                    &candidate.content,
+                );
+                if let Err(error) = recorded {
+                    let error = format!("{error:#}");
+                    tracing::warn!(%error, entry = %existing.id, "a relearning went unrecorded");
+                }
+                RuntimeAdmissionPath::RepeatsRetired
+            } else {
+                RuntimeAdmissionPath::Duplicate
+            };
+            return Ok((Some(existing.id), path, similarity, source_trust));
         }
         if self
             .config
@@ -903,6 +935,17 @@ fn promote_runtime_entries(
         }
         true
     })
+}
+
+/// The ids of the entries an observation may confirm or reinforce: the
+/// committed entries a person has not retired (bug-2ad4fa).
+fn confirmable_ids(store: &KnowledgeStore) -> Result<BTreeSet<String>> {
+    Ok(store
+        .read_all()?
+        .into_iter()
+        .filter(|entry| entry.commit_batch.is_none() && !entry.deprecated)
+        .map(|entry| entry.id)
+        .collect())
 }
 
 fn quoted_entry_ids(
@@ -1479,6 +1522,113 @@ mod tests {
         // Replaying the same observation adds nothing.
         lifecycle.ingest_observation(reuse).expect("replay");
         assert_eq!(entry(&learned).confirmation_count, 2);
+    }
+
+    /// bug-2ad4fa: a run's uncommitted entries gain nothing from the run that
+    /// wrote them. In phase 5's run 1f677933, T5#1 surfaced T4#3's lesson
+    /// and stated a lesson of its own with words in common, and both counted
+    /// as an independent confirmation before the run had delivered anything.
+    /// A later pass of the same run neither confirms nor reinforces the
+    /// provisional lesson, by surfacing it, by a similar lesson or by
+    /// repeating it; a committed entry it surfaced is confirmed as before.
+    #[test]
+    fn a_run_does_not_confirm_its_own_provisional_lessons() {
+        let temp = TempDir::new().expect("tempdir");
+        let earlier = KnowledgeEntry {
+            id: "kn-earlier".to_string(),
+            kind: KnowledgeKind::StrategyFragment,
+            content: "Each factory preset sets its own master gain.".to_string(),
+            tags: vec!["presets".to_string()],
+            source_episodes: vec!["earlier-run:p4:T1:1".to_string()],
+            ..KnowledgeEntry::default()
+        };
+        let lifecycle = lifecycle(&temp).with_commit_batch("run-2ad4fa-lifecycle");
+        let store = lifecycle.knowledge_store();
+        store
+            .rewrite_all(&[earlier])
+            .expect("seed the committed entry");
+        let entry = |id: &str| {
+            let entries = store.read_all().expect("read");
+            entries
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .expect("entry")
+        };
+        let pass = |episode: &str, task: &str, lesson: &str| {
+            let mut pass = observation(episode, true);
+            pass.task_id = task.to_string();
+            pass.plan_id = Some("p5-ship".to_string());
+            pass.lesson = Some(lesson.to_string());
+            pass.task_tags = vec!["plan:p5-ship".to_string()];
+            pass
+        };
+        let gamed_lesson = "quiet presets render showcase artifacts too low, so \
+                            tools/render-demos.sh must compensate locally";
+
+        // T4#3 admits its lesson into the run's batch.
+        let t4 = pass("run:p5-ship:T4:3", "T4", gamed_lesson);
+        let admitted = lifecycle.ingest_observation(t4).expect("T4#3");
+        let gamed = admitted.candidate_entry_id.expect("the lesson");
+        let before = entry(&gamed);
+        assert_eq!(before.commit_batch.as_deref(), Some("run-2ad4fa-lifecycle"));
+
+        // T5#1 surfaced it and the committed entry, passed, and states a
+        // lesson that shares words with it.
+        let mut t5 = pass(
+            "run:p5-ship:T5:1",
+            "T5",
+            "showcase artifacts install under the bundle, so render the presets first",
+        );
+        t5.context_entry_ids = vec![gamed.clone(), "kn-earlier".to_string()];
+        lifecycle.ingest_observation(t5).expect("T5#1");
+
+        // T6#1 repeats T4's lesson word for word.
+        let t6 = pass("run:p5-ship:T6:1", "T6", gamed_lesson);
+        let repeat = lifecycle.ingest_observation(t6).expect("T6#1");
+        assert_eq!(repeat.admission_path, RuntimeAdmissionPath::Duplicate);
+        assert_eq!(repeat.candidate_entry_id.as_deref(), Some(gamed.as_str()));
+
+        let after = entry(&gamed);
+        assert_eq!(after.confirmation_count, before.confirmation_count);
+        assert_eq!(after.distinct_contexts, before.distinct_contexts);
+        assert_eq!(after.tier, before.tier);
+        assert_eq!(after.confidence, before.confidence);
+        assert_eq!(after.balance, before.balance);
+        let confirmed = entry("kn-earlier");
+        assert_eq!(confirmed.confirmation_count, 1);
+        assert!(confirmed.balance > 1.0, "{confirmed:?}");
+    }
+
+    /// bug-2ad4fa: a lesson a person retired absorbs its repeats. A run that
+    /// learns it again adds no copy and confirms nothing, and the retirement
+    /// ledger counts the relearning, which `roko knowledge stats` shows.
+    #[test]
+    fn a_retired_lesson_learned_again_is_absorbed_and_counted() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        let first = lifecycle
+            .ingest_observation(observation("episode-one", true))
+            .expect("first");
+        let learned = first.candidate_entry_id.expect("candidate");
+        let store = lifecycle.knowledge_store();
+        let learn_dir = temp.path().join(".roko").join("learn");
+        store
+            .retire(&learned, "a person judged it wrong", "human", &learn_dir)
+            .expect("retired");
+        let before = store.read_all().expect("read");
+
+        let again = lifecycle
+            .ingest_observation(observation("episode-two", true))
+            .expect("again");
+        assert_eq!(again.admission_path, RuntimeAdmissionPath::RepeatsRetired);
+        assert_eq!(again.candidate_entry_id.as_deref(), Some(learned.as_str()));
+        let after = store.read_all().expect("read");
+        assert_eq!(after, before, "nothing added, nothing confirmed");
+        let retired = store.retirements().expect("the ledger");
+        let [entry] = retired.as_slice() else {
+            panic!("one retired entry: {retired:?}");
+        };
+        assert_eq!((entry.id.as_str(), entry.relearned), (learned.as_str(), 1));
     }
 
     /// backlog 4216 (decision 4201): a verified pass whose agent stated no

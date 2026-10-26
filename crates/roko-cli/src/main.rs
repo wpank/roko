@@ -615,6 +615,11 @@ Examples:
         /// logged (decision 4115).
         #[arg(long)]
         no_holdout: bool,
+        /// Run no audits, as `roko plan run --no-audit` does: no green
+        /// attempt is drawn for a deep audit, for this run alone, so audits
+        /// spend nothing (decision 7103).
+        #[arg(long)]
+        no_audit: bool,
     },
     /// (Removed) Use `roko run "<prompt>"`, or `roko run --plan "<prompt>"`.
     ///
@@ -752,12 +757,13 @@ Examples:
         #[command(subcommand)]
         cmd: RunIndexCmd,
     },
-    /// List immune isolation controls and release one, with an audit record.
+    /// List immune controls on agents and tools, and release one, with an audit record.
     #[command(after_help = "\
 Examples:
   roko safety controls
   roko safety controls --json
-  roko safety release live-a/cli --reason \"blank answer, not tamper\"")]
+  roko safety release live-a/cli --reason \"blank answer, not tamper\"
+  roko safety release --tool run_tests --scope builtin:local --reason \"a false positive\"")]
     Safety {
         #[command(subcommand)]
         cmd: SafetyCmd,
@@ -1011,12 +1017,28 @@ Examples:
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Start the HTTP API server.
+    /// Start the HTTP API server, in the foreground or in the background
+    /// (`--detach`), or report, stop or restart the servers that run.
+    #[command(
+        args_conflicts_with_subcommands = true,
+        after_help = "\
+Examples:
+  roko serve                                   Run in the foreground until Ctrl-C or SIGTERM
+  roko serve --detach --workdir ~/code/app     Start in the background; return once it answers
+  roko serve --detach --json --idle-exit 3600  As JSON; exit after an idle hour
+  roko serve status --all                      Every roko serve on this machine
+  roko serve stop --workdir ~/code/app         Stop it (--force: even with runs going)
+  roko serve restart --all                     Restart every idle serve on this roko binary"
+    )]
     Serve {
+        #[command(subcommand)]
+        action: Option<commands::server::ServeCmd>,
         /// Address to bind to (default: 127.0.0.1).
         #[arg(long)]
         bind: Option<String>,
-        /// Port number (default: 6677).
+        /// Port number (default: `[server] port`, 6677). With --detach and no
+        /// --port: the configured port when it is free, else one the OS
+        /// picks; serve.json records it.
         #[arg(long)]
         port: Option<u16>,
         /// Working directory (default: cwd).
@@ -1025,11 +1047,34 @@ Examples:
         /// Run the interactive TUI dashboard embedded in the server process.
         /// The TUI reads live state directly from the server's StateHub
         /// (zero-copy, no file polling).
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["detach", "idle_exit"])]
         tui: bool,
         /// Expose the PTY terminal routes.
         #[arg(long)]
         enable_terminal: bool,
+        /// Start the server in the background, in its own session, and
+        /// return once it answers. Idempotent: a server that runs for the
+        /// workdir already is reported, not started again. Its output goes
+        /// to <workdir>/.roko/logs/serve.log.
+        #[arg(long)]
+        detach: bool,
+        /// With --detach: print one JSON object.
+        #[arg(long, requires = "detach")]
+        json: bool,
+        /// Exit gracefully after this many seconds with no run, no open
+        /// event stream or WebSocket, and no request but /health and /ready
+        /// (0: never).
+        #[arg(long, value_name = "SECS")]
+        idle_exit: Option<u64>,
+        /// With --detach: how long to wait for the server to answer
+        /// (default: 60).
+        #[arg(
+            long,
+            value_name = "SECS",
+            requires = "detach",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        wait: Option<u64>,
     },
     /// Start ACP (Agent Client Protocol) server for editor integration.
     Acp {
@@ -1620,8 +1665,12 @@ fn main() {
     let ansi_logs = use_color;
 
     // Determine the workdir for log file placement, crash reports and the agent
-    // PID registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
-    let workdir = invoked_subcommand_workdir().unwrap_or_else(|| resolve_workdir(&cli));
+    // PID registry: the invoked subcommand's `--workdir`, else `--repo`/cwd. A
+    // `--workdir` that is not a directory is left to the command to report,
+    // rather than created here for the log (gap-fb1594).
+    let workdir = invoked_subcommand_workdir()
+        .filter(|workdir| workdir.is_dir())
+        .unwrap_or_else(|| resolve_workdir(&cli));
     roko_agent::process::set_registry_root(&workdir);
     let _ = CRASH_REPORT_WORKDIR.set(workdir.clone());
 
@@ -1905,6 +1954,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             fresh,
             resume_plan,
             no_holdout,
+            no_audit,
         } => {
             // Resolve typed overrides before any side effects (#262).
             let _resolved = ResolvedExecutionOverrides::for_run(
@@ -1940,6 +1990,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     fresh,
                     resume_plan,
                     no_holdout,
+                    no_audit,
                 },
             )
             .await
@@ -2008,7 +2059,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url, fix).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
-        Command::Safety { cmd } => commands::safety::cmd_safety(cli, cmd).await,
+        Command::Safety { cmd } => {
+            commands::safety::cmd_safety(cmd, cli.json, || resolve_workdir(cli))
+        }
         Command::Effects { cmd } => commands::effects::cmd_effects(cli, cmd).await,
         Command::Showcase { cmd } => commands::showcase::cmd_showcase(cmd),
         Command::Audit { cmd } => commands::audit::cmd_audit(cli, cmd),
@@ -2135,12 +2188,35 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             commands::server::cmd_up(cli, wd).await
         }
         Command::Serve {
+            action: Some(action),
+            ..
+        } => commands::server::cmd_serve_action(cli, action).await,
+        Command::Serve {
+            action: None,
             bind,
             port,
             workdir,
             tui,
             enable_terminal,
-        } => commands::server::cmd_serve(cli, bind, port, workdir, tui, enable_terminal).await,
+            detach,
+            json,
+            idle_exit,
+            wait,
+        } => {
+            let flags = commands::server::ServeFlags {
+                bind,
+                port,
+                workdir,
+                tui,
+                enable_terminal,
+                idle_exit,
+            };
+            if detach {
+                commands::server::cmd_serve_detach(cli, flags, json, wait).await
+            } else {
+                commands::server::cmd_serve(cli, flags).await
+            }
+        }
         Command::Acp {
             workdir,
             profile,
@@ -2518,7 +2594,11 @@ fn resolve_config_for_workdir(cli: &Cli, workdir: &Path) -> Result<Config> {
         registry.providers.clone_from(&resolved.config.providers);
         let has_providers = !registry.effective_providers().is_empty();
         if fully_default && resolved.config.agent.command == "cat" && !has_providers {
-            eprintln!("error: no LLM provider configured.\n");
+            // `roko serve --detach` recognizes this line in a serve's log.
+            eprintln!(
+                "error: {}.\n",
+                roko_cli::serve_lifecycle::NO_PROVIDER_MESSAGE
+            );
             eprintln!("To get started, either:");
             eprintln!("  1. Run `roko init` to create a workspace with default config");
             eprintln!(
@@ -2619,8 +2699,9 @@ fn install_sigterm_handler(runtime: &tokio::runtime::Runtime, shutdown: Graceful
         while sigterm.recv().await.is_some() {
             // A running `plan run` owns SIGTERM: it cancels its graph,
             // finalizes checkpoints, restores the terminal and exits 143
-            // itself, with its own bounded forced-exit fallback.
-            if roko_cli::graph_execution::plan_runner::plan_run_owns_termination_signals() {
+            // itself, with its own bounded forced-exit fallback. `roko serve`
+            // owns it too: it shuts down and removes its files (gap-fb1594).
+            if roko_cli::cli_signals::cli_owns_termination_signals() {
                 continue;
             }
             let report = shutdown.drain().await;

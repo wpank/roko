@@ -43,6 +43,7 @@ use sha2::Digest;
 
 use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
+use super::live_tool_calls::ToolTiming;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 use crate::audit::labels::{VsLearner, VsLearners};
@@ -438,19 +439,25 @@ impl AttemptBook {
                 ..AttemptTiming::default()
             },
             failover: FailoverChain::default(),
+            refused_usd: 0.0,
             helpers: None,
             ladder: None,
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
             verify_steps: Vec::new(),
             scope_findings: Vec::new(),
+            checkout_findings: Vec::new(),
             exposures: None,
             pricing: None,
             arm_set: None,
             harness: None,
             trust_exclusions: None,
             verify_depth: None,
+            bound: None,
+            continues: None,
+            effort: None,
             forecast: std::sync::OnceLock::new(),
+            setup: AttemptSetup::default(),
             run,
         }
     }
@@ -466,6 +473,8 @@ pub(super) struct AttemptContext {
     timing: AttemptTiming,
     /// The models provider failover passed over.
     failover: FailoverChain,
+    /// What the calls a provider refused part-way cost, in USD (bug-8bcd98).
+    refused_usd: f64,
     /// The attempt's helper model calls, once they settled.
     helpers: Option<HelperCallsUsage>,
     /// Where the attempt stands on the model ladder, and whether it is the
@@ -480,6 +489,9 @@ pub(super) struct AttemptContext {
     /// The paths the attempt changed outside its task's `files`, as the
     /// pre-verify screen found them (backlog 1125).
     scope_findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    /// The paths of the person's checkout the try changed before its gate,
+    /// which the verdict lists beside the screen's (reg-d2deba).
+    checkout_findings: Vec<roko_learn::telemetry::ScopeFinding>,
     /// How many content items the attempt's prompt retrieved and included,
     /// once it was planned (S01 P0-9).
     exposures: Option<ExposureCounts>,
@@ -498,13 +510,43 @@ pub(super) struct AttemptContext {
     /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
     /// `None` until verification reaches DP3.
     verify_depth: Option<VerifyDepthRecord>,
+    /// The rung's bound the try ended at, for its verdict (gap-3217a0).
+    bound: Option<&'static str>,
+    /// How many times the try's agent was sent back to its failing checks
+    /// within the try, for its verdict (bug-cbbaa8); `None` when its loop
+    /// never asked.
+    continues: Option<u32>,
+    /// The reasoning effort the attempt's request asked for, which its
+    /// verdict records where the model takes one (bug-29014c).
+    effort: Option<String>,
     /// The self-model's forecast of the attempt, as its route event carries
     /// it (gap-aaaaae); unset until the self-model forecasts it.
     forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
+    /// What came before the attempt opened (gap-6a319c): its waits and its
+    /// checkout's preparation, in ms, and the checkout.
+    setup: AttemptSetup,
     run: Arc<RunAttempts>,
 }
 
+/// What came before an attempt opened (gap-6a319c).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct AttemptSetup {
+    /// Waiting for an agent slot, the plan's pause, its budget and disk
+    /// admission, in ms.
+    pub queue_ms: Option<u64>,
+    /// Getting its checkout ready, in ms.
+    pub workspace_ms: Option<u64>,
+    /// Its checkout, when it has one of its own.
+    pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
+}
+
 impl AttemptContext {
+    /// What came before the attempt opened: its waits, its checkout's
+    /// preparation and the checkout (gap-6a319c).
+    pub(super) fn record_setup(&mut self, setup: AttemptSetup) {
+        self.setup = setup;
+    }
+
     /// Prompt assembly finished.
     pub(super) fn prompt_assembled(&mut self) {
         self.timing.prompt_assembled_at = Some(now_ms());
@@ -513,6 +555,12 @@ impl AttemptContext {
     /// The provider call starts.
     pub(super) fn dispatch_started(&mut self) {
         self.timing.dispatch_started_at = Some(now_ms());
+    }
+
+    /// The attempt's request asks for reasoning effort `effort`, which its
+    /// verdict records where the model that ran takes one (bug-29014c).
+    pub(super) fn record_effort(&mut self, effort: Option<String>) {
+        self.effort = effort;
     }
 
     /// The provider call returned.
@@ -549,6 +597,18 @@ impl AttemptContext {
         self.verify_depth = depth;
     }
 
+    /// The try ended at its rung's bound, `kind` (`turns`, `spend` or `time`),
+    /// which the verdict records (gap-3217a0).
+    pub(super) fn ended_at_bound(&mut self, kind: &'static str) {
+        self.bound = Some(kind);
+    }
+
+    /// The try's agent was sent back to its failing checks `continues` times
+    /// within the try (bug-cbbaa8), which the verdict records.
+    pub(super) fn record_continues(&mut self, continues: u32) {
+        self.continues = Some(continues);
+    }
+
     /// The pre-verify screen found `findings`: paths the attempt changed
     /// outside its task's `files`, which the verdict lists (backlog 1125).
     pub(super) fn record_scope_findings(
@@ -556,6 +616,16 @@ impl AttemptContext {
         findings: Vec<roko_learn::telemetry::ScopeFinding>,
     ) {
         self.scope_findings = findings;
+    }
+
+    /// The try changed the person's checkout at `findings`' paths before its
+    /// gate (reg-d2deba): its verdict lists them as `checkout_written`
+    /// findings, whether or not it reaches the gate.
+    pub(super) fn record_checkout_findings(
+        &mut self,
+        findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    ) {
+        self.checkout_findings = findings;
     }
 
     /// Provider failover passed over `failover`'s models before the one
@@ -570,6 +640,12 @@ impl AttemptContext {
             *last_chance = false;
         }
         self.failover = failover;
+    }
+
+    /// The calls a provider refused part-way, before failover moved the try
+    /// on or it called the same model again, cost `usd` (bug-8bcd98).
+    pub(super) fn record_refused_spend(&mut self, usd: f64) {
+        self.refused_usd = usd;
     }
 
     /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
@@ -751,7 +827,13 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.steps = self.verify_steps;
-        verdict.set_scope_findings(self.scope_findings);
+        let mut findings = self.scope_findings;
+        for finding in self.checkout_findings {
+            if !findings.contains(&finding) {
+                findings.push(finding);
+            }
+        }
+        verdict.set_scope_findings(findings);
         verdict.timing = self.timing;
         // The call's time to first token, measured from its start
         // (gap-7a8474), places the first token. A call that streamed no
@@ -765,12 +847,33 @@ impl AttemptContext {
         verdict.timing.first_token_at = first_token_at;
         verdict.timing.ttft_source = Some(ttft_source.to_string());
         verdict.timing.settled_at = Some(now_ms());
-        verdict.executed = executed_model(model_requested, dispatch, self.failover);
+        // Where its time went (gap-6a319c), from its timestamps, its tool
+        // calls and its verify steps.
+        let tools = verdict
+            .timing
+            .dispatch_started_at
+            .zip(verdict.timing.dispatch_ended_at)
+            .map(|(start, end)| self.live_tool_calls.timing(start, end));
+        verdict.timing.phases = Some(attempt_phases(
+            &verdict.timing,
+            tools.as_ref(),
+            &verdict.steps,
+            &self.setup,
+        ));
+        verdict.workspace = self.setup.workspace;
+        verdict.executed = executed_model(
+            model_requested,
+            dispatch,
+            self.failover,
+            self.effort.as_deref(),
+        );
         verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
         verdict.cost = attempt_cost(dispatch);
         // What the attempt's tokens cost at the run's price snapshot, the
         // figure cost per verified task reads (backlog 2115, 6105).
         price_at_snapshot(&mut verdict, dispatch, self.pricing.as_deref());
+        // Beside the call that ran, what its refused calls cost (bug-8bcd98).
+        verdict.cost.refused_usd = (self.refused_usd > 0.0).then_some(self.refused_usd);
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
@@ -785,6 +888,8 @@ impl AttemptContext {
         verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
         verdict.trust_exclusions = self.trust_exclusions;
         verdict.verify_depth = self.verify_depth;
+        verdict.bound = self.bound.map(str::to_string);
+        verdict.continues = self.continues;
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
         // M1's audit boost of the θ it ran raises its rate (B7, 8127).
@@ -945,13 +1050,20 @@ impl Settlement {
     }
 
     /// The harness failed the attempt outside its provider call and verify
-    /// steps: prompt assembly, or recording its spend in the cost ledger.
+    /// steps: prompt assembly, or recording its spend in the cost ledger. A
+    /// task refused because every rung of the ladder failed its probe settles
+    /// as that (gap-b856d3).
     pub(super) fn harness_failure(error: &RokoError) -> Self {
+        let (outcome, class) = if super::ladder::refused_for_no_rung(error) {
+            (AttemptOutcome::AllRungsSkipped, "all_rungs_skipped")
+        } else {
+            (AttemptOutcome::HarnessError, "harness")
+        };
         Self {
-            outcome: AttemptOutcome::HarnessError,
+            outcome,
             gate_verdict: None,
             first_token_seen: false,
-            failure_reason: Some(format!("harness: {error}")),
+            failure_reason: Some(format!("{class}: {error}")),
             rung: None,
         }
     }
@@ -1168,6 +1280,90 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// Where an attempt's time went (gap-6a319c): the spans between its
+/// `timing` stamps, the provider call split by its `tools`, and each of its
+/// verify `steps`. A span whose ends are not both stamped is `None`.
+fn attempt_phases(
+    timing: &AttemptTiming,
+    tools: Option<&ToolTiming>,
+    steps: &[VerifyStepVerdict],
+    setup: &AttemptSetup,
+) -> roko_core::dashboard_snapshot::AttemptPhases {
+    let span = |from: Option<i64>, to: Option<i64>| {
+        from.zip(to)
+            .and_then(|(from, to)| u64::try_from(to - from).ok())
+    };
+    let duration = span(timing.attempt_started_at, timing.settled_at);
+    let prompt = span(timing.attempt_started_at, timing.prompt_assembled_at);
+    let dispatch = span(timing.dispatch_started_at, timing.dispatch_ended_at);
+    let checks = span(timing.verify_started_at, timing.verify_ended_at);
+    // The provider call is model time but for its tool calls: all of it
+    // when it made none, and unknown when one's result never showed.
+    let tools_ms = tools.and_then(|tools| {
+        if tools.tool_calls == 0 {
+            Some(0)
+        } else {
+            tools.tools_ms
+        }
+    });
+    let model_ms = dispatch
+        .zip(tools_ms)
+        .map(|(dispatch, tools)| dispatch.saturating_sub(tools));
+    // What the other phases leave of the attempt: a phase it never reached
+    // took no time.
+    let other_ms = duration.map(|duration| {
+        duration.saturating_sub(prompt.unwrap_or(0) + dispatch.unwrap_or(0) + checks.unwrap_or(0))
+    });
+    roko_core::dashboard_snapshot::AttemptPhases {
+        queue_ms: setup.queue_ms,
+        workspace_ms: setup.workspace_ms,
+        prompt_ms: prompt,
+        ttft_ms: span(timing.dispatch_started_at, timing.first_token_at),
+        model_ms,
+        model_calls: tools.and_then(|tools| tools.model_calls),
+        tools_ms,
+        tool_calls: tools.map(|tools| tools.tool_calls),
+        tools_by_name: tools.map(|tools| tools.by_name.clone()).unwrap_or_default(),
+        checks_ms: checks,
+        checks: steps
+            .iter()
+            .zip(check_names(steps))
+            .map(|(step, name)| roko_core::dashboard_snapshot::CheckTime {
+                name,
+                ms: step.duration_ms,
+                passed: step.passed,
+            })
+            .collect(),
+        other_ms,
+    }
+}
+
+/// The names `steps` have on their gate results. The verdict names a task's
+/// verify step `verify:0/test`, or `custom:build` for a phase the gate
+/// pipeline does not know, and lists those steps in order; their gate results
+/// name them by their place, `verify[0:test]` and `verify[1:build]`. Any
+/// other step keeps its rung.
+fn check_names(steps: &[VerifyStepVerdict]) -> Vec<String> {
+    let mut verify_steps = 0_usize;
+    steps
+        .iter()
+        .map(|step| {
+            let phase = step
+                .rung
+                .strip_prefix("verify:")
+                .and_then(|rest| rest.split_once('/'))
+                .map(|(_, phase)| phase)
+                .or_else(|| step.rung.strip_prefix("custom:"));
+            let Some(phase) = phase else {
+                return step.rung.clone();
+            };
+            let index = verify_steps;
+            verify_steps += 1;
+            super::verification::verify_step_label(index, phase)
+        })
+        .collect()
+}
+
 /// Whether the agent produced any output before the call ended.
 pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> bool {
     dispatch.events.iter().any(|event| {
@@ -1228,11 +1424,13 @@ fn failure_class(
 /// The model that ran: the one the bridge launched, which after failover
 /// is not the requested one, and the one the provider reported serving,
 /// which is `None` when it named none (bug-31438d). `failover` lists the
-/// models passed over first (bug-35379d).
+/// models passed over first (bug-35379d); `effort` is the reasoning effort
+/// the request asked for (bug-29014c).
 fn executed_model(
     model_requested: &str,
     dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
     failover: FailoverChain,
+    effort: Option<&str>,
 ) -> ExecutedModel {
     let mut executed = ExecutedModel {
         model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
@@ -1250,6 +1448,7 @@ fn executed_model(
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
         executed.sampling = request_sampling(&dispatch.target);
+        executed.reasoning_effort = request_reasoning_effort(&dispatch.target, effort);
         executed.tool_policy = dispatch.tool_policy.clone();
     }
     executed
@@ -1269,6 +1468,26 @@ fn request_sampling(
             roko_agent::provider::openai_compat::request_sampling(provider, model)
         })
         .unwrap_or_default()
+}
+
+/// The `reasoning_effort` the attempt's requests carried (bug-29014c): for an
+/// OpenAI reasoning model, the model's own, else `effort`, the request's, or
+/// `none` when the model calls tools, since a request with function tools
+/// carries none. `None` for any other model, or when the target named no
+/// provider config or profile.
+fn request_reasoning_effort(
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+    effort: Option<&str>,
+) -> Option<String> {
+    let (provider, model) = target
+        .provider_config
+        .as_ref()
+        .zip(target.model_profile.as_ref())?;
+    let model = model
+        .clone()
+        .with_reasoning_effort_or(effort.unwrap_or_default());
+    roko_agent::provider::openai_compat::request_reasoning_effort(provider, &model)
+        .map(str::to_string)
 }
 
 /// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
@@ -1460,7 +1679,7 @@ mod tests {
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn,
         make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, no_auto_fix,
-        spawn_openai_mock, verify_step,
+        spawn_openai_mock, tool_call_turn, verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -1917,6 +2136,85 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
         );
     }
 
+    /// A fake Claude CLI that keeps what it was sent beside itself: its
+    /// arguments, the system prompt among them, in `args`, and its prompt in
+    /// `prompt`.
+    const PROMPT_KEEPING_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+dir=$(dirname -- "$0")
+printf '%s\n' "$@" > "$dir/args"
+cat > "$dir/prompt"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// bug-fa22cc (Undertow phase 5.1, run 814a7340): T2#1 cut
+    /// `tools/render-demos.sh` from 121 lines to 43 and failed its gate, and
+    /// T2#2 to #4, in its checkout, each died in pre-validation on the
+    /// declared `1-121`, before any model call. A try fits its declared
+    /// ranges to the files in its checkout, whichever task changed them:
+    /// `1-121` reads the whole 43-line script, and `4-30` of a 10-line file
+    /// is cut at its last line.
+    #[tokio::test]
+    async fn a_try_fits_declared_ranges_to_its_checkout() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            PROMPT_KEEPING_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let numbered = |name: &str, count: usize| {
+            (1..=count)
+                .map(|n| format!("echo {name}-{n:02}\n"))
+                .collect::<String>()
+        };
+        std::fs::create_dir(temp.path().join("tools")).expect("tools");
+        std::fs::write(
+            temp.path().join("tools/render-demos.sh"),
+            numbered("demo", 43),
+        )
+        .expect("the script");
+        std::fs::write(temp.path().join("tools/notes.txt"), numbered("note", 10))
+            .expect("the notes");
+        let read = |path: &str, lines: &str| crate::task_parser::ReadFile {
+            path: path.to_string(),
+            lines: Some(lines.to_string()),
+            why: "context".to_string(),
+        };
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![
+                read("tools/render-demos.sh", "1-121"),
+                read("tools/notes.txt", "4-30"),
+            ],
+            ..crate::task_parser::TaskContext::default()
+        });
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try runs");
+
+        let sent: String = ["args", "prompt"]
+            .iter()
+            .map(|name| {
+                std::fs::read_to_string(temp.path().join(name)).expect("what the provider was sent")
+            })
+            .collect();
+        for shown in [
+            "echo demo-01",
+            "echo demo-43",
+            "echo note-04",
+            "echo note-10",
+        ] {
+            assert!(sent.contains(shown), "{shown}: {sent}");
+        }
+        assert!(!sent.contains("echo note-03"), "{sent}");
+    }
+
     /// An attempt the pre-verify screen rejected settles as the agent's
     /// failed gate, so no learner credits it, and its rung names the check.
     #[test]
@@ -2008,6 +2306,569 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert_eq!(timing.first_token_at, None);
         assert_eq!(timing.ttft_source.as_deref(), Some("unavailable"));
         assert_eq!(timing.verify_started_at, None);
+    }
+
+    /// gap-6a319c: an attempt's phases come from its stamps, its tool calls
+    /// and its verify steps, and those of the try itself add up to its
+    /// duration; a provider call whose tool results never showed leaves the
+    /// split of model and tool time unknown.
+    #[test]
+    fn attempt_phases_add_up_to_its_duration() {
+        let timing = AttemptTiming {
+            attempt_started_at: Some(10_000),
+            prompt_assembled_at: Some(10_050),
+            dispatch_started_at: Some(10_060),
+            first_token_at: Some(10_460),
+            dispatch_ended_at: Some(20_060),
+            verify_started_at: Some(20_100),
+            verify_ended_at: Some(58_100),
+            settled_at: Some(58_200),
+            ..AttemptTiming::default()
+        };
+        let tools = ToolTiming {
+            tools_ms: Some(3_000),
+            tool_calls: 4,
+            by_name: vec![roko_core::dashboard_snapshot::ToolTime {
+                tool: "bash".to_string(),
+                calls: 4,
+                ms: 3_000,
+            }],
+            model_calls: Some(5),
+        };
+        let steps = [VerifyStepVerdict {
+            rung: "verify:0/test".to_string(),
+            command_sha256: None,
+            passed: Some(true),
+            exit_code: Some(0),
+            duration_ms: Some(37_900),
+            timed_out: false,
+            skipped: false,
+            skip_reason: None,
+            self_checked: false,
+            confirmed_by_user: false,
+        }];
+        let setup = AttemptSetup {
+            queue_ms: Some(1_200),
+            workspace_ms: Some(400),
+            workspace: None,
+        };
+
+        let phases = attempt_phases(&timing, Some(&tools), &steps, &setup);
+
+        assert_eq!(phases.queue_ms, Some(1_200));
+        assert_eq!(phases.workspace_ms, Some(400));
+        assert_eq!(phases.prompt_ms, Some(50));
+        assert_eq!(phases.ttft_ms, Some(400));
+        assert_eq!(phases.model_ms, Some(7_000));
+        assert_eq!(phases.tools_ms, Some(3_000));
+        assert_eq!((phases.model_calls, phases.tool_calls), (Some(5), Some(4)));
+        assert_eq!(phases.checks_ms, Some(38_000));
+        assert_eq!(phases.checks.len(), 1);
+        assert_eq!(phases.checks[0].name, "verify[0:test]");
+        assert_eq!(phases.checks[0].ms, Some(37_900));
+        let parts = [
+            phases.prompt_ms,
+            phases.model_ms,
+            phases.tools_ms,
+            phases.checks_ms,
+            phases.other_ms,
+        ];
+        let sum: u64 = parts.iter().map(|part| part.expect("measured")).sum();
+        assert_eq!(sum, 48_200, "{phases:?}");
+
+        let unknown = ToolTiming {
+            tools_ms: None,
+            ..tools
+        };
+        let phases = attempt_phases(&timing, Some(&unknown), &steps, &setup);
+        assert_eq!((phases.model_ms, phases.tools_ms), (None, None));
+        assert_eq!(phases.other_ms, Some(150));
+
+        // A phase the gate pipeline does not know is `custom:<phase>` in the
+        // verdict; its gate result numbers it among the task's verify steps.
+        let rungs = [
+            "verify:0/test",
+            "custom:build",
+            "pre_verify:no_changes",
+            "custom:",
+        ];
+        let steps: Vec<VerifyStepVerdict> = rungs
+            .iter()
+            .map(|rung| VerifyStepVerdict {
+                rung: (*rung).to_string(),
+                ..VerifyStepVerdict::default()
+            })
+            .collect();
+        assert_eq!(
+            check_names(&steps),
+            [
+                "verify[0:test]",
+                "verify[1:build]",
+                "pre_verify:no_changes",
+                "verify[2]"
+            ]
+        );
+    }
+
+    /// gap-6a319c: a dispatched attempt's verdict row carries its phases, and
+    /// they add up to its duration.
+    #[tokio::test]
+    async fn attempt_phases_reach_the_verdict_row() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let timing = &attempts[1]["timing"];
+        let phases = &timing["phases"];
+        let ms = |name: &str| {
+            phases[name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("no {name}: {phases}"))
+        };
+        let duration = timing["settled_at"].as_i64().expect("settled")
+            - timing["attempt_started_at"].as_i64().expect("started");
+        let parts = ms("prompt_ms") + ms("model_ms") + ms("tools_ms") + ms("checks_ms");
+        assert_eq!(
+            parts + ms("other_ms"),
+            u64::try_from(duration).expect("a positive duration"),
+            "{phases}"
+        );
+        assert!(ms("ttft_ms") >= 150, "{phases}");
+        assert!(phases["queue_ms"].is_u64(), "{phases}");
+        // The name the step's gate result has.
+        assert_eq!(
+            phases["checks"][0]["name"], "verify[0:structural]",
+            "{phases}"
+        );
+        assert_eq!(phases["checks"][0]["passed"], true);
+    }
+
+    /// gap-5c3347: a try's spend reaches the hub as each model call returns,
+    /// not only when the try settles: one `call_cost` per call, priced at its
+    /// model's rates, with the attempt's spend so far growing with each.
+    /// gap-1ba0ac: each also says what its reasoning cost, why it ended and
+    /// how long it took.
+    #[tokio::test]
+    async fn a_running_try_reports_its_spend_per_model_call() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("notes.txt"), "notes\n").expect("seed notes");
+        // Two calls read the notes and the third answers; call n reads
+        // 1,000 x n tokens and writes 100, at $1 and $2 per million.
+        let read = serde_json::json!({ "path": "notes.txt" });
+        let mut turns = vec![
+            tool_call_turn("call-1", "read_file", read.clone()),
+            tool_call_turn("call-2", "read_file", read),
+            final_turn("done"),
+        ];
+        for (call, turn) in (1_u32..).zip(&mut turns) {
+            turn["usage"] = serde_json::json!({
+                "prompt_tokens": 1_000 * call,
+                "completion_tokens": 100,
+                "total_tokens": 1_000 * call + 100,
+                "completion_tokens_details": { "reasoning_tokens": 10 * call }
+            });
+        }
+        let (base_url, _requests) = spawn_openai_mock(turns);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path())
+            .await
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+
+        // The calls' costs, in the order the hub published them, and where
+        // the attempt's settlement came.
+        let mut calls = Vec::new();
+        let mut reasoning = Vec::new();
+        let mut settled_after = None;
+        while let Ok(envelope) = events.try_recv() {
+            match envelope.payload {
+                DashboardEvent::CallCost {
+                    task_id,
+                    attempt,
+                    call,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    attempt_cost_usd,
+                    reasoning_tokens,
+                    finish_reason,
+                    wall_ms,
+                    ..
+                } => {
+                    assert_eq!((task_id.as_str(), attempt), (task.id.as_str(), 1));
+                    assert_eq!(model, "api-model-1");
+                    assert!(wall_ms.is_some(), "call {call} says how long it took");
+                    calls.push((
+                        call,
+                        input_tokens,
+                        output_tokens,
+                        cost_usd,
+                        attempt_cost_usd,
+                    ));
+                    reasoning.push((reasoning_tokens, finish_reason));
+                }
+                DashboardEvent::AttemptSettled { .. } => settled_after = Some(calls.len()),
+                _ => {}
+            }
+        }
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(
+            settled_after,
+            Some(3),
+            "every call's cost came before the try settled"
+        );
+        assert_eq!(
+            reasoning,
+            [
+                (10, Some("tool_calls".to_string())),
+                (20, Some("tool_calls".to_string())),
+                (30, Some("stop".to_string())),
+            ]
+        );
+        let mut total = 0.0;
+        for (n, (call, input, output, cost, so_far)) in (1_u32..).zip(&calls) {
+            let expected = 0.001 * f64::from(n) + 0.000_2;
+            total += expected;
+            assert_eq!(
+                (*call, *input, *output),
+                (n, 1_000 * u64::from(n), 100),
+                "{calls:?}"
+            );
+            let cost = cost.expect("the model's rates price the call");
+            assert!(
+                (cost - expected).abs() < 1e-6,
+                "call {n} cost ${cost}, not ${expected}"
+            );
+            assert!(
+                (so_far - total).abs() < 1e-6,
+                "after call {n}: ${so_far}, not ${total}"
+            );
+        }
+    }
+
+    /// bug-8bcd98: a model call that failed left no call_cost row, so the
+    /// per-call book lost the call, its time and how it ended: in run
+    /// bdc4461e, T1's two tries lost 4 min of model time to two 120 s
+    /// response waits. A call that times out now writes its row: no tokens,
+    /// no cost, `timeout`, and how long it waited.
+    #[tokio::test]
+    async fn a_call_that_fails_writes_its_call_cost_row() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        // A provider that starts its answer and then never sends a byte.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the provider");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("its address"));
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = crate::graph_task_dispatch::tests::read_mock_request(&mut stream);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                );
+                held.push(stream);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        let mut config = priced_api_config(base_url);
+        config
+            .providers
+            .get_mut("mock_api")
+            .expect("the provider")
+            .ttft_timeout_ms = Some(300);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the call times out");
+
+        let mut rows = Vec::new();
+        while let Ok(envelope) = events.try_recv() {
+            if let DashboardEvent::CallCost {
+                model,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                outcome,
+                wall_ms,
+                ..
+            } = envelope.payload
+            {
+                rows.push((
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    outcome,
+                    wall_ms,
+                ));
+            }
+        }
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let (model, input, output, cost, outcome, wall_ms) = &rows[0];
+        assert_eq!(model, "api-model-1");
+        assert_eq!((*input, *output), (0, 0));
+        assert_eq!(*cost, Some(0.0));
+        assert_eq!(outcome.as_deref(), Some("timeout"));
+        assert!(wall_ms.is_some_and(|ms| ms >= 300), "{wall_ms:?}");
+    }
+
+    /// gap-770cb5: an agent in a C++ task runs its task's own checks mid-try
+    /// with `run_tests` and `build: "checks"`. It sees the compiler's error,
+    /// fixes the file, sees the checks pass, and the try passes first time.
+    #[tokio::test]
+    async fn a_cmake_task_can_run_its_checks_mid_try() {
+        let temp = tempdir().expect("tempdir");
+        // A build check that prints what CMake would, and fails until
+        // src/voice.cpp returns 1.
+        std::fs::write(
+            temp.path().join("check.sh"),
+            "echo '[ 50%] Building CXX object CMakeFiles/undertow.dir/src/voice.cpp.o'\n\
+             if ! grep -q 'return 1' src/voice.cpp 2>/dev/null; then\n\
+             echo 'src/voice.cpp:1:1: error: voice() needs a body' >&2\n\
+             exit 2\n\
+             fi\n\
+             echo '[100%] Built target undertow'\n",
+        )
+        .expect("check.sh");
+        let checks = serde_json::json!({ "build": "checks" });
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("c1", "run_tests", checks.clone()),
+            tool_call_turn("c2", "write_file", fix),
+            tool_call_turn("c3", "run_tests", checks),
+            final_turn("done"),
+            final_turn("done"),
+        ]);
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path()).await;
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("build", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try passes first time");
+
+        // What each run_tests call told the agent: the tool message answering it.
+        let answer = |call: &str| -> String {
+            let requests = requests.lock();
+            requests
+                .iter()
+                .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
+                .find(|message| message["role"] == "tool" && message["tool_call_id"] == call)
+                .and_then(|message| message["content"].as_str().map(str::to_string))
+                .unwrap_or_else(|| panic!("no answer to {call}"))
+        };
+        let first = answer("c1");
+        assert!(
+            first.contains("check 1 of 1 (verify[0:build]) failed (exit 2)"),
+            "{first}"
+        );
+        assert!(first.contains("error: voice() needs a body"), "{first}");
+        let second = answer("c3");
+        assert!(second.contains("\"status\":\"ok\""), "{second}");
+        assert!(second.contains("verify[0:build]"), "{second}");
+        // The checks were left for the try only.
+        let left = temp.path().join(".roko/state/task-checks");
+        let files = std::fs::read_dir(&left).map_or(0, Iterator::count);
+        assert_eq!(files, 0, "the try's checks file outlived it");
+    }
+
+    /// A build check that fails, as CMake would, until `src/voice.cpp` returns 1.
+    const VOICE_CHECK: &str = "echo '[ 50%] Building CXX object CMakeFiles/undertow.dir/src/voice.cpp.o'\n\
+         if ! grep -q 'return 1' src/voice.cpp 2>/dev/null; then\n\
+         echo 'src/voice.cpp:1:1: error: voice() needs a body' >&2\n\
+         exit 2\n\
+         fi\n\
+         echo '[100%] Built target undertow'\n";
+
+    /// A try at a task whose one check is [`VOICE_CHECK`], its implementer
+    /// the mock at `base_url`, and the verdicts it writes, once there are
+    /// `verdicts` of them: whether the try passed, and what the model was sent.
+    async fn voice_try(
+        temp: &Path,
+        replies: Vec<serde_json::Value>,
+        verdicts: usize,
+    ) -> (bool, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        std::fs::write(temp.join("check.sh"), VOICE_CHECK).expect("check.sh");
+        let (base_url, requests) = spawn_openai_mock(replies);
+        let runs_dir = temp.join(".roko/runs");
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp)
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("build", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let passed = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .is_ok();
+        drop(dispatcher);
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let rows = jsonl_rows_where(
+            &runs_dir.join(RUN).join("attempts.jsonl"),
+            verdicts,
+            is_verdict,
+        )
+        .await;
+        let sent = requests.lock().clone();
+        (passed, rows, sent)
+    }
+
+    /// The last two messages a model call was sent, when it was sent two.
+    fn last_two(request: &serde_json::Value) -> Option<(serde_json::Value, serde_json::Value)> {
+        let messages = request["messages"].as_array()?;
+        let [.., reply, note] = messages.as_slice() else {
+            return None;
+        };
+        Some((reply.clone(), note.clone()))
+    }
+
+    /// bug-cbbaa8: in Undertow's phase 3 every strong try ran its spec tests,
+    /// saw them fail and handed back with most of its 120 turns left, and
+    /// each hand-off spent a whole try. An implementer that hands back while
+    /// its check fails, with turns left, now goes back with what the check
+    /// says, in the same try: here it then fixes the code and the try passes,
+    /// first time, its verdict saying it went back once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_red_hand_off_with_turns_left_continues_the_same_try() {
+        let temp = tempdir().expect("tempdir");
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let (passed, verdicts, sent) = voice_try(
+            temp.path(),
+            vec![
+                final_turn("done"),
+                tool_call_turn("c1", "write_file", fix),
+                final_turn("fixed"),
+                final_turn("spare"),
+            ],
+            1,
+        )
+        .await;
+
+        assert!(passed, "the try passes: {verdicts:?}");
+        assert_eq!(verdicts.len(), 1, "one try: {verdicts:?}");
+        assert_eq!(verdicts[0]["attempt"], 1);
+        assert_eq!(verdicts[0]["outcome"], "passed");
+        assert_eq!(verdicts[0]["continues"], 1);
+        // The call after the red hand-off: the agent's reply, then what the
+        // check said, as the next try's feedback says it.
+        assert!(sent.len() >= 3, "{sent:?}");
+        let (reply, note) = last_two(&sent[1]).expect("the call after the hand-off");
+        assert_eq!(reply["role"], "assistant");
+        assert_eq!(reply["content"], "done");
+        assert_eq!(note["role"], "user");
+        let note = note["content"].as_str().expect("the note is text");
+        for expected in [
+            "# Your checks still fail",
+            "your task's check verify[0:build] still fails, so this try goes on",
+            "`run_tests` with `\"build\": \"checks\"`",
+            "It can go back once more",
+            "verify[0:build] (`bash check.sh`): exit code: 2",
+            "error: voice() needs a body",
+        ] {
+            assert!(note.contains(expected), "{expected}: {note}");
+        }
+    }
+
+    /// bug-cbbaa8: an implementer whose check stays red goes back
+    /// `[gates] hand_off_continues` times (2), then the try settles on its
+    /// check as before, as `gate_failed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_try_that_stays_red_settles_after_its_returns() {
+        let temp = tempdir().expect("tempdir");
+        let (passed, verdicts, sent) = voice_try(temp.path(), vec![final_turn("done"); 8], 1).await;
+
+        assert!(!passed, "the try fails: {verdicts:?}");
+        assert_eq!(verdicts.len(), 1, "one try: {verdicts:?}");
+        assert_eq!(verdicts[0]["outcome"], "gate_failed");
+        assert_eq!(verdicts[0]["continues"], 2);
+        // Three hand-offs: two sent back, the last one settles. A call after
+        // them (the failure's diagnosis) carries no note.
+        let notes: Vec<String> = sent
+            .iter()
+            .filter_map(last_two)
+            .filter(|(_, note)| {
+                note["content"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("# Your checks still fail"))
+            })
+            .map(|(_, note)| note["content"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(notes.len(), 2, "{sent:?}");
+        assert!(
+            notes[0].contains("It can go back once more"),
+            "{}",
+            notes[0]
+        );
+        assert!(
+            notes[1].contains("This try does not go back again"),
+            "{}",
+            notes[1]
+        );
     }
 
     /// `api-model` on an OpenAI-compatible provider the mock at `base_url`
@@ -2126,6 +2987,58 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let recorded = costs[0]["cost_usd"].as_f64().expect("cost row");
         assert!(billed > 0.0, "{verdict}");
         assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
+    }
+
+    /// bug-29014c: an attempt on an OpenAI reasoning model calls tools, so its
+    /// requests carry function tools and no `reasoning_effort`, whatever
+    /// `[agent] default_effort` or the model's own effort says: chat
+    /// completions refuses the two together for the GPT-5.4 family. Its
+    /// verdict records `none`, the effort that ran.
+    #[tokio::test]
+    async fn a_verdict_records_the_reasoning_effort_sent() {
+        use roko_core::agent::ReasoningEffort;
+
+        for own in [None, Some(ReasoningEffort::High)] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            let answer = final_turn("done");
+            let (base_url, requests) = spawn_openai_mock(vec![answer.clone(), answer]);
+            let mut config = priced_api_config(base_url);
+            config.agent.default_effort = "medium".to_string();
+            let model = config.models.get_mut("api-model").expect("api model");
+            model.slug = "gpt-5.4-mini".to_string();
+            model.reasoning_effort = own;
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(roko.join("runs")),
+                ..GraphFeedbackContext::default()
+            };
+            let dispatcher = make_bare_dispatcher(config, temp.path())
+                .await
+                .with_feedback(feedback);
+            let task = TaskDef {
+                model_hint: Some("api-model".to_string()),
+                timeout_secs: FIXTURE_HANG_GUARD_SECS,
+                verify: vec![verify_step("structural", "true")],
+                ..make_task_def("focused")
+            };
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+
+            let request = requests
+                .lock()
+                .first()
+                .cloned()
+                .expect("the attempt's call");
+            assert!(request.get("tools").is_some(), "{request}");
+            assert!(request.get("reasoning_effort").is_none(), "{request}");
+            let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+            let verdict = &attempts[1];
+            assert_eq!(verdict["executed"]["reasoning_effort"], "none", "{verdict}");
+        }
     }
 
     /// The verdict and the cost row of one verified attempt of `slug` on the

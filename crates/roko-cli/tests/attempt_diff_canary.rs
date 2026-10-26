@@ -258,6 +258,7 @@ worktree_per_task = false
             .env_remove("RUST_LOG")
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("XDG_CONFIG_HOME")
+            .env(common::AUDITS_OFF.0, common::AUDITS_OFF.1)
             .output()
             .expect("run roko")
     }

@@ -6851,6 +6851,63 @@ exclusive = ["src/app.rs"]
         }
     }
 
+    /// bug-daa54e: nodes that each add their source to `core/CMakeLists.txt`
+    /// share no other path, and still take turns: in one working tree, one
+    /// write to the shared list could overwrite the other. (With a worktree
+    /// per task the plan runner drops exclusive paths, so they run together.)
+    #[tokio::test(start_paused = true)]
+    async fn same_wave_tasks_sharing_a_build_list_take_turns_in_one_tree() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "shared-build-list"
+
+[graph.policy]
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "oscillator"
+cell_type = "sleep"
+config = { label = "oscillator", delay_ms = 100 }
+exclusive = ["core/src/oscillator.cpp", "core/CMakeLists.txt"]
+
+[[nodes]]
+id = "filter"
+cell_type = "sleep"
+config = { label = "filter", delay_ms = 100 }
+exclusive = ["core/src/filter.cpp", "./core/CMakeLists.txt"]
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log));
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(output.success, "through_start = {through_start}");
+            assert_eq!(
+                log.max_running.load(Ordering::SeqCst),
+                1,
+                "{:?}",
+                log.events()
+            );
+            assert!(
+                !ran_together(&log, "oscillator", "filter"),
+                "{:?}",
+                log.events()
+            );
+        }
+    }
+
     /// A node waiting for its exclusive paths holds no slot. `lib-a` and
     /// `lib-b` write the same file; with two slots, `docs` runs beside the
     /// one that starts first instead of queueing behind the one that waits.

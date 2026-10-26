@@ -29,6 +29,14 @@ use super::{FeedbackEvent, FeedbackSink};
 /// The persist runs on the blocking pool, and the sink waits for it, so the
 /// affect state is on disk once the facade has delivered the event. Errors
 /// are logged but not propagated — affect persistence is best-effort.
+///
+/// The lock is held across the read-and-write, exactly as
+/// [`roko_daimon::DaimonState`]'s own autosave does, so this save and every
+/// autosave serialize through the same mutex and can never race (bug-050398):
+/// the write always reflects whatever is live under the lock at the moment it
+/// runs, not a snapshot taken earlier and persisted later, so a plan-end save
+/// can never put back a state older than one a concurrent autosave already
+/// persisted.
 #[derive(Debug)]
 pub struct DaimonPersistenceSink {
     affect_path: PathBuf,
@@ -64,18 +72,19 @@ impl FeedbackSink for DaimonPersistenceSink {
             return Ok(());
         };
 
-        // Snapshot the state under the lock, then persist outside the lock.
-        let snapshot = {
-            let guard = self.daimon_state.lock().unwrap_or_else(|e| e.into_inner());
-            guard.clone()
-        };
-
         let path = self.affect_path.clone();
         let plan_id = plan_id.clone();
+        let daimon_state = Arc::clone(&self.daimon_state);
 
+        // Lock and persist together, the way `DaimonState::autosave` does,
+        // instead of snapshotting under the lock and persisting after
+        // releasing it: that gap let a concurrent plan's autosave write a
+        // newer state in between, which this save's deferred write of its
+        // now-stale snapshot could then overwrite (bug-050398).
         tokio::task::spawn_blocking(move || {
             use roko_daimon::AffectEngine;
-            match snapshot.persist(&path) {
+            let guard = daimon_state.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.persist(&path) {
                 Ok(()) => {
                     tracing::info!(plan_id, path = %path.display(), "daimon affect state persisted");
                 }
@@ -393,6 +402,76 @@ mod tests {
         assert!(
             contents.contains("half_life_hours"),
             "should contain DaimonState fields"
+        );
+    }
+
+    /// bug-050398: before the fix, the sink cloned a snapshot under the lock
+    /// and persisted it after releasing the lock. That gap let a
+    /// still-running plan's autosave (which locks, mutates, and persists in
+    /// one critical section, as `emit_feedback`'s W09 does) write a newer
+    /// state in between, which this save's deferred write of its now-stale
+    /// snapshot could then overwrite.
+    ///
+    /// The fix locks and persists together, so this save and every autosave
+    /// serialize through the same mutex. Whichever one the mutex orders last
+    /// is the one left on disk, and since every writer always persists its
+    /// own current (not a stale) state, the file can never regress to an
+    /// older value than the live state. This races many plan-end saves
+    /// against concurrent autosaving appraisals (two real OS threads, so
+    /// both lock-acquisition orders get exercised) and checks that
+    /// `affect.json` always ends up exactly equal to the live in-memory
+    /// state, never something older.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn daimon_plan_end_save_never_puts_back_an_older_state() {
+        use roko_daimon::AffectEngine;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let affect_path = tmp.path().join("daimon").join("affect.json");
+        let daimon_state = Arc::new(Mutex::new(
+            roko_daimon::DaimonState::new().with_persistence_path(&affect_path),
+        ));
+        let sink = DaimonPersistenceSink::new(affect_path.clone(), Arc::clone(&daimon_state));
+
+        // Round `i`: plan B's appraisal autosaves a new state while plan A's
+        // completion fires the plan-end save, both against the one shared
+        // `daimon_state`. Neither side is awaited before the other starts,
+        // so the two race.
+        let mut appraisal_handles = Vec::new();
+        for i in 0..20 {
+            let appraisal_state = Arc::clone(&daimon_state);
+            appraisal_handles.push(tokio::spawn(async move {
+                let mut guard = appraisal_state.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = guard.appraise(roko_daimon::AffectEvent::TaskOutcome {
+                    task_id: format!("plan-b-task-{i}"),
+                    succeeded: i % 2 == 0,
+                });
+            }));
+
+            let event = FeedbackEvent::PlanCompleted {
+                plan_id: format!("plan-a-{i}"),
+                succeeded: true,
+                tasks_completed: 1,
+                tasks_failed: 0,
+                total_cost_usd: 0.001,
+            };
+            sink.on_event(&event).await.unwrap();
+        }
+
+        for handle in appraisal_handles {
+            handle.await.unwrap();
+        }
+
+        // Every writer, once it holds the lock, persists exactly the state
+        // it is holding. So once everything above has settled, the file on
+        // disk must equal the live state exactly, never an earlier one.
+        let on_disk = std::fs::read_to_string(&affect_path).unwrap();
+        let live = {
+            let guard = daimon_state.lock().unwrap_or_else(|e| e.into_inner());
+            serde_json::to_string_pretty(&*guard).unwrap()
+        };
+        assert_eq!(
+            on_disk, live,
+            "plan-end save must never leave affect.json behind the live state"
         );
     }
 

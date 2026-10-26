@@ -47,6 +47,11 @@ Runtime tool allowlist: Read,Edit,Bash
 
 Use only the tools granted to your role.
 
+## Relevant Context
+### Workspace Notes
+- Snapshot output groups live prompt sections into six audit buckets.
+- Keep fixtures stable across runs.
+
 ## Active Signals
 
 - [Threat] - [Threat] Prompt layer drift can hide regressions between roles.
@@ -118,6 +123,12 @@ Prefer deterministic fixtures and readable snapshot diffs.
 Runtime tool allowlist: Read,Edit,Bash
 
 Use only the tools granted to your role.
+
+<!-- CONTEXT -->
+## Relevant Context
+### Workspace Notes
+- Snapshot output groups live prompt sections into six audit buckets.
+- Keep fixtures stable across runs.
 
 <!-- MEMORY -->
 ## Active Signals

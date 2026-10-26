@@ -3,11 +3,12 @@
 //!
 //! Labels follow S01 §4.1 through `Label::of_verdict`, as the offline fit's do (bug-9099b7): a
 //! learning label of 1 or 0 is a gate label. Unverified, forced-accept, provider, infra and
-//! harness outcomes teach nothing, and neither does an attempt a provider failover ran on a
-//! substitute model, since nobody chose it. The plan runner saves the state and the calibration
-//! window when the run ends, and the next run, a resumed one included, loads both again
-//! (gap-b38ed2). A frozen run registers no such sink (decision 2218). Late VS labels from S05
-//! come in through [`SelfModelOutcomeSink::observe_label`].
+//! harness outcomes teach nothing. An attempt a provider failover ran on a substitute model
+//! teaches the self-model what that model did, but stays out of the calibration window and
+//! policy (a)'s margin, since nobody chose it (bug-a35286). The plan runner saves the state
+//! and the calibration window when the run ends, and the next run, a resumed one included,
+//! loads both again (gap-b38ed2). A frozen run registers no such sink (decision 2218). Late VS
+//! labels from S05 come in through [`SelfModelOutcomeSink::observe_label`].
 
 use std::sync::Arc;
 
@@ -79,13 +80,11 @@ impl FeedbackSink for SelfModelOutcomeSink {
 
 /// The unit `verdict` teaches, with the features its forecast kept; `None` when it teaches
 /// nothing. Its arm is the provider and slug dispatch launched, as the forecast's candidates
-/// name them (bug-a400d0).
+/// name them (bug-a400d0): for a failover substitute, the model that ran, marked as one
+/// (bug-a35286).
 fn unit_of(verdict: &AttemptVerdictRecord, forecast: &AttemptForecast) -> Option<Unit> {
     let label = Label::of_verdict(verdict)?;
     let executed = &verdict.executed;
-    if !executed.failover_chain.is_empty() {
-        return None;
-    }
     let model = executed
         .model_dispatched
         .clone()
@@ -116,7 +115,7 @@ fn unit_of(verdict: &AttemptVerdictRecord, forecast: &AttemptForecast) -> Option
         api_equiv_usd: verdict.cost.api_equiv_usd,
         cost_source: verdict.cost.source,
         latency_s: latency_s(verdict),
-        failover: false,
+        failover: !executed.failover_chain.is_empty(),
     })
 }
 
@@ -182,10 +181,11 @@ mod tests {
         FeedbackEvent::AttemptSettled(Arc::new(verdict))
     }
 
-    /// 6129: a settled pass and an agent failure move the state; a forced accept, an unverified
-    /// attempt and a failover substitute do not, the forced accept as in the offline fit
-    /// (bug-9099b7); every forecast leaves the cache; the state survives a reload; a late VS
-    /// label reaches a settled attempt only.
+    /// 6129: a settled pass and an agent failure move the state; a forced accept and an
+    /// unverified attempt do not, the forced accept as in the offline fit (bug-9099b7). A
+    /// failover substitute teaches the model but not the calibration window (bug-a35286). Every
+    /// forecast leaves the cache; the state survives a reload; a late VS label reaches a settled
+    /// attempt only.
     #[tokio::test]
     async fn settled_verdict_updates_self_model_state() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -231,17 +231,18 @@ mod tests {
             .expect("the sink takes the verdict");
         assert_eq!(
             runtime.outcomes(),
-            2,
-            "a failover substitute teaches nothing"
+            3,
+            "a failover substitute teaches the model"
         );
         assert!(runtime.take_forecast(&key).is_none());
-        // The two labelled attempts reached the calibration gate's window.
+        // The two routed labelled attempts reached the calibration gate's window; the
+        // substitute did not.
         assert_eq!(runtime.gate().n, 2);
 
         runtime.save().expect("save the state");
         let (reloaded, load) = SelfModel::load_or_new(&state, &snapshot).expect("reload");
         assert_eq!(load, StateLoad::Loaded);
-        assert_eq!(reloaded.outcomes, 2);
+        assert_eq!(reloaded.outcomes, 3);
 
         let passed = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
         assert!(sink.observe_label(&passed, false, 4.0, LabelSource::Vs));
@@ -249,9 +250,94 @@ mod tests {
         assert!(!sink.observe_label(&unknown, true, 4.0, LabelSource::Vs));
         assert_eq!(
             runtime.outcomes(),
-            2,
+            3,
             "a late VS label is not another outcome"
         );
+    }
+
+    /// bug-a35286: in Undertow's phase 1, gpt-5.4-mini failed two routed tries and then passed
+    /// one as a failover substitute, which the self-model never learned: its stratum stayed at
+    /// 0 of 2. Now the substitute's pass counts in the model's estimate for the model that ran
+    /// it (its stratum is 1 of 3, and its forecast rises), while the calibration window, which
+    /// measures the forecasts of chosen arms, keeps only the two routed tries.
+    #[tokio::test]
+    async fn a_failover_substitutes_verified_pass_counts_in_its_models_estimate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let state = temp.path().join(".roko/learn/self-model/state-v1.json");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let runtime = Arc::new(SelfModelRuntime::new(
+            settings,
+            state.clone(),
+            SelfModel::new(&snapshot),
+        ));
+        let sink = SelfModelOutcomeSink::new(Arc::clone(&runtime));
+        let strong = ArmKey::roko("openai", "gpt-5.4-mini");
+        let remember = |task: &str| {
+            let candidates =
+                SelfModel::new(&snapshot).forecast(&self::task(), std::slice::from_ref(&strong));
+            let key = AttemptKey::new(RUN, "plan", task, 1).attempt_key();
+            runtime.remember(
+                key,
+                AttemptForecast {
+                    version: runtime.version(),
+                    features: self::task(),
+                    candidates,
+                    would_choose: Some(0),
+                    default: 0,
+                    pinned: false,
+                    routed: false,
+                },
+            );
+        };
+        let settle = |task: &str, outcome: AttemptOutcome, passed_over: Option<&str>| {
+            let identity = AttemptIdentity::new(&AttemptKey::new(RUN, "plan", task, 1));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.executed.provider = Some("openai".to_string());
+            verdict.executed.model_dispatched = Some("gpt-5.4-mini".to_string());
+            verdict.executed.failover_chain = passed_over.map(str::to_string).into_iter().collect();
+            verdict.cost.api_equiv_usd = Some(0.02);
+            FeedbackEvent::AttemptSettled(Arc::new(verdict))
+        };
+        let forecast = || runtime.forecast(&self::task(), std::slice::from_ref(&strong))[0].p_gate;
+
+        for task in ["T1", "T2"] {
+            remember(task);
+            sink.on_event(&settle(task, AttemptOutcome::GateFailed, None))
+                .await
+                .expect("the sink takes the verdict");
+        }
+        let after_two_failures = forecast();
+        remember("T3");
+        sink.on_event(&settle("T3", AttemptOutcome::Passed, Some("glm-4.7")))
+            .await
+            .expect("the sink takes the verdict");
+
+        assert_eq!(runtime.outcomes(), 3, "the substitute's pass is learned");
+        assert!(
+            forecast() > after_two_failures,
+            "gpt-5.4-mini's forecast rises with its pass: {} after {after_two_failures}",
+            forecast()
+        );
+        assert_eq!(
+            runtime.gate().n,
+            2,
+            "the window keeps only the routed tries"
+        );
+        runtime.save().expect("save the state");
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state).expect("read the state"))
+                .expect("the state is JSON");
+        // Three outcomes, discounted by L0's forgetting, one of them a pass.
+        let stratum = &saved["model"]["prior"]["strata"]["gpt-5.4-mini"];
+        let (n, k) = (
+            stratum["n"].as_f64().expect("n"),
+            stratum["k"].as_f64().expect("k"),
+        );
+        assert!(n > 2.9 && n <= 3.0 && (k - 1.0).abs() < 1e-9, "{stratum}");
     }
 
     /// gap-b38ed2: the calibration window survives across runs. Each run loads the self-model

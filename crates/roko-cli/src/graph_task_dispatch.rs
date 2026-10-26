@@ -15,7 +15,7 @@
 //! remains the production plan route until #256 atomically activates the
 //! streaming path after lease acquisition.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,14 +55,19 @@ mod attempt_workspace;
 mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
+mod best_try;
+mod blocked;
 mod budget;
+mod call_cost;
 mod check_output;
+mod checkout_writes;
 mod decision_log;
 mod diff_snapshot;
 mod failover;
 mod fast;
 mod feedback;
 mod gate_learning;
+mod hand_off;
 mod helper_calls;
 mod inert_settings;
 mod judge_step;
@@ -74,17 +79,20 @@ mod operator_stop;
 mod pack_rungs;
 mod prompt_experiment;
 mod prompt_log;
+mod reasoning_cut;
 mod red_flags;
 mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
+mod rung_speed;
 pub mod self_model;
 mod served_model;
 mod sibling_settle;
 mod step_ratchet;
 mod streaming;
 mod supervision;
+mod task_checks;
 mod test_runners;
 mod try_allowance;
 mod tui_forward;
@@ -96,6 +104,7 @@ mod watchdog;
 mod wiring;
 
 pub use attempt_workspace::{AWAITING_APPROVAL_PHASE, record_review};
+pub(crate) use budget::micro_usd_to_usd;
 pub use budget::{
     GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
     plan_ceiling_micro_usd,
@@ -187,6 +196,19 @@ impl From<roko_core::config::serve::LiveAgentOutput> for LiveAgentOutput {
     }
 }
 
+tokio::task_local! {
+    /// How long a dispatch waited for its agent slot, in ms (gap-6a319c):
+    /// [`crate::graph_execution::agent_slots::AgentSlotDispatcher`] sets it
+    /// around the dispatch it lets through, which counts it in the attempt's
+    /// queue time.
+    pub(crate) static SLOT_WAIT_MS: u64;
+}
+
+/// Milliseconds since `since`.
+fn elapsed_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Real runner/provider adapter injected into `TaskExecutorCell` factories.
 pub struct GraphTaskDispatcher {
     factory: Arc<SharedAgentFactory>,
@@ -217,6 +239,12 @@ pub struct GraphTaskDispatcher {
     /// Checkout generation per task (`"{plan_id}/{task_id}"`): see
     /// [`Self::worktree_generation`].
     worktree_generations: parking_lot::Mutex<HashMap<String, u32>>,
+    /// The checkouts this run's attempts have run in, so that an attempt
+    /// knows when it runs in an earlier try's (gap-6a319c).
+    checkouts_used: parking_lot::Mutex<HashSet<PathBuf>>,
+    /// Each task's best try so far, whose files a retry starts from after a
+    /// try that passed fewer verify steps (gap-fefdf5).
+    best_tries: best_try::BestTries,
     /// Optional TUI bridge for forwarding live agent output events to the
     /// dashboard. When set, completed dispatch events (text deltas, tool
     /// calls, tool outputs) are published through the StateHub so the TUI
@@ -288,6 +316,9 @@ pub struct GraphTaskDispatcher {
     /// allowance, with why; the next attempt resumes the partial work
     /// (gap-3e770b).
     allowance_stops: parking_lot::Mutex<HashMap<String, String>>,
+    /// What the run has seen of its rungs' speed, and the rungs it said run
+    /// slow (gap-3217a0).
+    rung_speed: parking_lot::Mutex<rung_speed::RungSpeed>,
     /// Each task's last routed step and why each unsettled try runs where it
     /// does, which its events say (gap-aaaaae).
     tries: parking_lot::Mutex<ladder::TryBook>,
@@ -295,6 +326,25 @@ pub struct GraphTaskDispatcher {
     /// (`"{plan_id}/{task_id}"`); [`Self::attempt_in_run`] counts the Graph
     /// engine's retries from it.
     task_attempts: parking_lot::Mutex<HashMap<String, u32>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) a failed whole-plan check was just
+    /// handed back to ([`Self::hand_back`], find-5bcba7). Their next attempt
+    /// starts a new chain: the pre-verify screen judges what it changed from
+    /// the tree it started on, even in a shared working tree whose base that
+    /// attempt took itself.
+    handed_back: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt the pre-verify
+    /// screen saw had changed nothing since the task's base
+    /// ([`Self::changed_nothing`]): a hand-back's try is not retried after one
+    /// (bug-fc05a3).
+    unchanged_tries: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// The hand-backs each task's tries (`"{plan_id}/{task_id}"`) got for
+    /// blockers in other tasks' files (bug-3b3bb6): its next tries run
+    /// widened by them ([`blocked::blocked_task`]).
+    blocked: parking_lot::Mutex<HashMap<String, blocked::BlockedHandBacks>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) whose last try was handed back for a
+    /// blocker in another task's file: it does not count on its rung
+    /// (bug-3b3bb6).
+    uncounted_tries: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Durable attempt identity per run: ordinals, and the run's
     /// `attempts.jsonl` writer (see [`Self::open_attempt`]).
     attempts: AttemptBook,
@@ -302,6 +352,18 @@ pub struct GraphTaskDispatcher {
     /// Attempts running now, so a verify step that fails while siblings edit
     /// the same working tree can wait for them to settle.
     in_flight: sibling_settle::InFlightTasks,
+    /// The paths of the person's checkout that changed while a task's checks
+    /// ran, by plan and task, for the end of the plan run (bug-b7d9ad).
+    checkout_writes: parking_lot::Mutex<
+        std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+        >,
+    >,
+    /// The checkout of each task's latest accepted attempt, by
+    /// `"{plan_id}/{task_id}"`, with the order it was accepted in: a task that
+    /// depends on it warms its build trees from there (gap-b6b7a1).
+    accepted_checkouts: parking_lot::Mutex<HashMap<String, (u64, PathBuf)>>,
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
@@ -351,6 +413,17 @@ pub struct GraphTaskDispatcher {
     outbound_floor: Option<roko_core::tool::OutboundPolicy>,
 }
 
+/// The `[models.*]` keys a run's side calls may use
+/// ([`GraphTaskDispatcher::side_call_models`]): any, or only those listed.
+struct SideCallModels(Option<HashSet<String>>);
+
+impl SideCallModels {
+    /// Whether a side call may use `model_key`.
+    fn allow(&self, model_key: &str) -> bool {
+        self.0.as_ref().is_none_or(|keys| keys.contains(model_key))
+    }
+}
+
 impl GraphTaskDispatcher {
     /// Construct a dispatcher sharing the plan run's provider runtime.
     #[must_use]
@@ -374,6 +447,8 @@ impl GraphTaskDispatcher {
             workspace_provider: None,
             disk_admission: None,
             worktree_generations: parking_lot::Mutex::new(HashMap::new()),
+            checkouts_used: parking_lot::Mutex::new(HashSet::new()),
+            best_tries: best_try::BestTries::default(),
             tui_bridge: None,
             live_agent_output: None,
             gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
@@ -392,10 +467,17 @@ impl GraphTaskDispatcher {
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             allowance_stops: parking_lot::Mutex::new(HashMap::new()),
+            rung_speed: parking_lot::Mutex::default(),
             tries: parking_lot::Mutex::default(),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
+            handed_back: parking_lot::Mutex::default(),
+            unchanged_tries: parking_lot::Mutex::default(),
+            blocked: parking_lot::Mutex::default(),
+            uncounted_tries: parking_lot::Mutex::default(),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
+            checkout_writes: parking_lot::Mutex::default(),
+            accepted_checkouts: parking_lot::Mutex::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),
             depths: verify_depth::Depths::default(),
@@ -783,12 +865,67 @@ impl GraphTaskDispatcher {
     }
 
     /// Return a helper agent wired to the model chosen by
-    /// [`select_cheap_model_key`], or `None` when no model is dispatchable.
-    /// Used for best-effort error enrichment, quality judgment and gate
-    /// reflection calls, which count toward the attempt being verified
-    /// ([`HelperAgent`]).
+    /// [`select_cheap_model_key`] among those the run's side calls may use
+    /// ([`Self::side_call_models`]) that are healthy ([`Self::helper_healthy`]),
+    /// or `None` when no such model is dispatchable: its callers then fall
+    /// back as they do with no model configured. Used for best-effort error
+    /// enrichment, quality judgment and gate reflection calls, which count
+    /// toward the attempt being verified ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
-        select_cheap_model_key(&self.config).map(|model_key| self.helper_agent(model_key))
+        let models = self.side_call_models();
+        select_cheap_model_key(&self.config, |key| {
+            models.allow(key) && self.helper_healthy(key)
+        })
+        .map(|model_key| self.helper_agent(model_key))
+    }
+
+    /// The helper model that judges an attempt `executor` (a model slug) ran
+    /// ([`routing_context::select_judge_model_key`], 9123), among the models
+    /// the run's side calls may use that are healthy.
+    fn judge_model_key(&self, executor: &str) -> Option<(String, bool)> {
+        let models = self.side_call_models();
+        routing_context::select_judge_model_key(&self.config, executor, |key| {
+            models.allow(key) && self.helper_healthy(key)
+        })
+    }
+
+    /// Whether a helper call may use the model `key` (bug-f9ca2f): its
+    /// provider's circuit is closed in the run's health registry, as task
+    /// routing asks, and it did not fail its tool-use probe this run. Nor was
+    /// its provider last seen refusing for want of pay (bug-e33b7e): by a
+    /// rung's probe this run, or by a call with no success since, which a
+    /// lapsed quarantine does not change, since a balance comes back only
+    /// when someone pays.
+    fn helper_healthy(&self, key: &str) -> bool {
+        let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+            .resolve(key);
+        let health = &self.factory.health_registry;
+        health.is_available(&target.provider_id)
+            && !health.last_seen_unpaid(&target.provider_id)
+            && !self.factory.unpaid_provider(&target.provider_id)
+            && self.factory.failed_probe(key).is_none()
+            && self.factory.failed_probe(&target.model_slug).is_none()
+    }
+
+    /// Whether this run's tasks hold their outbound tool calls for approval,
+    /// as a chat host's run does ([`Self::with_outbound_floor`], gap-cf427e).
+    fn stages_outbound(&self) -> bool {
+        self.outbound_floor
+            .is_some_and(|floor| floor != roko_core::tool::OutboundPolicy::Allow)
+    }
+
+    /// The models this run's side calls may use: an audit's suite authors
+    /// and reviewers, and the helper calls. Any configured model, except in a
+    /// run that holds its outbound tool calls for approval, as a chat host's
+    /// does: only the models roko's own tool loop runs with their credentials
+    /// set ([`RokoConfig::tool_loop_models`]), the rule its ladder keeps
+    /// (gap-cf427e). Such a run never calls a person's CLI agent or login
+    /// (bug-082810).
+    fn side_call_models(&self) -> SideCallModels {
+        SideCallModels(
+            self.stages_outbound()
+                .then(|| self.config.tool_loop_models().into_iter().collect()),
+        )
     }
 
     /// A helper agent wired to `model_key`, as [`Self::cheap_agent`] builds
@@ -806,6 +943,7 @@ impl GraphTaskDispatcher {
                 .llm_call_secs
                 .max(1)
                 .saturating_mul(1_000),
+            allowance: None,
         };
         HelperAgent::new(agent, target, self.pricing_snapshot())
     }
@@ -838,28 +976,108 @@ impl GraphTaskDispatcher {
             .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
     }
 
-    /// Fit `task`'s declared line ranges in files an earlier task of its
-    /// plan changed to those files in `workdir`, the attempt's checkout
-    /// (bug-7ff055): the planner guessed them before the files changed.
-    fn fit_declared_ranges(&self, spec: &TaskExecutionSpec, task: &mut TaskDef, workdir: &Path) {
-        let ranged = task.context.as_ref().is_some_and(|context| {
-            context
-                .read_files
-                .iter()
-                .any(|read_file| read_file.lines.is_some())
-        });
-        if !ranged || task.depends_on.is_empty() {
-            return;
-        }
-        let Some(plan) = self.read_plan(spec) else {
-            return;
+    /// `spec`'s task as this try runs it: its definition, widened by the
+    /// hand-backs its tries got for blockers in other tasks' files
+    /// ([`blocked::blocked_task`], bug-3b3bb6).
+    fn task_for_try(&self, spec: &TaskExecutionSpec) -> Result<TaskDef> {
+        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
+            RokoError::Planning(format!(
+                "decode task definition for `{}`: {error}",
+                spec.title
+            ))
+        })?;
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        let Some(handed) = self.blocked.lock().get(&key).cloned() else {
+            return Ok(task);
         };
-        for fitted in crate::plan_policy::fit_ranges_to_earlier_changes(task, &plan, workdir) {
+        Ok(match self.read_plan(spec) {
+            Some(plan) => blocked::blocked_task(task, &plan, &handed),
+            None => task,
+        })
+    }
+
+    /// What the final message of `dispatch`, a red try of `task`, says of a
+    /// blocker outside the task's files (bug-3b3bb6). A blocker in another
+    /// task's file widens the task's next tries to that task's files and
+    /// checks, and this try does not count on its rung; the next try's
+    /// feedback says what the line meant.
+    fn note_blocked_try(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) -> blocked::BlockedTry {
+        let output = dispatch.result.output.body.as_text().unwrap_or_default();
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        // An earlier try's mark the ladder never read counts for nothing.
+        self.uncounted_tries.lock().remove(&key);
+        let handed = self.blocked.lock().get(&key).cloned().unwrap_or_default();
+        let plan = self.read_plan(spec);
+        let blocked_try = blocked::classify(&spec.plan_id, plan.as_ref(), task, &output, &handed);
+        match &blocked_try {
+            blocked::BlockedTry::HandBack {
+                blocker,
+                path,
+                owner,
+            } => {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %path,
+                    %owner,
+                    why = %blocker.why,
+                    "a try is blocked by another task's file; the task's next try may change \
+                     that task's files, and its checks judge it"
+                );
+                self.blocked
+                    .lock()
+                    .entry(key.clone())
+                    .or_default()
+                    .owners
+                    .push((owner.clone(), path.clone(), blocker.clone()));
+                self.uncounted_tries.lock().insert(key);
+            }
+            blocked::BlockedTry::Stop { reason, .. } => tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                %reason,
+                "a try is blocked by a file roko cannot hand it to; the task stops"
+            ),
+            blocked::BlockedTry::InScope(blocker) => tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                path = %blocker.path,
+                "a try says it is blocked by a file its task may change"
+            ),
+            blocked::BlockedTry::None => {}
+        }
+        if let Some(note) = blocked::feedback_note(&blocked_try) {
+            self.gate_retry_context
+                .note_pending(&spec.plan_id, &task.id, &note);
+        }
+        blocked_try
+    }
+
+    /// Whether `task_key`'s last try was handed back for a blocker in
+    /// another task's file, which then does not count on its rung
+    /// (bug-3b3bb6). Asking clears it.
+    fn take_uncounted_try(&self, task_key: &str) -> bool {
+        self.uncounted_tries.lock().remove(task_key)
+    }
+
+    /// Fit `task`'s declared line ranges to its files in `workdir`, the
+    /// attempt's checkout, on every try (bug-7ff055, bug-fa22cc): the planner
+    /// wrote them before the plan's work, and an earlier task, or the task's
+    /// own last try, whose checkout a retry reuses, may have changed a file
+    /// since. Phase 5.1's T2#1 cut `tools/render-demos.sh` from 121 lines to
+    /// 43, and T2#2 to #4 died on its declared `1-121` before any model call.
+    fn fit_declared_ranges(&self, spec: &TaskExecutionSpec, task: &mut TaskDef, workdir: &Path) {
+        for fitted in crate::plan_policy::fit_ranges_to_checkout(task, workdir) {
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
                 %fitted,
-                "fitted a declared line range to a file an earlier task changed"
+                "fitted a declared line range to the file in the try's checkout"
             );
         }
     }
@@ -870,6 +1088,33 @@ impl GraphTaskDispatcher {
     fn plan_skips_enrichment(&self, spec: &TaskExecutionSpec) -> bool {
         self.read_plan_meta(spec)
             .is_some_and(|meta| meta.skip_enrichment)
+    }
+
+    /// `spec`'s plan's `[meta] sources`, the documents it is written from
+    /// (bug-60ad88), which its prompts show first and cut last (bug-a8a787,
+    /// [`DispatchContext::source_documents`]).
+    fn plan_sources(&self, spec: &TaskExecutionSpec) -> Vec<String> {
+        self.read_plan_meta(spec)
+            .map(|meta| meta.sources)
+            .unwrap_or_default()
+    }
+
+    /// The build trees the attempt checkout at `checkout` holds, by the
+    /// `[gates] warm_build_dirs` that gave them (gap-6754ab), for its prompt
+    /// to name (gap-9d7381, [`DispatchContext::warm_build_trees`]). Empty
+    /// without per-task worktrees: the shared checkout's trees are the
+    /// person's.
+    fn checkout_build_trees(&self, checkout: &Path) -> Vec<String> {
+        if self.workspace_provider.is_none() {
+            return Vec::new();
+        }
+        crate::orchestrator::worktree::warm_build_dirs(
+            checkout,
+            self.config.gates.warm_build_dirs.as_deref(),
+        )
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect()
     }
 
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
@@ -940,6 +1185,12 @@ impl GraphTaskDispatcher {
         if let Some(rejection) = self.unbuilt_rung(spec, task) {
             return Err(rejection);
         }
+        // So does a task the ladder routes when every rung of it failed its
+        // probe at plan start: no model outside the ladder runs it
+        // (gap-20301d).
+        if let Some(rejection) = self.unroutable(task) {
+            return Err(rejection);
+        }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let mut task = self.prompt_task(spec, task);
@@ -981,6 +1232,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        // What the attempt waits for before it opens counts as its queue
+        // (gap-6a319c), the agent slot it waited for included.
+        let entered = Instant::now();
+        let slot_wait_ms = SLOT_WAIT_MS.try_with(|ms| *ms).unwrap_or(0);
         // A paused run starts no attempt, a retry included (G10).
         operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
@@ -996,12 +1251,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // (gap-ca1c92).
         let allowance = budget_reservation.allowance(&self.budget_ledger);
 
-        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
-            RokoError::Planning(format!(
-                "decode task definition for `{}`: {error}",
-                spec.title
-            ))
-        })?;
+        let task = self.task_for_try(spec)?;
         let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
         self.admit_task_budget(spec, &task, &task_spend_key, ctx)?;
 
@@ -1120,6 +1370,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             None => None,
         };
 
+        let queue_ms = slot_wait_ms.saturating_add(elapsed_ms(entered));
+        let acquiring = Instant::now();
+
         // ── Worktree isolation: acquire ─────────────────────────────────
         //
         // When a workspace provider is configured, acquire an isolated
@@ -1148,8 +1401,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .as_ref()
             .filter(|_| scratch.is_none());
         let lease = if let Some(provider) = provider {
+            // A task that depends on another starts from its accepted work:
+            // its build trees come warm from that checkout (gap-b6b7a1).
+            let seed = self.dependency_checkout(&spec.plan_id, &task);
             let lease = provider
-                .acquire(&attempt_id)
+                .acquire_seeded(&attempt_id, seed.as_deref())
                 .await
                 .map_err(|e| RokoError::Agent {
                     backend: "worktree-isolation".to_string(),
@@ -1172,6 +1428,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
             (None, Some(lease)) => lease.path.clone(),
             (None, None) => self.workdir.clone(),
         };
+        // gap-6a319c: the checkout's preparation and what made it warm.
+        let setup = attempt::AttemptSetup {
+            queue_ms: Some(queue_ms),
+            workspace_ms: Some(elapsed_ms(acquiring)),
+            workspace: lease
+                .as_ref()
+                .map(|lease| self.attempt_workspace(&lease.path)),
+        };
+        // A try that passed fewer verify steps than the task's best one left
+        // its checkout to start from the best try's files (gap-fefdf5).
+        if let Some(lease) = &lease {
+            self.restore_best_try(spec, &task, &lease.path).await;
+        }
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git
         // command here then fails: clear a stale one before the agent starts
@@ -1264,8 +1533,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let retry_key = format!("{}/{}", spec.plan_id, task.id);
         // The attempt opens before prompt assembly (S01 §4.2): if the process
         // dies from here on, the attempt keeps its key and counts as
-        // abandoned.
+        // abandoned, and a resume settles it with what its hold on the plan
+        // budget says it spent (bug-b7f6a8).
         let mut attempt = self.open_attempt(spec, &task, ctx);
+        budget_reservation.bind_attempt(&attempt.key.attempt_key());
+        attempt.record_setup(setup);
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).
         self.record_diff_base(
@@ -1352,11 +1624,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            warm_build_trees: lease
+                .as_ref()
+                .map(|lease| self.checkout_build_trees(&lease.path))
+                .unwrap_or_default(),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
             knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
+            source_documents: self.plan_sources(spec),
         };
         // M3: the self-model forecasts the attempt before it is routed (6128),
         // and in active mode proposes its start rung (6130).
@@ -1369,29 +1646,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
-        // A try on a rung the task can still climb from is bounded: it gets
-        // the rung's turns, however many a turn-cap stop raised the cap to,
-        // and may spend no more than the rung's allowance (gap-3e770b).
-        let rung_allowance =
-            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, tier_turns);
-        if let Some(allowance) = &rung_allowance {
-            if let Some(turns) = allowance.turns {
-                max_turns = max_turns.min(turns);
-            }
-            tracing::info!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                rung = %allowance.rung,
-                max_turns,
-                max_usd = ?allowance.usd,
-                "the try on this rung is bounded; a try that uses its allowance up fails on the \
-                 rung"
-            );
-        }
-        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
-        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
-
-        let contract = self.task_contract(role, spec, &task);
         let base_timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // The last attempt ran out of time with partial work on disk: give
@@ -1409,6 +1663,56 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
             raised
         });
+        // A try on a rung the task can still climb from is bounded: it gets
+        // the rung's turns, however many a turn-cap stop raised the cap to,
+        // may spend no more than the rung's allowance (gap-3e770b), and may
+        // run for a share of the attempt's time (bug-f0007b).
+        let turn_cap = max_turns;
+        let rung_allowance = self.rung_allowance(
+            &task,
+            &attempt,
+            &dispatch_plan,
+            ladder_step,
+            tier_turns,
+            timeout_ms / 1_000,
+        );
+        if let Some(allowance) = &rung_allowance {
+            if let Some(turns) = allowance.turns {
+                max_turns = max_turns.min(turns);
+            }
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                rung = %allowance.rung,
+                max_turns,
+                max_usd = ?allowance.usd,
+                max_secs = ?allowance.secs,
+                "the try on this rung is bounded; a try that uses its allowance up fails on the \
+                 rung"
+            );
+        }
+        // Where the ladder routed the try, and what it may use on each rung
+        // above: a substitute failover moves it to there runs under that
+        // rung's bounds (bug-62ae1e).
+        let route = failover::LadderRoute::of(&task, &dispatch_plan, ladder_step).map(|route| {
+            let above = self.bounds_above(
+                &task,
+                &attempt,
+                &route,
+                turn_cap,
+                tier_turns,
+                timeout_ms / 1_000,
+            );
+            route.with_above(above)
+        });
+        let above = route
+            .as_ref()
+            .map(|route| route.above.as_slice())
+            .unwrap_or_default();
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref(), above);
+        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
+
+        let contract = self.task_contract(role, spec, &task);
         let mut prompt = dispatch_plan.prompt.user_prompt.clone();
         if let Some(previous) = turn_cap_resume {
             prompt.push_str(&turn_cap_resume_note(previous, max_turns));
@@ -1424,6 +1728,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             audit.scan_prompt(&dispatch_plan.prompt.system_prompt, &prompt);
         }
         self.log_prompts(spec, &task.id, &dispatch_plan.prompt.system_prompt, &prompt);
+        // bug-cbbaa8: an implementer that hands back with its checks failing
+        // goes back to them within the try.
+        let send_back = self.send_back(&task);
         let mut request = AgentDispatchRequest {
             model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,
@@ -1458,9 +1765,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
             knowledge_ids: decision_log::included_knowledge_ids(&dispatch_plan),
-            allowance: allowance
+            allowance: self.metered_calls(
+                allowance
+                    .clone()
+                    .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+                &spec.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ),
+            hand_off: send_back
                 .clone()
-                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+                .map(|check| -> Arc<dyn roko_agent::tool_loop::HandOffCheck> { check }),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);
@@ -1542,7 +1857,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
             Some(attempt.live_tool_calls()),
         );
 
+        // gap-770cb5: the agent can run its task's checks mid-try. They stay
+        // until the try is judged, which reads their runs (gap-56f761).
+        let _left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
+        // reg-d2deba: the person's checkout over the try, when it runs in a
+        // checkout of its own.
+        let try_watch = self.watch_checkout(spec, &effective_workdir).await;
         attempt.dispatch_started();
+        attempt.record_effort(request.effort.clone());
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
@@ -1558,7 +1880,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     attempt.key.attempt_key(),
                     request,
                     Some(&progress),
-                    failover::LadderRoute::of(&task, &dispatch_plan, ladder_step),
+                    route.as_ref(),
+                    allowance.as_deref(),
                     Some(failover::DashboardRow {
                         agent_id: &pre_dispatch_agent_id,
                         role: task.role.as_deref().unwrap_or("implementer"),
@@ -1577,6 +1900,25 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let dispatch_result =
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
+        // The calls a provider refused before the one that ran cost what
+        // they used, which the verdict counts beside it (bug-8bcd98).
+        attempt.record_refused_spend(progress.refused_usd());
+        // What the try changed in the person's checkout, its own checks
+        // included, said now: the try may end before its gate (reg-d2deba).
+        let (try_written, try_findings) = self
+            .try_checkout_written(
+                spec,
+                &task,
+                attempt_number,
+                &attempt.key.attempt_key(),
+                &effective_workdir,
+                try_watch,
+            )
+            .await;
+        attempt.record_checkout_findings(try_findings);
+        if let Some(continues) = send_back.as_ref().and_then(|check| check.continues()) {
+            attempt.record_continues(continues);
+        }
         if let Some(supervised) = supervised {
             supervised
                 .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));
@@ -1605,8 +1947,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
             (Ok(dispatched), None) => dispatched,
             (Err(error), None) => {
                 // An agent that runs its own loop and spent its rung's
-                // allowance resumes its work on its next try (gap-3e770b).
-                if let Some(watchdog::AttemptInterrupted::AllowanceSpent(reason)) = &ended_by {
+                // allowance, or a try that ran its rung's time, resumes its
+                // work on its next try (gap-3e770b, bug-f0007b).
+                if let Some(
+                    watchdog::AttemptInterrupted::AllowanceSpent(reason)
+                    | watchdog::AttemptInterrupted::TimeBound { reason, .. },
+                ) = &ended_by
+                {
                     self.keep_allowance_stop(&spec.plan_id, &task.id, reason);
                 }
                 // A call that failed once the run began to stop, such as an
@@ -1693,9 +2040,20 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 return Err(error);
             }
         };
+        // A substitute failover moved up the ladder ran under its own rung's
+        // bounds (bug-62ae1e).
+        let (rung_allowance, max_turns) = match route
+            .as_ref()
+            .and_then(|route| route.substitute_bounds(&failover))
+        {
+            Some(bounds) => (bounds.allowance.clone(), bounds.max_turns),
+            None => (rung_allowance, max_turns),
+        };
         // The attempt's records name the planned model beside the one that
         // ran (bug-35379d).
         attempt.record_failover(failover);
+        // A reply roko stopped while it only reasoned says so (gap-f3f950).
+        self.publish_reasoning_cuts(&spec.plan_id, &task.id, attempt.key.attempt, &dispatch);
         let wall_duration = started_at.elapsed();
         // The model the provider reported serving (bug-31438d). A
         // substitution is priced by the model that served, and fails a
@@ -1799,7 +2157,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // spend limit the attempt gave it (gap-e14344): the harness
             // stopped it, and no retry can pay for that call either.
             // A try that spent its rung's allowance stopped the same ways
-            // (gap-3e770b), and failed on its rung.
+            // (gap-3e770b), as did one that ran its rung's time (bug-f0007b),
+            // and failed on its rung.
             let budget_stop = match allowance.as_deref() {
                 Some(allowance) => allowance.stop(own_budget_stop(&dispatch)),
                 None => own_budget_stop(&dispatch).map(TryStop::Plan),
@@ -1810,7 +2169,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let settlement = match (&stopped, &budget_stop) {
                 (Some(cancelled), _) => Settlement::provider_call_error(cancelled),
                 (None, Some(TryStop::Plan(reason))) => Settlement::budget_exhausted(reason),
-                (None, Some(TryStop::Rung(reason))) => Settlement::allowance_spent(reason),
+                (None, Some(TryStop::Rung(reason) | TryStop::Time { reason, .. })) => {
+                    Settlement::allowance_spent(reason)
+                }
                 (None, None) => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
             };
             let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
@@ -1847,13 +2208,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     );
                     return Err(RokoError::gateway("budget", false, reason));
                 }
-                Some(TryStop::Rung(reason)) => {
+                Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
                     tracing::info!(
                         plan_id = %spec.plan_id,
                         task_id = %task.id,
                         %reason,
-                        "the try spent its rung's allowance; it failed on the rung, and its work \
-                         stays in its checkout"
+                        "the try used up its rung's allowance; it failed on the rung, and its \
+                         work stays in its checkout"
                     );
                     self.keep_allowance_stop(&spec.plan_id, &task.id, &reason);
                     return Err(RokoError::Agent {
@@ -1936,6 +2297,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &attempt_key,
                 None,
                 attempt.harness_params(),
+                &try_written,
             ))
             .await;
         attempt.verify_ended();
@@ -1943,6 +2305,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
         attempt.record_scope_findings(report.scope_findings);
         attempt.record_verify_depth(report.verify_depth);
         let verification = report.result;
+        // A red try that states a blocker outside its task's files
+        // (bug-3b3bb6): another task's file hands the failure back to that
+        // task's files and checks, on the same rung; a file no task of the
+        // plan changes stops the task for the person.
+        let blocked_try = if verification.is_err() {
+            self.note_blocked_try(spec, &task, &dispatch)
+        } else {
+            blocked::BlockedTry::None
+        };
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
         attempt.record_helper_calls(
@@ -1956,6 +2327,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // experiments learn from the verified outcome rather than from the
         // provider dispatch result.
         let settlement = Settlement::verified(&verification);
+        if let Some(stop) = &bounded {
+            attempt.ended_at_bound(stop.kind());
+        }
         let mut settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
         settled.bound = bounded.as_ref().map(BoundedStop::describe);
         self.emit_feedback(
@@ -1988,6 +2362,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         )
                         .await;
                 }
+                // A rejection is never retried: the person has to act.
+                if let blocked::BlockedTry::Stop { reason, .. } = blocked_try {
+                    return Err(RokoError::Rejected(reason));
+                }
                 return Err(error);
             }
         };
@@ -2011,7 +2389,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 handed_on = Some(lease.clone());
             } else {
-                accepted = self
+                let merging = Instant::now();
+                let merged = self
                     .accept_attempt(
                         spec,
                         &task,
@@ -2021,7 +2400,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         lease,
                         ctx,
                     )
-                    .await?;
+                    .await;
+                self.publish_attempt_merged(spec, &task, &settled, &merged, elapsed_ms(merging));
+                accepted = merged?;
             }
         }
         // A scratch_dir attempt's result is copied back into the workspace,
@@ -2101,7 +2482,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         permissions.set_mode(0o755);
         std::fs::set_permissions(&script, permissions).expect("make script executable");
 
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "graph-model".to_string();
@@ -2374,7 +2755,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         permissions.set_mode(0o755);
         std::fs::set_permissions(&script, permissions).expect("make script executable");
 
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "graph-model".to_string();
@@ -2534,6 +2915,23 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         config.gates.cargo_fix_enabled = false;
     }
 
+    /// Audits are on by default (decision 7103), and their vault defaults to
+    /// `~/.roko/audit`: a dispatcher fixture runs them only with a vault of
+    /// its own (`[audit] home`), so no test writes to the operator's vault.
+    pub(crate) fn fence_audits(config: &mut RokoConfig) {
+        if config.audit.home.is_none() {
+            config.audit.enabled = false;
+        }
+    }
+
+    /// `RokoConfig::default()` for a dispatcher fixture, its audits fenced
+    /// ([`fence_audits`]).
+    pub(crate) fn fixture_config() -> RokoConfig {
+        let mut config = RokoConfig::default();
+        fence_audits(&mut config);
+        config
+    }
+
     /// [`no_auto_fix`] in maximize mode (`[experiments] maximize`): no loop
     /// withholds its content and no section is left out, so each prompt
     /// carries the learned content it retrieved, whatever arms the day's
@@ -2605,6 +3003,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             },
         );
         configure(&mut config);
+        fence_audits(&mut config);
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
@@ -2705,11 +3104,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
 
     // ─── Dispatch overhead and config wiring ─────────────────────────────────
 
-    /// A dispatcher over `config` whose factory owns no live provider.
+    /// A dispatcher over `config`, its audits fenced ([`fence_audits`]),
+    /// whose factory owns no live provider.
     pub(super) async fn make_bare_dispatcher(
-        config: RokoConfig,
+        mut config: RokoConfig,
         workdir: &Path,
     ) -> GraphTaskDispatcher {
+        fence_audits(&mut config);
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
@@ -3114,36 +3515,65 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
                 let Some(request) = read_mock_request(&mut stream) else {
                     return;
                 };
-                // A request that asks to stream gets the same answer as SSE
-                // chunks: an attempt streams whenever its progress is tracked
-                // (bug-3a3b0f), with or without the stall watchdog.
                 let streamed = request["stream"] == serde_json::Value::Bool(true);
                 requests.lock().push(request);
-                let wire = if streamed {
-                    let mut body = String::new();
-                    for chunk in openai_stream_chunks(&response) {
-                        body.push_str(&format!("data: {chunk}\n\n"));
-                    }
-                    body.push_str("data: [DONE]\n\n");
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
-                    )
-                } else {
-                    let body = response.to_string();
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
+                let wire = openai_mock_wire(&response, streamed);
                 let _ = stream.write_all(wire.as_bytes());
             }
         });
         (base_url, captured)
     }
 
+    /// The HTTP response a stand-in OpenAI-compatible server sends for the
+    /// chat completion `response`: a [`rate_limited_turn`] as HTTP 429 with
+    /// its `Retry-After`; any other as SSE chunks when the request asked to
+    /// stream, as an attempt does whenever its progress is tracked
+    /// (bug-3a3b0f), else as JSON.
+    pub(super) fn openai_mock_wire(response: &serde_json::Value, streamed: bool) -> String {
+        if let Some(status) = response
+            .get(REFUSED_TURN)
+            .and_then(serde_json::Value::as_u64)
+        {
+            let body = response["body"].to_string();
+            let reason = if status == 402 {
+                "Payment Required"
+            } else {
+                "Too Many Requests"
+            };
+            format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else if let Some(retry_after) = response
+            .get(RATE_LIMITED_TURN)
+            .and_then(serde_json::Value::as_u64)
+        {
+            let body = serde_json::json!({ "error": response["error"] }).to_string();
+            format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else if streamed {
+            let mut body = String::new();
+            for chunk in openai_stream_chunks(response) {
+                body.push_str(&format!("data: {chunk}\n\n"));
+            }
+            body.push_str("data: [DONE]\n\n");
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            )
+        } else {
+            let body = response.to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+    }
+
     /// A chat-completion `response` as the SSE chunks a streaming provider
-    /// sends for it: the message's content and tool calls as one delta, then
-    /// its finish reason, then its usage.
+    /// sends for it: the message's reasoning, content and tool calls as one
+    /// delta, then its finish reason, then its usage.
     fn openai_stream_chunks(response: &serde_json::Value) -> Vec<serde_json::Value> {
         let choice = &response["choices"][0];
         let message = &choice["message"];
@@ -3151,6 +3581,12 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         let calls = message["tool_calls"]
             .as_array()
             .filter(|calls| !calls.is_empty());
+        if let Some(reasoning) = message["reasoning_content"]
+            .as_str()
+            .filter(|reasoning| !reasoning.is_empty())
+        {
+            delta["reasoning_content"] = serde_json::json!(reasoning);
+        }
         if let Some(content) = message["content"]
             .as_str()
             .filter(|content| !content.is_empty())
@@ -3230,7 +3666,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
 
     /// The JSON body of the HTTP request on `stream`; `None` when the
     /// client hung up before its headers.
-    fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
+    pub(super) fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
         use std::io::Read;
 
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
@@ -3287,6 +3723,34 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         })
     }
 
+    /// The key of a [`rate_limited_turn`]'s `Retry-After`.
+    const RATE_LIMITED_TURN: &str = "__rate_limited_retry_after_secs";
+
+    /// A call the provider refuses with HTTP 429 and a `Retry-After` of
+    /// `retry_after_secs`, with z.ai's error body (bug-4b6844).
+    /// [`spawn_openai_mock`] answers it so whether the request streams or not.
+    const REFUSED_TURN: &str = "__refused_with_status";
+
+    /// A call the provider refuses with HTTP `status` and the JSON `body`,
+    /// with no `Retry-After` (bug-390e4b). [`spawn_openai_mock`] answers it so
+    /// whether the request streams or not.
+    pub(super) fn refused_turn(status: u16, body: serde_json::Value) -> serde_json::Value {
+        let mut turn = serde_json::json!({ "body": body });
+        turn[REFUSED_TURN] = serde_json::json!(status);
+        turn
+    }
+
+    pub(super) fn rate_limited_turn(retry_after_secs: u64) -> serde_json::Value {
+        let mut turn = serde_json::json!({
+            "error": {
+                "code": "1302",
+                "message": "Rate limit reached for requests"
+            }
+        });
+        turn[RATE_LIMITED_TURN] = serde_json::json!(retry_after_secs);
+        turn
+    }
+
     pub(super) fn final_turn(text: &str) -> serde_json::Value {
         serde_json::json!({
             "id": "chatcmpl-final",
@@ -3326,7 +3790,7 @@ sleep 30
         base_url: String,
         feedback: GraphFeedbackContext,
     ) {
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "api-model".to_string();
@@ -3590,7 +4054,7 @@ sleep 30
     async fn agent_spawned_names_planned_provider() {
         let temp = tempdir().expect("tempdir");
         let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "glm-model".to_string();
@@ -3653,7 +4117,7 @@ sleep 30
     async fn route_decisions_are_published() {
         let temp = tempdir().expect("tempdir");
         let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok")]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "glm-model".to_string();
@@ -3755,7 +4219,7 @@ sleep 30
     async fn retried_attempts_publish_their_attempt_number() {
         let temp = tempdir().expect("tempdir");
         let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "glm-model".to_string();
@@ -3870,7 +4334,7 @@ sleep 30
             }
         });
         let temp = tempdir().expect("tempdir");
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "claude-model".to_string();

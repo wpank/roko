@@ -2,16 +2,28 @@
 //!
 //! A try on the rung the model ladder put a task on is bounded: at most the
 //! rung's turns ([`LadderConfig::try_turns`]: fewer below the highest rung
-//! the task can reach, unless `[routing.ladder] max_turns` says otherwise)
-//! and, when `[routing.ladder] max_usd` names the rung, at most its spend. A
-//! try that uses either up is judged by the task's checks on the work it
-//! left, as a finished try is (gap-2c9412): it passes when they pass, and
-//! otherwise fails on its check, blamed on the agent, so two such tries climb
-//! the ladder as two failed checks do. The plan's budget still bounds every
-//! try and is asked first: a stop for the plan's budget stays the harness's,
-//! and ends the attempt unchecked, as before.
+//! the task can reach, unless `[routing.ladder] max_turns` says otherwise),
+//! at most its time ([`LadderConfig::try_secs`], the same way, unless
+//! `max_secs` says otherwise; bug-f0007b) and, when `[routing.ladder]
+//! max_usd` names the rung, at most its spend. A try that uses any of them
+//! up is judged by the task's checks on the work it left, as a finished try
+//! is (gap-2c9412): it passes when they pass, and otherwise fails on its
+//! check, blamed on the agent, so two such tries climb the ladder as two
+//! failed checks do. The plan's budget still bounds every try and is asked
+//! first: a stop for the plan's budget stays the harness's, and ends the
+//! attempt unchecked, as before.
+//!
+//! A try's time runs while its provider call does, less any wait for the
+//! provider's concurrency permit. Once it has run its time, the watchdog
+//! ([`GraphTaskDispatcher::run_watched`]) marks the bound reached: roko's own
+//! tool loop then makes no further model call, and an agent that runs its
+//! own loop is stopped at once. A call of roko's loop still running
+//! [`TRY_TIME_GRACE`] past the bound is stopped too.
 //!
 //! [`LadderConfig::try_turns`]: roko_core::config::routing::LadderConfig::try_turns
+//! [`LadderConfig::try_secs`]: roko_core::config::routing::LadderConfig::try_secs
+
+use std::time::Duration;
 
 use super::budget::AttemptAllowance;
 use super::failover::FailoverChain;
@@ -19,9 +31,15 @@ use super::watchdog::{AttemptInterrupted, AttemptProgress};
 use super::*;
 use crate::dispatch_v2::CallAllowance;
 
-/// The failure class of a try its rung's spend allowance stopped, which its
-/// failure reason and its error lead with.
+/// The failure class of a try its rung's spend allowance or time bound
+/// stopped, which its failure reason and its error lead with.
 pub(super) const RUNG_ALLOWANCE: &str = "rung_allowance";
+
+/// How long a provider call of roko's own tool loop may run past its try's
+/// time bound before the watchdog stops it: the loop makes no model call
+/// after the bound, so this lets the turn in flight end (bug-f0007b). A call
+/// whose provider's `timeout_ms` is longer gets that instead (bug-5e597a).
+pub(super) const TRY_TIME_GRACE: Duration = Duration::from_secs(120);
 
 /// What one try may use on the rung the ladder put it on.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +51,9 @@ pub(super) struct RungAllowance {
     /// What the try may spend, in USD; `None` leaves the plan's budget alone
     /// to bound it.
     pub(super) usd: Option<f64>,
+    /// How long the try may run, in seconds; `None` leaves the attempt's
+    /// timeout alone to bound it (bug-f0007b).
+    pub(super) secs: Option<u64>,
 }
 
 /// Why a try's allowance stopped it.
@@ -43,6 +64,9 @@ pub(super) enum TryStop {
     Plan(String),
     /// It spent its rung's allowance: the agent's failure on the rung.
     Rung(String),
+    /// It ran its rung's time, `secs` seconds, for this reason: the agent's
+    /// failure on the rung (bug-f0007b).
+    Time { secs: u64, reason: String },
 }
 
 /// How a try ended at its rung's bound (gap-2c9412): the task's checks then
@@ -53,24 +77,76 @@ pub(super) enum BoundedStop {
     Turns(TurnCapRetry),
     /// It spent the rung's allowance, for this reason.
     Spend(String),
+    /// It ran the rung's time, `secs` seconds, for this reason (bug-f0007b).
+    Time { secs: u64, reason: String },
 }
 
 impl BoundedStop {
+    /// The bound's kind, as a verdict records it (gap-3217a0).
+    pub(super) const fn kind(&self) -> &'static str {
+        match self {
+            Self::Turns(_) => roko_learn::telemetry::records::BOUND_TURNS,
+            Self::Spend(_) => roko_learn::telemetry::records::BOUND_SPEND,
+            Self::Time { .. } => roko_learn::telemetry::records::BOUND_TIME,
+        }
+    }
+
     /// The bound it reached, in words.
     pub(super) fn describe(&self) -> String {
         match self {
             Self::Turns(stop) => format!("its {}-turn bound", stop.cap),
             Self::Spend(_) => "its spend allowance".to_string(),
+            Self::Time { secs, .. } => format!("its {secs} s time bound"),
         }
     }
 }
 
 /// What one try's model calls may spend: its plan's hold, asked first, so
-/// the run's cap has the last word, then its rung's spend allowance.
+/// the run's cap has the last word, then its rung's time bound and spend
+/// allowance. A try failover moved to a substitute on a rung above runs
+/// under that rung's ([`Self::rebind`], bug-62ae1e).
 #[derive(Debug)]
 pub(super) struct TryAllowance {
     plan: Option<Arc<AttemptAllowance>>,
-    rung: Option<RungSpend>,
+    rung: parking_lot::RwLock<Option<Arc<RungSpend>>>,
+    time: parking_lot::RwLock<Option<Arc<RungTime>>>,
+}
+
+/// What a try that failover moved up the ladder may use on the rung its
+/// substitute runs on (bug-62ae1e): what a try the ladder routed there would
+/// get.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RungBounds {
+    /// Index of the rung among the role's rungs, cheapest first.
+    pub(super) index: usize,
+    /// What the try may use there; `None` on a rung with no bound of its
+    /// own, such as the highest one the task can reach.
+    pub(super) allowance: Option<RungAllowance>,
+    /// The turns the try may take there.
+    pub(super) max_turns: u32,
+}
+
+/// A rung's time bound for one try (bug-f0007b), which the watchdog marks
+/// reached.
+#[derive(Debug)]
+struct RungTime {
+    rung: String,
+    limit: Duration,
+    /// Why the try must stop, once it reached the bound.
+    reached: parking_lot::Mutex<Option<String>>,
+}
+
+impl RungTime {
+    /// `rung`'s time bound, when it bounds time.
+    fn of(rung: &RungAllowance) -> Option<Arc<Self>> {
+        rung.secs.map(|secs| {
+            Arc::new(Self {
+                rung: rung.rung.clone(),
+                limit: Duration::from_secs(secs),
+                reached: parking_lot::Mutex::default(),
+            })
+        })
+    }
 }
 
 /// A rung's spend allowance for one try, and what the try spent of it.
@@ -96,19 +172,101 @@ struct RungSpent {
 
 impl TryAllowance {
     /// The allowance of a try that holds `plan` of its plan's budget and may
-    /// spend `rung`'s allowance on its rung; `None` when neither bounds it.
+    /// spend `rung`'s allowance on its rung; `None` when neither bounds it,
+    /// nor the time or spend of any rung `above` that failover may move it
+    /// to (bug-62ae1e).
     pub(super) fn new(
         plan: Option<Arc<AttemptAllowance>>,
         rung: Option<&RungAllowance>,
+        above: &[RungBounds],
     ) -> Option<Arc<Self>> {
-        let rung = rung.and_then(|rung| {
-            rung.usd.map(|limit_usd| RungSpend {
-                rung: rung.rung.clone(),
-                limit_usd,
-                spent: parking_lot::Mutex::default(),
+        let time = rung.and_then(RungTime::of);
+        let spend = rung.and_then(|rung| RungSpend::of(rung, RungSpent::default()));
+        let bounded_above = above
+            .iter()
+            .filter_map(|bounds| bounds.allowance.as_ref())
+            .any(|rung| rung.usd.is_some() || rung.secs.is_some());
+        (plan.is_some() || spend.is_some() || time.is_some() || bounded_above).then(|| {
+            Arc::new(Self {
+                plan,
+                rung: parking_lot::RwLock::new(spend),
+                time: parking_lot::RwLock::new(time),
             })
+        })
+    }
+
+    /// The calls the try recorded so far are on the plan's books: failover
+    /// settled their dispatch as refused (bug-8bcd98), so a resume after a
+    /// crash does not charge them again (bug-b7f6a8).
+    pub(super) fn book_recorded_calls(&self) {
+        if let Some(plan) = &self.plan {
+            plan.book_recorded_calls();
+        }
+    }
+
+    /// Bound the rest of the try by `rung`'s spend allowance and time in
+    /// place of the rung's it was routed to, once failover moved it to a
+    /// substitute on that rung (bug-62ae1e); `None` leaves it no bound of a
+    /// rung's own. What it spent so far still counts.
+    pub(super) fn rebind(&self, rung: Option<&RungAllowance>) {
+        let spent = self.rung_spend().map_or_else(RungSpent::default, |spend| {
+            let spent = spend.spent.lock();
+            RungSpent {
+                usd: spent.usd,
+                last_call_usd: spent.last_call_usd,
+                ..RungSpent::default()
+            }
         });
-        (plan.is_some() || rung.is_some()).then(|| Arc::new(Self { plan, rung }))
+        *self.rung.write() = rung.and_then(|rung| RungSpend::of(rung, spent));
+        *self.time.write() = rung.and_then(RungTime::of);
+    }
+
+    fn rung_spend(&self) -> Option<Arc<RungSpend>> {
+        self.rung.read().clone()
+    }
+
+    fn rung_time(&self) -> Option<Arc<RungTime>> {
+        self.time.read().clone()
+    }
+
+    /// How long the try may run on its rung, if its rung bounds its time.
+    pub(super) fn time_limit(&self) -> Option<Duration> {
+        self.rung_time().map(|time| time.limit)
+    }
+
+    /// The rung whose time bounds the try.
+    pub(super) fn time_rung(&self) -> Option<String> {
+        self.rung_time().map(|time| time.rung.clone())
+    }
+
+    /// The try has run its rung's time (bug-f0007b): it makes no further
+    /// model call, and [`Self::stop`] says so. The reason it stops, the same
+    /// each time this is asked; `None` when its rung bounds no time.
+    pub(super) fn reach_time_bound(&self) -> Option<TryStop> {
+        let time = self.rung_time()?;
+        let secs = time.limit.as_secs();
+        let reason = time
+            .reached
+            .lock()
+            .get_or_insert_with(|| {
+                format!(
+                    "the try reached its time bound on rung `{}`: {secs} s ([routing.ladder] \
+                     max_secs)",
+                    time.rung
+                )
+            })
+            .clone();
+        Some(TryStop::Time { secs, reason })
+    }
+
+    /// The stop for the try's time, once it ran it.
+    pub(super) fn time_stop(&self) -> Option<TryStop> {
+        let time = self.rung_time()?;
+        let reason = time.reached.lock().clone()?;
+        Some(TryStop::Time {
+            secs: time.limit.as_secs(),
+            reason,
+        })
     }
 
     /// Why the try stopped for its allowance, if it did. `own_stop` is why an
@@ -118,9 +276,15 @@ impl TryAllowance {
         if let Some(reason) = self.plan.as_deref().and_then(AttemptAllowance::refusal) {
             return Some(TryStop::Plan(reason));
         }
-        let rung = self.rung.as_ref();
-        if let Some(reason) = rung.and_then(|rung| rung.spent.lock().refusal.clone()) {
+        let rung = self.rung_spend();
+        if let Some(reason) = rung
+            .as_ref()
+            .and_then(|rung| rung.spent.lock().refusal.clone())
+        {
             return Some(TryStop::Rung(reason));
+        }
+        if let Some(stop) = self.time_stop() {
+            return Some(stop);
         }
         let own_stop = own_stop?;
         match rung {
@@ -133,6 +297,18 @@ impl TryAllowance {
 }
 
 impl RungSpend {
+    /// `rung`'s spend allowance, when it has one, of which the try spent
+    /// `spent` so far.
+    fn of(rung: &RungAllowance, spent: RungSpent) -> Option<Arc<Self>> {
+        rung.usd.map(|limit_usd| {
+            Arc::new(Self {
+                rung: rung.rung.clone(),
+                limit_usd,
+                spent: parking_lot::Mutex::new(spent),
+            })
+        })
+    }
+
     /// Why the try must stop: it spent its allowance (`detail` says how the
     /// agent put it, when it stopped itself). What it spent is said when it
     /// is known: an agent that keeps its own limit reports it only at the
@@ -162,7 +338,10 @@ impl CallAllowance for TryAllowance {
         if let Some(reason) = self.plan.as_deref().and_then(CallAllowance::refuse_call) {
             return Some(reason);
         }
-        let rung = self.rung.as_ref()?;
+        if let Some(TryStop::Time { reason, .. }) = self.time_stop() {
+            return Some(reason);
+        }
+        let rung = self.rung_spend()?;
         let spent = rung.spent.lock();
         if spent.usd + spent.last_call_usd <= rung.limit_usd && spent.usd < rung.limit_usd {
             return None;
@@ -179,7 +358,7 @@ impl CallAllowance for TryAllowance {
         }
         // An unpriced call's cost is unknown: the plan refuses the next call
         // (bug-4fabd0), and the rung counts nothing.
-        if let Some(rung) = &self.rung
+        if let Some(rung) = self.rung_spend()
             && priced
             && cost_usd.is_finite()
             && cost_usd > 0.0
@@ -195,7 +374,7 @@ impl CallAllowance for TryAllowance {
             .plan
             .as_deref()
             .and_then(CallAllowance::spend_limit_usd);
-        let Some(rung) = &self.rung else {
+        let Some(rung) = self.rung_spend() else {
             return plan;
         };
         let mut spent = rung.spent.lock();
@@ -208,7 +387,8 @@ impl CallAllowance for TryAllowance {
 impl GraphTaskDispatcher {
     /// How `dispatch`, an unsuccessful try of `task_id` that ran with
     /// `max_turns` turns, ended at its rung's bound (gap-2c9412): its rung's
-    /// spend `allowance` stopped it, or it used up the turns `rung` gave it.
+    /// spend `allowance` or time bound (bug-f0007b) stopped it, or it used
+    /// up the turns `rung` gave it.
     /// `None` for any other end: the plan's budget stopping it, the run
     /// stopping, a provider failure, or a turn cap that was the tier's, as
     /// on the highest rung.
@@ -228,6 +408,9 @@ impl GraphTaskDispatcher {
         match allowance.and_then(|allowance| allowance.stop(own_budget_stop(dispatch))) {
             Some(TryStop::Plan(_)) => return None,
             Some(TryStop::Rung(reason)) => return Some(BoundedStop::Spend(reason)),
+            Some(TryStop::Time { secs, reason }) => {
+                return Some(BoundedStop::Time { secs, reason });
+            }
             None => {}
         }
         let hit = roko_agent::provider::error_classify::detect_turn_cap(message)?;
@@ -239,12 +422,13 @@ impl GraphTaskDispatcher {
         ))
     }
 
-    /// The call of an agent that runs its own loop, which the watchdog
-    /// stopped once it spent its rung's allowance (gap-2c9412): the call,
-    /// with the usage it streamed, as a try that ended at its rung's bound,
-    /// for the task's checks to judge the work it left. `None` for any other
-    /// interruption, for a call that streamed nothing to account, and once
-    /// the run is stopping.
+    /// The call the watchdog stopped at its try's bound: an agent that runs
+    /// its own loop once it spent its rung's allowance (gap-2c9412), or any
+    /// call once its try ran its rung's time (bug-f0007b). The call, with the
+    /// usage it streamed, as a try that ended at its rung's bound, for the
+    /// task's checks to judge the work it left. `None` for any other
+    /// interruption, for a call that never started, and once the run is
+    /// stopping.
     pub(super) fn interrupted_at_bound(
         &self,
         plan_id: &str,
@@ -257,8 +441,13 @@ impl GraphTaskDispatcher {
         (crate::dispatch_v2::AgentResultDispatch, FailoverChain),
         BoundedStop,
     )> {
-        let Some(AttemptInterrupted::AllowanceSpent(reason)) = ended_by else {
-            return None;
+        let stop = match ended_by {
+            Some(AttemptInterrupted::AllowanceSpent(reason)) => BoundedStop::Spend(reason.clone()),
+            Some(AttemptInterrupted::TimeBound { secs, reason }) => BoundedStop::Time {
+                secs: *secs,
+                reason: reason.clone(),
+            },
+            _ => return None,
         };
         let message = error.to_string();
         if self.stopped_call(plan_id, task_id, &message).is_some() {
@@ -266,16 +455,18 @@ impl GraphTaskDispatcher {
         }
         let call = progress.interrupted_call()?;
         let dispatched = call.into_dispatch(&message, wall_ms, self.pricing_snapshot().as_deref());
-        Some((dispatched, BoundedStop::Spend(reason.clone())))
+        Some((dispatched, stop))
     }
 
     /// Owe `plan_id/task_id`'s next attempt the resume note of a try that
     /// ended at its rung's bound and failed its checks: its turn cap and
-    /// the work it left, or the allowance it spent.
+    /// the work it left, or the allowance or time it used up.
     pub(super) fn keep_bounded_stop(&self, plan_id: &str, task_id: &str, stop: &BoundedStop) {
         match stop {
             BoundedStop::Turns(retry) => self.keep_turn_cap_retry(plan_id, task_id, *retry),
-            BoundedStop::Spend(reason) => self.keep_allowance_stop(plan_id, task_id, reason),
+            BoundedStop::Spend(reason) | BoundedStop::Time { reason, .. } => {
+                self.keep_allowance_stop(plan_id, task_id, reason);
+            }
         }
     }
 
@@ -321,8 +512,9 @@ mod tests {
             rung: "cheap".to_string(),
             turns: None,
             usd: Some(0.25),
+            secs: None,
         };
-        let allowance = TryAllowance::new(None, Some(&rung)).expect("an allowance");
+        let allowance = TryAllowance::new(None, Some(&rung), &[]).expect("an allowance");
         assert_eq!(allowance.refuse_call(), None);
         allowance.record_call(0.125, true);
         allowance.record_call(1.0, false);
@@ -334,7 +526,7 @@ mod tests {
         assert!(reason.contains("$0.2500 of $0.2500"), "{reason}");
         assert_eq!(allowance.stop(None), Some(TryStop::Rung(reason)));
 
-        let fresh = TryAllowance::new(None, Some(&rung)).expect("an allowance");
+        let fresh = TryAllowance::new(None, Some(&rung), &[]).expect("an allowance");
         assert_eq!(fresh.spend_limit_usd(), Some(0.25));
         let own = fresh.stop(Some("budget exhausted".to_string()));
         assert!(
@@ -342,8 +534,78 @@ mod tests {
             "{own:?}"
         );
 
-        assert!(TryAllowance::new(None, None).is_none());
+        assert!(TryAllowance::new(None, None, &[]).is_none());
         let turns_only = RungAllowance { usd: None, ..rung };
-        assert!(TryAllowance::new(None, Some(&turns_only)).is_none());
+        assert!(TryAllowance::new(None, Some(&turns_only), &[]).is_none());
+    }
+
+    /// bug-f0007b: a try whose rung bounds its time makes no model call once
+    /// the bound is reached, and its stop says so, the spend allowance
+    /// still asked first.
+    #[test]
+    fn a_rung_time_bound_refuses_the_next_call() {
+        let rung = RungAllowance {
+            rung: "mid".to_string(),
+            turns: None,
+            usd: None,
+            secs: Some(450),
+        };
+        let allowance = TryAllowance::new(None, Some(&rung), &[]).expect("a time bound");
+        assert_eq!(allowance.time_limit(), Some(Duration::from_secs(450)));
+        assert_eq!(allowance.refuse_call(), None);
+        assert_eq!(allowance.stop(None), None);
+
+        let reached = allowance.reach_time_bound().expect("the rung bounds time");
+        let TryStop::Time { secs, reason } = &reached else {
+            panic!("{reached:?}");
+        };
+        assert_eq!(*secs, 450);
+        assert!(reason.contains("rung `mid`: 450 s"), "{reason}");
+        assert_eq!(allowance.refuse_call().as_ref(), Some(reason));
+        assert_eq!(allowance.stop(None), Some(reached.clone()));
+        assert_eq!(allowance.reach_time_bound(), Some(reached));
+
+        let untimed = TryAllowance::new(None, Some(&RungAllowance { secs: None, ..rung }), &[]);
+        assert!(untimed.is_none());
+    }
+
+    /// bug-62ae1e: a try failover moved to a substitute on a rung above runs
+    /// under that rung's time and spend, its spend so far still counted; a
+    /// rung with no bound of its own leaves it none. A try its own rung
+    /// leaves unbounded still gets an allowance when a rung above has one.
+    #[test]
+    fn a_rebound_try_runs_under_its_substitutes_rung() {
+        let mid = RungAllowance {
+            rung: "mid".to_string(),
+            turns: Some(7),
+            usd: Some(0.25),
+            secs: Some(450),
+        };
+        let strong = RungAllowance {
+            rung: "strong".to_string(),
+            turns: Some(13),
+            usd: Some(1.0),
+            secs: Some(900),
+        };
+        let allowance = TryAllowance::new(None, Some(&mid), &[]).expect("an allowance");
+        allowance.record_call(0.125, true);
+        allowance.rebind(Some(&strong));
+        assert_eq!(allowance.time_limit(), Some(Duration::from_secs(900)));
+        assert_eq!(allowance.time_rung().as_deref(), Some("strong"));
+        assert_eq!(allowance.spend_limit_usd(), Some(0.875));
+        allowance.rebind(None);
+        assert_eq!(allowance.time_limit(), None);
+        assert_eq!(allowance.spend_limit_usd(), None);
+        assert_eq!(allowance.refuse_call(), None);
+
+        let above = [RungBounds {
+            index: 2,
+            allowance: Some(strong.clone()),
+            max_turns: 13,
+        }];
+        let unbounded = TryAllowance::new(None, None, &above).expect("a rung above bounds it");
+        assert_eq!(unbounded.time_limit(), None);
+        unbounded.rebind(Some(&strong));
+        assert_eq!(unbounded.time_limit(), Some(Duration::from_secs(900)));
     }
 }

@@ -74,6 +74,14 @@ const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itse
 const LESSON_NOTE: &str = "When you finish, end your final message with one line, `Lesson: <one \
      sentence about this repository that a later task should know>`, or `Lesson: none`.";
 
+/// Appended before [`LESSON_NOTE`] to the user prompt of a task with authored verify steps and
+/// files (bug-3b3bb6): a try that cannot fix a failure inside its files says where the cause is,
+/// in a line roko reads, rather than work around it, and roko hands the failure to the task that
+/// owns that file.
+const BLOCKED_NOTE: &str = "If what fails is caused in a file outside this task's `files`, do not \
+     work around it in your files: put a line `Blocked: <path> — <why>` before your `Lesson:` \
+     line, naming that file, and roko hands the failure to the task that owns it.";
+
 /// Appended to the user prompt of a task that sets `research_before_edit` (gap-404fdb).
 const RESEARCH_BEFORE_EDIT_NOTE: &str = "\n## Before You Edit\nResearch first: find the code that \
      already does something like this task (search for the types, functions and files it names), \
@@ -180,6 +188,9 @@ pub struct PromptContext {
     /// The other plans running in the same working tree now, with the areas
     /// they write ([`DispatchContext::concurrent_plans`]).
     pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The build trees the attempt's checkout holds
+    /// ([`DispatchContext::warm_build_trees`]).
+    pub warm_build_trees: Vec<String>,
     /// The plan's `brief.md`, which `roko plan prepare` writes (gap-d6fd85).
     pub plan_brief: String,
     /// The arms of the attempt's chain ([`DispatchContext::arm_set`]).
@@ -187,6 +198,9 @@ pub struct PromptContext {
     /// Whether the θ the attempt runs keeps the knowledge section
     /// ([`DispatchContext::knowledge_section`], M1's B4).
     pub knowledge_section: bool,
+    /// The plan's `[meta] sources` ([`DispatchContext::source_documents`]):
+    /// the declared files show them first and cut them last (bug-a8a787).
+    pub source_documents: Vec<String>,
 }
 
 impl PromptContext {
@@ -301,9 +315,11 @@ impl PromptContext {
             workspace_context,
             error_patterns: ctx.error_patterns.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
+            warm_build_trees: ctx.warm_build_trees.clone(),
             plan_brief,
             arm_set: ctx.arm_set.clone(),
             knowledge_section: ctx.knowledge_section,
+            source_documents: ctx.source_documents.clone(),
         }
     }
 
@@ -895,6 +911,11 @@ pub struct GateFeedback {
     /// errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnosis: Option<String>,
+    /// What roko kept of the task's tries (gap-fefdf5): its best try, whose
+    /// files the attempt starts from, and what the failed try changed from
+    /// them. Rendered as its own section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
 }
 
 impl GateFeedback {
@@ -905,6 +926,13 @@ impl GateFeedback {
         if !diagnosis.is_empty() {
             self.diagnosis = Some(diagnosis.chars().take(MAX_DIAGNOSIS_CHARS).collect());
         }
+        self
+    }
+
+    /// Attach what roko kept of the task's tries ([`Self::kept`]).
+    #[must_use]
+    pub fn with_kept(mut self, kept: Option<String>) -> Self {
+        self.kept = kept.filter(|kept| !kept.trim().is_empty());
         self
     }
 
@@ -919,15 +947,29 @@ impl GateFeedback {
         let mut compile_errors = Vec::new();
         let mut test_failures = Vec::new();
         let mut clippy_warnings = Vec::new();
-        for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let lines: Vec<&str> = raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        for (index, line) in lines.iter().enumerate() {
             let lower = line.to_ascii_lowercase();
             let truncated = line.chars().take(240).collect::<String>();
             if lower.contains("error[") || lower.starts_with("error:") || line.contains("-->") {
                 compile_errors.push(truncated);
-            } else if lower.contains("test")
-                && (lower.contains("failed") || lower.contains("panicked"))
-            {
-                test_failures.push(truncated);
+            } else if is_failing_test_line(line) {
+                // A failed check with what it saw (gap-0cfa36); a runner
+                // prints one failed assertion many times.
+                let failure = match observed_values(&lines[index + 1..]) {
+                    Some(values) => format!("{line} ({values})")
+                        .chars()
+                        .take(400)
+                        .collect::<String>(),
+                    None => truncated,
+                };
+                if !test_failures.contains(&failure) {
+                    test_failures.push(failure);
+                }
             } else if lower.contains("warning") || lower.contains("clippy") {
                 clippy_warnings.push(truncated);
             }
@@ -945,12 +987,52 @@ impl GateFeedback {
                 .take(roko_core::defaults::DEFAULT_TOOL_OUTPUT_TRUNCATE_AT)
                 .collect(),
             diagnosis: None,
+            kept: None,
         })
+    }
+}
+
+/// Whether `line` of a check's output names a failing test or one of its
+/// failed assertions: a line with "test" that says it failed or panicked,
+/// a doctest `TEST CASE:` (doctest prints only the cases that fail), a C++
+/// runner's failed assertion (doctest's `ERROR:`, Catch2's `FAILED:`,
+/// GoogleTest's `Failure`) or GoogleTest's `[  FAILED  ] Suite.Test`; never
+/// a runner's summary of counts, which named no test in Undertow's phase 4.2
+/// retry (bug-3e3d08).
+fn is_failing_test_line(line: &str) -> bool {
+    if roko_learn::failure_text::is_summary_line(line) {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    line.starts_with("TEST CASE:")
+        || line.starts_with("[  FAILED  ]")
+        || [": ERROR: ", ": FATAL ERROR: ", ": FAILED:", ": Failure"]
+            .iter()
+            .any(|marker| line.contains(marker))
+        || (lower.contains("test") && (lower.contains("failed") || lower.contains("panicked")))
+}
+
+/// What a C++ runner says a failed check saw, from the lines after it,
+/// `after` (gap-0cfa36): doctest's `values: CHECK( 0.975951 >= 0.98 )`, or
+/// Catch2's check and its expansion, `REQUIRE( a == b ), with expansion: 1
+/// == 2`. `None` when they say neither.
+fn observed_values(after: &[&str]) -> Option<String> {
+    match after {
+        [values, ..] if values.starts_with("values:") => Some((*values).to_string()),
+        [check, with, expanded, ..] if *with == "with expansion:" => {
+            Some(format!("{check}, with expansion: {expanded}"))
+        }
+        _ => None,
     }
 }
 
 /// Longest diagnosis a retry prompt carries.
 const MAX_DIAGNOSIS_CHARS: usize = 1_200;
+
+/// Most characters of a check's raw output a retry prompt shows. A failed
+/// step's entry is cut failure first to 2,400 characters (bug-3e3d08), so
+/// one step's entry shows whole.
+const RAW_EXCERPT_CHARS: usize = 4_096;
 
 // ─── Outputs ───────────────────────────────────────────────────────────
 
@@ -1643,22 +1725,11 @@ fn parse_role_label(role: &str) -> AgentRole {
 /// feedback, dependency outputs, workspace map, tasks toml, workspace
 /// context, and C-factor context into a single markdown block. This
 /// block is passed to [`TaskContext::with_context`] so the canonical 9-layer
-/// builder includes it in the "Relevant Context" section.
-fn build_runner_context(
-    task: &TaskDef,
-    ctx: &PromptContext,
-) -> Result<String, RunnerDispatchError> {
+/// builder includes it in the "Relevant Context" section. The declared
+/// files' contents are not in it: they have a section of their own
+/// ([`declared_files`], bug-a8a787), so a long read never cuts these parts.
+fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
     let mut parts: Vec<String> = Vec::new();
-
-    let declared_context = crate::plan_policy::render_declared_context(
-        task,
-        &ctx.workdir,
-        crate::plan_policy::PlanExecutionPolicy::for_environment(),
-    )
-    .map_err(|reason| RunnerDispatchError::PreValidationFailed { reason })?;
-    if !declared_context.is_empty() {
-        parts.push(declared_context);
-    }
 
     if !ctx.files_in_scope.is_empty() {
         let list = ctx
@@ -1682,6 +1753,10 @@ fn build_runner_context(
 
     if let Some(verify) = render_verify_commands(ctx) {
         parts.push(verify);
+    }
+
+    if let Some(trees) = render_build_trees(ctx) {
+        parts.push(trees);
     }
 
     if !ctx.impact_context.is_empty() {
@@ -1761,7 +1836,31 @@ fn build_runner_context(
         parts.push(ctx.error_patterns.text.clone());
     }
 
-    Ok(parts.join("\n\n"))
+    parts.join("\n\n")
+}
+
+/// The bytes the declared files' section keeps back for its heading and the
+/// prompt's normalization (bug-a8a787).
+const DECLARED_FILES_SLACK: usize = 64;
+
+/// The contents of the files `task` declares, for the prompt (bug-a8a787):
+/// checked as the plan policy checks them, and fitted into `budget` bytes,
+/// the plan's sources first and cut last, each cut named
+/// ([`crate::plan_policy::render_declared_files`]). A declared file that
+/// fails the policy fails the dispatch.
+fn declared_files(
+    task: &TaskDef,
+    ctx: &PromptContext,
+    budget: usize,
+) -> Result<String, RunnerDispatchError> {
+    crate::plan_policy::render_declared_files(
+        task,
+        &ctx.workdir,
+        crate::plan_policy::PlanExecutionPolicy::for_environment(),
+        budget.saturating_sub(DECLARED_FILES_SLACK),
+        &ctx.source_documents,
+    )
+    .map_err(|reason| RunnerDispatchError::PreValidationFailed { reason })
 }
 
 /// The `# Verify` block: the task's verify commands, and the pinned-step note
@@ -1789,12 +1888,35 @@ fn render_verify_commands(ctx: &PromptContext) -> Option<String> {
     Some(format!("# Verify\nAfter editing, run:\n{list}{note}"))
 }
 
+/// The `# Prebuilt build trees` line: the checkout's warm build trees
+/// ([`PromptContext::warm_build_trees`]) are to be built in, not deleted or
+/// configured afresh, which rebuilds the whole project (gap-9d7381). `None`
+/// when the checkout holds none.
+fn render_build_trees(ctx: &PromptContext) -> Option<String> {
+    let quoted: Vec<String> = ctx
+        .warm_build_trees
+        .iter()
+        .map(|tree| format!("`{tree}`"))
+        .collect();
+    let (names, is, them) = match quoted.split_last()? {
+        (last, []) => (last.clone(), "is", "it"),
+        (last, rest) => (format!("{} and {last}", rest.join(", ")), "are", "them"),
+    };
+    Some(format!(
+        "# Prebuilt build trees\n{names} {is} already built in this checkout: build in {them} \
+         incrementally, and don't delete {them} or reconfigure {them} from scratch (`rm -rf`, \
+         `cmake --fresh`), which rebuilds everything."
+    ))
+}
+
 /// The runner context of a role with no cross-plan context (`context: 0` in
 /// [`roko_compose::budget_for`]: QuickReviewer and AutoFixer). It holds only
-/// what checking the task turns on: its verify commands and, on a retry, the
-/// failing gate's feedback (gap-c8bfc8).
+/// what checking the task turns on: its verify commands, the checkout's
+/// prebuilt build trees and, on a retry, the failing gate's feedback
+/// (gap-c8bfc8).
 fn minimal_runner_context(ctx: &PromptContext) -> String {
     let mut parts: Vec<String> = render_verify_commands(ctx).into_iter().collect();
+    parts.extend(render_build_trees(ctx));
     if ctx.attempt > 0 {
         if let Some(feedback) = &ctx.gate_feedback {
             parts.push(render_gate_feedback(feedback));
@@ -2033,14 +2155,35 @@ impl PromptAssembler {
         // Rich runner context (files, acceptance, verify, allowed tools,
         // gate feedback, dep outputs, workspace map, etc.) injected
         // into the canonical "Relevant Context" section. A role with no
-        // cross-plan context gets only its verify commands and gate feedback;
-        // the full block is still built, so its declared context is checked.
-        let full_context = build_runner_context(task, ctx)?;
-        let runner_context = if roko_compose::budget_for(role).context == 0 {
+        // cross-plan context gets only its verify commands and gate feedback.
+        let budget = roko_compose::budget_for(role);
+        let mut runner_context = if budget.context == 0 {
             minimal_runner_context(ctx)
         } else {
-            full_context
+            build_runner_context(task, ctx)
         };
+        // bug-a8a787: the declared files' contents get the role's budget for
+        // files, in a section after the relevant context, so a long read (a
+        // whole spec) never cuts the parts above; a role without that budget
+        // keeps them at the end of its relevant context, in the room left.
+        // Every role's declared files are checked, whether shown or not.
+        let file_room = if budget.file_context > 0 {
+            budget.file_context.saturating_mul(4)
+        } else {
+            budget
+                .runner_context
+                .saturating_mul(4)
+                .saturating_sub(runner_context.len())
+        };
+        let declared = declared_files(task, ctx, file_room)?;
+        let mut file_context = String::new();
+        if budget.context > 0 && !declared.is_empty() {
+            if budget.file_context > 0 {
+                file_context = declared;
+            } else {
+                runner_context = format!("{runner_context}\n\n{declared}");
+            }
+        }
 
         // Build TaskContext with runner-specific context block.
         let task_context = {
@@ -2049,6 +2192,9 @@ impl PromptAssembler {
                 .with_workspace(ctx.workdir.to_string_lossy().into_owned());
             if !runner_context.is_empty() {
                 tc = tc.with_context(runner_context.clone());
+            }
+            if !file_context.is_empty() {
+                tc = tc.with_file_context(file_context);
             }
             if !code_context.is_empty() {
                 tc = tc.with_domain_notes(code_context.join("\n\n"));
@@ -2369,9 +2515,14 @@ impl PromptAssembler {
                 user_prompt.push_str(PINNED_STEP_NOTE);
                 user_prompt.push('\n');
             }
+            // A try blocked outside its files says where (bug-3b3bb6).
+            user_prompt.push('\n');
+            if !task.files.is_empty() {
+                user_prompt.push_str(BLOCKED_NOTE);
+                user_prompt.push('\n');
+            }
             // Only a verified pass writes knowledge: ask for its lesson
             // (backlog 4215).
-            user_prompt.push('\n');
             user_prompt.push_str(LESSON_NOTE);
             user_prompt.push('\n');
         }
@@ -3153,13 +3304,29 @@ pub(crate) fn cached_reader_ids(task: &TaskDef, cache: &PromptCache) -> (Vec<Str
 }
 
 fn render_gate_feedback(feedback: &GateFeedback) -> String {
-    let mut buf = String::from(
+    format!(
         "# Previous attempt feedback\n\n\
-         Your previous attempt FAILED verification. Fix these exact errors before doing anything else.\n\n",
-    );
+         Your previous attempt FAILED verification. Fix these exact errors before doing anything \
+         else.\n\n{}",
+        render_gate_feedback_sections(feedback)
+    )
+}
+
+/// The sections of `feedback` a retry prompt carries under its heading.
+///
+/// They are its diagnosis, what roko kept, its errors and failing tests, and
+/// the raw gate output unless compile errors explain the failure. A try sent
+/// back to its failing checks gets them too (bug-cbbaa8).
+pub(crate) fn render_gate_feedback_sections(feedback: &GateFeedback) -> String {
+    let mut buf = String::new();
     if let Some(diagnosis) = &feedback.diagnosis {
         buf.push_str("## Diagnosis\n");
         buf.push_str(diagnosis);
+        buf.push_str("\n\n");
+    }
+    if let Some(kept) = &feedback.kept {
+        buf.push_str("## Kept by roko\n");
+        buf.push_str(kept);
         buf.push_str("\n\n");
     }
     if !feedback.compile_errors.is_empty() {
@@ -3185,12 +3352,15 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
     // says what it expected and got (bug-59ed90), and a step's `fail_msg` can
     // look like a failing test line itself.
     if feedback.compile_errors.is_empty() && !feedback.raw_output.is_empty() {
-        if !buf.ends_with("\n\n") {
+        if !buf.is_empty() && !buf.ends_with("\n\n") {
             buf.push('\n');
         }
         buf.push_str("## Raw gate output\n```\n");
-        // Limit to ~2 KB to avoid blowing the prompt budget.
-        let raw_excerpt: String = feedback.raw_output.chars().take(2048).collect();
+        let raw_excerpt: String = feedback
+            .raw_output
+            .chars()
+            .take(RAW_EXCERPT_CHARS)
+            .collect();
         buf.push_str(&raw_excerpt);
         buf.push_str("\n```\n");
     }
@@ -3272,11 +3442,13 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             attempt_key: None,
             arm_set: None,
             knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
+            source_documents: Vec::new(),
         }
     }
 
@@ -4084,6 +4256,11 @@ mod tests {
         let verified = prompt_for(&task());
         assert!(verified.contains(LESSON_NOTE), "{verified}");
         assert!(verified.contains("`Lesson: none`"), "{verified}");
+        // bug-3b3bb6: a task that changes files is asked to say where a
+        // cause outside them is, before its lesson.
+        assert!(!task().files.is_empty());
+        let blocked = verified.find(BLOCKED_NOTE).expect("the Blocked: note");
+        assert!(blocked < verified.find(LESSON_NOTE).expect("the lesson note"));
 
         let mut unverified = task();
         unverified.verify.clear();
@@ -4428,6 +4605,7 @@ mod tests {
             clippy_warnings: vec![],
             raw_output: "...".into(),
             diagnosis: Some("The import path moved to crate::dispatch.".into()),
+            kept: None,
         });
         let pctx = PromptContext::from_task(&task(), &c);
         let p = assembler.assemble(&task(), &pctx).unwrap();
@@ -4491,6 +4669,47 @@ mod tests {
         assert!(!rendered.contains("## Raw gate output"), "{rendered}");
     }
 
+    /// gap-0cfa36 (Undertow phase 2, run 82b7e069): a failing doctest step's
+    /// failing tests are its failed checks, each with the values it saw, not
+    /// doctest's summary lines; Catch2's checks carry their expansion.
+    #[test]
+    fn doctest_failures_name_the_failing_checks() {
+        let doctest = "verify[0:test] (`tools/spec.sh 2 output`): exit code: 1\n\
+             [doctest] run with \"--help\" for options\n\
+             ===============================================================================\n\
+             /x/tests/spec/p2/output_test.cpp:117:\n\
+             TEST CASE:  P2.04 the output stage keeps the level below full scale\n\n\
+             /x/tests/spec/p2/output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct!\n\
+             \x20 values: CHECK( 0.975951 >= 0.98 )\n\n\
+             /x/tests/spec/p2/output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct!\n\
+             \x20 values: CHECK( 0.975951 >= 0.98 )\n\n\
+             ===============================================================================\n\
+             [doctest] test cases: 2 | 1 passed | 1 failed | 0 skipped\n\
+             [doctest] assertions: 19 | 15 passed | 4 failed |\n\
+             [doctest] Status: FAILURE!";
+
+        let feedback = GateFeedback::from_raw(doctest).expect("feedback");
+
+        assert_eq!(
+            feedback.test_failures,
+            [
+                "TEST CASE:  P2.04 the output stage keeps the level below full scale",
+                "/x/tests/spec/p2/output_test.cpp:125: ERROR: CHECK( low >= 0.98 ) is NOT correct! \
+                 (values: CHECK( 0.975951 >= 0.98 ))",
+            ]
+        );
+        let catch2 = "/src/layout_test.cpp:15: FAILED:\n  REQUIRE( found != nullptr )\n\
+             with expansion:\n  nullptr != nullptr\n";
+        let feedback = GateFeedback::from_raw(catch2).expect("feedback");
+        assert_eq!(
+            feedback.test_failures,
+            [
+                "/src/layout_test.cpp:15: FAILED: (REQUIRE( found != nullptr ), with expansion: \
+                 nullptr != nullptr)"
+            ]
+        );
+    }
+
     /// gap-c8bfc8: QuickReviewer and AutoFixer get no cross-plan context, yet
     /// their prompt still carries the task's verify commands and, on a retry,
     /// the failing gate's feedback, and none of the rest of the runner context.
@@ -4507,6 +4726,7 @@ mod tests {
                 clippy_warnings: vec![],
                 raw_output: "...".into(),
                 diagnosis: Some("The import path moved to crate::dispatch.".into()),
+                kept: None,
             });
             let pctx = PromptContext::from_task(&task(), &c);
             let system = assembler.assemble(&task(), &pctx).unwrap().system_prompt;
@@ -4692,7 +4912,7 @@ covers = ["AC1"]
         dispatch_ctx.workdir = workdir.path().to_path_buf();
 
         let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
-        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        let context = build_runner_context(&task(), &pctx);
 
         assert_eq!(pctx.plan_brief, "# Plan brief: `p`\n");
         assert!(
@@ -4709,7 +4929,7 @@ covers = ["AC1"]
         let areas = vec!["crates/roko-serve".to_string(), "web/src".to_string()];
         dispatch_ctx.concurrent_plans = vec![("portal-api".to_string(), areas)];
         let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
-        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        let context = build_runner_context(&task(), &pctx);
         assert!(
             context.contains("# Plans Running Beside This One"),
             "{context}"
@@ -4720,8 +4940,50 @@ covers = ["AC1"]
         );
 
         let alone = PromptContext::from_task(&task(), &ctx());
-        let context = build_runner_context(&task(), &alone).expect("runner context");
+        let context = build_runner_context(&task(), &alone);
         assert!(!context.contains("# Plans Running Beside This One"));
+    }
+
+    /// gap-9d7381: an agent whose checkout holds warm build trees
+    /// (gap-6754ab) is told to build in them, not delete or reconfigure
+    /// them; one whose checkout holds none hears nothing of them.
+    #[test]
+    fn a_checkout_with_warm_build_trees_is_told_to_keep_them() {
+        let mut dispatch_ctx = ctx();
+        let trees = vec!["build/core".to_string(), "build/plugin".to_string()];
+        dispatch_ctx.warm_build_trees = trees;
+        let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &pctx);
+        assert!(
+            context.contains(
+                "# Prebuilt build trees\n`build/core` and `build/plugin` are already built in \
+                 this checkout: build in them incrementally, and don't delete them or \
+                 reconfigure them from scratch (`rm -rf`, `cmake --fresh`), which rebuilds \
+                 everything."
+            ),
+            "{context}"
+        );
+        // A role without plan context builds too, and hears it as well.
+        let minimal = minimal_runner_context(&pctx);
+        assert!(minimal.contains("# Prebuilt build trees\n"), "{minimal}");
+
+        dispatch_ctx.warm_build_trees = vec!["build/plugin".to_string()];
+        let one = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &one);
+        assert!(
+            context.contains(
+                "`build/plugin` is already built in this checkout: build in it incrementally, \
+                 and don't delete it or reconfigure it from scratch"
+            ),
+            "{context}"
+        );
+
+        let none = PromptContext::from_task(&task(), &ctx());
+        let context = build_runner_context(&task(), &none);
+        assert!(!context.contains("# Prebuilt build trees"), "{context}");
+        assert!(!context.contains("already built"), "{context}");
+        let minimal = minimal_runner_context(&none);
+        assert!(!minimal.contains("# Prebuilt build trees"), "{minimal}");
     }
 
     /// gap-404fdb: the context-depth hints shape the prompt. `skills` brings
@@ -5014,6 +5276,159 @@ covers = ["AC1"]
         assert_eq!(parse_role_label("quick-reviewer"), AgentRole::QuickReviewer);
     }
 
+    /// A prompt context for `task` in `workdir`, with phase 4's spec as the
+    /// plan's source (bug-a8a787).
+    fn phase_4_context(workdir: &Path) -> PromptContext {
+        PromptContext {
+            plan_id: "p4-undertow-phosphor-editor".into(),
+            role: "implementer".into(),
+            workdir: workdir.to_path_buf(),
+            files_in_scope: vec![
+                "plugin/ui/UnitArray.h".into(),
+                "plugin/ui/UnitArray.cpp".into(),
+            ],
+            acceptance_criteria: vec!["AC1: `tools/spec.sh 4 steps` passes".into()],
+            verify_commands: vec!["tools/spec.sh 4 steps".into()],
+            impact_context: String::new(),
+            gate_feedback: None,
+            attempt: 0,
+            prompt_experiment: None,
+            workspace_map: String::new(),
+            tasks_toml: String::new(),
+            dependency_outputs: Vec::new(),
+            workspace_context: String::new(),
+            error_patterns: Default::default(),
+            concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
+            plan_brief: String::new(),
+            arm_set: None,
+            knowledge_section: true,
+            source_documents: vec!["docs/specs/phase-4-ui.md".into()],
+        }
+    }
+
+    /// bug-a8a787: hermes-pilot's proof (phase 4's T4). A whole read of
+    /// `docs/specs/phase-4-ui.md` (264 lines, 17,950 bytes) filled the
+    /// implementer's 4,000-token relevant context and was cut at line 212,
+    /// and the task's other read, Files in scope, the acceptance and the
+    /// verify commands went with it. The declared files now have the role's
+    /// own budget for files, 8,000 tokens: the spec, the plan's source, and
+    /// two editor headers arrive whole, the spec first, in fewer bytes than
+    /// the section's cap, and the relevant context keeps its structured parts
+    /// and no file. With less room the headers are cut before the spec, and
+    /// each cut names the lines it leaves out.
+    #[test]
+    fn a_whole_spec_and_its_headers_fit_the_file_context_or_say_what_is_cut() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let spec = include_str!("../../tests/fixtures/p4_spec/phase-4-ui.md");
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("a directory");
+            std::fs::write(path, text).expect("a file");
+        };
+        let header = |name: &str, count: usize| -> String {
+            (1..=count)
+                .map(|n| format!("    int {name}Member{n} = {n}; // part {n}\n"))
+                .collect()
+        };
+        write("docs/specs/phase-4-ui.md", spec);
+        write("plugin/ui/Theme.h", &header("theme", 60));
+        write("plugin/PluginEditor.h", &header("editor", 80));
+        let read = |path: &str, lines: Option<&str>| crate::task_parser::ReadFile {
+            path: path.into(),
+            lines: lines.map(str::to_string),
+            why: "what the task builds on".into(),
+        };
+        let mut task = task();
+        task.files = vec![
+            "plugin/ui/UnitArray.h".into(),
+            "plugin/ui/UnitArray.cpp".into(),
+        ];
+        // The planner's order: a header first, the spec in the middle.
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![
+                read("plugin/ui/Theme.h", Some("1-60")),
+                read("docs/specs/phase-4-ui.md", None),
+                read("plugin/PluginEditor.h", None),
+            ],
+            ..Default::default()
+        });
+        let pctx = phase_4_context(root);
+        let budget = roko_compose::budget_for(roko_core::AgentRole::Implementer);
+        let room = budget.file_context * 4;
+
+        let files = declared_files(&task, &pctx, room).expect("the declared files");
+        let spec_lines = spec.lines().count();
+        assert_eq!(spec_lines, 264);
+        for (number, line) in spec.lines().enumerate() {
+            let numbered = format!("{:>6} | {line}\n", number + 1);
+            assert!(
+                files.contains(&numbered),
+                "spec line {} is missing",
+                number + 1
+            );
+        }
+        assert!(
+            files.contains("    80 |     int editorMember80 = 80;"),
+            "{files}"
+        );
+        assert!(
+            files.contains("    60 |     int themeMember60 = 60;"),
+            "{files}"
+        );
+        assert!(!files.contains("not shown: read_file them]"), "{files}");
+        let spec_at = files
+            .find("path=\"docs/specs/phase-4-ui.md\"")
+            .expect("the spec");
+        let theme_at = files.find("path=\"plugin/ui/Theme.h\"").expect("Theme.h");
+        assert!(spec_at < theme_at, "the source comes first");
+        assert!(
+            files.len() + roko_compose::FILE_CONTEXT_HEADING.len() <= room,
+            "{} bytes for {room}",
+            files.len()
+        );
+
+        // The relevant context keeps its structured parts, and no file.
+        let runner = build_runner_context(&task, &pctx);
+        for part in ["# Files in scope", "# Acceptance criteria", "# Verify"] {
+            assert!(runner.contains(part), "{part}: {runner}");
+        }
+        assert!(!runner.contains("declared-file"), "{runner}");
+        assert!(
+            runner.len() <= budget.runner_context * 4,
+            "{} bytes",
+            runner.len()
+        );
+
+        // With room for the spec and a little more, the headers are cut, and
+        // named; the spec stays whole.
+        let spec_block = files[spec_at..].find("</declared-file>").expect("its end") + spec_at;
+        let tight = declared_files(&task, &pctx, spec_block + 3_000).expect("the declared files");
+        assert!(tight.contains(&format!(
+            "   264 | {}",
+            spec.lines().last().expect("a line")
+        )));
+        assert!(
+            tight.contains("[plugin/PluginEditor.h lines ")
+                && tight.contains(" not shown: read_file them]"),
+            "{tight}"
+        );
+        // With less room than the spec, it is cut last, and named too.
+        let short = declared_files(&task, &pctx, 8_000).expect("the declared files");
+        assert!(short.contains("    1 | "), "{short}");
+        assert!(short.contains("-264 not shown: read_file them]"), "{short}");
+        assert!(
+            short.contains("[plugin/ui/Theme.h lines 1-60 not shown: read_file them]"),
+            "{short}"
+        );
+        assert!(
+            short.contains("[plugin/PluginEditor.h lines 1-80 not shown: read_file them]"),
+            "{short}"
+        );
+        assert!(short.len() <= 8_000, "{} bytes", short.len());
+    }
+
     #[test]
     fn build_runner_context_includes_all_sections() {
         let t = task();
@@ -5034,11 +5449,13 @@ covers = ["AC1"]
             workspace_context: String::new(),
             error_patterns: Default::default(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             plan_brief: String::new(),
             arm_set: None,
             knowledge_section: true,
+            source_documents: Vec::new(),
         };
-        let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
+        let ctx_str = build_runner_context(&t, &pctx);
         assert!(ctx_str.contains("# Files in scope"));
         assert!(ctx_str.contains("# Acceptance criteria"));
         assert!(ctx_str.contains("# Verify"));

@@ -168,17 +168,27 @@ pub(super) async fn plan_chat(
 
 /// Request body for `POST /api/plans/generate`: the request to plan from.
 ///
-/// `prompt` is required and must not be blank; the portal's "Generate…"
-/// field sends it. A `slug` naming a PRD to plan from is refused with 422:
-/// the PRD pipeline was removed on 2026-10-02, and plans come from a prompt.
+/// `prompt`, or a `spec_path` in the workspace whose text serve reads
+/// (gap-fe4225), is required and must not be blank; the portal's
+/// "Generate…" field sends a prompt. A `max_usd`, when given, must be a
+/// number above 0 (gap-33d458). A `slug` naming a PRD to plan from is
+/// refused with 422: the PRD pipeline was removed on 2026-10-02, and plans
+/// come from a request.
 #[derive(Deserialize, Validate)]
 pub(super) struct GenerateRequest {
     /// The removed PRD slug, read only to refuse it with a clear message.
     #[serde(default)]
     pub(super) slug: Option<String>,
-    /// The request to plan from. Non-blank.
+    /// The request to plan from, or instructions that follow the spec.
     #[serde(default)]
     pub(super) prompt: Option<String>,
+    /// A spec file in the workspace to plan from, read exactly as written.
+    #[serde(default)]
+    pub(super) spec_path: Option<String>,
+    /// The most writing the plan may spend, in USD (gap-33d458). Without
+    /// it, `[authoring] max_generation_usd` applies.
+    #[serde(default)]
+    pub(super) max_usd: Option<f64>,
 }
 
 impl RequestPayload for GenerateRequest {
@@ -189,8 +199,25 @@ impl RequestPayload for GenerateRequest {
                  from as 'prompt'",
             ));
         }
+        if self
+            .max_usd
+            .is_some_and(|usd| !(usd.is_finite() && usd > 0.0))
+        {
+            return Err(ApiError::unprocessable_entity(
+                "'max_usd' must be a number above 0",
+            ));
+        }
+        if self
+            .spec_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+        {
+            return Ok(());
+        }
         match &self.prompt {
-            None => Err(ApiError::unprocessable_entity("'prompt' is required")),
+            None => Err(ApiError::unprocessable_entity(
+                "'prompt' or 'spec_path' is required",
+            )),
             Some(prompt) if prompt.trim().is_empty() => {
                 Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
             }
@@ -199,14 +226,64 @@ impl RequestPayload for GenerateRequest {
     }
 }
 
+/// The largest spec a `spec_path` may name, in bytes.
+const MAX_SPEC_BYTES: u64 = 1024 * 1024;
+
+/// The text a plan is generated from (gap-fe4225): `prompt`, or the exact
+/// text of the workspace file at `spec_path`, with `prompt`'s instructions
+/// after it. A chat that copied a spec into `prompt` by hand reworded or
+/// mangled it (round v7: every row of phase 2's checks table arrived as
+/// `|| …`); serve reads the file instead, as `roko plan generate
+/// --from-file` does. The path must name a file of at most 1 MiB inside the
+/// workspace `workdir`.
+pub(crate) fn plan_request_text(
+    workdir: &std::path::Path,
+    prompt: Option<&str>,
+    spec_path: Option<&str>,
+) -> Result<String, ApiError> {
+    let prompt = prompt.map(str::trim).filter(|prompt| !prompt.is_empty());
+    let Some(spec_path) = spec_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return prompt
+            .map(str::to_string)
+            .ok_or_else(|| ApiError::unprocessable_entity("'prompt' or 'spec_path' is required"));
+    };
+    let outside = || {
+        ApiError::unprocessable_entity(format!(
+            "'spec_path' {spec_path} is not a file inside the workspace"
+        ))
+    };
+    let root = workdir.canonicalize().map_err(|_| outside())?;
+    let file = workdir
+        .join(spec_path)
+        .canonicalize()
+        .map_err(|_| outside())?;
+    let metadata = std::fs::metadata(&file).map_err(|_| outside())?;
+    if !file.starts_with(&root) || !metadata.is_file() {
+        return Err(outside());
+    }
+    if metadata.len() > MAX_SPEC_BYTES {
+        return Err(ApiError::unprocessable_entity(format!(
+            "'spec_path' {spec_path} is larger than {MAX_SPEC_BYTES} bytes"
+        )));
+    }
+    let spec = std::fs::read_to_string(&file).map_err(|error| {
+        ApiError::unprocessable_entity(format!("'spec_path' {spec_path} cannot be read: {error}"))
+    })?;
+    Ok(match prompt {
+        Some(prompt) => format!("{spec}\n\n---\n\n{prompt}\n"),
+        None => spec,
+    })
+}
+
 /// `POST /api/plans/generate` — spawn background plan generation from a prompt.
 ///
 /// Derives a unique plan slug from the prompt's first line, then runs the
 /// plan generator through `runtime.generate_plan_from_prompt`.
 ///
-/// Responds 202 with `{ "id": op_id, "plan_id": slug }`.  The slug is known
-/// before the background work starts so the portal's generate hook can use it
-/// immediately.
+/// Responds 202 with `{ "id": op_id, "plan_id": slug, "max_usd",
+/// "max_usd_source" }`: the cap that applies ([`GenerationCap`]). The slug is
+/// known before the background work starts so the portal's generate hook can
+/// use it immediately.
 ///
 /// The operation ends `Completed { result: {"slug", "task_count", "cost_usd"} }`
 /// only when plan `slug` loads afterwards. A generation that fails, or that
@@ -220,14 +297,62 @@ pub(super) async fn generate_plan(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<GenerateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // `validate_payload` guarantees a non-blank prompt.
-    let prompt_text = body.prompt.clone().unwrap_or_default();
-    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http, None).await;
+    // `validate_payload` guarantees a prompt or a spec path.
+    let prompt_text = plan_request_text(
+        &state.workdir,
+        body.prompt.as_deref(),
+        body.spec_path.as_deref(),
+    )?;
+    let cap = GenerationCap::resolve(&state, body.max_usd);
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        prompt_text,
+        &RunOrigin::Http,
+        None,
+        cap,
+        body.spec_path.as_deref(),
+    )
+    .await;
+    let mut answer = json!({ "id": op_id, "plan_id": slug });
+    cap.answer(&mut answer);
 
-    Ok((
-        axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": op_id, "plan_id": slug })),
-    ))
+    Ok((axum::http::StatusCode::ACCEPTED, Json(answer)))
+}
+
+/// The spend cap a plan generation runs under (gap-33d458), as its start
+/// answer gives it, so a host can tell the person the real cap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GenerationCap {
+    /// What its planner calls may cost together, in USD; `None` sets no cap.
+    pub(crate) max_usd: Option<f64>,
+    /// Where it comes from: `request`, or `config` for `[authoring]
+    /// max_generation_usd`.
+    pub(crate) source: &'static str,
+}
+
+impl GenerationCap {
+    /// The cap a request names, else the workspace's, where 0 sets none.
+    pub(crate) fn resolve(state: &AppState, requested: Option<f64>) -> Self {
+        match requested {
+            Some(max_usd) => Self {
+                max_usd: Some(max_usd),
+                source: "request",
+            },
+            None => {
+                let configured = state.load_roko_config().authoring.max_generation_usd;
+                Self {
+                    max_usd: (configured.is_finite() && configured > 0.0).then_some(configured),
+                    source: "config",
+                }
+            }
+        }
+    }
+
+    /// Adds `max_usd` (null when uncapped) and `max_usd_source` to `answer`.
+    pub(crate) fn answer(self, answer: &mut Value) {
+        answer["max_usd"] = json!(self.max_usd);
+        answer["max_usd_source"] = json!(self.source);
+    }
 }
 
 /// Start generating a plan from `prompt_text` in the background, as `POST
@@ -237,13 +362,25 @@ pub(super) async fn generate_plan(
 /// fenced as untrusted data ([`RunOrigin::request_text`], 9117).
 ///
 /// With a `title` (gap-c2efe7), the slug comes from the title, and the written
-/// plan's `[meta] title` is it.
+/// plan's `[meta] title` is it. The planner calls may cost `cap` together
+/// (gap-33d458). With a `spec_path` (the workspace file `prompt_text` was read
+/// from), every task of the plan reads that file (bug-60ad88).
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
     origin: &RunOrigin,
     title: Option<String>,
+    cap: GenerationCap,
+    spec_path: Option<&str>,
 ) -> (String, String) {
+    let options = crate::runtime::PlanGenerationOptions {
+        // The cap serve resolved, so the answer says what applies; 0 is none.
+        max_usd: Some(cap.max_usd.unwrap_or(0.0)),
+        spec_path: spec_path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| state.workdir.join(path)),
+    };
     let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
     let prompt_text = origin.request_text(&prompt_text).into_owned();
     // bug-7a08a8: a chat host's plan runs with nobody to answer its questions.
@@ -305,6 +442,7 @@ pub(crate) async fn start_plan_generation(
                     &slug_for_task,
                     &prompt_text,
                     for_chat_host,
+                    options,
                     report,
                 )
                 .await;
@@ -317,6 +455,7 @@ pub(crate) async fn start_plan_generation(
                             summary.task_count,
                             gen_result.cost_usd,
                             gen_result.source_checks,
+                            gen_result.repairs,
                         )),
                         Ok(None) => Err(no_plan()),
                         Err(err) => Err(format!(
@@ -328,7 +467,7 @@ pub(crate) async fn start_plan_generation(
             };
 
             match generated {
-                Ok((task_count, cost_usd, source_checks)) => {
+                Ok((task_count, cost_usd, source_checks, repairs)) => {
                     // bug-a0432b: the result says what writing the plan cost,
                     // and gap-dc5d7c what became of the request's checks.
                     let mut result = json!({
@@ -338,6 +477,10 @@ pub(crate) async fn start_plan_generation(
                     });
                     if let Some(source_checks) = source_checks {
                         result["source_checks"] = source_checks;
+                    }
+                    // gap-0fb7d9: and what roko changed in its planner's draft.
+                    if !repairs.is_empty() {
+                        result["repairs"] = json!(repairs);
                     }
                     let result_json = serde_json::to_string(&result).unwrap_or_default();
 

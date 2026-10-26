@@ -1199,6 +1199,8 @@ pub struct ModelProfileLayer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_tools: Option<bool>,
@@ -1262,6 +1264,10 @@ pub struct ModelProfileLayer {
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<roko_core::ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<roko_core::config::schema::OpenAiApi>,
 }
 
 impl ModelProfileLayer {
@@ -1271,6 +1277,7 @@ impl ModelProfileLayer {
             provider: overlay.provider.or(self.provider),
             slug: overlay.slug.or(self.slug),
             context_window: overlay.context_window.or(self.context_window),
+            compact_at_tokens: overlay.compact_at_tokens.or(self.compact_at_tokens),
             max_output: overlay.max_output.or(self.max_output),
             supports_tools: overlay.supports_tools.or(self.supports_tools),
             supports_thinking: overlay.supports_thinking.or(self.supports_thinking),
@@ -1316,6 +1323,8 @@ impl ModelProfileLayer {
             max_tool_iterations: overlay.max_tool_iterations.or(self.max_tool_iterations),
             temperature: overlay.temperature.or(self.temperature),
             seed: overlay.seed.or(self.seed),
+            reasoning_effort: overlay.reasoning_effort.or(self.reasoning_effort),
+            api: overlay.api.or(self.api),
         }
     }
 
@@ -1324,6 +1333,7 @@ impl ModelProfileLayer {
             provider: self.provider.context("missing required field `provider`")?,
             slug: self.slug.context("missing required field `slug`")?,
             context_window: self.context_window.unwrap_or(128_000),
+            compact_at_tokens: self.compact_at_tokens,
             max_output: self.max_output,
             supports_tools: self.supports_tools.unwrap_or(true),
             supports_thinking: self.supports_thinking.unwrap_or(false),
@@ -1358,6 +1368,8 @@ impl ModelProfileLayer {
             tier: self.tier,
             temperature: self.temperature,
             seed: self.seed,
+            reasoning_effort: self.reasoning_effort,
+            api: self.api,
         })
     }
 }

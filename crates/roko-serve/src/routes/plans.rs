@@ -36,10 +36,11 @@ use self::run_control::*;
 
 // The MCP run tools (9115) start, generate and cancel what these routes do,
 // and `confirm_answer` (9137) records a decision as the review route does.
-pub(super) use self::authoring::start_plan_generation;
+pub(super) use self::authoring::{GenerationCap, plan_request_text, start_plan_generation};
 pub(super) use self::merge::record_review;
 pub(super) use self::run_control::{
-    cancel_plan_run, start_next_queued_run, start_plan_run_with, start_queued_run, workspace_busy,
+    PlanStart, cancel_plan_run, start_next_queued_run, start_plan_run_with, start_queued_run,
+    workspace_busy,
 };
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -111,6 +112,21 @@ fn plan_to_json(plan: &Plan) -> Value {
 /// directory. In a new workspace `plans/` appears with the first plan.
 fn plans_dir(workdir: &std::path::Path) -> std::path::PathBuf {
     roko_fs::workspace_plans::workspace_plans_dir(workdir)
+}
+
+/// The directory of plan `plan` in `workdir`: under its group's directory
+/// when it belongs to a plan set.
+fn plan_dir_of(
+    workdir: &std::path::Path,
+    plan: &crate::plan_types::PlanSummaryDto,
+) -> std::path::PathBuf {
+    plan.group
+        .as_deref()
+        .map_or_else(
+            || plans_dir(workdir),
+            |group| plans_dir(workdir).join(group),
+        )
+        .join(&plan.id)
 }
 
 /// Load a plan by id using the runtime's plan-discovery methods.

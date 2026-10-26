@@ -118,21 +118,26 @@ shell) must not be able to tell it from its provider's own error. So:
 - **Its body** is the upstream's own error, in its shape and words (`UPSTREAM_ERRORS`, keyed by the upstream's name,
   the arm's provider; an upstream of any other name gets OpenAI's): OpenAI's `{"error": {message, type, param,
   code}}` with `RATE_LIMITED` and `SERVER_ERROR`, as before; z.ai's `{"error": {code, message}}`, business code 1302
-  for a rate limit and none for an internal error (docs.z.ai's error codes); Moonshot's `{"error": {type, message}}`
+  for a rate limit and none for an internal error (docs.z.ai's error codes); Moonshot's `{"error": {message, type}}`
   with `rate_limit_reached_error`, `server_error` and, for a 503, `server_unavailable` (platform.kimi.ai's error
-  reference); and Cerebras's flat `{message, type, param, code}`, the shape of a captured Cerebras 401, with the words
-  of its per-minute request limit. z.ai's and Cerebras's bodies are compact JSON, as theirs are. What the sources
+  reference); and Cerebras's flat `{message, type, param, code}`, with the words of its per-minute request limit. Each
+  is laid out and labelled as that provider's own errors are: OpenAI's JSON indented by four spaces with a final
+  newline, the others' compact, under the provider's own Content-Type (`application/json; charset=utf-8` for OpenAI
+  and Moonshot, `application/json` for Cerebras, none at all for z.ai). The shapes, their key order, the layout and
+  the Content-Type are those of each provider's captured error (gap-db8dab, `driver/testdata/provider_errors/`,
+  2026-10-18: none of the four documents a way to get a 429 or a 5xx on request, so each capture is its error for a
+  model that does not exist). The words of a 429 and a 5xx stay what the documents and public reports give; what they
   leave open (Cerebras's 429 `type`, its and Moonshot's 5xx words; all checked 2026-10-17) is chosen so that every
   harness takes the fault as before: `param` and `code` null, no quota word, which Roko reads as billing, and no
-  "server error", which its provider health reads as a longer cooldown. A capture of each provider's own 429 and 5xx
-  would settle the rest (gap-db8dab).
+  "server error", which its provider health reads as a longer cooldown.
 - **Its headers** are those of the last answer the proxy forwarded from that upstream: its rate-limit headers, its
   CDN's, its cookies, each `vary`. Left out are those that describe that answer's own body (`Content-Type`,
   `Content-Encoding`, `ETag`, ...), the hop-by-hop ones (`NOT_RELAYED`) and `Retry-After`, which a rate limit sets
   itself (`NOT_MIRRORED`). A value that is new on every answer (a request or trace id, Cloudflare's `cf-ray`, a
   cookie's token: `PER_ANSWER`) is drawn anew in the same form, its length and alphabet, with its words and a cookie's
-  timestamps kept, so no real id is sent twice. A fault before the upstream has answered anything carries none of
-  them (gap-db8dab).
+  timestamps kept, so no real id is sent twice. A fault before the upstream has answered anything carries the
+  headers of that provider's captured error instead (`UpstreamErrors.headers`, masked, its per-answer values drawn
+  anew the same way); a template cookie keeps its capture's dates, and an upstream of any other name gets none.
 The statuses, `Retry-After`, the meter and the log are as before, and so is how each harness takes a fault but for one
 thing, by design: litellm maps each by its status (`RateLimitError`, `InternalServerError`, `ServiceUnavailableError`,
 all of which mini-swe-agent retries), the direct loop reads only the status and `Retry-After`, and no body holds a
@@ -166,9 +171,10 @@ API:
     FaultProxy: a context manager (.start(), .close()); .url, .token, .base_url(name) -> str
     FaultProxy.endpoint(endpoint: provider.Endpoint) -> provider.Endpoint      # the same provider, through the proxy
     FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=..., model_swap=...) -> dict
-    FaultProxy.state() -> dict; FaultProxy.policy() -> dict
+    FaultProxy.state() -> dict; FaultProxy.policy() -> dict; FaultProxy.answered_headers(name) -> list[tuple]
     usage_classes(raw) -> dict | None; arm_hosts() -> frozenset[str]
-    UpstreamErrors(rate_limit, server_error, by_status={}, compact=False); .body(status) -> bytes
+    UpstreamErrors(rate_limit, server_error, by_status={}, layout="spaced", newline=False,
+                   content_type="application/json", headers=()); .body(status) -> bytes
     upstream_errors(name) -> UpstreamErrors          # UPSTREAM_ERRORS[name], else OpenAI's
     ProxyError; CHAT_PATH; POLICY_REFUSALS; REFUSALS; SERVER_ERROR; RATE_LIMITED; UPSTREAM_ERRORS; NOT_MIRRORED
 """
@@ -310,49 +316,128 @@ class Upstream:
 
 @dataclass(frozen=True)
 class UpstreamErrors:
-    """An upstream's own error bodies (module docstring, "A fault looks like its upstream's own error"): its 429, its
-    5xx (`server_error`, or the one `by_status` gives a status of its own), and whether it sends compact JSON."""
+    """An upstream's own errors (module docstring, "A fault looks like its upstream's own error"): its 429, its 5xx
+    (`server_error`, or the one `by_status` gives a status of its own), how it lays their JSON out (`layout`:
+    "compact", "spaced", as json.dumps writes it, or "indent:<n>"; `newline` at the end), the Content-Type it sends with
+    them (None: it sends none), and the headers of its captured error answer (`headers`, masked), which a fault carries
+    before the upstream has answered anything (gap-db8dab)."""
 
     rate_limit: dict
     server_error: dict
     by_status: Mapping[int, dict] = field(default_factory=dict)
-    compact: bool = False
+    layout: str = "spaced"
+    newline: bool = False
+    content_type: str | None = "application/json"
+    headers: tuple[tuple[str, str], ...] = ()
 
     def body(self, status: int) -> bytes:
-        """The body of a fault answered with `status`: a rate limit's for 429, else a 5xx's."""
+        """The body of a fault answered with `status`: a rate limit's for 429, else a 5xx's, laid out as the
+        upstream's own."""
         payload = self.rate_limit if status == 429 else self.by_status.get(status, self.server_error)
-        return json.dumps(payload, separators=(",", ":") if self.compact else None).encode("utf-8")
+        if self.layout == "compact":
+            text = json.dumps(payload, separators=(",", ":"))
+        elif self.layout.startswith("indent:"):
+            text = json.dumps(payload, indent=int(self.layout.split(":", 1)[1]))
+        else:
+            text = json.dumps(payload)
+        return (text + ("\n" if self.newline else "")).encode("utf-8")
 
 
 # Each arm provider's own errors, under the name its arm files give it (module docstring); `upstream_errors` gives any
-# other upstream OpenAI's. Checked 2026-10-17 against OpenAI's error codes (developers.openai.com), docs.z.ai's API
-# codes (a 429 with code 1302 "Rate limit reached for requests"; a 500 "Internal Error" with no business code, "-" in
-# its table), platform.kimi.ai's error reference (key order as in its example; a 429 rate_limit_reached_error with its
-# literal "Organization-level RPM limit reached"; 500 server_error and 503 server_unavailable, whose words it only
-# describes) and, for Cerebras, a captured 401, flat and compact ({"message":"Wrong API Key","type":
-# "invalid_request_error","param":"api_key","code":"wrong_api_key"}), with public reports of its per-minute limits
-# ("Tokens per minute limit exceeded - too many tokens processed."). What no source gives (Cerebras's 429 `type`, its
-# and Moonshot's 5xx words) is chosen so that every harness reads the fault as it read the old one: null `param` and
-# `code`, no quota word (Roko's billing), no "server error" (Roko's provider health would cool the provider down for
-# 30 s, not 5). gap-db8dab holds the capture that would settle them.
+# other upstream OpenAI's. The words were checked 2026-10-17 against OpenAI's error codes (developers.openai.com),
+# docs.z.ai's API codes (a 429 with code 1302 "Rate limit reached for requests"; a 500 "Internal Error" with no
+# business code, "-" in its table), platform.kimi.ai's error reference (a 429 rate_limit_reached_error with its literal
+# "Organization-level RPM limit reached"; 500 server_error and 503 server_unavailable, whose words it only describes)
+# and, for Cerebras, public reports of its per-minute limits ("Tokens per minute limit exceeded - too many tokens
+# processed."). What no source gives (Cerebras's 429 `type`, its and Moonshot's 5xx words) is chosen so that every
+# harness reads the fault as it read the old one: null `param` and `code`, no quota word (Roko's billing), no "server
+# error" (Roko's provider health would cool the provider down for 30 s, not 5). The rest is each provider's own error
+# as captured on 2026-10-18 (gap-db8dab, `driver/testdata/provider_errors/<provider>.json`; `vb capture-errors`): a
+# model that does not exist, since none documents a way to get a 429 or a 5xx on request. The captures set the
+# envelope and its key order (Moonshot's `message` comes before its `type`, unlike its documentation's example), the
+# layout (OpenAI indents by four spaces and ends with a newline; the others are compact), the Content-Type (z.ai sends
+# none with an error) and the template headers, whose ids, cookies and account ids are the capture's, drawn anew.
 UPSTREAM_ERRORS = {
     "openai": UpstreamErrors(
         rate_limit={"error": {"message": RATE_LIMITED, "type": "requests", "param": None,
                               "code": "rate_limit_exceeded"}},
-        server_error={"error": {"message": SERVER_ERROR, "type": "server_error", "param": None, "code": None}}),
+        server_error={"error": {"message": SERVER_ERROR, "type": "server_error", "param": None, "code": None}},
+        layout="indent:4", newline=True, content_type="application/json; charset=utf-8",
+        headers=(
+            ("CF-Ray", "b8a689c9efe5f799-TXL"),
+            ("CF-Cache-Status", "DYNAMIC"),
+            ("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload"),
+            ("Vary", "Origin"),
+            ("Access-Control-Expose-Headers", "CF-Ray"),
+            ("Access-Control-Expose-Headers", "CF-Ray"),
+            ("X-Content-Type-Options", "nosniff"),
+            ("x-openai-proxy-wasm", "v0.1"),
+            ("x-request-id", "req_d008dcf06b86efec18310f84b6a23aa2"),
+            ("set-cookie", "__cf_bm=EO8lUuSJk0us2YtIahM_wKS4Fcr8dF5ZWqEgaxrrhRI-1792348836.4124055-1.0.1.1-aA3NpO5Ow"
+                           "YSR8HTxORIBMKiJXyD8YvMif_e9awKNo5b8z7z.E_roYNN4fne6FvrRAUCFTRogmGPpCLIXxB5fY6b2EUh5dweooGiZ9H"
+                           "LZQZHQZGtmEXh2Ng81Ckh9Eg3.; HttpOnly; SameSite=None; Secure; Path=/; Domain=api.openai.com; "
+                           "Expires=Sun, 18 Oct 2026 19:10:36 GMT"),
+            ("alt-svc", 'h3=":443"; ma=86400'),
+        )),
     "zai": UpstreamErrors(
         rate_limit={"error": {"code": "1302", "message": "Rate limit reached for requests"}},
-        server_error={"error": {"message": "Internal Error"}}, compact=True),
+        server_error={"error": {"message": "Internal Error"}}, layout="compact", content_type=None,
+        headers=(
+            ("Alt-Svc", 'h3=":443"; ma=3600'),
+            ("Set-Cookie", "acw_tc=ab1ecd7c13c22081e9cab6c7a3fb822bab7ac50c646e1c2d38a4e64c8b8668;path=/;HttpOnly;"
+                           "Max-Age=1800"),
+            ("ga-traceid", "4f6b2f4f9c77a4f90f03dcc26d1926fb"),
+            ("Vary", "Origin"),
+            ("Vary", "Access-Control-Request-Method"),
+            ("Vary", "Access-Control-Request-Headers"),
+            ("X-LOG-ID", "f2bf70e5c6aeab9b4368c0d5397b9c"),
+            ("Vary", "Origin"),
+            ("Vary", "Access-Control-Request-Method"),
+            ("Vary", "Access-Control-Request-Headers"),
+            ("X-Request-ID", "3010365b-744e-99c9-0017-7f6d9c6548f6"),
+            ("Vary", "Origin"),
+        )),
     "moonshot": UpstreamErrors(
-        rate_limit={"error": {"type": "rate_limit_reached_error", "message": "Organization-level RPM limit reached"}},
-        server_error={"error": {"type": "server_error", "message": "Internal error"}},
-        by_status={503: {"error": {"type": "server_unavailable",
-                                   "message": "The service is unavailable, please try again later"}}}),
+        rate_limit={"error": {"message": "Organization-level RPM limit reached", "type": "rate_limit_reached_error"}},
+        server_error={"error": {"message": "Internal error", "type": "server_error"}},
+        by_status={503: {"error": {"message": "The service is unavailable, please try again later",
+                                   "type": "server_unavailable"}}},
+        layout="compact", content_type="application/json; charset=utf-8",
+        headers=(
+            ("set-cookie", "__cf_bm=4hNPlKfi.qpQJOmPq_aHMGbQtbcjJQeEJaHJJeZafZ6-1792348835.9895205-1.0.1.1-8K2lBkjwy"
+                           "PWLlF3G5tpp51zf_V4m4gNZpmVYmFxigDalIU9FzqIKkBxgwP53yPa542OWieKePNwemhEg5nx1R_tSx5_W3VVKqxrzLb"
+                           "oIvr_uUeGFad9Tn5a.uk2SmHxb; HttpOnly; SameSite=None; Secure; Path=/; Domain=moonshot.ai; "
+                           "Expires=Sun, 18 Oct 2026 19:10:36 GMT"),
+            ("x-internal-adhoc-canary", "3001894700"),
+            ("Msh-Gid", "enterprise-tier-2"),
+            ("Msh-Org-Id", "org-e51f55bf5027741f9c416492711bcb72"),
+            ("Msh-Project-Id", "proj-1947641ab15bd191691a55c31df3bc61"),
+            ("Msh-Request-Id", "03198d44-c48b-b33d-873c-6f86e53516ed"),
+            ("Msh-Trace-Mode", "on"),
+            ("Msh-Uid", "e5kemheysngazvc2v24g"),
+            ("Vary", "Origin"),
+            ("X-Msh-Trace-Id", "64f66f393ba9b3fcd573fe1e5ab4b97b"),
+            ("Strict-Transport-Security", "max-age=31536000; includeSubDomains"),
+            ("cf-cache-status", "DYNAMIC"),
+            ("CF-RAY", "3bdb903498855ba5-TXL"),
+        )),
     "cerebras": UpstreamErrors(
         rate_limit={"message": "Requests per minute limit exceeded - too many requests sent.",
                     "type": "too_many_requests_error", "param": None, "code": None},
         server_error={"message": "Internal error", "type": "server_error", "param": None, "code": None},
-        compact=True),
+        layout="compact", content_type="application/json",
+        headers=(
+            ("set-cookie", "__cf_bm=aELgX0JiR6vuwWlHRMzVuDWagdaG7hKNsw0dBb8RWjb-1792348835.5049279-1.0.1.1-IgDvs9s3v"
+                           "TGtcvGKdHnSCCTTwBIQXncIDLHOwtJ1HXCdVYm.GpcWZSUwUXsGmXdma3QQhXoe_cQNVfHihVe2_59Ude4s0XYUQgzTEs"
+                           "YXpz.E3SBSdZfYtbhfqbJqr6kw; HttpOnly; SameSite=None; Secure; Path=/; Domain=api.cerebras.ai; "
+                           "Expires=Sun, 18 Oct 2026 19:10:35 GMT"),
+            ("referrer-policy", "strict-origin-when-cross-origin"),
+            ("x-content-type-options", "nosniff"),
+            ("strict-transport-security", "max-age=15552000; includeSubDomains; preload"),
+            ("cf-cache-status", "DYNAMIC"),
+            ("CF-RAY", "f62da4ee7ffac9bc-TXL"),
+            ("alt-svc", 'h3=":443"; ma=86400'),
+        )),
 }
 
 
@@ -671,7 +756,9 @@ class FaultProxy:
             if fault in ("http_5xx", "rate_limit"):  # the upstream's own error (module docstring)
                 status = profile.status if fault == "http_5xx" else 429
                 waits = [("Retry-After", str(profile.retry_after))] if fault == "rate_limit" else []
-                call.answer(status, upstream_errors(upstream.name).body(status), [*self._mirrored(upstream), *waits])
+                errors = upstream_errors(upstream.name)
+                call.answer(status, errors.body(status), [*self._mirrored(upstream), *waits],
+                            content_type=errors.content_type)
             elif fault == "hang":
                 handler.hold(profile.s)
                 call.settle()
@@ -752,11 +839,20 @@ class FaultProxy:
         with self._lock:
             self._answered[upstream.name] = kept
 
-    def _mirrored(self, upstream: Upstream) -> list[tuple[str, str]]:
-        """A fault's headers: those of `upstream`'s latest answer, each value that is new on every answer drawn anew in
-        the same form (`PER_ANSWER`); none before the upstream has answered."""
+    def answered_headers(self, name: str) -> list[tuple[str, str]]:
+        """The headers of upstream `name`'s last forwarded answer that a fault would carry (`NOT_MIRRORED` left out),
+        with the values it sent, in order; [] before it has answered. `vb capture-errors` masks them for a fixture."""
         with self._lock:
-            kept = list(self._answered.get(upstream.name, ()))
+            return list(self._answered.get(name, ()))
+
+    def _mirrored(self, upstream: Upstream) -> list[tuple[str, str]]:
+        """A fault's headers: those of `upstream`'s latest answer, or before it has answered anything those of its
+        provider's captured error (`UpstreamErrors.headers`; none for an upstream of any other name), each value that
+        is new on every answer drawn anew in the same form (`PER_ANSWER`)."""
+        with self._lock:
+            answered = self._answered.get(upstream.name)
+        captured = UPSTREAM_ERRORS.get(upstream.name)
+        kept = list(answered) if answered is not None else list(captured.headers) if captured else []
         return [(name, _redrawn(value, cookie=name.lower() == "set-cookie") if PER_ANSWER.search(name) else value)
                 for name, value in kept]
 
@@ -956,11 +1052,13 @@ class _Call:
             self.settled = True
             self.proxy._settle(self)
 
-    def answer(self, status: int, payload: dict | bytes, headers: Iterable[tuple[str, str]] = ()) -> None:
-        """Answer the client from the proxy itself: `payload` as JSON, or as the bytes it is."""
+    def answer(self, status: int, payload: dict | bytes, headers: Iterable[tuple[str, str]] = (), *,
+               content_type: str | None = "application/json") -> None:
+        """Answer the client from the proxy itself: `payload` as JSON, or as the bytes it is, under `content_type`
+        (None: no Content-Type, as z.ai sends its errors)."""
         self.entry["status"] = status
         self.settle()
-        self.handler.send_json(status, payload, headers)
+        self.handler.send_json(status, payload, headers, content_type=content_type)
 
 
 class _Relay:
@@ -1042,15 +1140,17 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 (the stdlib's name)
         self._dispatch(has_body=True)
 
-    def send_json(self, status: int, payload: dict | bytes, headers: Iterable[tuple[str, str]] = ()) -> int:
+    def send_json(self, status: int, payload: dict | bytes, headers: Iterable[tuple[str, str]] = (), *,
+                  content_type: str | None = "application/json") -> int:
         """A JSON answer: `payload` serialized, or bytes already serialized (a fault's, `UpstreamErrors.body`), after
-        `headers` in order, a name repeated as often as it comes."""
+        `headers` in order, a name repeated as often as it comes, under `content_type` (None: no Content-Type)."""
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
         try:
             self.send_response(status)
             for name, value in headers:
                 self.send_header(name, value)
-            self.send_header("Content-Type", "application/json")
+            if content_type is not None:
+                self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

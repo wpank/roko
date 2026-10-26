@@ -26,6 +26,12 @@
 
 mod acceptance;
 pub use acceptance::{ReviewDiff, attempt_review_diff};
+mod build_output;
+pub use build_output::LeftOut;
+mod build_trees;
+#[cfg(test)]
+pub(crate) use build_trees::clones_on;
+pub use build_trees::{GivenBuildTree, give_build_trees, warm_build_dirs};
 mod cleanup;
 pub use cleanup::{LEFTOVER_CHECKOUT_MIN_AGE, LeftoverCheckout, clear_stale_index_lock};
 mod creation_journal;
@@ -195,6 +201,21 @@ pub struct AcceptedWorktree {
     /// The plan branch's tip once the attempt was folded in: the base of the
     /// plan's later attempts.
     pub commit_oid: String,
+    /// The build output the attempt left that its commit leaves out
+    /// (bug-ba0c40). It stays in the checkout until
+    /// [`WorktreeManager::release_accepted`] removes the checkout.
+    pub left_out: LeftOut,
+}
+
+/// What [`WorktreeManager::union_merge_attempt`] merged into an attempt's
+/// checkout (gap-32ddce).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnionMerge {
+    /// The commit the checkout now holds: the attempt's work merged with its
+    /// plan branch's tip, which it has as a parent.
+    pub commit: String,
+    /// The files that hold both sides' added lines.
+    pub paths: Vec<String>,
 }
 
 /// What [`WorktreeManager::release_accepted`] did with a delivered plan's
@@ -232,6 +253,9 @@ pub struct AttemptAcceptance {
     pub verdict: String,
     /// Task title, for the commit subject.
     pub title: String,
+    /// The task's `files`: build output the attempt left that they do not
+    /// name stays out of its commit ([`LeftOut`], bug-ba0c40).
+    pub files: Vec<String>,
 }
 /// Health of a tracked worktree (§15.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -521,6 +545,11 @@ pub struct WorktreeManager {
     pub(super) operations: Arc<AsyncMutex<OperationState>>,
     /// Canonical executable selected once and shared by probes and mutations.
     pub(super) resolved_git_executable: Arc<Mutex<Option<PathBuf>>>,
+    /// The operator's `core.excludesFile`, resolved once with their own
+    /// config and shared by the managed commands that stage files
+    /// (bug-346498). Outer `None`: not yet resolved. `Some(None)`: resolved,
+    /// and the operator set none.
+    pub(super) resolved_excludes_file: Arc<Mutex<Option<Option<PathBuf>>>>,
     #[cfg(test)]
     pub(super) git_binary: Arc<Mutex<PathBuf>>,
     #[cfg(test)]
@@ -549,6 +578,7 @@ impl WorktreeManager {
             attempt_checkouts: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
+            resolved_excludes_file: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             git_binary: Arc::new(Mutex::new(PathBuf::from("git"))),
             #[cfg(test)]
@@ -595,6 +625,7 @@ impl WorktreeManager {
             attempt_checkouts: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
+            resolved_excludes_file: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             git_binary: Arc::new(Mutex::new(PathBuf::from("git"))),
             #[cfg(test)]
@@ -1025,6 +1056,11 @@ impl WorktreeManager {
     /// ([`format_branch_name`]), and make the plan branch's new tip the base
     /// of the plan's later attempts.
     ///
+    /// New build output that the task's `files` do not name, such as a
+    /// `target/` cargo wrote in a crate's directory, is not committed; the
+    /// commit's message and [`AcceptedWorktree::left_out`] name it
+    /// ([`LeftOut`], bug-ba0c40).
+    ///
     /// Only the attempt's own checkout, the object database and the plan
     /// branch change: every step is plumbing, and no other checkout's
     /// branch, index or files are touched. The plan branch moves only by
@@ -1065,6 +1101,43 @@ impl WorktreeManager {
         })
         .await
     }
+    /// Merge plan `plan_id`'s branch into the checkout of attempt `attempt` at
+    /// `task_id`, whose acceptance conflicted (gap-32ddce), when the merge
+    /// conflicts only in files of `paths` and each side only added lines to
+    /// each of them since their merge base: each such file then gets both
+    /// sides' added lines (`git merge-file --union`).
+    ///
+    /// The checkout then holds a commit with the plan branch's tip as a
+    /// parent, so accepting the attempt again fast-forwards the branch: check
+    /// the merge before that. Returns `Ok(None)`, with nothing changed, for
+    /// any other conflict, a checkout with changes it has not committed, or a
+    /// plan branch the attempt no longer conflicts with.
+    pub async fn union_merge_attempt(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        paths: &[String],
+    ) -> Result<Option<UnionMerge>, WorktreeError> {
+        let id = format_attempt_worktree_id(plan_id, task_id, attempt);
+        let handle = self
+            .get(&id)
+            .ok_or_else(|| WorktreeError::NotFound(id.clone()))?;
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        let plan_id = plan_id.to_string();
+        let paths = paths.to_vec();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let result = manager
+                .union_merge_locked(&plan_id, &handle, &paths, &lifecycle)
+                .await;
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            result
+        })
+        .await
+    }
+
     /// Last accepted attempt for a plan, used by plan verification and merge.
     pub fn accepted_for_plan(&self, plan_id: &str) -> Option<AcceptedWorktree> {
         self.accepted.lock().get(plan_id).cloned()
@@ -1702,6 +1775,7 @@ impl WorktreeManager {
     #[cfg(test)]
     pub(super) fn set_test_git_probe_environment(&self, environment: Vec<(OsString, OsString)>) {
         *self.git_probe_environment.lock() = environment;
+        *self.resolved_excludes_file.lock() = None;
     }
 
     #[cfg(test)]

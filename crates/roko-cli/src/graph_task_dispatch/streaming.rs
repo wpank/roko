@@ -83,12 +83,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let started_at = Instant::now();
 
         // ── Task + dispatch context ──────────────────────────────────────
-        let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
-            RokoError::Planning(format!(
-                "decode task definition for `{}`: {error}",
-                spec.title
-            ))
-        })?;
+        let task = self.task_for_try(spec)?;
         // Only the batch dispatch path builds scratch_dir workspaces (9135).
         if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
             return Err(RokoError::Rejected(format!(
@@ -96,6 +91,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                  dispatch path does not build",
                 task.id
             )));
+        }
+        // A try that passed fewer verify steps than the task's best one
+        // left its checkout to start from the best try's files (gap-fefdf5).
+        if self.workspace_provider.is_some() {
+            self.restore_best_try(spec, &task, &lease.path).await;
         }
         let role = task.role.as_deref().unwrap_or("implementer");
         let _in_flight = self.in_flight.register(
@@ -196,11 +196,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            warm_build_trees: self.checkout_build_trees(&lease.path),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
             knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
+            source_documents: self.plan_sources(spec),
         };
         // M3, as on the batch path (bug-78e5ce): the self-model forecasts the
         // attempt before it is routed (6128), surfaces a refine-spec or
@@ -216,21 +218,27 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        let timeout_ms =
+            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // A try on a rung the task can still climb from is bounded, as on the
-        // batch path (gap-3e770b).
-        let rung_allowance =
-            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, max_turns);
+        // batch path (gap-3e770b, bug-f0007b).
+        let rung_allowance = self.rung_allowance(
+            &task,
+            &attempt,
+            &dispatch_plan,
+            ladder_step,
+            max_turns,
+            timeout_ms / 1_000,
+        );
         if let Some(turns) = rung_allowance
             .as_ref()
             .and_then(|allowance| allowance.turns)
         {
             max_turns = max_turns.min(turns);
         }
-        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref(), &[]);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
         let contract = self.task_contract(role, spec, &task);
-        let timeout_ms =
-            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         self.log_prompts(
             spec,
             &task.id,
@@ -265,9 +273,15 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
             knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
-            allowance: allowance
-                .clone()
-                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+            allowance: self.metered_calls(
+                allowance
+                    .clone()
+                    .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+                &spec.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ),
+            hand_off: None,
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);
@@ -308,7 +322,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         );
 
         // ── Provider invocation ──────────────────────────────────────────
+        // gap-770cb5: the agent can run its task's checks mid-try. They stay
+        // until the try is judged, which reads their runs (gap-56f761).
+        let _left_checks = self.leave_task_checks(&task, &attempt_key);
+        // reg-d2deba: the person's checkout over the try.
+        let try_watch = self.watch_checkout(spec, &lease.path).await;
         attempt.dispatch_started();
+        attempt.record_effort(request.effort.clone());
         progress.call_started(
             crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
                 .resolve(&request.model_key),
@@ -325,6 +345,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             )
             .await;
         attempt.dispatch_ended();
+        // What the try changed there, said now (reg-d2deba).
+        let (try_written, try_findings) = self
+            .try_checkout_written(
+                spec,
+                &task,
+                attempt_number,
+                &attempt_key,
+                &lease.path,
+                try_watch,
+            )
+            .await;
+        attempt.record_checkout_findings(try_findings);
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
             // The stall watchdog, the conductor or a stopping plan run
@@ -536,6 +568,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             &attempt_key,
                             Some(&event_tx),
                             attempt.harness_params(),
+                            &try_written,
                         ))
                         .await;
                     attempt.verify_ended();
@@ -562,13 +595,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     ),
                     (None, None) => match &budget_stop {
                         Some(TryStop::Plan(reason)) => Settlement::budget_exhausted(reason),
-                        Some(TryStop::Rung(reason)) => Settlement::allowance_spent(reason),
+                        Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
+                            Settlement::allowance_spent(reason)
+                        }
                         None => Settlement::provider_failure(
                             dispatch.result.output.body.as_text().unwrap_or_default(),
                             first_token_seen(&dispatch),
                         ),
                     },
                 };
+                if let Some(stop) = &bounded {
+                    attempt.ended_at_bound(stop.kind());
+                }
                 let mut settled =
                     attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
                 settled.bound = bounded.as_ref().map(BoundedStop::describe);
@@ -712,7 +750,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
         match budget_stop.filter(|_| !verified) {
             Some(TryStop::Plan(reason)) => return Err(RokoError::gateway("budget", false, reason)),
-            Some(TryStop::Rung(reason)) => {
+            Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
                 return Err(RokoError::Agent {
                     backend: outcome.provider_id.clone(),
                     message: format!("{RUNG_ALLOWANCE}: {reason}"),
@@ -1452,10 +1490,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
                     .models
                     .insert(key.to_string(), model("stream-cli", slug, None));
             }
-            let rung = |name: &str, model: &str| LadderRung {
-                name: name.to_string(),
-                model: model.to_string(),
-            };
+            let rung = |name: &str, model: &str| LadderRung::new(name, model);
             config.routing.ladder.rungs =
                 vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
         };
@@ -1537,10 +1572,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
                     .models
                     .insert(key.to_string(), model("stream-cli", slug, None));
             }
-            let rung = |name: &str, model: &str| LadderRung {
-                name: name.to_string(),
-                model: model.to_string(),
-            };
+            let rung = |name: &str, model: &str| LadderRung::new(name, model);
             config.routing.ladder.rungs =
                 vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
         };

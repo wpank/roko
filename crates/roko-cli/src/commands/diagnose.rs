@@ -293,6 +293,11 @@ pub struct TaskDiagnosis {
     /// Listed like `attempts`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_policies: Vec<AttemptToolPolicy>,
+    /// Paths of the person's own checkout that changed while the task's
+    /// checks ran in its worktree, from its verdicts (bug-b7d9ad); always
+    /// listed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub checkout_written: Vec<String>,
 }
 
 /// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
@@ -449,6 +454,9 @@ struct RunRecords {
     /// Attempts' tool policies from the run's `attempts.jsonl`, with their
     /// task ids, oldest first.
     tool_policies: Vec<(String, AttemptToolPolicy)>,
+    /// The paths of the person's checkout each task's checks changed, from
+    /// the run's `attempts.jsonl` (bug-b7d9ad).
+    checkout_written: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl RunRecords {
@@ -457,6 +465,9 @@ impl RunRecords {
     /// whose time cannot be read is kept.
     fn load(workdir: &Path, plan_id: &str, run_id: &str, since_ms: Option<i64>) -> Self {
         let layout = RokoLayout::for_project(workdir);
+        // An unreadable run log has no verdicts.
+        let run = roko_learn::telemetry::report::RunRecords::load(&layout.run_dir(run_id))
+            .unwrap_or_default();
         let in_run = |at_ms: Option<i64>| since_ms.zip(at_ms).is_none_or(|(since, at)| at >= since);
         Self {
             attempts: read_jsonl_lossy::<CostRecord>(&layout.learn_dir().join("costs.jsonl"))
@@ -476,7 +487,8 @@ impl RunRecords {
                         && in_run(Some(episode.timestamp.timestamp_millis()))
                 })
                 .collect(),
-            tool_policies: recorded_tool_policies(&layout.run_dir(run_id), plan_id),
+            tool_policies: recorded_tool_policies(&run, plan_id),
+            checkout_written: recorded_checkout_writes(&run, plan_id),
         }
     }
 
@@ -495,27 +507,41 @@ impl RunRecords {
     }
 }
 
-/// The tool policies `plan_id`'s attempts recorded in their verdicts in
-/// `run_dir`'s `attempts.jsonl`, with their task ids, oldest first. An
-/// unreadable log has none.
-fn recorded_tool_policies(run_dir: &Path, plan_id: &str) -> Vec<(String, AttemptToolPolicy)> {
-    let Ok(run) = roko_learn::telemetry::report::RunRecords::load(run_dir) else {
-        return Vec::new();
-    };
+/// The tool policies `plan_id`'s attempts recorded in their verdicts in the
+/// run's `attempts.jsonl`, `run`, with their task ids, oldest first.
+fn recorded_tool_policies(
+    run: &roko_learn::telemetry::report::RunRecords,
+    plan_id: &str,
+) -> Vec<(String, AttemptToolPolicy)> {
     run.verdicts
-        .into_iter()
-        .map(|verdict| verdict.record)
+        .iter()
+        .map(|verdict| &verdict.record)
         .filter(|record| record.identity.plan_id == plan_id)
         .filter_map(|record| {
-            let policy = record.executed.tool_policy?;
+            let policy = record.executed.tool_policy.clone()?;
             let attempt = AttemptToolPolicy {
                 attempt: record.identity.attempt,
-                model: record.executed.model_dispatched,
+                model: record.executed.model_dispatched.clone(),
                 policy,
             };
-            Some((record.identity.task_id, attempt))
+            Some((record.identity.task_id.clone(), attempt))
         })
         .collect()
+}
+
+/// The paths of the person's checkout that the checks of each task of
+/// `plan_id` changed, by task, from their verdicts in `run` (bug-b7d9ad).
+fn recorded_checkout_writes(
+    run: &roko_learn::telemetry::report::RunRecords,
+    plan_id: &str,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut writes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for write in run.checkout_writes() {
+        if write.plan_id == plan_id {
+            writes.entry(write.task_id).or_default().extend(write.paths);
+        }
+    }
+    writes
 }
 
 /// The gate-gaming alerts in `.roko/learn/gate-gaming-alerts.jsonl` that
@@ -850,6 +876,11 @@ fn diagnose_tasks(
                 gate_failures: if listed { gate_failures } else { Vec::new() },
                 episode_ids: if listed { episode_ids } else { Vec::new() },
                 tool_policies: if listed { tool_policies } else { Vec::new() },
+                checkout_written: records
+                    .checkout_written
+                    .get(task_id)
+                    .map(|paths| paths.iter().cloned().collect())
+                    .unwrap_or_default(),
             };
             diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
             diagnosis
@@ -1020,19 +1051,45 @@ fn describe_task(
             } else {
                 String::new()
             };
-            let verdict = match task.gate_verdict {
-                Some(TaskGateVerdict::Passed) => "; its verify steps passed",
-                Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
-                    "; its verify steps passed, apart from tests that failed before the run"
+            // The person's checkout changed while it ran, not its own tree:
+            // through its checks or a command its agent ran (bug-b7d9ad,
+            // reg-d2deba).
+            let written = (!task.checkout_written.is_empty()).then(|| {
+                let paths: Vec<String> = task
+                    .checkout_written
+                    .iter()
+                    .map(|path| format!("`{path}`"))
+                    .collect();
+                format!(
+                    "your checkout changed while it ran, not its own worktree: {}",
+                    paths.join(", ")
+                )
+            });
+            let verdict = match (task.gate_verdict, &written) {
+                (Some(TaskGateVerdict::Unverified), Some(written)) => {
+                    format!("; unverified: it changed nothing in its own tree, and {written}")
                 }
-                Some(TaskGateVerdict::AlreadySatisfied) => {
-                    "; it changed nothing, and its verify steps passed on the tree as it was"
+                (verdict, written) => {
+                    let verdict = match verdict {
+                        Some(TaskGateVerdict::Passed) => "; its verify steps passed",
+                        Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
+                            "; its verify steps passed, apart from tests that failed before the run"
+                        }
+                        Some(TaskGateVerdict::AlreadySatisfied) => {
+                            "; it changed nothing, and its verify steps passed on the tree as it was"
+                        }
+                        Some(TaskGateVerdict::Unverified) => "; it has no verify steps",
+                        Some(TaskGateVerdict::ForcedAccept) => {
+                            "; its verify steps failed and it was force-accepted, so a resume runs \
+                             it again"
+                        }
+                        None => "",
+                    };
+                    match written {
+                        Some(written) => format!("{verdict}; {written}"),
+                        None => verdict.to_string(),
+                    }
                 }
-                Some(TaskGateVerdict::Unverified) => "; it has no verify steps",
-                Some(TaskGateVerdict::ForcedAccept) => {
-                    "; its verify steps failed and it was force-accepted, so a resume runs it again"
-                }
-                None => "",
             };
             format!("completed{retries}{verdict}")
         }
@@ -2501,7 +2558,7 @@ title = "Tidy the changelog"
         }
         checkpoint
             .take_cost_ledger()
-            .persist(spent_micro_usd, 0)
+            .persist(spent_micro_usd, 0, Vec::new())
             .expect("cost ledger");
         checkpoint.finish_with_status(status).expect("finish");
     }
@@ -3033,6 +3090,92 @@ title = "Tidy the changelog"
         ] {
             assert!(text.contains(line), "{text}");
         }
+    }
+
+    /// bug-b7d9ad: a task whose checks changed the person's own checkout,
+    /// by its verdicts' `checkout_written` findings in the run's
+    /// `attempts.jsonl`, is named with the paths; settled unverified for it,
+    /// it says it is unverified and why. A task without such findings says
+    /// nothing of it.
+    #[test]
+    fn graph_report_names_the_checkout_a_tasks_checks_changed() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, ScopeFinding,
+            TelemetryWriter, TelemetryWriterConfig,
+        };
+
+        let workspace = workspace();
+        let root = workspace.path();
+        let dir = root.join("plans/programme").join(PLAN_ID);
+        let plan = Plan {
+            id: PLAN_ID.to_string(),
+            tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
+            dir,
+        };
+        let mut checkpoint = start_plan_checkpoint(root, &plan).expect("checkpoint");
+        let mut recorder = checkpoint.take_recorder();
+        let mut unverified = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("nothing to change"))
+                .build(),
+        ];
+        TaskGateVerdict::Unverified.stamp(&mut unverified);
+        recorder
+            .record(PLAN_ID, "T1", 0, unverified)
+            .expect("record");
+        recorder
+            .record(PLAN_ID, "T2", 0, passed_output())
+            .expect("record");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Unverified)
+            .expect("finish");
+        let run_id = inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("read checkpoint")
+            .expect("checkpoint")
+            .manifest
+            .run_id;
+        let key = AttemptKey::new(run_id.as_str(), PLAN_ID, "T1", 1);
+        let mut verdict = AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            AttemptOutcome::Unverified,
+            true,
+        );
+        verdict.set_scope_findings(vec![ScopeFinding {
+            path: "artifacts/ui/editor-idle.png".into(),
+            kind: "checkout_written".into(),
+        }]);
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(verdict));
+        assert_eq!(writer.close().written, 1);
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        let t1 = task(&report, "T1");
+        assert_eq!(t1.checkout_written, ["artifacts/ui/editor-idle.png"]);
+        assert_eq!(
+            t1.reason,
+            "completed; unverified: it changed nothing in its own tree, and your checkout \
+             changed while it ran, not its own worktree: `artifacts/ui/editor-idle.png`"
+        );
+        let t2 = task(&report, "T2");
+        assert!(t2.checkout_written.is_empty());
+        assert_eq!(t2.reason, "completed; its verify steps passed");
+        let json = serde_json::to_value(&report).expect("serialize");
+        let tasks = json["tasks"].as_array().expect("tasks");
+        let t1_json = tasks
+            .iter()
+            .find(|task| task["task_id"] == "T1")
+            .expect("T1");
+        assert_eq!(
+            t1_json["checkout_written"],
+            serde_json::json!(["artifacts/ui/editor-idle.png"])
+        );
+        let t2_json = tasks
+            .iter()
+            .find(|task| task["task_id"] == "T2")
+            .expect("T2");
+        assert!(t2_json.get("checkout_written").is_none(), "{t2_json}");
     }
 
     #[test]

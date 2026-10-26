@@ -10,7 +10,7 @@
 //! idempotent for the same exact attempt ID and fingerprint; a different
 //! active attempt never receives the same path or branch.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -258,6 +258,11 @@ pub struct WorkspaceAcceptRequest {
     pub verdict: String,
     /// Task title, for the commit subject.
     pub title: String,
+    /// The task's `files`. Build output the attempt left that they do not
+    /// name, such as a `target/` that cargo run from a crate's directory
+    /// wrote, stays out of the commit (bug-ba0c40).
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 /// An accepted attempt: the commit holding its work, and where its plan now
@@ -309,6 +314,21 @@ pub trait ExecutionWorkspaceProvider: Send + Sync {
         attempt_id: &WorkspaceAttemptId,
     ) -> Result<WorkspaceLease, WorkspaceError>;
 
+    /// [`Self::acquire`], for an attempt whose task depends on work that
+    /// `seed`, the checkout of an accepted attempt, already built: a new
+    /// checkout warms its build trees from there instead of from the
+    /// repository checkout, so its first build compiles only what changed
+    /// since (gap-b6b7a1). An existing lease is returned as it is. The
+    /// default ignores `seed`.
+    async fn acquire_seeded(
+        &self,
+        attempt_id: &WorkspaceAttemptId,
+        seed: Option<&Path>,
+    ) -> Result<WorkspaceLease, WorkspaceError> {
+        let _ = seed;
+        self.acquire(attempt_id).await
+    }
+
     /// Reconcile a previously checkpointed lease against the live workspace
     /// state.
     ///
@@ -357,6 +377,23 @@ pub trait ExecutionWorkspaceProvider: Send + Sync {
         lease: &WorkspaceLease,
         request: &WorkspaceAcceptRequest,
     ) -> Result<WorkspaceAcceptance, WorkspaceError>;
+
+    /// After [`Self::accept`] refused the attempt holding `lease` with a
+    /// [`WorkspaceError::Conflict`], merge its plan branch into its checkout
+    /// when the merge conflicts only in files of `paths` and each side only
+    /// added lines to each of them: each then gets both sides' added lines.
+    ///
+    /// The checkout then holds a commit that builds on the plan branch's tip,
+    /// so accepting the attempt again fast-forwards the branch, once the
+    /// caller has checked the merge. Returns the files merged, or `None`, with
+    /// nothing changed, for any other conflict. The default merges nothing.
+    async fn union_merge(
+        &self,
+        _lease: &WorkspaceLease,
+        _paths: &[String],
+    ) -> Result<Option<Vec<String>>, WorkspaceError> {
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------

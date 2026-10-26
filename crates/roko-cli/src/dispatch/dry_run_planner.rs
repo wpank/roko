@@ -93,11 +93,13 @@ fn canary_context(task: &TaskDef, workdir: &Path) -> DispatchContext {
         cached_workspace_map: String::new(),
         cached_workspace_context: String::new(),
         concurrent_plans: Vec::new(),
+        warm_build_trees: Vec::new(),
         attempt_key: None,
         arm_set: None,
         knowledge_section: true,
         self_model_rung: None,
         skip_enrichment: false,
+        source_documents: Vec::new(),
     }
 }
 

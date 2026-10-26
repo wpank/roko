@@ -6,6 +6,8 @@ This directory holds Roko's whitepaper: one file per section, the figures, the f
 the bibliography. This README is the plan the sections follow: the thesis, the outline with its word budgets and
 reading order, and the conventions every section keeps. Epic: spec-ce1484. Review: [`REVIEW.md`](REVIEW.md).
 
+Published: whitepaper-v1 · 2026-10-20 · sha256 9652c1543299b2ebe22f835b345f5eecff2b2035d3606c49af17a2b43c9ffd4d · https://github.com/wpank/roko/releases/tag/whitepaper-v1
+
 | Decision | Value |
 |---|---|
 | Title | Roko: A Cybernetic Harness for Multi-Agent Orchestration |

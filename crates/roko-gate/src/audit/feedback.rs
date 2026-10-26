@@ -9,12 +9,16 @@
 //!   minimum, [`min_n_eff`] (73 for θ_max = 0.05, 189 for γ_max = 0.02).
 //!   Below that minimum even a window without events can show UCB95 above
 //!   the limit, so without evidence the level holds (q-394b7f). The ladder
-//!   steps a task type down one only after two windows in a row with
-//!   UCB95(θ) < θ_max/2, which at θ_max = 0.05 takes an n_eff near 150 or
-//!   more. It moves at most one step per window, never below V0 or an
-//!   active M1 floor request, and every step appends `audit.policy_change`.
-//!   A window without a known label of a task type leaves its level and its
-//!   run of quiet windows as they are.
+//!   steps a task type down one once its run is quiet: the windows since
+//!   its last step, each rate's n_eff and events added up ([`Run`]), with
+//!   the pooled UCB95(θ) < θ_max/2 and UCB95(γ) < γ_max/2 (q-e916e4). A run
+//!   without events is quiet from [`quiet_n_eff`] on: 150 for θ_max = 0.05
+//!   and 381 for γ_max = 0.02, about 20 to 40 default windows, which audit
+//!   10 to 20 units each. Events in the run raise it, and a window that
+//!   steps up starts a fresh run. The ladder moves at most one step per
+//!   window, never below V0 or an active M1 floor request, and every step
+//!   appends `audit.policy_change`. A window without a known label of a
+//!   task type leaves its level and its run as they are.
 //! - [`TrustBook`] holds the latest Beta posterior on each (model, harness)
 //!   pair's false-green rate, Beta(1 + θ̂·n_eff, 19 + (1 − θ̂)·n_eff), in the
 //!   vault's `trust.json`. The harness reads it at plan start; agents never
@@ -36,7 +40,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::estimate::Z95;
+use super::estimate::{Z95, wilson};
 use super::ledger::{AuditEvent, AuditLedger, records};
 use super::window::{GroupEstimate, LabelEstimate, WindowClose, due_windows};
 
@@ -49,8 +53,6 @@ pub const FEEDBACK_LOCK: &str = ".feedback.lock";
 /// The knob of a ladder step in `audit.policy_change`, before the task
 /// type.
 pub const DEPTH_KNOB: &str = "verify_depth:";
-/// Quiet windows in a row before the ladder steps down.
-pub const QUIET_WINDOWS: u32 = 2;
 
 /// The rates the ladder holds below (`[audit] theta_max`, `gamma_max`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,10 +87,23 @@ pub fn min_n_eff(max: f64) -> f64 {
     (Z95 * Z95 * (1.0 - max) / max).ceil()
 }
 
-/// What a window showed of one rate of a task type: the 95% interval at
-/// Kish's n_eff.
+/// The least pooled n_eff at which a run without events is quiet for the
+/// limit `max`: UCB95 = z²/(n_eff + z²) below `max`/2.
+///
+/// It is [`min_n_eff`] of `max`/2: 150 for θ_max = 0.05 and 381 for
+/// γ_max = 0.02 (q-e916e4). Events in the run raise it: one false green
+/// to 223 for θ, one gaming finding to 563 for γ.
+#[must_use]
+pub fn quiet_n_eff(max: f64) -> f64 {
+    min_n_eff(max / 2.0)
+}
+
+/// What a window showed of one rate of a task type: the Hájek estimate and
+/// its 95% interval at Kish's n_eff.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reading {
+    /// θ̂_H, the rate's Hájek estimate.
+    pub rate: f64,
     /// LCB95, the interval's lower end.
     pub lcb: f64,
     /// UCB95, the interval's upper end.
@@ -101,10 +116,12 @@ impl Reading {
     /// The reading of one label's estimate, `None` without a known label.
     #[must_use]
     pub fn of(label: &LabelEstimate) -> Option<Self> {
-        label.ucb().map(|ucb| Self {
-            lcb: label.estimate.ci.0,
-            ucb,
-            n_eff: label.estimate.n_eff,
+        let estimate = &label.estimate;
+        estimate.theta_hajek.map(|rate| Self {
+            rate,
+            lcb: estimate.ci.0,
+            ucb: estimate.ci.1,
+            n_eff: estimate.n_eff,
         })
     }
 
@@ -113,7 +130,9 @@ impl Reading {
     /// LCB95 above `max` is evidence at any n_eff; UCB95 above `max` counts
     /// only from [`min_n_eff`] on. Otherwise the level holds.
     fn steps_up(self, name: &str, max: f64) -> Option<String> {
-        let Self { lcb, ucb, n_eff } = self;
+        let Self {
+            lcb, ucb, n_eff, ..
+        } = self;
         if lcb > max {
             return Some(format!(
                 "LCB95({name}) {lcb:.4} > {name}_max {max} at n_eff {n_eff:.1}"
@@ -147,14 +166,86 @@ impl Signal {
     }
 }
 
+/// One rate pooled over a run of windows: their n_eff and events added up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pool {
+    /// The windows' Kish n_eff, added up.
+    pub n_eff: f64,
+    /// Their events at that n_eff, θ̂_H·n_eff, added up: a window's count
+    /// of events when its sampled units weigh the same.
+    pub events: f64,
+}
+
+impl Pool {
+    /// Add one window's `reading`.
+    fn add(&mut self, reading: Reading) {
+        self.n_eff += reading.n_eff;
+        self.events += reading.rate * reading.n_eff;
+    }
+
+    /// UCB95 of the pooled rate: Wilson's at the pooled n_eff, as a window's
+    /// own; 1 for an empty pool.
+    #[must_use]
+    pub fn ucb(&self) -> f64 {
+        if self.n_eff.is_nan() || self.n_eff <= 0.0 {
+            return 1.0;
+        }
+        let rate = (self.events / self.n_eff).clamp(0.0, 1.0);
+        wilson(rate, self.n_eff, Z95).map_or(1.0, |(_, ucb)| ucb)
+    }
+}
+
+/// A task type's run: the windows applied to it since its last step, each
+/// rate pooled (q-e916e4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Run {
+    /// The windows in the run, each with a known label of the task type.
+    pub windows: u32,
+    /// θ, the false-green rate, pooled.
+    pub theta: Pool,
+    /// γ, the spec-gaming rate, pooled.
+    pub gamma: Pool,
+}
+
+impl Run {
+    /// Add one window's `signal`, which has a known label.
+    fn add(&mut self, signal: Signal) {
+        self.windows = self.windows.saturating_add(1);
+        if let Some(theta) = signal.theta {
+            self.theta.add(theta);
+        }
+        if let Some(gamma) = signal.gamma {
+            self.gamma.add(gamma);
+        }
+    }
+
+    /// Why the run steps its task type down, if it is quiet: the pooled
+    /// UCB95(θ) below θ_max/2 and UCB95(γ) below γ_max/2.
+    fn quiet(&self, limits: Limits) -> Option<String> {
+        let (theta, gamma) = (self.theta.ucb(), self.gamma.ucb());
+        let (theta_half, gamma_half) = (limits.theta_max / 2.0, limits.gamma_max / 2.0);
+        (theta < theta_half && gamma < gamma_half).then(|| {
+            format!(
+                "pooled over {} windows since the last step: UCB95(θ) {theta:.4} < θ_max/2 \
+                 {theta_half} at n_eff {:.1}, UCB95(γ) {gamma:.4} < γ_max/2 {gamma_half} at \
+                 n_eff {:.1}",
+                self.windows, self.theta.n_eff, self.gamma.n_eff
+            )
+        })
+    }
+}
+
 /// One task type's place on the ladder.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rung {
     /// Its verify depth.
     pub level: VerifyDepth,
-    /// Quiet windows in a row, with UCB95(θ) below θ_max/2.
-    pub quiet: u32,
+    /// Its run since its last step, which a quiet run ends with a step
+    /// down.
+    pub run: Run,
     /// The last window applied to it.
     pub window: Option<String>,
 }
@@ -186,7 +277,7 @@ impl Step {
 }
 
 /// DP3's strictness ladder: a verify depth per task type (S05 §4.6).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Ladder {
     /// Each task type's rung.
@@ -252,7 +343,16 @@ impl Ladder {
 }
 
 /// Move `rung` by one window's `signal`; the reason when its level moved.
+///
+/// A window that shows evidence steps the rung up and starts a fresh run,
+/// at V4 too, where it cannot step. Any other window joins the run, and a
+/// quiet run steps the rung down one, never below `floor`, and starts a
+/// fresh one; at or below `floor` the run goes on. A window without a
+/// known label leaves the rung as it is.
 fn step(rung: &mut Rung, signal: Signal, limits: Limits, floor: VerifyDepth) -> Option<String> {
+    if signal.theta.is_none() && signal.gamma.is_none() {
+        return None;
+    }
     let theta_up = signal
         .theta
         .and_then(|theta| theta.steps_up("θ", limits.theta_max));
@@ -262,7 +362,7 @@ fn step(rung: &mut Rung, signal: Signal, limits: Limits, floor: VerifyDepth) -> 
             .and_then(|gamma| gamma.steps_up("γ", limits.gamma_max))
     });
     if let Some(reason) = up {
-        rung.quiet = 0;
+        rung.run = Run::default();
         let to = rung.level.deeper();
         if to == rung.level {
             return None;
@@ -270,22 +370,14 @@ fn step(rung: &mut Rung, signal: Signal, limits: Limits, floor: VerifyDepth) -> 
         rung.level = to;
         return Some(reason);
     }
-    match signal.theta {
-        None => return None,
-        Some(theta) if theta.ucb < limits.theta_max / 2.0 => {
-            rung.quiet = rung.quiet.saturating_add(1);
-        }
-        Some(_) => rung.quiet = 0,
-    }
-    if rung.quiet < QUIET_WINDOWS || rung.level <= floor {
+    rung.run.add(signal);
+    if rung.level <= floor {
         return None;
     }
-    rung.quiet = 0;
+    let reason = rung.run.quiet(limits)?;
+    rung.run = Run::default();
     rung.level = rung.level.shallower().max(floor);
-    Some(format!(
-        "UCB95(θ) below θ_max/2 ({}) in {QUIET_WINDOWS} windows in a row",
-        limits.theta_max / 2.0
-    ))
+    Some(reason)
 }
 
 /// The latest routing trust estimate of each (model, harness) pair
@@ -479,8 +571,14 @@ mod tests {
     /// a rate.
     fn reading(events: u32, audited: u32) -> Reading {
         let n_eff = f64::from(audited);
-        let (lcb, ucb) = wilson(f64::from(events) / n_eff, n_eff, Z95).expect("an interval");
-        Reading { lcb, ucb, n_eff }
+        let rate = f64::from(events) / n_eff;
+        let (lcb, ucb) = wilson(rate, n_eff, Z95).expect("an interval");
+        Reading {
+            rate,
+            lcb,
+            ucb,
+            n_eff,
+        }
     }
 
     const fn signal(theta: Reading, gamma: Reading) -> Signal {
@@ -556,7 +654,7 @@ mod tests {
 
     #[test]
     fn ladder_steps_up_on_ucb_and_down_after_two_quiet_windows() {
-        use VerifyDepth::{V0, V1, V2, V4};
+        use VerifyDepth::{V0, V1, V2, V3, V4};
 
         // Windows of 200 audited units, past both minimum n_effs, where no
         // LCB95 is above its limit: 6 false greens (UCB95(θ) 0.064), one
@@ -574,39 +672,56 @@ mod tests {
         // Up on UCB95(γ) > γ_max alone.
         assert_eq!(apply(&mut ladder, 2, gaming, V0), [(V1, V2)]);
 
-        // Down only after two quiet windows in a row: a window between
-        // θ_max/2 and θ_max breaks the run.
+        // Down once the run since the last step, pooled, is quiet: one
+        // window of 200 is quiet for θ (UCB95(θ) 0.019 < 0.025) but not
+        // for γ (0.019 > 0.01), and two are quiet for both (0.0095 at
+        // n_eff 400).
         assert!(apply(&mut ladder, 3, quiet, V0).is_empty());
-        assert!(apply(&mut ladder, 4, middling, V0).is_empty());
-        assert!(apply(&mut ladder, 5, quiet, V0).is_empty());
-        assert_eq!(apply(&mut ladder, 6, quiet, V0), [(V2, V1)]);
-        // A window without a known label leaves the run as it is.
+        assert_eq!(apply(&mut ladder, 4, quiet, V0), [(V2, V1)]);
+        // A window between θ_max/2 and θ_max no longer breaks the run: its
+        // false green joins the pool, where 1 in 400 is quiet (UCB95(θ)
+        // 0.014). A window without a known label leaves the run as it is.
+        assert!(apply(&mut ladder, 5, middling, V0).is_empty());
         let unknown = Signal::default();
-        assert!(apply(&mut ladder, 7, quiet, V0).is_empty());
-        assert!(apply(&mut ladder, 8, unknown, V0).is_empty());
-        assert_eq!(apply(&mut ladder, 9, quiet, V0), [(V1, V0)]);
+        assert!(apply(&mut ladder, 6, unknown, V0).is_empty());
+        assert_eq!(apply(&mut ladder, 7, quiet, V0), [(V1, V0)]);
 
         // Never below V0.
-        assert!(apply(&mut ladder, 10, quiet, V0).is_empty());
-        assert!(apply(&mut ladder, 11, quiet, V0).is_empty());
+        assert!(apply(&mut ladder, 8, quiet, V0).is_empty());
+        assert!(apply(&mut ladder, 9, quiet, V0).is_empty());
         assert_eq!(ladder.level("code"), V0);
 
         // Never below an active M1 floor request: at V1 with a V1 floor,
-        // quiet windows hold it, and it steps down once the floor goes.
-        assert_eq!(apply(&mut ladder, 12, loud, V1), [(V0, V1)]);
-        assert!(apply(&mut ladder, 13, quiet, V1).is_empty());
-        assert!(apply(&mut ladder, 14, quiet, V1).is_empty());
+        // a quiet run holds it, and it steps down once the floor goes.
+        assert_eq!(apply(&mut ladder, 10, loud, V1), [(V0, V1)]);
+        assert!(apply(&mut ladder, 11, quiet, V1).is_empty());
+        assert!(apply(&mut ladder, 12, quiet, V1).is_empty());
         assert_eq!(ladder.level("code"), V1);
-        assert_eq!(apply(&mut ladder, 15, quiet, V0), [(V1, V0)]);
+        assert_eq!(apply(&mut ladder, 13, quiet, V0), [(V1, V0)]);
 
         // V4 is the top.
-        for window in 16..20 {
+        for window in 14..18 {
             apply(&mut ladder, window, loud, V0);
         }
         assert_eq!(ladder.level("code"), V4);
+        assert!(apply(&mut ladder, 18, loud, V0).is_empty());
+        // Evidence at the top starts a fresh run, though the level cannot
+        // step: pooled with window 20's six false greens, windows 19 and
+        // 21 would be quiet (UCB95(θ) 0.022 at n_eff 600).
+        assert!(apply(&mut ladder, 19, quiet, V0).is_empty());
         assert!(apply(&mut ladder, 20, loud, V0).is_empty());
+        assert!(apply(&mut ladder, 21, quiet, V0).is_empty());
+        assert_eq!(apply(&mut ladder, 22, quiet, V0), [(V4, V3)]);
 
-        // The ladder keeps its state, and a step names its window.
+        // The ladder keeps its state, its run too, and a step names its
+        // window.
+        assert!(apply(&mut ladder, 23, middling, V0).is_empty());
+        let run = ladder.task_types["code"].run;
+        assert_eq!(
+            (run.windows, run.theta.n_eff, run.gamma.n_eff),
+            (1, 200.0, 200.0)
+        );
+        assert!((run.theta.events - 1.0).abs() < 1e-9, "{run:?}");
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join(LADDER_FILE);
         ladder.save(&path).expect("save");
@@ -676,8 +791,9 @@ mod tests {
         assert_eq!(reasons, ["UCB95(θ) 0.0736 > θ_max 0.05 at n_eff 73.0 ≥ 73"]);
         assert_eq!(ladder.level("code"), V1);
 
-        // Below the minimum a window is not quiet either: clean windows of
-        // 20 never step a level down.
+        // Below the minimum a window is not quiet on its own either: four
+        // clean windows of 20 hold the level, and only a pooled run of 381
+        // audited units steps it down (q-e916e4).
         for window in 12..=15 {
             assert!(apply(&mut ladder, window, clean, V0).is_empty(), "{window}");
         }
@@ -744,6 +860,126 @@ mod tests {
             [(V2, V3)]
         );
         assert_eq!(ladder.level("code"), V3);
+    }
+
+    /// Apply `signals` in turn to task type `code`, from window `first`,
+    /// until one steps the ladder: the windows that took, and the step.
+    fn windows_to_step(
+        ladder: &mut Ladder,
+        first: u32,
+        signals: impl IntoIterator<Item = Signal>,
+    ) -> (u32, (VerifyDepth, VerifyDepth)) {
+        for (n, signal) in (1..).zip(signals) {
+            if let [step] = apply(ladder, first + n - 1, signal, VerifyDepth::V0)[..] {
+                return (n, step);
+            }
+        }
+        panic!("no step");
+    }
+
+    #[test]
+    fn ladder_steps_down_once_the_pooled_run_is_quiet() {
+        use VerifyDepth::{V0, V1, V2};
+        use std::iter::{once, repeat_n};
+
+        // A run without events is quiet from n_eff 150 for θ (UCB95 below
+        // θ_max/2 = 0.025) and from 381 for γ (below γ_max/2 = 0.01).
+        assert_eq!(quiet_n_eff(LIMITS.theta_max), 150.0);
+        assert_eq!(quiet_n_eff(LIMITS.gamma_max), 381.0);
+        assert!(reading(0, 149).ucb > 0.025 && reading(0, 150).ucb < 0.025);
+        assert!(reading(0, 380).ucb > 0.01 && reading(0, 381).ucb < 0.01);
+
+        // A default window audits about 20 units. Three false greens in 20
+        // (LCB95(θ) 0.052) step the ladder up twice. Then the clean
+        // windows since the last step pool: θ is quiet from the 8th (n_eff
+        // 160) and γ from the 20th (n_eff 400), which steps the level down.
+        let clean = window_signal(20, 0, 0);
+        let evidence = window_signal(20, 3, 0);
+        let mut ladder = Ladder::default();
+        assert_eq!(apply(&mut ladder, 1, evidence, V0), [(V0, V1)]);
+        assert_eq!(apply(&mut ladder, 2, evidence, V0), [(V1, V2)]);
+        for window in 3..=21 {
+            assert!(apply(&mut ladder, window, clean, V0).is_empty(), "{window}");
+        }
+        let run = ladder.task_types["code"].run;
+        assert!(run.theta.ucb() < 0.025 && run.gamma.ucb() > 0.01, "{run:?}");
+        let signals = BTreeMap::from([("code".to_string(), clean)]);
+        let steps = ladder.apply("window:22-22", &signals, LIMITS, V0);
+        let reasons: Vec<&str> = steps.iter().map(|step| step.reason.as_str()).collect();
+        assert_eq!(
+            reasons,
+            [
+                "pooled over 20 windows since the last step: UCB95(θ) 0.0095 < θ_max/2 0.025 \
+                 at n_eff 400.0, UCB95(γ) 0.0095 < γ_max/2 0.01 at n_eff 400.0"
+            ]
+        );
+        assert_eq!(ladder.level("code"), V1);
+        assert_eq!(ladder.task_types["code"].run, Run::default());
+
+        // Events in the run count against it, though no window steps up on
+        // its own. One false green in each of four windows of 20 (LCB95(θ)
+        // 0.009 each) raises θ's quiet n_eff to 407, so the step comes at
+        // the 21st window; one gaming finding raises γ's to 563, the 29th.
+        let one_false_green = window_signal(20, 1, 0);
+        let noisy = repeat_n(one_false_green, 4).chain(repeat_n(clean, 40));
+        assert_eq!(windows_to_step(&mut ladder, 23, noisy), (21, (V1, V0)));
+        assert_eq!(apply(&mut ladder, 44, evidence, V0), [(V0, V1)]);
+        let gaming = once(window_signal(20, 0, 1)).chain(repeat_n(clean, 40));
+        assert_eq!(windows_to_step(&mut ladder, 45, gaming), (29, (V1, V0)));
+
+        // On the audit worker's path the run lasts from one window close to
+        // the next: with the ladder at V1, nineteen windows of 20 clean
+        // audited units close without a step, and the twentieth steps down.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (vault, mut ledger) = vault_in(temp.path());
+        let config = AuditConfig {
+            window_units: 20,
+            ..AuditConfig::default()
+        };
+        let rung = Rung {
+            level: V1,
+            ..Rung::default()
+        };
+        let task_types = BTreeMap::from([("code".to_string(), rung)]);
+        Ladder { task_types }
+            .save(&ladder_path(&vault))
+            .expect("the ladder is written");
+        for n in 1..=380 {
+            audited(&mut ledger, n, "glm-4.7", false);
+        }
+        let closed = close_due_windows(&mut ledger, &vault, &config, V0, Utc::now())
+            .expect("the windows close");
+        assert_eq!(closed.len(), 19);
+        let ladder = Ladder::load(&ladder_path(&vault)).expect("the ladder");
+        assert_eq!(ladder.level("code"), V1);
+        let run = ladder.task_types["code"].run;
+        assert_eq!(run.windows, 19);
+        assert!((run.gamma.n_eff - 380.0).abs() < 1e-9, "{run:?}");
+        for n in 381..=400 {
+            audited(&mut ledger, n, "glm-4.7", false);
+        }
+        let closed = close_due_windows(&mut ledger, &vault, &config, V0, Utc::now())
+            .expect("the window closes");
+        assert_eq!(closed.len(), 1);
+        let ladder = Ladder::load(&ladder_path(&vault)).expect("the ladder");
+        assert_eq!(ladder.level("code"), V0);
+        assert_eq!(ladder.task_types["code"].run, Run::default());
+        let all = records(ledger.dir()).expect("records");
+        let reasons: Vec<&str> = all
+            .iter()
+            .filter_map(|record| match &record.event {
+                AuditEvent::PolicyChange { knob, reason, .. } if knob == "verify_depth:code" => {
+                    Some(reason.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let expected = format!(
+            "{}: pooled over 20 windows since the last step",
+            closed[0].id
+        );
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].starts_with(&expected), "{reasons:?}");
     }
 
     /// A selected unit of task type `code` by `model` at π = 1, and its

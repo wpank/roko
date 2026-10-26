@@ -367,7 +367,10 @@ roko status --cfactor              # Compute and show C-Factor metrics
 for `.roko/`, `roko.toml`, agent command availability, secrets, and optionally the HTTP
 control plane. Its `routing_ladder` line names the `[routing.ladder]` rungs that cannot run on
 this machine and why (a run only logs them), since a task whose start rung cannot run starts on
-the next rung up that can.
+the next rung up that can, or, when no rung above it can, one runnable rung below the highest, so it
+can still climb once. Its detail also names each rung's `alternates` apart from the rungs: those
+that run here, which the rung draws among at `[routing] explore_epsilon` so the cascade router
+learns from plan runs, and those it goes without (gap-51d2ca).
 
 ```
 roko doctor [--workdir <path>] [--serve-url <url>]
@@ -481,7 +484,10 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 The Graph engine honors `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
 `--max-tasks`, `--budget-override`, and `--no-budget`. Its checkpoint manifest binds schema
 version, plan ID, converted-graph fingerprint, run ID, and Activity log; drift fails closed
-unless force-resume archives the old state and starts clean. Graph records actual provider
+unless force-resume archives the old state and starts clean. A resume after roko stopped with
+tasks in flight (a crash or a restart) charges those attempts what their model calls cost, the
+call cut off at an estimate, records them `abandoned`, and continues the run; the plan's ceiling
+counts that spend. Graph records actual provider
 cost from both successful and unsuccessful paid calls, routes against the tighter Cell or
 plan remainder, blocks later Activities at a configured ceiling, fails a hard-limit run if
 the last call crosses the ceiling, and reports per-plan and total spend.

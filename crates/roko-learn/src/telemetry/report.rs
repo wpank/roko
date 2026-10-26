@@ -25,7 +25,7 @@ use super::assign::{Arm, Assignment};
 use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptPredictionRecord,
     AttemptVerdictRecord, ContentDecisionPoint, ContentDecisionRecord, DECISION_SCHEMA,
     DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, HARNESS_POLICY_DECISION_POINT,
     HarnessPolicyDecisionRecord, PLACEBO_DECISION_POINT, PREDICTION_SCHEMA, PlaceboDecisionRecord,
@@ -79,7 +79,46 @@ pub struct RunRecords {
     pub seqs: Vec<(RunFile, u64)>,
 }
 
+/// A try whose checks changed the person's own checkout instead of its
+/// worktree, from its verdict's `checkout_written` scope findings
+/// (bug-b7d9ad).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckoutWrite {
+    /// The try's plan.
+    pub plan_id: String,
+    /// The try's task.
+    pub task_id: String,
+    /// The try's ordinal, from 1.
+    pub attempt: u32,
+    /// The paths, relative to the checkout.
+    pub paths: Vec<String>,
+}
+
 impl RunRecords {
+    /// The run's tries whose checks changed the person's own checkout, in
+    /// the order their verdicts were written (bug-b7d9ad).
+    #[must_use]
+    pub fn checkout_writes(&self) -> Vec<CheckoutWrite> {
+        self.verdicts
+            .iter()
+            .map(|line| &line.record)
+            .filter_map(|verdict| {
+                let paths: Vec<String> = verdict
+                    .scope_findings
+                    .iter()
+                    .filter(|finding| finding.kind == super::records::SCOPE_CHECKOUT_WRITTEN)
+                    .map(|finding| finding.path.clone())
+                    .collect();
+                (!paths.is_empty()).then(|| CheckoutWrite {
+                    plan_id: verdict.identity.plan_id.clone(),
+                    task_id: verdict.identity.task_id.clone(),
+                    attempt: verdict.identity.attempt,
+                    paths,
+                })
+            })
+            .collect()
+    }
+
     /// Parse the run files in `run_dir`. Missing files hold no lines; a line
     /// that does not parse as a record of its file is kept in
     /// [`Self::invalid`].
@@ -174,10 +213,16 @@ impl RunRecords {
             let key = line.record.identity.attempt_key.as_str();
             (ATTEMPT_OPEN_SCHEMA, key)
         });
-        let verdicts = self.verdicts.iter().map(|line| {
-            let key = line.record.identity.attempt_key.as_str();
-            (VERDICT_SCHEMA, key)
-        });
+        // A resume's `abandoned` verdict leaves its attempt abandoned
+        // (bug-b7f6a8).
+        let verdicts = self
+            .verdicts
+            .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
+            .map(|line| {
+                let key = line.record.identity.attempt_key.as_str();
+                (VERDICT_SCHEMA, key)
+            });
         AttemptTally::from_lines(opens.chain(verdicts))
     }
 }

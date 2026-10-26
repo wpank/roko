@@ -2614,6 +2614,13 @@ async fn run_graph_plan_body(
                 "rungs": rungs.rows,
                 "rungs_skipped": skipped_rungs,
                 "misordered": rungs.misordered.as_ref().map(|misorder| &misorder.line),
+                // The paths of the person's checkout each task's checks
+                // changed, by plan and task (bug-b7d9ad).
+                "checkout_written": plans
+                    .iter()
+                    .map(|plan| (plan.id.clone(), graph_task_dispatcher.checkout_writes(&plan.id)))
+                    .filter(|(_, writes)| !writes.is_empty())
+                    .collect::<std::collections::BTreeMap<_, _>>(),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
                     "discarded": batch_discarded,
@@ -2698,6 +2705,15 @@ async fn run_graph_plan_body(
                 short_oid(&work.commit),
                 work.review_command()
             );
+        }
+        // Checks that changed the person's checkout, not their own worktree
+        // (bug-b7d9ad).
+        for plan in &plans {
+            let note =
+                checkout_written_note(&workdir, &graph_task_dispatcher.checkout_writes(&plan.id));
+            if !note.is_empty() {
+                println!("Plan {}{note}", plan.id);
+            }
         }
         // Where each delivered plan's work landed (gap-415c54).
         if let Some(batch) = batch.as_ref() {
@@ -3988,6 +4004,33 @@ impl FlowWatch {
     }
 }
 
+/// What a plan's end says of the tasks whose checks changed the person's
+/// checkout at `workdir` instead of their own worktree (bug-b7d9ad), from the
+/// paths of each, by task; empty without any.
+fn checkout_written_note(
+    workdir: &Path,
+    writes: &std::collections::BTreeMap<String, Vec<String>>,
+) -> String {
+    if writes.is_empty() {
+        return String::new();
+    }
+    let tasks: Vec<String> = writes
+        .iter()
+        .map(|(task, paths)| {
+            let paths: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
+            format!("{task} ({})", paths.join(", "))
+        })
+        .collect();
+    let paths: Vec<&str> = writes.values().flatten().map(String::as_str).collect();
+    format!(
+        ". The checks of {} changed your checkout, not their own worktree; roko left the \
+         changes there and did not deliver them: see them with `git -C {} status -- {}`",
+        tasks.join("; "),
+        workdir.display(),
+        paths.join(" ")
+    )
+}
+
 /// Run one admitted plan to a terminal checkpoint.
 ///
 /// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
@@ -4677,11 +4720,22 @@ async fn run_one_plan(
             work.review_command()
         )
     });
+    // Tasks whose checks changed the person's checkout, not their own
+    // worktree (bug-b7d9ad).
+    let checkout_written = checkout_written_note(
+        ctx.workdir,
+        &ctx.graph_task_dispatcher.checkout_writes(&plan.id),
+    );
     if outcome == PlanOutcome::Unverified {
+        let why = if checkout_written.is_empty() {
+            "ran no verify step"
+        } else {
+            "ran no verify step, or their checks changed your checkout"
+        };
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}' is unverified: {} task(s) ran no verify step{unverified_at}",
+                "plan '{}' is unverified: {} task(s) {why}{unverified_at}{checkout_written}",
                 plan.id, task_verdicts.unverified
             ),
         );
@@ -4689,10 +4743,15 @@ async fn run_one_plan(
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': task(s) {} ran no verify step{unverified_at}",
+                "plan '{}': task(s) {} ran no verify step{unverified_at}{checkout_written}",
                 plan.id,
                 work.tasks.join(", ")
             ),
+        );
+    } else if !checkout_written.is_empty() {
+        graph_tui_bridge.log_event(
+            "graph.plan_unverified",
+            &format!("plan '{}'{checkout_written}", plan.id),
         );
     }
     // Why each failed task failed, in the run's events, so a host can tell
@@ -10697,6 +10756,46 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+        // bug-b7d9ad: the plans live in the checkout and the run changes
+        // nothing there, so no task's checks are said to have changed it. Each
+        // plan keeps its records under a run of its own.
+        let runs: Vec<roko_learn::telemetry::report::RunRecords> =
+            std::fs::read_dir(repo.join(".roko/runs"))
+                .expect("read .roko/runs")
+                .map(|entry| entry.expect("run directory").path())
+                .filter(|path| path.is_dir())
+                .map(|path| {
+                    roko_learn::telemetry::report::RunRecords::load(&path)
+                        .expect("the run's records")
+                })
+                .collect();
+        let verdicts: usize = runs.iter().map(|run| run.verdicts.len()).sum();
+        assert!(verdicts >= 2, "{verdicts}");
+        assert!(runs.iter().all(|run| run.checkout_writes().is_empty()));
+    }
+
+    /// bug-b7d9ad: what roko writes in the person's checkout during a run,
+    /// its own `.roko/` here not ignored by git, beside plans that live in the
+    /// checkout, is not taken for a task's checks changing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rokos_own_writes_in_the_checkout_raise_no_checkout_flag() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        git_in(repo, &["rm", "-q", ".gitignore"]);
+        git_in(repo, &["commit", "-q", "-m", "show .roko to git"]);
+
+        let exit_code = run_graph_plan_in_run(worktree_run_params(repo), Some("run-own".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let status = git_stdout(repo, &["status", "--porcelain"]);
+        assert!(status.contains(".roko/"), "roko wrote its state: {status}");
+        let records =
+            roko_learn::telemetry::report::RunRecords::load(&repo.join(".roko/runs/run-own"))
+                .expect("the run's records");
+        assert!(!records.verdicts.is_empty());
+        assert!(records.checkout_writes().is_empty());
     }
 
     /// backlog 3104: with per-task worktrees and `max_parallel_plans = 2`,

@@ -36,6 +36,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use roko_learn::failure_text::{failure_excerpt, is_failure_line, is_progress_line};
+
 use super::batch::PlanWork;
 use crate::dispatch::GateFeedback;
 use crate::runner::merge::git_output;
@@ -62,8 +64,8 @@ const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 /// The most characters of output the next attempt's feedback quotes.
 const MAX_EXCERPT_CHARS: usize = 4_000;
 
-/// Lines of output kept above the line the excerpt starts at: the first that
-/// says something failed, else the first that names a handed-back file.
+/// Lines of output kept above the first line that names a handed-back file,
+/// where an excerpt with no failure line starts.
 const EXCERPT_LEAD_LINES: usize = 3;
 
 /// A whole-plan check step that failed: its command, and what it wrote.
@@ -462,26 +464,26 @@ pub fn handback_feedback(
     })
 }
 
-/// The part of `output` the next attempt needs: without cargo's progress
-/// lines, from a few lines above the first line that says something failed
-/// ([`is_failure_line`]), else the first that names one of `files`, at most
-/// [`MAX_EXCERPT_CHARS`] long. The failure comes first: a step's errors can
-/// follow lines that name a file only to warn about it, as its standard
-/// error, written after its test output, did in Undertow's phase 4
-/// (bug-fc05a3).
+/// The part of `output` the next attempt needs, at most about
+/// [`MAX_EXCERPT_CHARS`] long: failure first
+/// ([`roko_learn::failure_text::failure_excerpt`]), each failing test case
+/// with its first failure and why (bug-3e3d08), else from a few lines above
+/// the first line that says something failed. A step's errors can follow
+/// lines that name a file only to warn about it, as its standard error,
+/// written after its test output, did in Undertow's phase 4 (bug-fc05a3).
+/// Without a line that says something failed, it runs from the first line
+/// that names one of `files`, build progress left out.
 fn excerpt(output: &str, files: &[&str]) -> String {
+    if let Some(excerpt) = failure_excerpt(output, MAX_EXCERPT_CHARS) {
+        return excerpt;
+    }
     let lines: Vec<&str> = output
         .lines()
         .filter(|line| !is_progress_line(line))
         .collect();
     let start = lines
         .iter()
-        .position(|line| is_failure_line(line))
-        .or_else(|| {
-            lines
-                .iter()
-                .position(|line| files.iter().any(|file| names_path(line, file)))
-        })
+        .position(|line| files.iter().any(|file| names_path(line, file)))
         .unwrap_or(0);
     let mut excerpt = String::new();
     for line in &lines[start.saturating_sub(EXCERPT_LEAD_LINES)..] {
@@ -493,45 +495,6 @@ fn excerpt(output: &str, files: &[&str]) -> String {
         excerpt.push('\n');
     }
     excerpt
-}
-
-/// Whether `line` says that something failed: an error (`error: …`,
-/// `error[E0425]: …`, `x.cpp:3:1: error: …`, `fatal error: …`, `ERROR: …`), a
-/// failed test (`FAILED`, CTest's `***Failed`, `FAIL:`), a panic, a Python
-/// assertion or a traceback. A warning is not one, and neither is a count of
-/// no failures (`0 tests failed`).
-fn is_failure_line(line: &str) -> bool {
-    let line = line.trim_start();
-    let lower = line.to_ascii_lowercase();
-    lower.starts_with("error:")
-        || lower.starts_with("error[")
-        || line.contains(": error:")
-        || line.contains(": error[")
-        || line.contains("fatal error:")
-        || line.contains("ERROR:")
-        || line.contains("FAILED")
-        || line.contains("***Failed")
-        || line.contains("FAIL:")
-        || line.contains("panicked at")
-        || line.contains("AssertionError")
-        || line.contains("Traceback (most recent call last)")
-}
-
-/// Whether `line` is one of cargo's progress lines, which say nothing about
-/// a failure.
-fn is_progress_line(line: &str) -> bool {
-    let line = line.trim_start();
-    [
-        "Compiling ",
-        "Checking ",
-        "Finished ",
-        "Fresh ",
-        "Blocking waiting",
-        "Downloaded ",
-        "Downloading ",
-    ]
-    .iter()
-    .any(|prefix| line.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -704,18 +667,23 @@ Errors while running CTest
 
     /// bug-fc05a3: the excerpt leads with the failure, not with the first
     /// line that names a handed-back file, which was a warning written after
-    /// it: phase 4's T5 got only warnings and never saw P4.06.
+    /// it: phase 4's T5 got only warnings and never saw P4.06. Since
+    /// bug-3e3d08 it keeps the failing doctest case whole, and the warnings
+    /// after it drop out.
     #[test]
     fn the_excerpt_leads_with_the_failure_not_a_warning() {
         let excerpt = excerpt(PHASE_4_CHECK, &["plugin/ui/Look.cpp"]);
 
         assert!(
-            excerpt.starts_with("      Start 23: spec_p4_budget\n"),
+            excerpt.starts_with("24/28 Test #24: spec_p4_display"),
+            "{excerpt}"
+        );
+        assert!(
+            excerpt.contains("TEST CASE:  P4.06 the one number"),
             "{excerpt}"
         );
         assert!(excerpt.contains("1145 bone pixels"), "{excerpt}");
-        assert!(excerpt.contains("Look.cpp:89:48: warning"), "{excerpt}");
-        assert!(!excerpt.contains("0 tests failed out of 22"), "{excerpt}");
+        assert!(!excerpt.contains("warning"), "{excerpt}");
         // Without a line that says something failed, the first line that
         // names a file leads, as before.
         let quiet = "building\nlinking\nsrc/a.rs:3: unused\nlast line\n";

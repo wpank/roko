@@ -15,6 +15,13 @@ const TASK_CONTEXT_LIMIT: usize = 1_000;
 const DIAGNOSIS_SENTENCE_LIMIT: usize = 2;
 const DIAGNOSIS_CHAR_LIMIT: usize = 320;
 
+/// The most failing cases a fallback diagnosis names one by one.
+const CASES_NAMED: usize = 6;
+
+/// The most characters of a failing case's name, and of its first failed
+/// assertion, that a fallback diagnosis quotes.
+const CASE_PART_CHARS: usize = 120;
+
 /// Summarize raw compiler or test output into a short retry-ready diagnosis.
 ///
 /// The supplied `agent` should already be configured for the cheapest
@@ -64,6 +71,10 @@ fn normalize_diagnosis(text: &str) -> String {
 }
 
 fn fallback_diagnosis(raw_error: &str, task_context: &str) -> String {
+    let cases = crate::failure_text::failed_cases(raw_error);
+    if !cases.is_empty() {
+        return cases_diagnosis(&cases);
+    }
     let file_line = extract_file_line(raw_error);
     let headline = extract_headline(raw_error);
     let mismatch = extract_mismatch(raw_error);
@@ -97,6 +108,45 @@ fn fallback_diagnosis(raw_error: &str, task_context: &str) -> String {
     format!("{} {}", ensure_sentence(&first), ensure_sentence(&second))
 }
 
+/// A diagnosis that names each failing case of a test run once (bug-3e3d08):
+/// its name, where its first failure is, what that failure asserted, and how
+/// many failures it had, at most [`CASES_NAMED`] of them.
+fn cases_diagnosis(cases: &[crate::failure_text::FailedCase]) -> String {
+    let named: Vec<String> = cases
+        .iter()
+        .take(CASES_NAMED)
+        .map(|case| {
+            let first = &case.failures[0];
+            let at = first
+                .location()
+                .map(|location| format!(" at {location}"))
+                .unwrap_or_default();
+            let times = match case.failures.len() {
+                1 => String::new(),
+                failures => format!(", {failures} failures"),
+            };
+            format!(
+                "{}{at}: {}{times}",
+                truncate_chars(&collapse_whitespace(case.name()), CASE_PART_CHARS),
+                truncate_chars(&collapse_whitespace(first.assertion()), CASE_PART_CHARS),
+            )
+        })
+        .collect();
+    let more = match cases.len().saturating_sub(CASES_NAMED) {
+        0 => String::new(),
+        more => format!("; and {more} more"),
+    };
+    let which = if cases.len() == 1 {
+        "1 test case failed".to_string()
+    } else {
+        format!("{} test cases failed", cases.len())
+    };
+    format!(
+        "{} The retry should make each of them pass without breaking the others.",
+        ensure_sentence(&format!("{which}: {}{more}", named.join("; ")))
+    )
+}
+
 fn extract_file_line(raw_error: &str) -> Option<String> {
     raw_error.lines().find_map(|line| {
         let trimmed = line.trim();
@@ -108,15 +158,21 @@ fn extract_file_line(raw_error: &str) -> Option<String> {
     })
 }
 
+/// Whether `token` is a source location, `path/file.ext:line` with an
+/// optional column: Rust's `src/lib.rs:9:5` as well as C++'s
+/// `layout_test.cpp:219` or Python's `test_text.py:3` (bug-3e3d08).
 fn is_file_line_token(token: &str) -> bool {
-    let Some((_, tail)) = token.rsplit_once(".rs:") else {
+    let token = token.trim_end_matches([':', ',']);
+    let Some((path, tail)) = token.split_once(':') else {
         return false;
     };
-
-    let mut parts = tail.split(':');
-    parts
-        .next()
-        .is_some_and(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);
+    let line = tail.split(':').next().unwrap_or_default();
+    (1..=5).contains(&extension.len())
+        && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+        && !line.is_empty()
+        && line.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn extract_headline(raw_error: &str) -> Option<String> {
@@ -125,7 +181,9 @@ fn extract_headline(raw_error: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| {
             !line.is_empty()
+                && !crate::failure_text::is_summary_line(line)
                 && (line.starts_with("error[")
+                    || line.contains(": error:")
                     || line.starts_with("error:")
                     || line.contains("panicked at")
                     || line.contains("FAIL")
@@ -156,10 +214,15 @@ fn extract_mismatch(raw_error: &str) -> Option<String> {
                     || line.contains("trait bound")
                     || line.contains("borrow of moved value"))
         })
-        .take(2)
         .map(focus_fragment)
         .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
+        .fold(Vec::new(), |mut kept, fragment| {
+            // A fragment said twice says nothing more (bug-3e3d08).
+            if kept.len() < 2 && !kept.contains(&fragment) {
+                kept.push(fragment);
+            }
+            kept
+        })
         .join(" ");
 
     if detail.is_empty() {
@@ -265,8 +328,58 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::enrich_error_digest;
+    use super::{enrich_error_digest, fallback_diagnosis};
     use roko_agent::MockAgent;
+
+    /// bug-3e3d08: with the cheap model out of balance, Undertow's phase 4.2
+    /// T1#1 got "The primary error is [doctest] test cases: 5 | 3 passed | 2
+    /// failed | 0 skipped. The retry should fix found != nullptr ) is NOT
+    /// correct found != nullptr ) is NOT correct." Now the fallback names
+    /// each failing case once, where it failed and what it asserted, and says
+    /// nothing twice.
+    #[test]
+    fn fallback_diagnosis_repeats_no_fragment() {
+        let diagnosis = fallback_diagnosis(
+            crate::failure_text::tests::PHASE_4_2_LAYOUT,
+            "Lay the editor out as designed",
+        );
+
+        assert!(
+            diagnosis.starts_with("2 test cases failed: P4.2.01 every control"),
+            "{diagnosis}"
+        );
+        for needed in [
+            "at layout_test.cpp:109: CHECK( !b.intersects(otherBounds) )",
+            "P4.2.04 every control has the design's short label, drawn under it",
+            "at layout_test.cpp:219: CHECK( found != nullptr ), 4 failures",
+        ] {
+            assert!(diagnosis.contains(needed), "{needed} in {diagnosis}");
+        }
+        assert_eq!(
+            diagnosis.matches("found != nullptr").count(),
+            1,
+            "{diagnosis}"
+        );
+        assert!(!diagnosis.contains("[doctest]"), "{diagnosis}");
+        // A Rust mismatch said on two lines is said once.
+        let twice =
+            "error[E0308]: mismatched types\n  found `Option<String>`\n  found `Option<String>`\n";
+        let diagnosis = fallback_diagnosis(twice, "");
+        assert_eq!(
+            diagnosis.matches("found `Option<String>`").count(),
+            1,
+            "{diagnosis}"
+        );
+        // A C++ compile error's location is read.
+        let cpp = "src/ui/Look.cpp:89:48: error: no member named 'boneDim' in 'Theme'\n";
+        let diagnosis = fallback_diagnosis(cpp, "");
+        assert_eq!(
+            diagnosis,
+            "The primary error is src/ui/Look.cpp:89:48: error: no member named 'boneDim' in 'Theme'. \
+             The retry should focus on the cited file and align the implementation with the failing \
+             check."
+        );
+    }
 
     #[tokio::test]
     async fn error_enrichment_returns_two_sentence_mock_diagnosis() {

@@ -1502,6 +1502,14 @@ async fn run_graph_plan_body(
         .await;
         skipped_rungs =
             crate::dispatch::rung_probe::skipped_rungs(&roko_config, &ladder, &failed, workdir);
+        // A rung that passed its probe in this run shows its provider can
+        // pay, so helper calls take that provider again (bug-e33b7e).
+        let resolver = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&roko_config));
+        let models = ladder.rung_models();
+        for model in crate::dispatch::rung_probe::passed_in_run(&models, workdir, run_started_ms) {
+            let provider = resolver.resolve(&model).provider_id;
+            shared_factory.health_registry.record_success(&provider);
+        }
         shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
     // A chat host's run holds its tasks' outbound tool calls for approval

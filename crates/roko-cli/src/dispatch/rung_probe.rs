@@ -190,6 +190,24 @@ pub async fn probe_ladder(
         .collect()
 }
 
+/// The `models` whose probe passed in the run that started at
+/// `run_started_ms`, by the verdicts saved at `workdir`: each shows its
+/// provider can pay, as a recharged provider's probe does (bug-e33b7e).
+#[must_use]
+pub fn passed_in_run(models: &[String], workdir: &Path, run_started_ms: i64) -> Vec<String> {
+    let probes = RungProbes::load(&RungProbes::path(workdir));
+    models
+        .iter()
+        .filter(|model| {
+            probes
+                .models
+                .get(model.as_str())
+                .is_some_and(|probe| probe.passed && probe.probed_at_ms >= run_started_ms)
+        })
+        .cloned()
+        .collect()
+}
+
 /// A rung the run skips because its model's fresh probe failed: what its
 /// `rung_skipped` event and the run's readout say (gap-20301d).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -542,6 +560,38 @@ mod tests {
             (plan_id.as_str(), until_ms, billing, detail),
             ("p1", None, true, billed.detail())
         );
+    }
+
+    /// bug-e33b7e: the models whose probe passed in this run are named, as a
+    /// recharged provider's is; an earlier run's pass, a failure and a model
+    /// never probed are not.
+    #[test]
+    fn the_probes_passed_in_this_run_are_named() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = RungProbes::path(temp.path());
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        let probe = |passed: bool, probed_at_ms: i64| RungProbe {
+            passed,
+            reason: if passed {
+                String::new()
+            } else {
+                "insufficient_credits: http 402".to_string()
+            },
+            probed_at_ms,
+        };
+        let probes = RungProbes {
+            models: [
+                ("again", probe(true, 200)),
+                ("earlier", probe(true, 100)),
+                ("refused", probe(false, 200)),
+            ]
+            .into_iter()
+            .map(|(model, probe)| (model.to_string(), probe))
+            .collect(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+        let models = ["again", "earlier", "refused", "unprobed"].map(String::from);
+        assert_eq!(passed_in_run(&models, temp.path(), 150), ["again"]);
     }
 
     /// bug-374384: a failure on the provider's billing or usage window stands

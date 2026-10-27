@@ -11,7 +11,7 @@ subsystem = ["roko-neuro/knowledge", "roko-neuro/lifecycle"]
 created = 2026-10-26
 updated = 2026-10-27
 last_verified = 2026-10-27
-last_verified_rev = "ea7661e29"
+last_verified_rev = "d050a93d5"
 source = "round-v7 roko-learnguard while fixing bug-2ad4fa (Undertow run 1f677933's knowledge-confirmations.jsonl), the lead's ask"
 discovered_from = "agent:roko-learnguard (round v7)"
 anchors = ["crates/roko-neuro/src/knowledge_store/scoring.rs::entries_are_similar", "crates/roko-neuro/src/knowledge_store/scoring.rs::detect_confirmations", "crates/roko-neuro/src/knowledge_store/crud.rs::ingest", "crates/roko-neuro/src/lifecycle.rs::promote_runtime_entries"]
@@ -23,16 +23,19 @@ command = "grep -rqw 'fn run_generic_tags_confirm_nothing' crates/roko-neuro/src
 [[verify]]
 command = "grep -rqw 'fn an_undelivered_run_confirms_nothing' crates/roko-neuro/src && cargo test -p roko-neuro an_undelivered_run_confirms_nothing"
 
+[[verify]]
+command = "grep -rqw 'fn a_pass_that_surfaces_and_restates_an_entry_confirms_it_once' crates/roko-neuro/src && cargo test -p roko-neuro a_pass_that_surfaces_and_restates_an_entry_confirms_it_once"
+
 [closed]
 at = 2026-10-27
-at_ts = "2026-10-27T00:27:52Z"
-commit = "ea7661e29"
+at_ts = "2026-10-27T01:54:56Z"
+commit = "d050a93d5"
 executor = "claude-agent"
 via = "manual"
 size = "M"
 claimed_at = "2026-10-26T21:18:07Z"
 forced = false
-evidence = "ea7661e29. crates/roko-neuro: entries_are_similar (scoring.rs) counts only topical tags (a file or a package; lesson, runtime, kind names, plan:/gate:/task:/model: left out) and needs a content-word Jaccard of 0.17 with stopwords out (MIN_CONTENT_JACCARD, in place of MIN_KEYWORD_OVERLAP's count of 2); promotion thresholds unchanged, and no recorded decision names these constants. Held confirmations (knowledge_store/pending.rs): a guarded run's confirmations of committed entries (surfaced passes from the lifecycle, repeats from ingest) wait in .roko/neuro/knowledge-pending-confirmations.jsonl beside its batch; KnowledgeBatch::commit applies them once each (deduplicated, never to a retired entry) with the repeats' records, discard drops them, propose_batch settles a lesson-less batch by delivery, orphaned_batches counts confirmation-only batches; an unguarded run confirms at once; reinforcement stays immediate. Replay on a read-only copy of Undertow's store (tmp/hermes-roko-v7/roko-learnguard/bin/confirm-report.py, logs/confirm-report-5-2.log): the old rule's mirror reproduces 854/854 records; 3 survive, all real repeats (phase 1's envelope double precision, phase 4.1/4.2's budget PNGs, phase 5/5.1's master_gain trim); the gamed lesson's 31, run 1f677933's 230 and phase 5.2's 38 go; closest dropped 0.152 (two different tools/spec.sh facts). Red first: run_generic_tags_confirm_nothing, an_undelivered_run_confirms_nothing, a_resumed_run_applies_its_pending_confirmations_once and the updated a_run_does_not_confirm_its_own_provisional_lessons failed on the old code; green all pass; lib suites roko-learn 1408/0, roko-neuro 254/0, roko-cli 4049/0; clippy -D warnings and nightly fmt clean (logs/1220c5-chain.log, logs/1220c5-clippy.log)."
+evidence = "d050a93d5 on ea7661e29. crates/roko-neuro: entries_are_similar (scoring.rs) counts only topical tags (a file or a package; lesson, runtime, kind names, plan:/gate:/task:/model: left out) and needs a content-word Jaccard of 0.17 with stopwords out (MIN_CONTENT_JACCARD, in place of MIN_KEYWORD_OVERLAP's count of 2); promotion thresholds unchanged, and no recorded decision names these constants. Recall below the floor (the lead's review): 20 recorded pairs fall in [0.12, 0.17); the 3 with a shared topical tag each state two different facts (0.152, 0.125, 0.121) and the other 17 share none; no tagged pair falls in [0.17, 0.194), so the floor stays 0.17. Held confirmations (knowledge_store/pending.rs): a guarded run's confirmations of committed entries (surfaced passes from the lifecycle, repeats from ingest) wait in .roko/neuro/knowledge-pending-confirmations.jsonl beside its batch; KnowledgeBatch::commit applies at most one per entry per batch (the first that counts; a later surfacing pass is only noted), never to a retired entry, with the counted repeats' records; discard drops them; propose_batch settles a lesson-less batch by delivery; orphaned_batches counts confirmation-only batches. A pass confirms an entry once, whether it surfaced it, repeated it or both (counts_episode); an unguarded run confirms per pass, at once; reinforcement stays immediate. Resume: as bug-2ad4fa drops a dead invocation's lessons (a resume is a new batch, and its start rolls the dead batch back), it drops that invocation's held confirmations. Replay on a read-only copy of Undertow's store (58 entries, 854 records; bin/confirm-report.py, logs/confirm-report-5-2.log): the old rule's mirror reproduces 854/854; 3 survive, all real repeats (Jaccard 0.194 phase 1's envelope double precision, 0.217 phase 4.1/4.2's budget PNGs, 0.200 phase 5/5.1's master_gain trim); the gamed lesson's 31, run 1f677933's 230 and phase 5.2's 38 go; phases 0 to 4 keep 2 of 414; the distiller's 63 rows all go. Red first: run_generic_tags_confirm_nothing, an_undelivered_run_confirms_nothing, a_resumed_run_applies_its_pending_confirmations_once and the updated a_run_does_not_confirm_its_own_provisional_lessons failed on the old code (logs/1220c5-chain.log); a_pass_that_surfaces_and_restates_an_entry_confirms_it_once failed on ea7661e29 (one pass, 2 confirmations; logs/1220c5b-chain.log). Green (logs/1220c5c-chain.log): the targeted tests pass; lib suites roko-learn 1408/0, roko-neuro 255/0, roko-cli 4049/0; the knowledge_workflows, property_tests and learning_wiring_census integration tests pass (logs/1220c5d-chain.log); l_know_census_credits_a_reinforced_knowledge_entry expected T1's confirmation of the seeded entry, which the fixture's failed plan now drops, and expects the receipt's 1 held confirmation and a count of 0; clippy -D warnings and nightly fmt clean."
 +++
 
 ## Problem
@@ -141,17 +144,56 @@ themselves (bug-7e0556), not this rule.
 - **The ledger:** a guarded run's confirmations of committed entries wait in
   `.roko/neuro/knowledge-pending-confirmations.jsonl`, one row per confirmation, tagged with the run's batch. A row
   is either `surfaced` (a pass's context and episode) or `repeat` (the confirming lesson and its episodes).
-- **Commit:** `KnowledgeBatch::commit` applies them. Each pass and each repeat counts once, however often it was
-  held, and an entry retired since gets nothing. The repeats' records are written then.
+- **Commit:** `KnowledgeBatch::commit` applies them: at most one confirmation per entry per batch (see "One pass,
+  one confirmation" below), and none to an entry retired since. The records of the repeats that counted are written
+  then.
 - **Rollback:** `discard` drops them.
 - **A batch with no lesson:** `propose_batch` settles its held confirmations by delivery alone.
   `orphaned_batches` counts a batch that holds only confirmations.
 - **No batch (`off`):** confirmations apply at once, as before.
 - **Reinforcement stays immediate.** The balance bumps (retrieved, gated, cited, quoted) are no confirmation.
+- **The loop census:** its fixture's plan fails at T2, so T1's pass no longer confirms the seeded entry.
+  `l_know_census_credits_a_reinforced_knowledge_entry` now expects the receipt's held confirmation and a count of 0;
+  its reinforcement and its credit of L-know are unchanged.
 
 **A resume is a new batch.** The serve gives a resume a new uuid, and the CLI a new id. Its start rolls the dead
 run's batch back, held confirmations included. `a_resumed_run_applies_its_pending_confirmations_once` covers it, a
 pass that reaches the sink twice included.
+
+**One pass, one confirmation** (the lead's review, 2026-10-27).
+- **The double count:** a pass that surfaced an entry and stated a lesson repeating it confirmed the entry twice,
+  once by each path. A guarded batch applied every held confirmation, so passes that surfaced an entry N times
+  confirmed it N times.
+- **Now a pass confirms an entry once.** A repeat whose episodes the entry counts already counts nothing, and so does
+  a surfacing whose episode it counts already. `counts_episode` reads that from the entry's contexts: a context that
+  is the episode (a repeat's), or ends with `:episode` (a surfacing's `plan:task:episode`).
+- **An unguarded run** confirms once per pass.
+- **A guarded run** confirms an entry at most once per batch. The commit applies the first held confirmation that
+  counts; a later pass that surfaced the entry is only noted as one of its sources, as a pass that confirmed it
+  already is.
+- **Records:** only the confirmations that counted write one.
+- **Tests:** `a_pass_that_surfaces_and_restates_an_entry_confirms_it_once` covers both kinds of run.
+  `an_undelivered_run_confirms_nothing` now expects one confirmation from the delivered run's pass, not two.
+- **Tiers are as before.** The surfacing path re-tiers by `evaluate_tier_progression_v2` (one confirmation lifts a
+  transient entry, two a working one), the repeat path by P2-15 (2 confirmations, 3 contexts). Only the count
+  changed.
+
+**Recall below the floor** (the lead's review): 20 recorded pairs fall in [0.12, 0.17).
+- Only 3 share a topical tag, and each states two different facts:
+  - 0.152: `tools/spec.sh` re-runs cmake, and the spec-target programs added to CMake;
+  - 0.125: the spec harness globs its tests, and core's `CONFIGURE_DEPENDS` glob;
+  - 0.121: the spec harness's globbing, and core modules registered in one place.
+- The other 17 share no topical tag, so no floor would let them confirm. One is a real repeat of plan-generation
+  distiller boilerplate (0.13), which the tag rule keeps out on purpose.
+- No tagged pair falls in [0.17, 0.194). **The floor stays at 0.17**: the tagged pairs leave a gap from 0.152
+  (different facts) to 0.194 (the lowest real repeat).
+
+**Resume, against bug-2ad4fa.** bug-2ad4fa drops a dead invocation's lessons:
+- every resume is a new batch (the serve gives each execution a new uuid; `roko resume` and `--resume-plan` take
+  `new_batch_run_id`);
+- its start rolls the dead batch back as an orphan.
+
+The dead invocation's held confirmations go with that batch, so the two agree, and nothing changes.
 
 ## Done when
 

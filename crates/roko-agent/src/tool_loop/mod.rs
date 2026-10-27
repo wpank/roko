@@ -227,6 +227,9 @@ pub struct StreamEvent {
     /// keeps the last of each, so a streamed turn continues the provider's
     /// session as an answered one does.
     pub session: Option<SessionState>,
+    /// When the request this event answers was sent, when its backend says:
+    /// the loop times the call's first token from it (gap-0eb14e).
+    pub sent_at: Option<std::time::Instant>,
 }
 
 impl StreamEvent {
@@ -238,6 +241,7 @@ impl StreamEvent {
             timestamp: std::time::Instant::now(),
             model: None,
             session: None,
+            sent_at: None,
         }
     }
 
@@ -252,6 +256,13 @@ impl StreamEvent {
     #[must_use]
     pub fn with_session(mut self, session: Option<SessionState>) -> Self {
         self.session = session;
+        self
+    }
+
+    /// This event, in answer to a request sent at `sent_at` (gap-0eb14e).
+    #[must_use]
+    pub fn with_sent_at(mut self, sent_at: Option<std::time::Instant>) -> Self {
+        self.sent_at = sent_at;
         self
     }
 }
@@ -335,6 +346,23 @@ pub enum StreamEventKind {
         /// Provider finish reason string.
         finish_reason: String,
     },
+}
+
+impl StreamEventKind {
+    /// Whether this is model output, whose first arrival ends a call's time
+    /// to first token: text, reasoning or a tool call (gap-7a8474). Usage,
+    /// the end of a turn and a tool's own result are not.
+    pub fn is_model_output(&self) -> bool {
+        match self {
+            Self::TextDelta(_)
+            | Self::ToolCallStart { .. }
+            | Self::ToolCallDelta { .. }
+            | Self::ToolCallEnd { .. } => true,
+            // An empty one only says a reasoning call is alive (gap-1ba0ac).
+            Self::ReasoningDelta(text) => !text.is_empty(),
+            _ => false,
+        }
+    }
 }
 
 /// Per-turn configuration that replaces scattered parameters.
@@ -1043,12 +1071,25 @@ struct StreamTally {
     reported: Option<Usage>,
     /// The model the stream last named.
     model: Option<String>,
+    /// How long after its request was sent the call streamed its first
+    /// token, in ms; `None` until it does, or when its backend does not say
+    /// when it sent the request (gap-0eb14e).
+    first_token_ms: Option<u64>,
+    /// Whether the call has streamed its first token.
+    first_token_seen: bool,
 }
 
 impl StreamTally {
     fn see(&mut self, event: &StreamEvent) {
         if event.model.is_some() {
             self.model.clone_from(&event.model);
+        }
+        if !self.first_token_seen && event.kind.is_model_output() {
+            self.first_token_seen = true;
+            self.first_token_ms = event.sent_at.map(|sent_at| {
+                let waited = event.timestamp.saturating_duration_since(sent_at);
+                u64::try_from(waited.as_millis()).unwrap_or(u64::MAX)
+            });
         }
         let output = match &event.kind {
             StreamEventKind::TextDelta(text) | StreamEventKind::ReasoningDelta(text) => text,
@@ -1215,6 +1256,11 @@ pub struct CallFacts<'a> {
     /// `rate_limited`, `refused` or `error` (bug-8bcd98). `None` for a call
     /// that returned a response.
     pub outcome: Option<&'a str>,
+    /// How long after its request was sent the call streamed its first
+    /// token (text, reasoning or a tool call), in ms (gap-0eb14e). `None`
+    /// for a call that was not streamed, or whose backend does not say when
+    /// it sent the request: never an estimate.
+    pub first_token_ms: Option<u64>,
 }
 
 /// How a model call that failed with `error`, past the loop's retries, ended,
@@ -1844,6 +1890,7 @@ impl ToolLoop {
                                     finish_reason: None,
                                     wall_ms: call_ms(),
                                     outcome: Some(call_outcome(&e)),
+                                    first_token_ms: tally.first_token_ms,
                                 },
                             );
                         }
@@ -1892,6 +1939,7 @@ impl ToolLoop {
                                     finish_reason: None,
                                     wall_ms: call_ms(),
                                     outcome: Some(call_outcome(&e)),
+                                    first_token_ms: None,
                                 },
                             );
                         }
@@ -1911,6 +1959,7 @@ impl ToolLoop {
                 }
             };
             let turn_duration_ms = call_ms();
+            let first_token_ms = streamed.as_ref().and_then(|tally| tally.first_token_ms);
             merge_session_state(&mut session, self.backend.extract_session(&response));
             let turn_reasoning = response.extract_reasoning();
             let turn_model = response.extract_model();
@@ -1941,6 +1990,7 @@ impl ToolLoop {
                         finish_reason: finish_reason.as_deref(),
                         wall_ms: turn_duration_ms,
                         outcome: None,
+                        first_token_ms,
                     },
                 );
             }
@@ -4964,6 +5014,38 @@ mod tests {
         ] {
             assert_eq!(call_outcome(&error), outcome, "{error}");
         }
+    }
+
+    /// gap-0eb14e: a call's first token is the first text, reasoning or tool
+    /// call it streamed, timed from when its request went. An empty
+    /// reasoning delta only says the call is alive, and a stream that does
+    /// not say when its request went leaves the time unknown, not guessed.
+    #[test]
+    fn a_tally_times_the_first_token_from_its_request() {
+        let sent = std::time::Instant::now();
+        let after = |ms, kind| {
+            let mut event = StreamEvent::now(kind).with_sent_at(Some(sent));
+            event.timestamp = sent + std::time::Duration::from_millis(ms);
+            event
+        };
+        let mut tally = StreamTally::default();
+        tally.see(&after(100, StreamEventKind::ReasoningDelta(String::new())));
+        assert_eq!(tally.first_token_ms, None);
+        let call = StreamEventKind::ToolCallStart {
+            id: "call-1".to_string(),
+            name: "echo".to_string(),
+        };
+        tally.see(&after(250, call));
+        tally.see(&after(900, StreamEventKind::TextDelta("later".to_string())));
+        assert_eq!(tally.first_token_ms, Some(250));
+
+        // Its first token is untimed: a later one does not stand in for it.
+        let mut untimed = StreamTally::default();
+        untimed.see(&StreamEvent::now(StreamEventKind::TextDelta(
+            "hi".to_string(),
+        )));
+        untimed.see(&after(300, StreamEventKind::TextDelta("timed".to_string())));
+        assert_eq!(untimed.first_token_ms, None);
     }
 
     /// bug-72d775: the provider bills a model call cut off mid-stream for

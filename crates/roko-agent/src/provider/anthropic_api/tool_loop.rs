@@ -903,9 +903,14 @@ impl LlmBackend for AnthropicMessagesBackend {
             // must never emit Done.
         });
 
-        // Convert tokio mpsc::Receiver into a futures::Stream.
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // Convert tokio mpsc::Receiver into a futures::Stream. Each event
+        // says when the request went, so the loop can time the call's first
+        // token (gap-0eb14e).
+        let sent_at = Some(request_start);
+        let stream = futures::stream::unfold(rx, move |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|item| (item.map(|event| event.with_sent_at(sent_at)), rx))
         });
         Ok(Box::pin(stream))
     }
@@ -1653,6 +1658,15 @@ data: {}\n\
             .filter(|e| matches!(e.kind, StreamEventKind::Done { .. }))
             .count();
         assert_eq!(done_count, 1);
+
+        // Each event says when its request went, so the tool loop can time
+        // the call's first token (gap-0eb14e).
+        assert!(
+            events
+                .iter()
+                .all(|e| e.sent_at.is_some_and(|sent_at| sent_at <= e.timestamp)),
+            "{events:?}"
+        );
     }
 
     #[tokio::test]

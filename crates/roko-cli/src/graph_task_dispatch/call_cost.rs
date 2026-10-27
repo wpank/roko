@@ -5,10 +5,11 @@
 //! wraps the attempt's [`CallAllowance`]. roko's tool loop tells it each model
 //! call's usage and cost as the call returns, and it publishes them as a
 //! `call_cost` event before passing them on, with the call's reasoning
-//! tokens, finish reason and duration (gap-1ba0ac). A call that failed past
-//! the loop's retries (a timeout, a rate limit, a refusal) gets its row too,
-//! with how it ended and how long it took (bug-8bcd98). The attempt's
-//! `attempt_settled` stays the record of what it spent.
+//! tokens, finish reason and duration (gap-1ba0ac), and when its first token
+//! came (gap-0eb14e). A call that failed past the loop's retries (a timeout,
+//! a rate limit, a refusal) gets its row too, with how it ended and how long
+//! it took (bug-8bcd98). The attempt's `attempt_settled` stays the record of
+//! what it spent.
 
 use super::*;
 use crate::dispatch_v2::CallAllowance;
@@ -91,6 +92,9 @@ impl CallAllowance for MeteredCalls {
             reasoning_tokens: u64::from(usage.reasoning_tokens),
             finish_reason: facts.finish_reason.map(str::to_string),
             wall_ms: facts.wall_ms,
+            // When its first token came, apart from how long it took
+            // (gap-0eb14e).
+            first_token_ms: facts.first_token_ms,
             // A call that failed says how (bug-8bcd98).
             outcome: Some(facts.outcome.unwrap_or("ok").to_string()),
         });

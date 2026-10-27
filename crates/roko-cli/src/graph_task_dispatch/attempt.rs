@@ -2578,11 +2578,18 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                     reasoning_tokens,
                     finish_reason,
                     wall_ms,
+                    first_token_ms,
                     ..
                 } => {
                     assert_eq!((task_id.as_str(), attempt), (task.id.as_str(), 1));
                     assert_eq!(model, "api-model-1");
                     assert!(wall_ms.is_some(), "call {call} says how long it took");
+                    // The streamed call says when its first token came, within
+                    // its time (gap-0eb14e).
+                    assert!(
+                        first_token_ms.is_some_and(|ms| wall_ms.is_some_and(|wall| ms <= wall)),
+                        "call {call}: first token {first_token_ms:?}, took {wall_ms:?}"
+                    );
                     calls.push((
                         call,
                         input_tokens,

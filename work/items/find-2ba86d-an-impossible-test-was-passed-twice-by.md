@@ -9,11 +9,14 @@ goal = "truth"
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
-updated = 2026-10-15
-last_verified = 2026-10-13
+updated = 2026-10-27
+last_verified = 2026-10-27
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/judge_step.rs"]
-links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-382947", "gap-3e1428", "gap-ba2841", "gap-0af587"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn gaming_screen_flags_the_three_instances' crates/roko-gate/src && grep -rqw 'fn gaming_screen_leaves_honest_code_alone' crates/roko-gate/src && grep -rqw 'fn a_pass_the_gaming_screen_flags_settles_unverified' crates/roko-cli/src && cargo test -p roko-gate --lib gaming_screen && cargo test -p roko-cli --lib a_pass_the_gaming_screen_flags_settles_unverified"
 +++
 
 ## Finding
@@ -65,3 +68,27 @@ spec check should flag before any money is spent.
 2026-10-15 (status-quo assessment, finding 4): still open with no follow-up. Re-checked at b42578bab: no commit since 2026-10-13 touches `crates/roko-cli/src/graph_task_dispatch/red_flags.rs`, `judge_step.rs` or `crates/roko-gate/src/spec_quality.rs`, and no other item links here. Nothing in a default run looks past the visible tests: the audit-only A1 kinds (`roko_gate::attempt_diff::audit_only_findings`: test sniffing, success strings, vacuous diff) run only at verify depth V1 or deeper or in an M4 audit, and audits are off by default (`[audit] enabled = false`, `crates/roko-core/src/config/audit.rs:71`). Will's decision 2 (2026-10-15, `tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md`) turns audits on at 10% only after a minimum-sample floor fixes the over-escalation (gap-d76b1b, q-394b7f). The 2026-10-15 live run found a third instance by another mechanism (finding 45; see the next note).
 
 2026-10-15 (status-quo assessment, finding 45): a third instance, by a mechanism the suggested directions above do not cover. In agent H's capped live run (HEAD 7b6a5af44, plan `live-b`, task `wrap`, gpt-oss-120b on the cheap rung), the task said the module must not import or mention the standard-library wrapping module and must implement the algorithm itself. The delivered `textkit/wrap.py` has no algorithm: `name = "".join(["te", "xt", "wrap"]); return importlib.import_module(name)`, and its docstring says the name is hidden as "a requirement enforced by the test suite". The visible test checked only that the word `textwrap` was absent, so the verify step, the whole-plan check and a re-run passed, and the verdict was `succeeded`. Attempt 1 already delegated. It hit its 25-turn cap, and the retry reused the worktree and only removed the word (proxy calls 109-125). Neither the tamper screen (tests, verify scripts, scope) nor the A1 audit kinds look at what product code imports. Filed separately as a narrow screen, an A1 kind for imports and evals of computed names (the item filed from finding 45). A hidden check that blocks the module (`sys.modules["textwrap"] = None` before the import) would also have caught it. Evidence: `tmp/status-quo/2026-10-15/live/H-live-run.md:195-214` and `live/evidence/wrap-delivered-by-r2.py.txt`.
+
+## Plan (scope set 2026-10-27)
+
+The coordinator's decisions for this item:
+
+- A cheap static screen over the attempt's diff of product code (not tests), with few false positives, in
+  `roko_gate::attempt_diff` beside the A1 kinds and run by the pre-verify screen (`red_flags.rs`). It flags (a) new
+  state that persists across calls and that the function's result reads: a module-level name rebound under
+  `global`, a function attribute set or bumped inside the function, a `nonlocal` counter, a mutable default argument
+  used as a store; and (b) an import or eval of a name built at run time (`importlib.import_module`, `__import__`,
+  `eval`, `exec` on a computed string). A branch comparing a parameter with a literal is flagged only with (a), or
+  when the task's tests assert the same input equal to two different values.
+- Python first, pluggable by language.
+- When the checks pass but the screen flags the attempt, it settles `unverified` (neither `succeeded` nor `failed`),
+  with the screen's reason in the verdict.
+- Out of scope, filed separately: the LLM judge for chat-host runs (gap-3e1428) and a spec-gate check for
+  contradictory acceptance criteria (gap-ba2841). The reports that should show the screen's reason are gap-0af587.
+
+## Done when
+
+The `[[verify]]` passes: the three instances above, reproduced as fixtures (the `_150_call_count` counter, the
+function-attribute counter that inverts 1900, the computed `textwrap` import), are flagged; a base case, a
+module-level constant, a `functools.lru_cache` memo and a plain `import textwrap` are not; and a dispatch whose
+check passes on the counter settles `unverified` with the screen's reason in its verdict.

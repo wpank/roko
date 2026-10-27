@@ -2,7 +2,7 @@
 id = "bug-2f70cd"
 kind = "bug"
 title = "A passed delivery check's summary is dropped: its receipt and the run log can't say it ran cold, so a cold ship check is recorded only in the plan's check log, which its next delivery overwrites"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "2a36515ed"
 source = "round-v7 roko-speed, the $0 CLI proof of gap-dc24dd"
 discovered_from = "agent:roko-speed (round v7)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::deliver", "crates/roko-cli/src/graph_execution/delivery.rs::DeliveryRegressionOutcome"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-dc24dd"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_passed_cold_check_s_receipt_says_it_ran_cold' crates/roko-cli/src && cargo test -p roko-cli --lib a_passed_cold_check_s_receipt_says_it_ran_cold"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T05:22:07Z"
+commit = "2a36515ed"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-27T01:30:52Z"
+forced = false
+evidence = "chain50 on main a871b2664 with the change (2a36515ed): fmt and clippy (roko-cli lib and the roko binary, -D warnings) green; 52 targeted tests pass, among them a_passed_cold_check_s_receipt_says_it_ran_cold (a passing cold delivery through the service: its receipt holds roko.delivery.build_trees@1 = {cold: true, started_from: 'a cold check: the regression checkout starts from no build trees and an empty cargo target dir'}; a failing warm one: {cold: false, started_from: 'a warm check: neither the regression checkout nor your checkout has build trees'}), recorded_batch_delivery_reads_only_a_delivered_plan (plan status reads the record) and every delivery and batch test; roko-cli lib suite 4070 passed, 0 failed (8 ignored, share_run_scrubs_output_text_and_prompt skipped). The $0 CLI proof ran on the pre-fix binary f9328a636 (runs/dc24dd-proof): both receipts lacked any summary, which this fixes"
 +++
 
 ## Problem
@@ -64,6 +76,20 @@ and commit message say a cold check's summary says so, which holds only for a fa
 - A passed cold delivery's receipt in the checkpoint says it ran cold. A test drives a cold check that passes
   through the service and reads the receipt.
 - The `[[verify]]` passes.
+
+## What was built
+
+- `DeliveryRegressionOutcome::build_trees` (`DeliveryBuildTrees`: `cold`, `started_from`) comes from the check log's
+  first line. `CliCompletionDeliveryService::deliver` records it under `roko.delivery.build_trees@1` on every
+  receipt whose check ran, whether it passed, failed or was stopped. The `delivery regression passed` line now
+  carries the summary.
+- Beyond the plan: `roko plan status` reads the record. Its text gains a `plan check from:` line, and its JSON
+  gains `delivery.build_trees` (`RecordedBatchDelivery::build_trees`).
+- The Warm Build Trees section of `docs/v3/depth/04-execution/worktree-isolation.md` now says where the record
+  lives. gap-dc24dd's record has a dated correction.
+- Tests: `a_passed_cold_check_s_receipt_says_it_ran_cold` (a passing cold delivery and a failing warm one through
+  the service, each receipt read back) and `recorded_batch_delivery_reads_only_a_delivered_plan` (the record read
+  from a checkpoint).
 
 ## Notes
 

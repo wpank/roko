@@ -10905,6 +10905,50 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         assert!(runs.iter().all(|run| run.checkout_writes().is_empty()));
     }
 
+    /// bug-4fadf8: a run whose task passed but whose delivery a crash cut
+    /// (roko-recovery's kill point e: the run never wrote its end, so its
+    /// checkpoint says running and records no delivery, and its batch branch
+    /// never moved) resumes without running the task again, and delivers
+    /// into the resuming run's batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivery_cut_run_resumes_with_no_task_attempt_and_delivers() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let first = run_graph_plan_in_run(worktree_run_params(repo), Some("run-cut".into()))
+            .await
+            .expect("run the plan");
+        assert_eq!(first, EXIT_SUCCESS);
+        let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&checkpoint).expect("checkpoint"))
+                .expect("checkpoint json")
+        };
+        let mut manifest = read();
+        manifest["status"] = serde_json::json!("running");
+        let extensions = manifest["extensions"].as_object_mut().expect("extensions");
+        extensions.remove("roko.batch@1");
+        extensions.remove("roko.delivery@1");
+        std::fs::write(&checkpoint, serde_json::to_vec(&manifest).expect("json")).expect("write");
+        git_in(repo, &["branch", "-D", "roko/batch/run-cut"]);
+
+        let again = run_graph_plan_in_run(worktree_run_params(repo), Some("run-resume".into()))
+            .await
+            .expect("resume the plan");
+
+        assert_eq!(again, EXIT_SUCCESS);
+        let attempts = std::fs::read_to_string(repo.join(".roko/runs/run-resume/attempts.jsonl"))
+            .unwrap_or_default();
+        assert!(
+            !attempts.contains("roko.attempt_open"),
+            "no task ran again: {attempts}"
+        );
+        let record = &read()["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["state"], "delivered", "{record}");
+        assert_eq!(record["branch"], "roko/batch/run-resume", "{record}");
+        let files = git_stdout(repo, &["ls-tree", "--name-only", "roko/batch/run-resume"]);
+        assert!(files.contains("alpha.txt"), "{files}");
+    }
+
     /// bug-b7d9ad: what roko writes in the person's checkout during a run,
     /// its own `.roko/` here not ignored by git, beside plans that live in the
     /// checkout, is not taken for a task's checks changing it.

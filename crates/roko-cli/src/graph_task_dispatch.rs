@@ -936,7 +936,7 @@ impl GraphTaskDispatcher {
         let agent = CheapFactoryAgent {
             factory: Arc::clone(&self.factory),
             model_key,
-            workdir: self.workdir.clone(),
+            workspace_root: self.workdir.clone(),
             timeout_ms: self
                 .config
                 .timeouts

@@ -85,8 +85,10 @@ What's left:
 - serve's summary of a CLI run, whose events go under a second id (bug-c872f6);
 - `status.json`'s dead pid in the global `roko plan status`;
 - settling the dead invocation when a resume starts (plan steps 3 and 4).
-- Until then, the kill matrix's E4 fails on the `cli` rows, where serve summarizes the events id as running
-  (`tmp/hermes-roko-v7/roko-recovery/runs/fix-693bb3-96ff7f0e0`).
+- Until then, the kill matrix's E4 fails on its 10 `cli` rows
+  (`tmp/hermes-roko-v7/roko-recovery/runs/fix-df0e79-454815ee6`). There `plan status`, `diagnose` and `show plans` say
+  interrupted, but serve answers the records id with a 404 and says the events id is still running. The two
+  c-verify rows miss their kill, so their run succeeds and E4 has nothing to check.
 
 ## Done when
 

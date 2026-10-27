@@ -2,7 +2,7 @@
 id = "bug-bd261a"
 kind = "bug"
 title = "A plan run's --log-file names no plans in run.started: the spec gate's events now come before PlanSetLoaded, so run.started has plan_ids [] and total_tasks 0 (since 40e48440b)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
-last_verified_rev = "15335e2f9"
+last_verified_rev = "3dd67beb5"
 source = "bug-c63cca harness fix, 2026-10-26: graph_plan_callers::plan_run_log_file_records_one_bracketed_run"
 discovered_from = "bug-c63cca"
 anchors = ["crates/roko-cli/src/graph_execution/event_log.rs::write_start", "crates/roko-cli/src/graph_execution/plan_runner.rs::SpecGateStarted"]
@@ -19,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-c63cca"], supersedes = [
 
 [[verify]]
 command = "grep -qw 'fn with_mock_agents' crates/roko-cli/tests/common/mod.rs && cargo test -p roko-cli --test graph_plan_callers -- --exact plan_run_log_file_records_one_bracketed_run"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:31:00Z"
+commit = "3dd67beb5"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T16:06:43Z"
+forced = false
+evidence = "run.started is written when the --log-file recorder opens and names the plans the run executes: run_recorded selects them with the new plan_runner::compute_plan_run_set (load, --only, plan-set order; serve compute_plan_run_order now reads it) and RunEventLog::open_for_run writes the line before the run publishes anything, so the spec gate events that now come before PlanSetLoaded no longer blank it (option 3; option 2 would drop the spec.gate.refused rows serve reads from a refused run index). The verify (grep with_mock_agents && cargo test -p roko-cli --test graph_plan_callers -- --exact plan_run_log_file_records_one_bracketed_run) failed before at graph_plan_callers.rs:266 (plan_ids [] vs [test-wire-xyz]) and passes on 3dd67beb5 with no claude CLI and no keys. Also green: 18 event_log and plan-set unit tests, among them the new run_started_names_the_plans_before_the_spec_gate_events and compute_plan_run_set_selects_and_orders_plans_as_the_run_does; the --log-file integration tests graph_plan_callers (2), graph_timeout_matrix (7), supervision_canary (2) and honest_verdicts_canary (1); cargo clippy -p roko-cli --no-deps -- -D warnings as CI runs it. clippy --all-targets still fails only on the pre-existing test-code findings gap-7bf92d tracks, none in changed lines."
 +++
 
 ## Problem
@@ -67,6 +78,15 @@ There is a real design choice:
    gate refuses.
 3. `run_recorded` works out the plan set itself before the run starts, from the plans directory and `--only` in its
    params, and hands it to the writer.
+
+Chosen (2026-10-26): option 3. `run_recorded` selects the plans with `plan_runner::compute_plan_run_set`, the selection
+serve's `compute_plan_run_order` already made before a run (load, `--only`, plan-set order), and
+`RunEventLog::open_for_run` writes `run.started` as the log opens, before the run publishes anything. The line no longer
+depends on the hub's event order, survives a process killed during the spec gate, and names the plans of a run the gate
+refuses. Option 2 was rejected: once `PlanSetLoaded` comes first, `WorkspaceLogWriter::owns` drops the gate's
+`spec.gate.refused` rows from the run's index, because they name the plan's `tasks.toml` path rather than its id, and
+serve reads a refused run's reasons from those rows (`roko_serve::run_end::spec_gate_refusals`, bug-9a5970). Option 1
+would keep the log empty for the whole spec gate and lose those lines if the process died.
 
 ## Done when
 

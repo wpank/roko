@@ -623,7 +623,7 @@ impl super::GraphTaskDispatcher {
             .map(|(key, profile)| {
                 let factory = Arc::clone(&self.factory);
                 let model_key = key.clone();
-                let workdir = self.workdir.clone();
+                let workspace_root = self.workdir.clone();
                 // Each review's calls carry what its audit may still spend
                 // (decision 7103).
                 let agent: ReviewAgent = Arc::new(move |usd_limit: f64| {
@@ -632,7 +632,7 @@ impl super::GraphTaskDispatcher {
                     Arc::new(super::routing_context::CheapFactoryAgent {
                         factory: Arc::clone(&factory),
                         model_key: model_key.clone(),
-                        workdir: workdir.clone(),
+                        workspace_root: workspace_root.clone(),
                         timeout_ms,
                         allowance: Some(allowance),
                     }) as Arc<dyn roko_agent::Agent>

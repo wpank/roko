@@ -1774,6 +1774,7 @@ mod tests {
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
+                cold_verify: false,
                 approval: None,
                 allow_unverified: false,
                 outbound: None,

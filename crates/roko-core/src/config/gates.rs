@@ -439,10 +439,12 @@ pub struct GatesConfig {
     pub strip_env: Vec<String>,
     /// Build trees a new attempt checkout gets from the person's checkout, as
     /// a copy-on-write clone moved to the checkout's path, so its first check
-    /// builds incrementally instead of from nothing (gap-6754ab). Directories
-    /// relative to the repository root, each git-ignored. Unset: every
-    /// git-ignored directory holding a CMake build tree (`CMakeCache.txt` at
-    /// most two levels down). `[]`: none.
+    /// builds incrementally instead of from nothing (gap-6754ab); so does the
+    /// delivery's regression checkout, unless the plan sets `[meta]
+    /// cold_verify` (gap-dc24dd). Directories relative to the repository
+    /// root, each git-ignored. Unset: every git-ignored directory holding a
+    /// CMake build tree (`CMakeCache.txt` at most two levels down). `[]`:
+    /// none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm_build_dirs: Option<Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.

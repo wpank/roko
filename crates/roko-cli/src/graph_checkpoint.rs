@@ -3338,8 +3338,8 @@ pub struct CheckpointInspection {
     /// committed it (the cost ledger's own before generations). `None` when
     /// a checkpoint from before generations has no readable ledger.
     pub spent_micro_usd: Option<u64>,
-    /// Spend reserved for a provider call that never settled. Resume refuses
-    /// a checkpoint that committed an unresolved reservation.
+    /// Spend reserved for attempts that never settled. A resume settles it
+    /// as the attempts a stopped process left (bug-b7f6a8).
     pub reserved_micro_usd: Option<u64>,
     /// Task nodes whose output this run recorded in its Activity log, each
     /// with the gate verdict of its latest record. A record a resume refused
@@ -3351,6 +3351,42 @@ pub struct CheckpointInspection {
     /// milliseconds: records older than this belong to earlier runs of the
     /// plan. `None` when no earlier checkpoint was archived.
     pub replaced_at_ms: Option<u128>,
+}
+
+impl CheckpointInspection {
+    /// How many tasks the checkpoint committed a passing output for: a pass,
+    /// a pass over failures that were already there, or a task whose work
+    /// was already done (bug-693bb3). A crashed run's manifest has no
+    /// verdict summary yet, so this reads the committed records.
+    #[must_use]
+    pub fn passed_tasks(&self) -> usize {
+        self.recorded
+            .values()
+            .filter(|verdict| {
+                matches!(
+                    verdict,
+                    Some(
+                        TaskGateVerdict::Passed
+                            | TaskGateVerdict::PassedWithPreexistingFailures
+                            | TaskGateVerdict::AlreadySatisfied
+                    )
+                )
+            })
+            .count()
+    }
+}
+
+/// Whether run `run_id`, which a plan's checkpoint still records as
+/// `running`, has stopped (bug-693bb3): its run manifest is closed or names
+/// a process that is certainly gone, as `roko serve` tells it when it
+/// settles runs ([`roko_serve::interrupted_runs::run_has_stopped`]); without
+/// a run manifest, no process holds the workspace's runner lock. It only
+/// reads.
+#[must_use]
+pub fn running_checkpoint_has_stopped(workdir: &Path, run_id: &str) -> bool {
+    roko_serve::interrupted_runs::run_has_stopped(workdir, run_id).unwrap_or_else(|| {
+        crate::workspace_lock::runner_lock_holder(&workdir.join(".roko")).is_none()
+    })
 }
 
 /// Read `plan_id`'s canonical checkpoint under `.roko/state/graph/` for
@@ -4633,6 +4669,55 @@ depends_on = ["T1"]
             .map(|(_, recorded)| recorded.run_id)
             .collect();
         assert_eq!(set_aside, [RUN_A]);
+    }
+
+    /// bug-693bb3: a run with no run manifest has stopped only while no
+    /// process holds the workspace's runner lock. A run takes that lock
+    /// before it touches its checkpoint, so one that is starting, its
+    /// checkpoint already `running` and its manifest not yet written, runs.
+    #[test]
+    fn a_run_without_a_manifest_runs_while_the_runner_lock_is_held() {
+        let dir = tempdir().expect("tempdir");
+        assert!(running_checkpoint_has_stopped(dir.path(), "starting"));
+        let lock = crate::workspace_lock::acquire_runner_lock(&dir.path().join(".roko"))
+            .expect("the runner lock");
+        assert!(!running_checkpoint_has_stopped(dir.path(), "starting"));
+        drop(lock);
+        assert!(running_checkpoint_has_stopped(dir.path(), "starting"));
+    }
+
+    /// bug-693bb3: a checkpoint counts each task it committed a pass for
+    /// once, though a resume ran it again and recorded it a second time, and
+    /// a forced accept is not a pass.
+    #[test]
+    fn passed_tasks_count_a_task_once_across_a_resume() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let output = |verdict| verdict_output("done", Some(verdict));
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        first
+            .take_recorder()
+            .record("p", "T1", 0, output(TaskGateVerdict::Passed))
+            .expect("record T1");
+        first.finish(false).expect("finish");
+        drop(first);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume");
+        let mut recorder = resumed.take_recorder();
+        recorder
+            .record("p", "T1", 0, output(TaskGateVerdict::Passed))
+            .expect("record T1 again");
+        recorder
+            .record("p", "T2", 0, output(TaskGateVerdict::ForcedAccept))
+            .expect("record T2");
+        drop(recorder);
+        let inspection = inspect_canonical_checkpoint(dir.path(), "p")
+            .expect("inspect")
+            .expect("a checkpoint");
+        assert_eq!(inspection.passed_tasks(), 1);
     }
 
     #[test]

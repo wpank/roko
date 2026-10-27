@@ -76,6 +76,58 @@ fn cli_parses_learn_reflexes_workdir() {
     ));
 }
 
+/// gap-d2ad57: `roko learn probes` lists by default; `clear` takes a model
+/// or `--all`, not both and not neither.
+#[test]
+fn cli_parses_learn_probes() {
+    use commands::learn::ProbesCmd;
+
+    let parse = |args: &[&str]| {
+        Cli::try_parse_from(["roko", "learn", "probes"].iter().chain(args)).map(|cli| cli.command)
+    };
+    assert!(matches!(
+        parse(&[]).expect("list"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes { cmd: None, .. },
+        })
+    ));
+    assert!(matches!(
+        parse(&["clear", "gpt-oss-120b"]).expect("clear a model"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes {
+                cmd: Some(ProbesCmd::Clear { model: Some(ref model), all: false }),
+                ..
+            },
+        }) if model == "gpt-oss-120b"
+    ));
+    assert!(matches!(
+        parse(&["clear", "--all"]).expect("clear all"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes {
+                cmd: Some(ProbesCmd::Clear {
+                    model: None,
+                    all: true
+                }),
+                ..
+            },
+        })
+    ));
+    assert!(matches!(
+        parse(&["clear", "glm-4.7", "--workdir", "/tmp/w"]).expect("a workdir after clear"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes {
+                workdir: Some(ref workdir),
+                ..
+            },
+        }) if workdir == std::path::Path::new("/tmp/w")
+    ));
+    assert!(parse(&["clear"]).is_err(), "a model or --all");
+    assert!(
+        parse(&["clear", "gpt-oss-120b", "--all"]).is_err(),
+        "not both"
+    );
+}
+
 // ── #311: learn inspect / config preset parser tests ──────────
 
 #[test]

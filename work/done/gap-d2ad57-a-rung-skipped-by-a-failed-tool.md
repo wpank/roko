@@ -2,15 +2,16 @@
 id = "gap-d2ad57"
 kind = "gap"
 title = "A rung skipped by a failed tool-use probe can be brought back before its day is up only by hand-editing .roko/learn/rung-probes.json: add roko learn probes (list, clear <model>, --all) and name it in the skip readout and the all-rungs-skipped refusal"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "f99855681"
 source = "round-v7 roko-ladder, the lead's ask when approving bug-374384 (2026-10-26)"
 discovered_from = "agent:roko-ladder (round v7)"
 anchors = ["crates/roko-cli/src/dispatch/rung_probe.rs::RungProbes", "crates/roko-cli/src/dispatch/rung_probe.rs::way_out", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::refused_for_no_rung", "crates/roko-cli/src/commands/learn.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-374384", "gap-20301d", "
 
 [[verify]]
 command = "grep -rqw 'fn a_cleared_probe_is_probed_again' crates/roko-cli/src && cargo test -p roko-cli --lib a_cleared_probe_is_probed_again"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:06:55Z"
+commit = "092366294"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-26T21:45:05Z"
+forced = false
+evidence = "092366294: roko learn probes lists each rung model's probe verdict (when it was probed, until when it stands and how to clear it; a billing failure says the next run probes it again), and roko learn probes clear <model> or --all removes verdicts so the next run probes those rungs again (rung_probe::clear_probes, probe_rows, ProbeRow::line); --json on both, --workdir global to the subcommands, and clearing a model with no verdict exits 1. The skipped-rung readout, its rung_skipped detail and the all-rungs refusal name the command instead of the JSON file; the CLAUDE.md table and the HTTP API doc follow. Tests: a_cleared_probe_is_probed_again, the_probe_list_says_what_stands_and_how_to_clear_it, cli_parses_learn_probes and the readout tests; red on a clear that does nothing and the old wording: a_cleared_probe_is_probed_again cleared nothing, a_skipped_rung_says_why_and_until_when and a_failed_probe_skips_its_rung_with_an_event named the file. Chain on work/gap-326182 f99855681 (main 00ecbd158, a fresh clone of roko-v7-target): red at 01:31; green targeted 10/10 roko-cli and the implementer tests, lib suites roko-cli 4053/0 and roko-compose 529/0, roko-compose's integration tests pass (the implementer snapshot), the bin's CLI parse tests 7/7, clippy -D warnings and nightly fmt clean. The built roko on a scratch workspace with a fenced HOME listed the three kinds of verdict, cleared one (exit 0, then exit 1 once none was left), cleared --all with --json, and refused clear with no model or with both."
 +++
 
 ## Problem

@@ -2765,8 +2765,9 @@ fn run_summary(
         "side_call_usd": summary["metrics"]["side_call_usd"],
         // What earlier processes of the run spent before a restart, which the
         // budgets of the plans it resumed count beside `cost_usd`
-        // (bug-b7f6a8).
-        "carried_usd": carried.values().sum::<f64>(),
+        // (bug-b7f6a8). Summed from 0.0: an empty f64 sum is -0.0
+        // (bug-f6cd5a).
+        "carried_usd": carried.values().fold(0.0, |total, usd| total + usd),
         "tasks": {
             "total": tasks.len(),
             "passed": passed,
@@ -4287,12 +4288,14 @@ mod tests {
                 json!({"type":"run.completed","run_id":"r2","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.05}),
             ],
         );
-        for (run_id, carried_usd) in [("r1", 0.375), ("r2", 0.0)] {
+        for (run_id, carried_usd) in [("r1", "0.375"), ("r2", "0.0")] {
             let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
                 .await
                 .unwrap();
             assert_eq!(summary["cost_usd"], 0.05, "{summary}");
-            assert_eq!(summary["carried_usd"], carried_usd, "{summary}");
+            // As a host reads it: a run that carried nothing says 0.0, with
+            // no sign (bug-f6cd5a).
+            assert_eq!(summary["carried_usd"].to_string(), carried_usd, "{summary}");
         }
     }
 

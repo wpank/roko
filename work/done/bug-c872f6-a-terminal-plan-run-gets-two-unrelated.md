@@ -2,15 +2,16 @@
 id = "bug-c872f6"
 kind = "bug"
 title = "A terminal plan run gets two unrelated run ids, graph-<plan>-<uuid> for its records and graph-<uuid> for its events, prints neither, and serve's summary answers only the events id"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-17
-updated = 2026-10-26
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "167ddf269"
 source = "round-v6-dogfood-will#R4-2"
 discovered_from = "agent:dogfood-will (round v6 run 4, 2026-10-17)"
 anchors = ["crates/roko-cli/src/graph_execution/event_log.rs::graph_run_id", "crates/roko-cli/src/graph_checkpoint.rs::create_fresh_checkpoint"]
@@ -19,6 +20,19 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn cli_plan_run_uses_one_run_id_for_records_and_events' crates/roko-cli/ && cargo test -p roko-cli cli_plan_run_uses_one_run_id_for_records_and_events"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T03:24:30Z"
+commit = "167ddf269"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "S"
+claimed_at = "2026-10-27T02:50:23Z"
+forced = false
+evidence = "167ddf269: run_graph_plan_observed passes the id a run's events go under to the body as the caller's run id when no caller named the run (the terminal plan run, and a --log-file run), so a single plan's fresh checkpoint (.roko/runs/<id>/), the batch branch (roko/batch/<id>) and the knowledge batch take the id status.json and the events-by-run index already had; the run prints `Run <id>` on stderr at its start (not with --quiet or --json), and its closing summary adds `Run <id>` and `Plan <plan>: run <plan run>` for a plan whose records keep another id; --json adds run_id and plan_runs. Verify: cli_plan_run_uses_one_run_id_for_records_and_events passes (chain39: 1/1; graph_execution:: 298/298; fmt and clippy -D warnings clean on roko-cli). E4 on roko-recovery's kill matrix (a copy on ports 6790-6792, CLI path, ways back cli-resume and serve-mcp-resume): on roko-main-fe204e330 each dead CLI run had two ids, the records id's summary answered 404 and the events id's said running (a-stream, b-tool, d-between); on this branch's binary each had one id, and serve's summary and MCP run_status said interrupted ('roko stopped while this run was going'). E4 stays FAIL on its other half, `roko plan status` saying running, which is bug-df0e79 (roko-recovery); c-verify's kill missed on both binaries. Evidence: tmp/hermes-roko-v7/roko-exact/e4/{red2-fe204e330,green-c872f6}."
 +++
 
 ## Problem

@@ -330,14 +330,21 @@ pub struct InterruptedAttempt {
     #[serde(default)]
     pub cancelled: bool,
     /// What its finished model calls cost, in millionths of one USD, as the
-    /// resume settled its hold on the plan budget (bug-b7f6a8); `None` when
-    /// the ledger did not record it.
+    /// resume settled its hold on the plan budget (bug-b7f6a8), less the
+    /// calls `refused_micro_usd` holds; `None` when the ledger did not
+    /// record it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spent_micro_usd: Option<u64>,
     /// What the model call it had in flight was charged at, an estimate, in
     /// millionths of one USD; `None` with no call in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_micro_usd: Option<u64>,
+    /// What the calls of its dispatches that failover settled as refused
+    /// cost, in millionths of one USD (bug-8bcd98): on the plan's books
+    /// before the stop, so the resume charged them nothing. `None` when it
+    /// had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_micro_usd: Option<u64>,
 }
 
 /// Task nodes whose recorded outputs must carry a passing gate verdict before
@@ -525,6 +532,7 @@ fn interrupted_attempts(
                 cancelled,
                 spent_micro_usd: None,
                 estimated_micro_usd: None,
+                refused_micro_usd: None,
             })
         })
         .collect()
@@ -673,8 +681,9 @@ fn abandoned_cost_line(open: &AttemptOpenRecord, verdict: &AttemptVerdictRecord)
 }
 
 /// What an `abandoned` attempt is charged (bug-b7f6a8): its finished calls,
-/// plus the call it had in flight at its estimate. Unknown when the ledger
-/// did not record its hold.
+/// plus the call it had in flight at its estimate, with the calls failover
+/// settled as refused beside them, as a live attempt's verdict carries them
+/// (bug-8bcd98). Unknown when the ledger did not record its hold.
 fn abandoned_cost(attempt: &InterruptedAttempt) -> AttemptCost {
     let Some(spent) = attempt.spent_micro_usd else {
         return AttemptCost::default();
@@ -689,6 +698,7 @@ fn abandoned_cost(attempt: &InterruptedAttempt) -> AttemptCost {
             CostSource::ProviderUsage
         },
         estimated_usd: estimated.map(micro_usd_to_usd),
+        refused_usd: attempt.refused_micro_usd.map(micro_usd_to_usd),
         ..AttemptCost::default()
     }
 }
@@ -931,8 +941,8 @@ pub struct SettledHolds {
     pub spent_before_micro_usd: u64,
     /// The reservation the settlement released.
     pub released_micro_usd: u64,
-    /// What the dead attempts were charged: their finished calls, and each
-    /// call in flight at its estimate.
+    /// What the dead attempts were charged: their finished calls the plan's
+    /// books did not hold yet, and each call in flight at its estimate.
     pub charged_micro_usd: u64,
     /// The ledger recorded no holds, as one written before they were kept:
     /// the dead attempts' spend is unknown, and nothing was charged.
@@ -955,6 +965,11 @@ pub struct CommittedHold {
     /// What its finished model calls cost, in millionths of one USD.
     #[serde(default)]
     pub spent_micro_usd: u64,
+    /// Of `spent_micro_usd`, what the plan's books held already: the calls of
+    /// the dispatches failover settled as refused (bug-8bcd98), which a
+    /// settlement does not charge again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub booked_micro_usd: u64,
     /// It had admitted a model call and not recorded it: the call was in
     /// flight.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -974,13 +989,24 @@ const fn is_zero(value: &u64) -> bool {
 }
 
 /// What settling `holds` charges, in millionths of one USD: each hold's
-/// finished calls, and its call in flight at its estimate (bug-b7f6a8).
+/// finished calls the plan's books do not hold yet, and its call in flight at
+/// its estimate (bug-b7f6a8).
 fn hold_charge(holds: &[CommittedHold]) -> u64 {
     holds.iter().fold(0_u64, |total, hold| {
         total
-            .saturating_add(hold.spent_micro_usd)
+            .saturating_add(hold.unbooked_micro_usd())
             .saturating_add(hold.in_flight_micro_usd)
     })
+}
+
+impl CommittedHold {
+    /// What its finished calls cost that the plan's books do not hold yet, in
+    /// millionths of one USD: its spend, less the calls of the dispatches
+    /// failover settled as refused.
+    #[must_use]
+    pub const fn unbooked_micro_usd(&self) -> u64 {
+        self.spent_micro_usd.saturating_sub(self.booked_micro_usd)
+    }
 }
 
 /// Versioned metadata that makes an Activity JSONL file safe to resume.
@@ -1151,8 +1177,10 @@ impl GraphCostLedgerCheckpoint {
     /// Settle the holds of the attempts a stopped process left in flight
     /// (bug-b7f6a8). A resume calls this once it holds the runner lock, so
     /// no other process runs the plan: what each dead attempt's finished
-    /// calls cost, and the call it had in flight at the estimate it was
-    /// admitted at, become spent, and nothing stays reserved. A ledger that
+    /// calls cost, less those the plan's books hold already (a dispatch
+    /// failover settled as refused), and the call it had in flight at the
+    /// estimate it was admitted at, become spent, and nothing stays
+    /// reserved. A ledger that
     /// recorded no holds (one written before holds were kept) has its
     /// reservation released with its spend unknown. The settled ledger is
     /// written here, and committed with the resume's first generation.
@@ -1725,9 +1753,11 @@ impl PreparedGraphCheckpoint {
                     .iter()
                     .find(|hold| hold.attempt_key.as_deref() == Some(attempt.attempt_key.as_str()));
                 if let Some(hold) = hold {
-                    attempt.spent_micro_usd = Some(hold.spent_micro_usd);
+                    attempt.spent_micro_usd = Some(hold.unbooked_micro_usd());
                     attempt.estimated_micro_usd =
                         hold.in_flight.then_some(hold.in_flight_micro_usd);
+                    attempt.refused_micro_usd =
+                        (hold.booked_micro_usd > 0).then_some(hold.booked_micro_usd);
                 }
             }
         }
@@ -3308,8 +3338,8 @@ pub struct CheckpointInspection {
     /// committed it (the cost ledger's own before generations). `None` when
     /// a checkpoint from before generations has no readable ledger.
     pub spent_micro_usd: Option<u64>,
-    /// Spend reserved for a provider call that never settled. Resume refuses
-    /// a checkpoint that committed an unresolved reservation.
+    /// Spend reserved for attempts that never settled. A resume settles it
+    /// as the attempts a stopped process left (bug-b7f6a8).
     pub reserved_micro_usd: Option<u64>,
     /// Task nodes whose output this run recorded in its Activity log, each
     /// with the gate verdict of its latest record. A record a resume refused
@@ -3321,6 +3351,42 @@ pub struct CheckpointInspection {
     /// milliseconds: records older than this belong to earlier runs of the
     /// plan. `None` when no earlier checkpoint was archived.
     pub replaced_at_ms: Option<u128>,
+}
+
+impl CheckpointInspection {
+    /// How many tasks the checkpoint committed a passing output for: a pass,
+    /// a pass over failures that were already there, or a task whose work
+    /// was already done (bug-693bb3). A crashed run's manifest has no
+    /// verdict summary yet, so this reads the committed records.
+    #[must_use]
+    pub fn passed_tasks(&self) -> usize {
+        self.recorded
+            .values()
+            .filter(|verdict| {
+                matches!(
+                    verdict,
+                    Some(
+                        TaskGateVerdict::Passed
+                            | TaskGateVerdict::PassedWithPreexistingFailures
+                            | TaskGateVerdict::AlreadySatisfied
+                    )
+                )
+            })
+            .count()
+    }
+}
+
+/// Whether run `run_id`, which a plan's checkpoint still records as
+/// `running`, has stopped (bug-693bb3): its run manifest is closed or names
+/// a process that is certainly gone, as `roko serve` tells it when it
+/// settles runs ([`roko_serve::interrupted_runs::run_has_stopped`]); without
+/// a run manifest, no process holds the workspace's runner lock. It only
+/// reads.
+#[must_use]
+pub fn running_checkpoint_has_stopped(workdir: &Path, run_id: &str) -> bool {
+    roko_serve::interrupted_runs::run_has_stopped(workdir, run_id).unwrap_or_else(|| {
+        crate::workspace_lock::runner_lock_holder(&workdir.join(".roko")).is_none()
+    })
 }
 
 /// Read `plan_id`'s canonical checkpoint under `.roko/state/graph/` for
@@ -4605,6 +4671,55 @@ depends_on = ["T1"]
         assert_eq!(set_aside, [RUN_A]);
     }
 
+    /// bug-693bb3: a run with no run manifest has stopped only while no
+    /// process holds the workspace's runner lock. A run takes that lock
+    /// before it touches its checkpoint, so one that is starting, its
+    /// checkpoint already `running` and its manifest not yet written, runs.
+    #[test]
+    fn a_run_without_a_manifest_runs_while_the_runner_lock_is_held() {
+        let dir = tempdir().expect("tempdir");
+        assert!(running_checkpoint_has_stopped(dir.path(), "starting"));
+        let lock = crate::workspace_lock::acquire_runner_lock(&dir.path().join(".roko"))
+            .expect("the runner lock");
+        assert!(!running_checkpoint_has_stopped(dir.path(), "starting"));
+        drop(lock);
+        assert!(running_checkpoint_has_stopped(dir.path(), "starting"));
+    }
+
+    /// bug-693bb3: a checkpoint counts each task it committed a pass for
+    /// once, though a resume ran it again and recorded it a second time, and
+    /// a forced accept is not a pass.
+    #[test]
+    fn passed_tasks_count_a_task_once_across_a_resume() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let output = |verdict| verdict_output("done", Some(verdict));
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        first
+            .take_recorder()
+            .record("p", "T1", 0, output(TaskGateVerdict::Passed))
+            .expect("record T1");
+        first.finish(false).expect("finish");
+        drop(first);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume");
+        let mut recorder = resumed.take_recorder();
+        recorder
+            .record("p", "T1", 0, output(TaskGateVerdict::Passed))
+            .expect("record T1 again");
+        recorder
+            .record("p", "T2", 0, output(TaskGateVerdict::ForcedAccept))
+            .expect("record T2");
+        drop(recorder);
+        let inspection = inspect_canonical_checkpoint(dir.path(), "p")
+            .expect("inspect")
+            .expect("a checkpoint");
+        assert_eq!(inspection.passed_tasks(), 1);
+    }
+
     #[test]
     fn preview_refuses_an_edited_plan_unless_forced() {
         let dir = tempdir().expect("tempdir");
@@ -4874,6 +4989,7 @@ depends_on = ["T1"]
         let hold = CommittedHold {
             attempt_key: Some(identity.attempt_key.clone()),
             spent_micro_usd: 80_000,
+            booked_micro_usd: 0,
             in_flight: true,
             in_flight_micro_usd: 41_000,
             unpriced: false,
@@ -5536,6 +5652,7 @@ depends_on = ["T1"]
             cancelled,
             spent_micro_usd: None,
             estimated_micro_usd: None,
+            refused_micro_usd: None,
         };
         assert_eq!(
             recorded.attempts,

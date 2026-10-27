@@ -190,6 +190,111 @@ pub async fn probe_ladder(
         .collect()
 }
 
+/// Remove the probe verdict of `model`, or of every model with `None`, from
+/// the workspace at `workdir`, so the next run probes those rungs again:
+/// `roko learn probes clear` (gap-d2ad57). Returns the models removed.
+///
+/// # Errors
+///
+/// The verdicts could not be saved.
+pub fn clear_probes(workdir: &Path, model: Option<&str>) -> std::io::Result<Vec<String>> {
+    let path = RungProbes::path(workdir);
+    let mut probes = RungProbes::load(&path);
+    let removed: Vec<String> = match model {
+        Some(model) => probes
+            .models
+            .remove_entry(model)
+            .map(|(model, _)| model)
+            .into_iter()
+            .collect(),
+        None => std::mem::take(&mut probes.models).into_keys().collect(),
+    };
+    if !removed.is_empty() {
+        roko_fs::atomic_write_json(&path, &probes)?;
+    }
+    Ok(removed)
+}
+
+/// One rung model's probe verdict as `roko learn probes` lists it
+/// (gap-d2ad57).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProbeRow {
+    /// The model, as dispatch runs it for its rung.
+    pub model: String,
+    /// Whether its probe passed.
+    pub passed: bool,
+    /// Why it failed; empty when it passed.
+    pub reason: String,
+    /// When it was probed (unix ms).
+    pub probed_at_ms: i64,
+    /// When the verdict lapses and a run probes the rung again (unix ms);
+    /// `None` for a billing failure, which the next run probes again.
+    pub until_ms: Option<i64>,
+    /// The probe failed on its provider's billing or usage window.
+    pub billing: bool,
+}
+
+impl ProbeRow {
+    /// The row in words at `now_ms`: "gpt-oss-120b: failed at 09:12:
+    /// empty_response: …; its rung is skipped until 09:12; to probe it again
+    /// now, run `roko learn probes clear gpt-oss-120b`".
+    #[must_use]
+    pub fn line(&self, now_ms: i64) -> String {
+        let verdict = if self.passed { "passed" } else { "failed" };
+        let probed = local_until(self.probed_at_ms);
+        let Some(until_ms) = self.until_ms else {
+            return format!(
+                "{}: failed at {probed} on its provider's billing: {}; the next run probes it \
+                 again",
+                self.model, self.reason
+            );
+        };
+        if now_ms >= until_ms {
+            format!(
+                "{}: {verdict} at {probed}; the verdict has lapsed, so the next run probes it \
+                 again",
+                self.model
+            )
+        } else if self.passed {
+            format!(
+                "{}: passed at {probed}; probed again after {}",
+                self.model,
+                local_until(until_ms)
+            )
+        } else {
+            format!(
+                "{}: failed at {probed}: {}; its rung is skipped until {}; to probe it again \
+                 now, run `roko learn probes clear {}`",
+                self.model,
+                self.reason,
+                local_until(until_ms),
+                self.model
+            )
+        }
+    }
+}
+
+/// The probe verdicts saved for the workspace at `workdir`, by model: what
+/// `roko learn probes` lists (gap-d2ad57).
+#[must_use]
+pub fn probe_rows(workdir: &Path) -> Vec<ProbeRow> {
+    RungProbes::load(&RungProbes::path(workdir))
+        .models
+        .into_iter()
+        .map(|(model, probe)| {
+            let billing = probe.billing();
+            ProbeRow {
+                model,
+                passed: probe.passed,
+                reason: probe.reason,
+                probed_at_ms: probe.probed_at_ms,
+                until_ms: (!billing).then(|| probe.probed_at_ms.saturating_add(PROBE_TTL_MS)),
+                billing,
+            }
+        })
+        .collect()
+}
+
 /// The `models` whose probe passed in the run that started at
 /// `run_started_ms`, by the verdicts saved at `workdir`: each shows its
 /// provider can pay, as a recharged provider's probe does (bug-e33b7e).
@@ -292,7 +397,7 @@ impl SkippedRung {
             "the next run probes it again, so recharge the account and run again".to_string()
         } else {
             format!(
-                "to probe it again now, remove `{}` from .roko/learn/{PROBES_FILE}",
+                "to probe it again now, run `roko learn probes clear {}`",
                 self.model
             )
         }
@@ -520,7 +625,7 @@ mod tests {
             format!(
                 "mid (gpt-5.4-mini on openai): skipped until {until}, its tool-use probe failed: \
                  request_refused: openai refused the request (HTTP 400); to probe it again now, \
-                 remove `gpt-5.4-mini` from .roko/learn/rung-probes.json"
+                 run `roko learn probes clear gpt-5.4-mini`"
             )
         );
         assert_eq!(
@@ -529,7 +634,7 @@ mod tests {
                 "rung mid (gpt-5.4-mini on openai) is skipped until {until}: its tool-use probe \
                  failed: request_refused: openai refused the request (HTTP 400); a task that \
                  would start on it starts on the next rung that runs; to probe it again now, \
-                 remove `gpt-5.4-mini` from .roko/learn/rung-probes.json"
+                 run `roko learn probes clear gpt-5.4-mini`"
             )
         );
         let billed = SkippedRung {
@@ -629,5 +734,66 @@ mod tests {
         assert!(standing("billed-in-run"));
         assert!(standing("blank-before"));
         assert!(standing("passed-before"));
+    }
+
+    /// gap-d2ad57: `roko learn probes` lists each verdict: a failure, until
+    /// when its rung is skipped and how to probe it again now; a billing
+    /// failure, which the next run probes again; a pass; and a verdict that
+    /// has lapsed.
+    #[test]
+    fn the_probe_list_says_what_stands_and_how_to_clear_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = RungProbes::path(temp.path());
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let hour_ago = now_ms - 3_600_000;
+        let probe = |passed: bool, reason: &str, probed_at_ms: i64| RungProbe {
+            passed,
+            reason: reason.to_string(),
+            probed_at_ms,
+        };
+        let probes = RungProbes {
+            models: [
+                (
+                    "billed",
+                    probe(false, "insufficient_credits: http 402", hour_ago),
+                ),
+                (
+                    "blank",
+                    probe(false, "empty_response: reasoning only", hour_ago),
+                ),
+                ("fine", probe(true, "", hour_ago)),
+                ("old", probe(true, "", now_ms - 2 * PROBE_TTL_MS)),
+            ]
+            .into_iter()
+            .map(|(model, probe)| (model.to_string(), probe))
+            .collect(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+
+        let rows = probe_rows(temp.path());
+        let lines: Vec<String> = rows.iter().map(|row| row.line(now_ms)).collect();
+        let (probed, until) = (local_until(hour_ago), local_until(hour_ago + PROBE_TTL_MS));
+        assert_eq!(
+            lines[..3],
+            [
+                format!(
+                    "billed: failed at {probed} on its provider's billing: insufficient_credits: \
+                     http 402; the next run probes it again"
+                ),
+                format!(
+                    "blank: failed at {probed}: empty_response: reasoning only; its rung is \
+                     skipped until {until}; to probe it again now, run `roko learn probes clear \
+                     blank`"
+                ),
+                format!("fine: passed at {probed}; probed again after {until}"),
+            ]
+        );
+        assert!(
+            lines[3].ends_with("the verdict has lapsed, so the next run probes it again"),
+            "{}",
+            lines[3]
+        );
+        assert_eq!((rows[0].billing, rows[0].until_ms), (true, None));
     }
 }

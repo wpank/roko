@@ -81,7 +81,9 @@ document the deviation.\n\
 \n\
 ## Before you write any code\n\
 \n\
-1. Read ALL files listed in the task's `read_files` and `files` fields\n\
+1. If this prompt has a \"Declared source context\" section, don't read again what it shows: \
+read the lines a note there says are not shown, and anything else you need. Otherwise read the \
+files listed in the task's `read_files` and `files` fields\n\
 2. Check existing code for types, traits, and functions you need — search before creating\n\
 3. Check existing imports and re-exports — the module may already expose what you need\n\
 4. If a \"Previous attempt feedback\" section exists below, read it FIRST and fix those exact errors\n\
@@ -545,6 +547,29 @@ mod tests {
             "Rust-specific text must not appear in the language-agnostic identity"
         );
         assert!(id.contains("Previous attempt feedback"));
+    }
+
+    /// gap-744bd0: phase 4.3's tries read again, in their first turn, the
+    /// files the prompt's declared source context already held, as rule 1
+    /// told them to: about 8% of the run. The role works from that section,
+    /// and reads only the lines a note names and the files it leaves out.
+    #[test]
+    fn implementer_works_from_its_declared_files() {
+        let id = ImplementerTemplate.role_identity();
+        assert!(!id.contains("Read ALL files"), "{id}");
+        assert!(id.contains("\"Declared source context\""), "{id}");
+        assert!(id.contains("not shown"), "{id}");
+    }
+
+    /// gap-326182: phase 5.2's only try needed its checks' tests and its
+    /// sources' headers, none of which its prompt held. Rule 1 stops the agent
+    /// reading again what the prompt shows, and lets it read what it lacks.
+    #[test]
+    fn implementer_may_read_what_the_prompt_lacks() {
+        let id = ImplementerTemplate.role_identity();
+        assert!(!id.contains("use `read_file` only for"), "{id}");
+        assert!(id.contains("don't read again what it shows"), "{id}");
+        assert!(id.contains("anything else you need"), "{id}");
     }
 
     #[test]

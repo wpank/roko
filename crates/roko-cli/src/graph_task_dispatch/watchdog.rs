@@ -1374,6 +1374,32 @@ mod tests {
         assert_eq!(watch.check(t0 + secs(300)), StallCheck::Stalled(secs(300)));
     }
 
+    /// gap-a94400: OpenAI's keepalive events reach the attempt as empty
+    /// reasoning deltas, as `response.in_progress` does. A call silent for
+    /// 120 s but for a keepalive every 30 s is never warned about, even with
+    /// the warning at 60 s; the same silence without them is warned about at
+    /// 60 s and cancelled at 100 s.
+    #[test]
+    fn keepalives_every_30_s_keep_a_120_s_silent_call_unwarned() {
+        let mut watch = StallWatch::new(thresholds(60, 100));
+        let t0 = Instant::now();
+        // `response.in_progress`.
+        watch.progress().observe_at(&alive(), t0);
+        for second in 1..=120 {
+            let now = t0 + secs(second);
+            if second % 30 == 0 {
+                watch.progress().observe_at(&alive(), now);
+            }
+            assert_eq!(watch.check(now), StallCheck::Healthy, "{second} s in");
+        }
+
+        let mut watch = StallWatch::new(thresholds(60, 100));
+        watch.progress().observe_at(&alive(), t0);
+        assert_eq!(watch.check(t0 + secs(59)), StallCheck::Healthy);
+        assert_eq!(watch.check(t0 + secs(60)), StallCheck::Silent(secs(60)));
+        assert_eq!(watch.check(t0 + secs(100)), StallCheck::Stalled(secs(100)));
+    }
+
     #[test]
     fn stall_diagnoses_name_the_task_and_the_intervention() {
         let attempt = WatchedAttempt {

@@ -321,9 +321,14 @@ pub struct CandidateForecast {
     /// The forecast comes from L0 alone: the model has fewer outcomes than it needs (6116).
     pub cold_start: bool,
     /// The layer that forecast `p_gate`: L0 while the model is cold and for every first try,
-    /// L1 for a retry or a climb (gap-3f36a6).
+    /// L1 for a retry or a climb (gap-3f36a6), L0 again for a retry whose L1 forecast ran away
+    /// (bug-bce0ed).
     #[serde(default)]
     pub basis: ForecastBasis,
+    /// L0's P(VS) for the arm, whatever layer forecast `p_vs`: an abandon needs it below
+    /// p_abandon too, so L1 alone never gives up a task the prior still rates (gap-d91691).
+    #[serde(default)]
+    pub prior_p_vs: f64,
     /// The cost quantiles are a bounded prior: the cost model's rows do not support the
     /// attempt. It sits at the arm's observed costs, as for an arm on a family it has not run
     /// (bug-f6682e), or at the price snapshot's price for an arm with none (bug-09173e).

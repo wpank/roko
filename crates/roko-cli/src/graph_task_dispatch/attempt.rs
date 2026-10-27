@@ -2097,10 +2097,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
         };
         let (dispatcher, mut task) =
             make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
-        // A declared context file that does not exist fails prompt assembly.
+        // A declared context file outside the workspace fails prompt
+        // assembly; a missing one no longer does (bug-41791b).
         task.context = Some(crate::task_parser::TaskContext {
             read_files: vec![crate::task_parser::ReadFile {
-                path: "src/missing.rs".to_string(),
+                path: "../outside.rs".to_string(),
                 lines: None,
                 why: "context".to_string(),
             }],
@@ -2133,6 +2134,141 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
         assert!(
             verdict["timing"]["prompt_assembled_at"].is_null(),
             "{verdict}"
+        );
+    }
+
+    /// A fake Claude CLI that keeps what it was sent beside itself: its
+    /// arguments, the system prompt among them, in `args`, and its prompt in
+    /// `prompt`.
+    const PROMPT_KEEPING_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+dir=$(dirname -- "$0")
+printf '%s\n' "$@" > "$dir/args"
+cat > "$dir/prompt"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// bug-fa22cc (Undertow phase 5.1, run 814a7340): T2#1 cut
+    /// `tools/render-demos.sh` from 121 lines to 43 and failed its gate, and
+    /// T2#2 to #4, in its checkout, each died in pre-validation on the
+    /// declared `1-121`, before any model call. A try fits its declared
+    /// ranges to the files in its checkout, whichever task changed them:
+    /// `1-121` reads the whole 43-line script, and `4-30` of a 10-line file
+    /// is cut at its last line.
+    #[tokio::test]
+    async fn a_try_fits_declared_ranges_to_its_checkout() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            PROMPT_KEEPING_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let numbered = |name: &str, count: usize| {
+            (1..=count)
+                .map(|n| format!("echo {name}-{n:02}\n"))
+                .collect::<String>()
+        };
+        std::fs::create_dir(temp.path().join("tools")).expect("tools");
+        std::fs::write(
+            temp.path().join("tools/render-demos.sh"),
+            numbered("demo", 43),
+        )
+        .expect("the script");
+        std::fs::write(temp.path().join("tools/notes.txt"), numbered("note", 10))
+            .expect("the notes");
+        let read = |path: &str, lines: &str| crate::task_parser::ReadFile {
+            path: path.to_string(),
+            lines: Some(lines.to_string()),
+            why: "context".to_string(),
+        };
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![
+                read("tools/render-demos.sh", "1-121"),
+                read("tools/notes.txt", "4-30"),
+            ],
+            ..crate::task_parser::TaskContext::default()
+        });
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try runs");
+
+        let sent: String = ["args", "prompt"]
+            .iter()
+            .map(|name| {
+                std::fs::read_to_string(temp.path().join(name)).expect("what the provider was sent")
+            })
+            .collect();
+        for shown in [
+            "echo demo-01",
+            "echo demo-43",
+            "echo note-04",
+            "echo note-10",
+        ] {
+            assert!(sent.contains(shown), "{shown}: {sent}");
+        }
+        assert!(!sent.contains("echo note-03"), "{sent}");
+    }
+
+    /// bug-41791b: a try whose declared files no longer hold a symbol its
+    /// plan anchors, or no longer include a file it declares, runs: the
+    /// anchor becomes a note that keeps its text, the missing file drops out
+    /// of its reads, and the prompt shows the files as they are. Both used
+    /// to fail prompt assembly before any model call, on every later try of
+    /// the task, as a stale line range did (bug-fa22cc).
+    #[tokio::test]
+    async fn a_missing_anchor_never_fails_a_try() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            PROMPT_KEEPING_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        std::fs::create_dir(temp.path().join("tools")).expect("tools");
+        std::fs::write(
+            temp.path().join("tools/render.cpp"),
+            "void renderEveryPreset() {}\n",
+        )
+        .expect("the renderer");
+        let read = |path: &str| crate::task_parser::ReadFile {
+            path: path.to_string(),
+            lines: None,
+            why: "context".to_string(),
+        };
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![read("tools/render.cpp"), read("tools/render-old.sh")],
+            symbols: vec!["renderAll — the renderer's entry point".to_string()],
+            ..crate::task_parser::TaskContext::default()
+        });
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try runs");
+
+        let prompt = std::fs::read_to_string(temp.path().join("prompt")).expect("the prompt");
+        assert!(
+            prompt.contains(
+                "- Symbol: renderAll (in no file the task reads): the renderer's entry point"
+            ),
+            "{prompt}"
+        );
+        assert!(prompt.contains("- Read `tools/render.cpp`"), "{prompt}");
+        assert!(!prompt.contains("render-old.sh"), "{prompt}");
+        let sent = std::fs::read_to_string(temp.path().join("args")).expect("the arguments");
+        assert!(
+            format!("{sent}{prompt}").contains("void renderEveryPreset() {}"),
+            "{sent}{prompt}"
         );
     }
 

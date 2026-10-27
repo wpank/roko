@@ -2,7 +2,7 @@
 id = "gap-8b1f4f"
 kind = "gap"
 title = "A source check that comes with its own command can be dropped with any reason that isn't a restatement, \"covered by the plan's final check\" included, though the planner's rules allow a drop only when no command can check it (phase 4.3's re-ask draft dropped P4.3.15 that way)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "7a96d8461"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 9, run 3752b8ff), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::SourceCoverage", "crates/roko-cli/src/plan_generate/source_checks.rs::is_restatement", "crates/roko-cli/src/plan_generate/source_checks.rs::planner_block"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-4dd77d", "gap-77220d", "
 
 [[verify]]
 command = "grep -rqw 'fn a_check_with_its_own_command_is_never_dropped' crates/roko-cli/src && cargo test -p roko-cli --lib a_check_with_its_own_command_is_never_dropped"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T21:56:36Z"
+commit = "00ecbd158"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 00ecbd158 (branch 7b92591ce; main merged in at 2529a19e3). Post-merge verify in main at 00ecbd158: the grep finds the test and a_check_with_its_own_command_is_never_dropped passes, with a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised (2 of 2). The test runs phase 4.3's re-ask draft (fixture tests/fixtures/p4_3_tiers): P4.3.15 counts missing, not dropped; refuse_drops takes the five drops out of [meta] dropped_checks; assign_runs gives P4.3.15 its step in T2 (owner_of's file rule now matches display to Displays.cpp, a plural s aside); all 17 kept; the source-check block and the re-ask state the rule. Branch suites: plan_generate and plan_policy 196/196; roko-cli lib 4050 passed, 0 failed; nightly fmt; clippy -p roko-cli -D warnings clean."
 +++
 
 ## Problem
@@ -40,6 +51,19 @@ check.
   threshold. So had the draft been kept (gap-4dd77d), P4.3.15 would have counted as dropped, not missing, and
   nothing would have asked for it.
 - The person added it back by hand.
+
+## Evidence: the phase-4.3 replay after gap-4dd77d (2026-10-26, roko-planner)
+
+- A $0 replay of 4.3's write on Undertow 2ac4b36 (`tmp/hermes-roko-v7/roko-planner/replay-p43`: a fake planner
+  answers with the as-written draft, then the re-ask's draft) on gap-4dd77d's binary kept the re-ask's draft, with T1
+  raised to integrative: "Source checks: 16 of 17 kept as verify steps, 1 dropped with a reason".
+- The one dropped is SC15, P4.3.15 (`tools/spec.sh 4 display 'P4.07*'`), with the draft's reason "The hazard-stripes
+  regression is not a task-specific change in this phase; it is covered by the plan's final check
+  `tools/check.sh --plugin`". So the path this item describes is now the live one.
+- `assign_runs` gave it no step because `owner_of` found no owner. Its command's word `display` doesn't match T2's
+  `plugin/ui/Displays.cpp`, whose stem is `displays`, and nothing in T2's text names P4.3.15.
+- gap-4dd77d's test `a_coverage_regeneration_over_its_tier_is_kept_with_the_tier_raised` pins (16 kept, 1 dropped,
+  0 missing, 17) for now. This item's fix should turn it into 17 kept.
 
 ## Why it matters
 

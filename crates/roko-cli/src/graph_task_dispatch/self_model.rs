@@ -1582,6 +1582,7 @@ mod tests {
                 lat_q90_s: latency.1,
                 cold_start: false,
                 basis: ForecastBasis::Prior,
+                prior_p_vs: p,
                 cost_prior: false,
                 latency_prior: false,
             }
@@ -1869,6 +1870,7 @@ mod tests {
                 lat_q90_s: 60.0,
                 cold_start: false,
                 basis: roko_learn::telemetry::ForecastBasis::Logit,
+                prior_p_vs: 0.36,
                 cost_prior: false,
                 latency_prior: false,
             };

@@ -253,7 +253,12 @@ pub fn after_failure(
         .iter()
         .map(|&(_, rung)| p_vs(rung))
         .fold(f64::NEG_INFINITY, f64::max);
-    if options.is_empty() || best_p < P_ABANDON {
+    // The prior must agree before L1 alone gives a task up (gap-d91691).
+    let best_prior = options
+        .iter()
+        .map(|&(_, rung)| rungs[rung].prior_p_vs)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if options.is_empty() || (best_p < P_ABANDON && best_prior < P_ABANDON) {
         return StepAction::Abandon;
     }
     if context
@@ -354,6 +359,7 @@ mod tests {
             lat_q90_s: 90.0,
             cold_start: false,
             basis: crate::telemetry::ForecastBasis::Logit,
+            prior_p_vs: p,
             cost_prior: false,
             latency_prior: false,
         }

@@ -159,6 +159,28 @@ pub fn settle(workdir: &Path, run_id: &str) -> Option<Interrupted> {
     })
 }
 
+/// Whether run `run_id` of the workspace at `workdir` has stopped.
+///
+/// It has when its manifest is closed, or names a process that is certainly
+/// gone, which [`settle`] would end as [`INTERRUPTED`] (bug-693bb3); `None`
+/// when the run has no manifest that reads. It only reads: a host shows a
+/// plan whose checkpoint still says `running` as stopped without settling
+/// anything.
+#[must_use]
+pub fn run_has_stopped(workdir: &Path, run_id: &str) -> Option<bool> {
+    roko_fs::run_index::validate_scoped_id(run_id).ok()?;
+    let run_dir = RokoLayout::for_project(workdir).run_dir(run_id);
+    let manifest = RunProvenanceManifest::load(&run_dir).ok()??;
+    if manifest.closed.is_some() {
+        return Some(true);
+    }
+    let owner = manifest
+        .invocations
+        .iter()
+        .max_by_key(|invocation| invocation.inv)?;
+    Some(process_gone(owner))
+}
+
 /// [`settle`] each open run of the workspace at `workdir`, the
 /// [`MAX_SETTLED_AT_START`] most recently written manifests first, as serve
 /// does when it starts. Returns the runs it ended.
@@ -416,6 +438,34 @@ mod tests {
     /// closes interrupted with the interruption, the run's index gets one
     /// `run_completed` row, and settling again reports the same end without
     /// writing another. A run whose process runs is left alone.
+    /// bug-693bb3: a run has stopped when its manifest is closed or names a
+    /// process that is gone; one whose process runs has not; one with no
+    /// manifest cannot be told. Asking writes nothing.
+    #[test]
+    fn a_run_has_stopped_when_its_process_is_gone_or_it_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let started = rfc3339(now_ms() - 60_000);
+        write_open_run(dir.path(), "dead", exited_pid(), &started);
+        let alive_since = rfc3339(now_ms());
+        write_open_run(dir.path(), "live", std::process::id(), &alive_since);
+        let manifest = |run_id: &str| {
+            std::fs::read(
+                RokoLayout::for_project(dir.path())
+                    .run_dir(run_id)
+                    .join(MANIFEST_FILE),
+            )
+            .expect("manifest")
+        };
+        let before = manifest("dead");
+
+        assert_eq!(run_has_stopped(dir.path(), "dead"), Some(true));
+        assert_eq!(manifest("dead"), before, "asking settles nothing");
+        assert_eq!(run_has_stopped(dir.path(), "live"), Some(false));
+        assert_eq!(run_has_stopped(dir.path(), "never-ran"), None);
+        settle(dir.path(), "dead").expect("the dead run settles");
+        assert_eq!(run_has_stopped(dir.path(), "dead"), Some(true));
+    }
+
     #[test]
     fn settling_ends_a_run_whose_process_is_gone_once() {
         let dir = tempfile::tempdir().expect("tempdir");

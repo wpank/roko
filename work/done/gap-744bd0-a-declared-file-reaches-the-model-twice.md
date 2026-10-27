@@ -2,7 +2,7 @@
 id = "gap-744bd0"
 kind = "gap"
 title = "A declared file reaches the model twice: the prompt holds it, and the implementer role's rule 1 (\"Read ALL files listed in the task's read_files and files fields\") has the agent read it again in its first turn, about 8% of phase 4.3's run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_policy"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "491f649b6"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 9, run 3752b8ff), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-compose/src/templates/implementer.rs::IMPLEMENTER_ROLE_IDENTITY", "crates/roko-cli/src/plan_policy.rs::DECLARED_FILES_INTRO"]
@@ -18,6 +19,18 @@ links = { depends_on = ["bug-c5f406"], blocks = [], related = ["bug-a8a787", "ga
 
 [[verify]]
 command = "grep -rqw 'fn implementer_works_from_its_declared_files' crates/roko-compose/src && cargo test -p roko-compose implementer_works_from_its_declared_files"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:59:39Z"
+commit = "d7ec5e487"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-26T19:33:24Z"
+forced = false
+evidence = "d7ec5e487: the implementer's rule 1 says to work from the prompt's \"Declared source context\" and read only the lines a note says are not shown and the task's own files it does not hold (else read the declared files, as before); 233 bytes longer (304 against 71). The declared files it stops agents reading again were 12-30 KB of each recorded Undertow prompt, 23 KB on average. Test implementer_works_from_its_declared_files and the implementer snapshot (rule 1 twice); red at 20:54: the identity said 'Read ALL files'. Chain on the stack (base 5e9af6682): red at 20:54, both new tests failed on the old code; green: roko-learn lib 1408/0, roko-compose lib 528/0, roko-cli lib 4033 passed and 3 failed (reg-1bf684's two, since fixed on main, and bug-c5f406's own test, whose 'not shown' check also matched the section's intro; it now checks the note's own words); roko-compose's 3 and roko-learn's 10 integration tests pass; clippy -D warnings and nightly fmt clean. With main c39ddd6fb merged in (4d376a003): the four items' tests, their neighbours and roko-planner's three new generation tests pass (19), lib suites roko-cli 4046/0, roko-compose 528/0, roko-learn 1409/0, the integration tests pass, clippy and fmt clean."
 +++
 
 ## Problem

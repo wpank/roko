@@ -275,6 +275,23 @@ impl RetryFeedbackBook {
         persist(&state, plan_id)
     }
 
+    /// Put `note` first in the diagnosis of the feedback left for
+    /// `task_id`'s next attempt, when there is one (bug-3b3bb6): what the
+    /// last try's own hand-off said, which the gate's output does not.
+    pub(crate) fn note_pending(&self, plan_id: &str, task_id: &str, note: &str) {
+        let mut state = self.state.lock();
+        let key = (plan_id.to_string(), task_id.to_string());
+        let Some(entry) = state.pending.get_mut(&key) else {
+            return;
+        };
+        let diagnosis = match entry.feedback.diagnosis.as_deref() {
+            Some(said) if !said.trim().is_empty() => format!("{note}\n\n{said}"),
+            _ => note.to_string(),
+        };
+        entry.feedback = entry.feedback.clone().with_diagnosis(&diagnosis);
+        persist(&state, plan_id);
+    }
+
     /// `task_id`'s standing on the model ladder.
     pub(crate) fn ladder_standing(&self, plan_id: &str, task_id: &str) -> LadderStanding {
         let key = (plan_id.to_string(), task_id.to_string());

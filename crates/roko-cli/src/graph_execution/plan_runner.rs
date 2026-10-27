@@ -18,7 +18,6 @@ use roko_core::config::learning::GuardedCommitMode;
 use roko_fs::RokoLayout;
 
 use super::plan_set::{BlockReason, PlanConflicts, PlanOutcome, PlanSetOrder, PlanSetScheduler};
-use crate::dispatch::rung_probe::billing_refusal;
 use crate::execution_control::{
     CommandAckReceiver, CommandAckStatus, ExecutionCommandKind, ExecutionCommandSender, ack_for,
 };
@@ -874,10 +873,31 @@ pub fn compute_plan_run_order(
     plans_dir: &Path,
     only_plans: Option<&[String]>,
 ) -> anyhow::Result<Vec<String>> {
+    Ok(compute_plan_run_set(workdir, plans_dir, only_plans)?
+        .into_iter()
+        .map(|plan| plan.id)
+        .collect())
+}
+
+/// The plans a run of `plans_dir` executes, in the order it runs them: the
+/// directory's plans, or those `only_plans` names, selected and ordered as
+/// the run selects them, so the set its `PlanSetLoaded` announces. It lets a
+/// caller know a run's plans before the run starts: serve's member list
+/// ([`compute_plan_run_order`]) and a `--log-file` run's `run.started` line
+/// (bug-bd261a).
+///
+/// It fails where the run fails to select them: an id in `only_plans` that
+/// the directory does not hold, and a set that cannot be ordered.
+pub(crate) fn compute_plan_run_set(
+    workdir: &Path,
+    plans_dir: &Path,
+    only_plans: Option<&[String]>,
+) -> anyhow::Result<Vec<crate::runner::plan_loader::Plan>> {
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
-    let plans = filter_only_plans(plans, only_plans, plans_dir)?;
-    let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
-    Ok(plan_order.order)
+    let mut plans = filter_only_plans(plans, only_plans, plans_dir)?;
+    let order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?.order;
+    plans.sort_by_key(|plan| order.iter().position(|plan_id| *plan_id == plan.id));
+    Ok(plans)
 }
 
 /// Parameters for running plans through the Graph Engine.
@@ -1256,7 +1276,9 @@ async fn run_graph_plan_body(
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
-    // batch.
+    // batch. `compute_plan_run_set` selects and orders the plans as the lines
+    // from `load_plans` to here do, before a run starts (serve's member
+    // list, `run.started`): keep them in step.
     let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
     let plan_execution_order = plan_order.order.clone();
 
@@ -2265,11 +2287,18 @@ async fn run_graph_plan_body(
             let _ = acks.try_send(ack);
         }
     }
-    // A conductor `Fail` stopped the run: it fails, naming the watcher.
-    if let Some(stop) = conductor_stop.lock().take() {
-        return Err(anyhow!("{stop}"));
-    }
-    if let Some(error) = first_error {
+    // A conductor `Fail` stopped the run: it fails, naming the watcher. A
+    // run that ends with an error delivered nothing, so its knowledge batch
+    // is rolled back now, with the error as the reason (bug-2ad4fa).
+    let conductor_failure = conductor_stop.lock().take().map(|stop| anyhow!("{stop}"));
+    if let Some(error) = conductor_failure.or(first_error) {
+        super::learning_commit::settle_errored_run_knowledge(
+            workdir,
+            &roko_config,
+            knowledge_batch.as_deref(),
+            &error,
+            Some(&state_hub),
+        );
         return Err(error);
     }
 
@@ -2442,8 +2471,9 @@ async fn run_graph_plan_body(
     // later load does not replay them again (bug-dfb28f). If the save fails,
     // the journal keeps them for that load. `[learning] guarded_commit`
     // proposes the router's merge and the run's knowledge batch to their
-    // guards, whatever the run's outcome; `off` saves the router unchecked.
-    // A frozen run saves and proposes nothing.
+    // guards, whatever the run's outcome; the batch commits only when every
+    // plan was delivered and nothing stopped the run (bug-2ad4fa). `off`
+    // saves the router unchecked. A frozen run saves and proposes nothing.
     let plan_run_ids: Vec<String> = plans
         .iter()
         .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
@@ -2452,6 +2482,12 @@ async fn run_graph_plan_body(
         .cascade_router
         .as_deref()
         .zip(cascade_journal.as_deref());
+    let delivery = super::learning_commit::run_delivery(
+        plan_execution_order
+            .iter()
+            .map(|plan_id| (plan_id.as_str(), scheduler.outcome(plan_id))),
+        stopped_by,
+    );
     super::learning_commit::commit_run_learning(&super::learning_commit::RunLearning {
         workdir,
         config: &roko_config,
@@ -2459,6 +2495,7 @@ async fn run_graph_plan_body(
         router,
         run_ids: &plan_run_ids,
         notices: Some(&state_hub),
+        delivery,
     });
 
     // ── Persist the section bandit (S02 L9) ─────────────────────────
@@ -4912,10 +4949,10 @@ impl PlanCheckResult {
 /// under its conditions, for the run that started at `run_started_ms`), whose
 /// verdicts stand for a day, so the probe at plan start reads them again. A
 /// billing failure from an earlier run is probed again here first
-/// (bug-374384). `None` when the probes are off, a rung can run, a
-/// task can start without the ladder, or a rung failed on its provider's
-/// billing or usage window ([`billing_refusal`]): the person's fix there is
-/// to recharge and run again, which a day-old verdict must not stop.
+/// (bug-374384), so one the stop reads is this run's: the person recharges
+/// either way, and the run stops before the pre-check (gap-d91691). `None`
+/// when the probes are off, a rung can run, or a task can start without the
+/// ladder.
 async fn unrunnable_ladder(
     config: &roko_core::config::schema::RokoConfig,
     workdir: &Path,
@@ -4945,9 +4982,7 @@ async fn unrunnable_ladder(
     let failed =
         crate::dispatch::rung_probe::probe_ladder(config, &ladder, workdir, run_started_ms).await;
     let models = ladder.rung_models();
-    if !models.iter().all(|model| failed.contains_key(model))
-        || failed.values().any(|reason| billing_refusal(reason))
-    {
+    if !models.iter().all(|model| failed.contains_key(model)) {
         return None;
     }
     let rungs = models
@@ -4958,7 +4993,8 @@ async fn unrunnable_ladder(
     Some(format!(
         "no rung of the routing ladder can run, so no task of this run can start: {rungs}. \
          The run stops before any check runs: fix the providers, or pin a model with --model, \
-         and run again"
+         and run again; a rung refused on its provider's billing is probed again when the next \
+         run starts"
     ))
 }
 
@@ -6539,6 +6575,40 @@ mod tests {
         assert_eq!(entries[2].group, None, "outside plans/");
     }
 
+    /// bug-bd261a: the plans a run executes, worked out before it starts, are
+    /// the ones it selects, in the order it runs them: a prerequisite before
+    /// the plan that needs it, else by id, and only the plans `only_plans`
+    /// names.
+    #[test]
+    fn compute_plan_run_set_selects_and_orders_plans_as_the_run_does() {
+        let dir = disabled_role_plan_set(
+            &[
+                ("a-needs-b", "a.txt", &["b-first"]),
+                ("b-first", "b.txt", &[]),
+                ("c-alone", "c.txt", &[]),
+            ],
+            "",
+        );
+        let plans_dir = dir.path().join("plans");
+        let selected = |only: Option<&[String]>| {
+            compute_plan_run_set(dir.path(), &plans_dir, only)
+                .map(|plans| plans.into_iter().map(|plan| plan.id).collect::<Vec<_>>())
+        };
+
+        let whole_set = ["b-first", "a-needs-b", "c-alone"];
+        assert_eq!(selected(None).expect("whole set"), whole_set);
+        assert_eq!(
+            compute_plan_run_order(dir.path(), &plans_dir, None).expect("run order"),
+            whole_set
+        );
+        let only = ["c-alone".to_string(), "b-first".to_string()];
+        assert_eq!(
+            selected(Some(&only)).expect("two plans"),
+            ["b-first", "c-alone"]
+        );
+        assert!(selected(Some(&["no-such-plan".to_string()])).is_err());
+    }
+
     /// Workspace config whose only role in use is disabled, so the task
     /// fails without dispatching a provider (bug-a843d4).
     const DISABLED_ROLE_CONFIG: &str = r#"
@@ -6749,7 +6819,7 @@ rungs = [{ name = "cheap", model = "cheap-model" }, { name = "mid", model = "mid
         assert!(
             detail.starts_with("rung cheap (cheap-1 on cheap_api) is skipped until ")
                 && detail.contains("its tool-use probe failed: request_refused")
-                && detail.ends_with("remove `cheap-1` from .roko/learn/rung-probes.json"),
+                && detail.ends_with("run `roko learn probes clear cheap-1`"),
             "{detail}"
         );
         let events =
@@ -11118,9 +11188,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         let pinned = unrunnable_ladder(&config, repo, &plans, false, Some("mid-model"), now);
         assert!(pinned.await.is_none());
-        // A rung refused on its provider's billing does not stop the run
-        // early: a recharge fixes it while the day-old verdict stands, and
-        // the probe at plan start decides (gap-20301d).
+        // A rung refused on its provider's billing in this run stops the run
+        // early too: one from an earlier run is probed again first
+        // (bug-374384), so the person recharges either way (gap-d91691).
         let billing = crate::dispatch::rung_probe::RungProbes {
             models: ["cheap-1", "mid-1", "strong-1"]
                 .into_iter()
@@ -11137,8 +11207,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 .collect(),
         };
         std::fs::write(&path, serde_json::to_vec(&billing).expect("json")).expect("probes");
-        let billed = unrunnable_ladder(&config, repo, &plans, false, None, now);
-        assert!(billed.await.is_none());
+        let billed = unrunnable_ladder(&config, repo, &plans, false, None, now)
+            .await
+            .expect("a billing failure of this run stops the run early");
+        assert!(billed.contains("(HTTP 402)"), "{billed}");
+        assert!(
+            billed.contains("probed again when the next run starts"),
+            "{billed}"
+        );
         for (reason, billed) in [
             (
                 "insufficient_credits: cerebras refused the request (HTTP 402)",
@@ -11161,7 +11237,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 false,
             ),
         ] {
-            assert_eq!(billing_refusal(reason), billed, "{reason}");
+            assert_eq!(
+                crate::dispatch::rung_probe::billing_refusal(reason),
+                billed,
+                "{reason}"
+            );
         }
         plans[0].tasks.tasks[0].model_hint = Some("mid-model".to_string());
         assert!(

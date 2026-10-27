@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use roko_core::dashboard_snapshot::FAILOVER_REFUSED_SIDE_CALL;
 use serde::{Deserialize, Serialize};
 
-use super::records::{AttemptVerdictRecord, BOUND_TIME};
+use super::records::{AttemptOutcome, AttemptVerdictRecord, BOUND_TIME};
 use super::report::RunRecords;
 
 /// The verified passes each rung needs before [`misordered`] compares it.
@@ -509,6 +509,11 @@ fn tally_run<'a>(run: &'a RunRecords, tallies: &mut BTreeMap<RowKey, Tally>) {
     // The time a chain has spent on a row since its last pass there.
     let mut toward_pass: HashMap<(&'a str, RowKey), f64> = HashMap::new();
     for verdict in verdicts {
+        // A try refused because every rung failed its probe ran on no rung
+        // and no model (gap-b856d3, gap-d91691).
+        if verdict.outcome == AttemptOutcome::AllRungsSkipped {
+            continue;
+        }
         let role = roles
             .get(verdict.identity.attempt_key.as_str())
             .copied()
@@ -766,6 +771,30 @@ mod tests {
             run.verdicts.push(stamped(verdict));
         }
         run
+    }
+
+    /// gap-d91691: a try refused because every rung failed its probe ran on no
+    /// rung and no model, so it is no rung's try; the tries that ran keep their
+    /// rows.
+    #[test]
+    fn a_try_refused_for_no_rung_is_no_rung_try() {
+        let tried = |task, outcome| Try {
+            task,
+            attempt: 1,
+            rung: "mid",
+            index: 1,
+            model: "gpt-5.4-mini",
+            outcome,
+            secs: 60,
+            usd: 0.02,
+        };
+        let run = run_of(&[
+            tried("T1", AttemptOutcome::Passed),
+            tried("T2", AttemptOutcome::AllRungsSkipped),
+        ]);
+        let rows = rows([&run]);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!((rows[0].tries, rows[0].verified_passes), (1, 1), "{rows:?}");
     }
 
     /// gap-c1045f: a task's time runs from its first try's start to the

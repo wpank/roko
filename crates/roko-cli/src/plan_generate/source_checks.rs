@@ -587,6 +587,16 @@ pub(super) fn normalize_covers(plan: &mut TasksFile, checks: &[SourceCheck]) -> 
                 moved.push(format!("{}: `covers` {id} became {criterion}", task.id));
                 task.verify[step].covers[cover] = criterion;
             }
+            // gap-77220d: two checks one criterion states leave it once
+            // (phase 5's T1 had `["AC1", "AC1"]`).
+            let mut seen: Vec<String> = Vec::new();
+            task.verify[step].covers.retain(|cover| {
+                let first = !seen.contains(cover);
+                if first {
+                    seen.push(cover.clone());
+                }
+                first
+            });
         }
     }
     moved
@@ -626,7 +636,8 @@ impl SourceCoverage {
     /// its acceptance text does. It cannot run when only steps that cannot
     /// pass cover it otherwise; shallow when only grep, file test or build
     /// steps do; dropped when `[meta] dropped_checks` gives a reason for it
-    /// that does more than restate it; and missing otherwise.
+    /// that does more than restate it, unless it comes with its own command
+    /// (gap-8b1f4f); and missing otherwise.
     pub(super) fn of(checks: &[SourceCheck], plan: &TasksFile, unrunnable: &[Unrunnable]) -> Self {
         let text_of = |id: &str| {
             checks
@@ -738,8 +749,13 @@ impl SourceCoverage {
                 let (id, reason) = entry.split_once(':')?;
                 let (id, reason) = (id.trim(), reason.trim());
                 let check = text_of(id)?;
-                (!reason.is_empty() && !kept.contains_key(id) && !is_restatement(reason, check))
-                    .then(|| (id.to_string(), reason.to_string()))
+                // gap-8b1f4f: a command can check a check that comes with its
+                // own, so it is never dropped.
+                (!reason.is_empty()
+                    && !kept.contains_key(id)
+                    && run_of(id).is_none()
+                    && !is_restatement(reason, check))
+                .then(|| (id.to_string(), reason.to_string()))
             })
             .collect::<BTreeMap<_, _>>();
         shallow.retain(|id, _| !dropped.contains_key(id));
@@ -1050,6 +1066,12 @@ const SELF_CONTAINED: &str = "A source check's command must be self-contained an
                               written, so a check that needs a build includes the build in its own \
                               command: a build put before it in a step is dropped.";
 
+/// What a check that comes with its own command never is (gap-8b1f4f):
+/// dropped, or left to the plan's final check. The planner hears it with the
+/// checks and when asked again.
+const NEVER_DROPPED: &str = "A check that comes with its own command is never dropped and never left \
+                             to the plan's final check: the task that owns it runs it.";
+
 /// The planner prompt's list of the source's `checks`, with how to keep
 /// each one; empty when the source states none. `states` says who states
 /// them ([`checks_stated_by`]).
@@ -1079,6 +1101,8 @@ pub(super) fn planner_block(checks: &[SourceCheck], states: &str) -> String {
              alone. ",
         );
         block.push_str(SELF_CONTAINED);
+        block.push(' ');
+        block.push_str(NEVER_DROPPED);
         block.push_str("\n\n");
     }
     if checks.iter().any(|check| check.run.is_none()) {
@@ -1344,12 +1368,13 @@ fn step_checks(acceptance: &[String], step: &VerifyStep) -> Vec<String> {
 /// runs, in the task that owns it (bug-72dc0d). The planner groups the work
 /// and words it; roko runs the source's commands, so how many of them a plan
 /// keeps does not turn on the planner retyping each one ([`owner_of`]). A
-/// task's checks run as one step: in place of its first step that cannot
-/// pass as written (`unrunnable`); else as a step of its own while the task
-/// has fewer than `max_steps(task)` steps; else in its last step that runs
-/// source commands, or else its last step. A step they join runs the
-/// source's commands alone (bug-56a806): those it ran already, then these.
-/// Returns one line per step changed or added.
+/// task's checks run in place of its first step that cannot pass as written
+/// (`unrunnable`); else each command in a step of its own while the task has
+/// fewer than `max_steps(task)` steps, as rule 3 of the planner prompt keeps
+/// a criterion's step apart (gap-77220d), and the rest in the last of those;
+/// else in its last step that runs source commands, or else its last step.
+/// A step they join runs the source's commands alone (bug-56a806): those it
+/// ran already, then these. Returns one line per step changed or added.
 pub(super) fn assign_runs(
     plan: &mut TasksFile,
     checks: &[SourceCheck],
@@ -1444,30 +1469,96 @@ pub(super) fn assign_runs(
                 one_line(&step.command)
             ));
         } else {
-            // bug-59782c: regression checks pass on the base too.
-            let regression = owned.iter().all(|check| check.regression);
-            let passes = match (regression, owned.len()) {
-                (false, _) => "",
-                (true, 1) => {
-                    ", which passes on the base too: the source calls it a regression check"
+            // gap-77220d: each command its own step while the task has room,
+            // the first failure of a chain hiding the rest; the commands left
+            // at the limit join the last step added.
+            let mut groups: Vec<(&str, Vec<&SourceCheck>)> = Vec::new();
+            for check in &owned {
+                let Some(run) = check.run.as_deref() else {
+                    continue;
+                };
+                match groups.iter_mut().find(|(command, _)| *command == run) {
+                    Some((_, group)) => group.push(*check),
+                    None => groups.push((run, vec![*check])),
                 }
-                (true, _) => {
-                    ", which pass on the base too: the source calls them regression checks"
+            }
+            for (run, group) in groups {
+                let ids = group
+                    .iter()
+                    .map(|check| check.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mut covers: Vec<String> = Vec::new();
+                for check in &group {
+                    if let Some(criterion) = criterion_naming(&task.acceptance, check)
+                        && !covers.contains(&criterion)
+                    {
+                        covers.push(criterion);
+                    }
                 }
-            };
-            assigned.push(format!(
-                "{}: added a step running `{command}`, the source's own commands for {ids}{passes}",
-                task.id
-            ));
-            task.verify.push(VerifyStep {
-                phase: "test".to_string(),
-                command,
-                fail_msg: Some(format!("the source's checks {ids}")),
-                timeout_ms: crate::task_parser::default_verify_timeout(),
-                scope: Vec::new(),
-                covers,
-                expect: regression.then_some(VerifyExpect::PassOnBase),
-            });
+                // bug-59782c: regression checks pass on the base too.
+                let regression = group.iter().all(|check| check.regression);
+                if task.verify.len() < limit.max(1) {
+                    let passes = match (regression, group.len()) {
+                        (false, _) => "",
+                        (true, 1) => {
+                            ", which passes on the base too: the source calls it a regression \
+                             check"
+                        }
+                        (true, _) => {
+                            ", which pass on the base too: the source calls them regression \
+                             checks"
+                        }
+                    };
+                    assigned.push(format!(
+                        "{}: added a step running `{run}`, the source's own commands for \
+                         {ids}{passes}",
+                        task.id
+                    ));
+                    task.verify.push(VerifyStep {
+                        phase: "test".to_string(),
+                        command: run.to_string(),
+                        fail_msg: Some(format!("the source's checks {ids}")),
+                        timeout_ms: crate::task_parser::default_verify_timeout(),
+                        scope: Vec::new(),
+                        covers,
+                        expect: regression.then_some(VerifyExpect::PassOnBase),
+                    });
+                    continue;
+                }
+                let number = task.verify.len();
+                let step = &mut task.verify[number - 1];
+                let was = one_line(&step.command);
+                let both = format!("{} && {run}", step.command);
+                step.command = exact_command(&both, &task_runs).unwrap_or(both);
+                for cover in covers {
+                    if !step.covers.contains(&cover) {
+                        step.covers.push(cover);
+                    }
+                }
+                // As above: a step of regression checks alone passes on the
+                // base, and one that now runs another may not.
+                let runs: Vec<&SourceCheck> = checks
+                    .iter()
+                    .filter(|check| {
+                        check
+                            .run
+                            .as_deref()
+                            .is_some_and(|run| runs_command(&step.command, run))
+                    })
+                    .collect();
+                if !runs.is_empty() && runs.iter().all(|check| check.regression) {
+                    step.expect = Some(VerifyExpect::PassOnBase);
+                } else if step.expect == Some(VerifyExpect::PassOnBase) {
+                    step.expect = None;
+                }
+                assigned.push(format!(
+                    "{} step {number}: `{was}` became `{}`, to run the source's own commands for \
+                     {ids}",
+                    task.id,
+                    one_line(&step.command)
+                ));
+            }
         }
     }
     assigned
@@ -1745,7 +1836,8 @@ const COMMON_WORDS: &[&str] = &[
 
 /// Whether `run`, a check's command, names one of `task`'s files: a word of
 /// its arguments is the name of a file the task writes, without its
-/// extension, or a part of that name (`output` of `output_stage.cpp`).
+/// extension, or a part of that name (`output` of `output_stage.cpp`), a
+/// plural `s` aside (`display` of `Displays.cpp`, gap-8b1f4f).
 fn names_files_of(run: &str, task: &TaskDef) -> bool {
     let words: Vec<String> = command_words(run)
         .iter()
@@ -1767,10 +1859,43 @@ fn names_files_of(run: &str, task: &TaskDef) -> bool {
         .filter_map(|file| Path::new(file).file_stem()?.to_str())
         .map(str::to_ascii_lowercase)
         .any(|stem| {
-            words
-                .iter()
-                .any(|word| *word == stem || stem.split(['_', '-']).any(|part| part == word))
+            words.iter().any(|word| {
+                same_word(word, &stem) || stem.split(['_', '-']).any(|part| same_word(word, part))
+            })
         })
+}
+
+/// Whether `word` and `name` are one word, a plural `s` aside.
+fn same_word(word: &str, name: &str) -> bool {
+    word == name || name.strip_suffix('s') == Some(word) || word.strip_suffix('s') == Some(name)
+}
+
+/// Take out of `[meta] dropped_checks` each check that comes with its own
+/// command (gap-8b1f4f): a command can check it, so it is never dropped, and
+/// the task that owns it runs it ([`assign_runs`]). Round v7's phase-4.3
+/// re-ask dropped P4.3.15 (`tools/spec.sh 4 display 'P4.07*'`) as "covered by
+/// the plan's final check". Returns one line per entry taken out.
+pub(super) fn refuse_drops(plan: &mut TasksFile, checks: &[SourceCheck]) -> Vec<String> {
+    let mut refused = Vec::new();
+    plan.meta.dropped_checks.retain(|entry| {
+        let id = entry
+            .split_once(':')
+            .map_or(entry.as_str(), |(id, _)| id)
+            .trim();
+        let Some(run) = checks
+            .iter()
+            .find(|check| check.id == id)
+            .and_then(|check| check.run.as_deref())
+        else {
+            return true;
+        };
+        refused.push(format!(
+            "`[meta] dropped_checks`: {id} comes with its own command, `{run}`, so it is not \
+             dropped: the task that owns it runs it"
+        ));
+        false
+    });
+    refused
 }
 
 /// The prompt that asks the planner once more for a plan that leaves some of
@@ -1862,7 +1987,7 @@ pub(super) fn regeneration_prompt(
         )
     };
     let own = if coverage.checks.iter().any(|check| check.run.is_some()) {
-        format!(" {SELF_CONTAINED}")
+        format!(" {SELF_CONTAINED} {NEVER_DROPPED}")
     } else {
         String::new()
     };
@@ -2673,6 +2798,167 @@ mod tests {
             format!("{meters} && tools/spec.sh 2_1 engine 'P2.1.09*'")
         );
         assert_eq!(step.expect, Some(VerifyExpect::FailOnBase));
+    }
+
+    /// gap-77220d: round v7's phase-5 replay left a step's `covers` naming one
+    /// criterion twice when two checks it runs are stated by that criterion
+    /// (T1: `["AC1", "AC1"]`), and regression checks a draft left out came
+    /// back joined in one `&&` step, whose first failure hides the rest. Each
+    /// criterion stays once, and each missing command gets a step of its own
+    /// while the task has room; at the limit the rest join the last one.
+    #[test]
+    fn missing_checks_get_steps_of_their_own_and_covers_stay_unique() {
+        let source = "# Phase 5\n\n## Acceptance checks\n\n\
+                      | Check | Command | Proves |\n|---|---|---|\n\
+                      | P5.01 | `tools/spec.sh 5 presets` | the presets are valid |\n\
+                      | P5.09 | `tools/spec.sh 5 presets` | the presets are loudness-matched |\n\
+                      | P5.10 | `tools/spec.sh 5 filter` | the top of the knob rings |\n\
+                      | P5.11 | `tools/spec.sh 2_2 filter` | phase 2.2's checks still pass. A \
+                      regression check: it passes on the base too |\n\
+                      | P5.12 | `tools/spec.sh 2_1 filter` | phase 2.1's checks still pass. A \
+                      regression check: it passes on the base too |\n";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(source);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(checks.len(), 5, "{checks:?}");
+
+        let mut presets = TasksFile::parse_str(
+            "[meta]\nplan = \"p5\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"The presets\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"architectural\"\nfiles = [\"core/src/presets.cpp\"]\n\
+             acceptance = [\"AC1: SC1 and SC2: `tools/spec.sh 5 presets` passes.\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5 presets\"\n\
+             covers = [\"SC1\", \"SC2\"]\n",
+        )
+        .expect("a plan");
+        let moved = normalize_covers(&mut presets, &checks);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert_eq!(presets.tasks[0].verify[0].covers, ["AC1"]);
+
+        let filter = || {
+            TasksFile::parse_str(
+                "[meta]\nplan = \"p5\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T6\"\ntitle = \"The top of the knob\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"mechanical\"\nfiles = [\"core/src/filter.cpp\"]\n\
+                 acceptance = [\"AC1: SC3: `tools/spec.sh 5 filter` passes.\"]\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5 filter\"\n\
+                 covers = [\"AC1\"]\nexpect = \"fail_on_base\"\n",
+            )
+            .expect("a plan")
+        };
+        let regression = ", which passes on the base too: the source calls it a regression check";
+        let mut roomy = filter();
+        assert_eq!(
+            assign_runs(&mut roomy, &checks, &[], |_| 3),
+            [
+                format!(
+                    "T6: added a step running `tools/spec.sh 2_2 filter`, the source's own \
+                     commands for SC4{regression}"
+                ),
+                format!(
+                    "T6: added a step running `tools/spec.sh 2_1 filter`, the source's own \
+                     commands for SC5{regression}"
+                ),
+            ]
+        );
+        let steps: Vec<(&str, Option<VerifyExpect>)> = roomy.tasks[0]
+            .verify
+            .iter()
+            .map(|step| (step.command.as_str(), step.expect))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("tools/spec.sh 5 filter", Some(VerifyExpect::FailOnBase)),
+                ("tools/spec.sh 2_2 filter", Some(VerifyExpect::PassOnBase)),
+                ("tools/spec.sh 2_1 filter", Some(VerifyExpect::PassOnBase)),
+            ]
+        );
+
+        // At a limit of 2, the second regression check joins the first's step.
+        let mut tight = filter();
+        assert_eq!(
+            assign_runs(&mut tight, &checks, &[], |_| 2),
+            [
+                format!(
+                    "T6: added a step running `tools/spec.sh 2_2 filter`, the source's own \
+                     commands for SC4{regression}"
+                ),
+                "T6 step 2: `tools/spec.sh 2_2 filter` became `tools/spec.sh 2_2 filter && \
+                 tools/spec.sh 2_1 filter`, to run the source's own commands for SC5"
+                    .to_string(),
+            ]
+        );
+        assert_eq!(tight.tasks[0].verify.len(), 2);
+        assert_eq!(
+            tight.tasks[0].verify[1].expect,
+            Some(VerifyExpect::PassOnBase)
+        );
+    }
+
+    /// gap-8b1f4f: round v7's phase-4.3 re-ask draft (Undertow 2ac4b36)
+    /// dropped P4.3.15, `tools/spec.sh 4 display 'P4.07*'`, as "covered by
+    /// the plan's final check", and roko counted it dropped with a reason. A
+    /// check that comes with its own command is never dropped: the coverage
+    /// counts it missing, the drop leaves the plan, and the task whose file
+    /// its command names (`display` of `Displays.cpp`) runs it, so the
+    /// draft keeps all 17. The planner hears the rule with the checks.
+    #[test]
+    fn a_check_with_its_own_command_is_never_dropped() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p4_3_tiers");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let mut plan = TasksFile::parse(&fixture.join("draft-2.toml")).expect("the re-ask draft");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&spec);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let p07 = checks
+            .iter()
+            .find(|check| check_label(&check.text) == Some("P4.3.15"))
+            .expect("P4.3.15")
+            .id
+            .clone();
+        assert_eq!(plan.meta.dropped_checks.len(), 5);
+
+        let before = SourceCoverage::of(&checks, &plan, &[]);
+        assert!(before.dropped.is_empty(), "{:?}", before.dropped);
+        let missing: Vec<&str> = before
+            .missing()
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect();
+        assert_eq!(missing, [p07.as_str()]);
+
+        let refused = refuse_drops(&mut plan, &checks);
+        assert_eq!(refused.len(), 5, "{refused:#?}");
+        assert!(
+            refused.contains(&format!(
+                "`[meta] dropped_checks`: {p07} comes with its own command, `tools/spec.sh 4 \
+                 display 'P4.07*'`, so it is not dropped: the task that owns it runs it"
+            )),
+            "{refused:#?}"
+        );
+        assert!(plan.meta.dropped_checks.is_empty());
+        let assigned = assign_runs(&mut plan, &checks, &[], |_| 6);
+        assert_eq!(
+            assigned,
+            [format!(
+                "T2: added a step running `tools/spec.sh 4 display 'P4.07*'`, the source's own \
+                 commands for {p07}, which passes on the base too: the source calls it a \
+                 regression check"
+            )]
+        );
+        let after = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(
+            after.kept.len(),
+            checks.len(),
+            "{:#?}",
+            after.detail_lines()
+        );
+
+        let block = planner_block(&checks, "The spec states");
+        assert!(block.contains(NEVER_DROPPED), "{block}");
+        let again = regeneration_prompt("Finish the editor.", "[meta]", &after, &[], &[]);
+        assert!(again.contains(NEVER_DROPPED), "{again}");
     }
 
     /// gap-115c2a: roko runs a source check's own command alone (bug-56a806),

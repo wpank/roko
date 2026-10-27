@@ -2,7 +2,7 @@
 id = "bug-2ad4fa"
 kind = "bug"
 title = "A lesson from a try that gamed its check reached Undertow's knowledge store and stayed: the run-end guard committed phase 5's knowledge batch although its plan check failed and the run was cancelled, a later task of the same run confirmed it, roko has no command to retire one entry, and retrieval ignores deprecated"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "896781b4b"
 source = "round-v7 run-analyst and the pilot (tmp/hermes-roko-v7/findings/hermes-pilot.md section R; Undertow run 1f677933), the lead's ask"
 discovered_from = "agent:hermes-pilot (round v7)"
 anchors = ["crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::VerifiedKnowledgeSink", "crates/roko-cli/src/graph_execution/learning_commit.rs::commit_run_learning", "crates/roko-neuro/src/knowledge_store/commit.rs::KnowledgeChecks", "crates/roko-neuro/src/knowledge_store/query.rs::is_hot", "crates/roko-cli/src/commands/knowledge.rs"]
@@ -24,6 +25,18 @@ command = "grep -rqw 'fn retrieval_skips_deprecated_entries' crates/roko-neuro/s
 
 [[verify]]
 command = "grep -rqw 'fn a_retired_entry_stays_retired_after_a_rollback' crates/roko-neuro/src && cargo test -p roko-neuro a_retired_entry_stays_retired_after_a_rollback"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T19:27:16Z"
+commit = "896781b4b"
+by = "roko-learnguard"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T16:34:24Z"
+forced = false
+evidence = "896781b4b. (a) roko-learn CommitCheck::precondition: GuardedStore::propose rolls a candidate back in either mode when it fails. The knowledge store's is `delivered` (roko-neuro Delivery in KnowledgeChecks); roko-cli learning_commit::run_delivery derives it from each plan's outcome and the stop cause, plan_runner passes it at the run end and settles an errored run's batch, and recover_orphaned_batches rolls orphans back (gap-6ff99a's decision changes: an orphan shows no delivery). An undelivered row reads e.g. 'delivered FAIL: plan hello-lesson failed; the batch's 1 lesson was not kept', mode observe. (b) detect_confirmations skips uncommitted and retired entries; the lifecycle reinforces and promotes only committed, unretired entries (an admitted candidate keeps its own pass). (c) `roko knowledge retire <id> --reason` (KnowledgeStore::retire; ledger .roko/neuro/knowledge-retired.jsonl applied on every read; an id only a kept guard version holds is accepted, an unknown one refused); a retired entry absorbs relearned copies (admission path repeats_retired) and the ledger counts them, shown by `roko knowledge stats`. (d) is_hot, query_similar and query_hdc skip deprecated; freeze_entry/thaw_entry/is_frozen fold into the cold tier. (e) the anchors check says no query was checked. Red first on stubs: the 6 new tests and 2 updated ones failed (tmp/hermes-roko-v7/roko-learnguard/logs/2ad4fa-chain.log). Green: the three [[verify]] tests pass; lib suites roko-learn 1405/0, roko-neuro 251/0, roko-cli 4027 passed with 2 failures that are reg-1bf684 (on main since find-697944, unrelated); bin tests knowledge+learn_commits 19/0 incl. knowledge_retire_retires_one_entry; clippy -D warnings and nightly fmt clean on the three crates. Zero-cost proofs on copies of Undertow's .roko/neuro and learn/commits (logs/proof-retire.log, logs/e2e-*.log): retire hides runtime_3c3b9654100195f1 and it stays hidden through rollbacks to v14 and v13 and a restore of a backup taken before the retirement; a fake-model plan run whose plan check fails rolls its lesson back, one that passes commits v15, and a run killed -9 with its lesson in the batch has it rolled back at the next run's start."
 +++
 
 ## Problem

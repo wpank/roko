@@ -16,7 +16,7 @@
 //!   (bug-cbbaa8).
 //! - [`context_factory`] — production [`ToolContext`] builder (T026).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,7 +101,7 @@ pub mod result_msg;
 pub use agent_wrapper::{MultimodalInputFormat, ToolLoopAgent};
 pub use backends::OpenAiCompatBackend;
 pub use checkpoint::Checkpoint;
-pub use hand_off::{HAND_OFF_TURNS_LEFT, HandOff, HandOffCheck};
+pub use hand_off::{HAND_OFF_TURNS_LEFT, HandOff, HandOffCheck, StatedBlocker, stated_blocker};
 pub use max_iter::DEFAULT_MAX_ITERATIONS;
 pub use prune::DEFAULT_CONTEXT_TOKEN_LIMIT;
 
@@ -836,6 +836,200 @@ fn guard_reasoning(
     .boxed()
 }
 
+/// How many malformed replies in a row ([`guard_tool_arguments`]) the loop
+/// asks again for, within the run, before the run ends on one as a provider
+/// glitch (bug-af5c20).
+const MALFORMED_ARGUMENT_RETRIES: usize = 1;
+
+/// The longest run of whitespace a tool call's arguments may hold between
+/// JSON tokens. JSON a model writes, pretty-printed or not, never needs a
+/// tenth of it; a model that derails pours out whitespace (bug-af5c20).
+const MAX_ARGUMENT_WHITESPACE: usize = 256;
+
+/// The longest run of spaces a string in a tool call's arguments may hold.
+const MAX_ARGUMENT_STRING_SPACES: usize = 2 * 1024;
+
+/// The most a tool call's arguments may stream, in bytes.
+const MAX_ARGUMENT_BYTES: usize = 256 * 1024;
+
+/// One tool call's streamed argument text, scanned for what a JSON object
+/// cannot hold (bug-af5c20). It checks the grammar only as far as a cut
+/// needs: where strings start and end, what they hold, where the object
+/// closes and what comes between tokens.
+#[derive(Debug, Default)]
+struct ArgumentScan {
+    /// Characters seen.
+    chars: usize,
+    /// Bytes seen.
+    bytes: usize,
+    /// The object opened.
+    opened: bool,
+    /// The object closed: only whitespace may follow.
+    closed: bool,
+    /// Open objects and arrays.
+    depth: usize,
+    in_string: bool,
+    escaped: bool,
+    /// The whitespace run that ends here.
+    whitespace: usize,
+}
+
+impl ArgumentScan {
+    /// Scan the next `fragment`: why the arguments cannot be a JSON object
+    /// any more, or `None` while they still can.
+    fn feed(&mut self, fragment: &str) -> Option<&'static str> {
+        for ch in fragment.chars() {
+            self.chars += 1;
+            self.bytes += ch.len_utf8();
+            if self.bytes > MAX_ARGUMENT_BYTES {
+                return Some("arguments past 256 KB");
+            }
+            let space = matches!(ch, ' ' | '\t' | '\n' | '\r');
+            self.whitespace = if space { self.whitespace + 1 } else { 0 };
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if ch == '\\' {
+                    self.escaped = true;
+                } else if ch == '"' {
+                    self.in_string = false;
+                } else if u32::from(ch) < 0x20 {
+                    return Some("a raw control character inside a string");
+                } else if self.whitespace > MAX_ARGUMENT_STRING_SPACES {
+                    return Some("a whitespace run over 2 KB inside a string");
+                }
+                continue;
+            }
+            if space {
+                if self.whitespace > MAX_ARGUMENT_WHITESPACE {
+                    return Some("a whitespace run outside strings");
+                }
+                continue;
+            }
+            if self.closed {
+                return Some("text after the closing brace");
+            }
+            if !self.opened {
+                if ch != '{' {
+                    return Some("arguments that do not start with {");
+                }
+                self.opened = true;
+                self.depth = 1;
+                continue;
+            }
+            match ch {
+                '"' => self.in_string = true,
+                '{' | '[' => self.depth += 1,
+                '}' | ']' => {
+                    self.depth = self.depth.saturating_sub(1);
+                    self.closed = self.depth == 0;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+/// `stream`, cut by roko once one of its tool calls' argument text can no
+/// longer be a JSON object (bug-af5c20; [`ArgumentScan`]): a `Done` with
+/// [`MALFORMED_TOOL_ARGUMENTS_FINISH`](crate::streaming::MALFORMED_TOOL_ARGUMENTS_FINISH),
+/// the tool and why, in place of the fragment that broke it. Dropping the
+/// rest of the stream ends the call, and its billing. gpt-5.4-mini once
+/// wrote its own routing tokens into an `ls` call's arguments and then
+/// whitespace for 300 s, until the stall watchdog cancelled the try.
+fn guard_tool_arguments(
+    stream: futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>,
+) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
+    use futures::StreamExt;
+
+    struct Guard {
+        inner: futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>,
+        /// Each open call's tool and scan, by its stream key.
+        calls: HashMap<String, (String, ArgumentScan)>,
+        stopped: bool,
+    }
+
+    let guard = Guard {
+        inner: stream,
+        calls: HashMap::new(),
+        stopped: false,
+    };
+    futures::stream::unfold(guard, |mut guard| async move {
+        if guard.stopped {
+            return None;
+        }
+        let next = guard.inner.next().await?;
+        let cut = match next.as_ref().map(|event| &event.kind) {
+            Ok(StreamEventKind::ToolCallStart { id, name }) => {
+                // A chat-completions start may carry the call's first
+                // arguments after a SOH ([`collect_stream_to_response`]).
+                let (id, first) = id.split_once('\u{1}').unwrap_or((id.as_str(), ""));
+                let mut scan = ArgumentScan::default();
+                let why = scan.feed(first);
+                let chars = scan.chars;
+                guard
+                    .calls
+                    .insert(split_stream_key(id).0, (name.clone(), scan));
+                why.map(|why| (name.clone(), why, chars))
+            }
+            Ok(StreamEventKind::ToolCallDelta { id, json_fragment }) => guard
+                .calls
+                .get_mut(&split_stream_key(id).0)
+                .and_then(|(name, scan)| {
+                    scan.feed(json_fragment)
+                        .map(|why| (name.clone(), why, scan.chars))
+                }),
+            Ok(StreamEventKind::ToolCallEnd { id, .. }) => {
+                guard.calls.remove(&split_stream_key(id).0);
+                None
+            }
+            _ => None,
+        };
+        let Some((tool, why, chars)) = cut else {
+            return Some((next, guard));
+        };
+        tracing::warn!(
+            tool = %tool,
+            why,
+            chars,
+            "tool_loop: a tool call's arguments stopped being JSON; the call is cut and not run"
+        );
+        guard.stopped = true;
+        let done = StreamEvent::now(StreamEventKind::Done {
+            finish_reason: format!(
+                "{}: {tool}: {why}, after {chars} characters",
+                crate::streaming::MALFORMED_TOOL_ARGUMENTS_FINISH
+            ),
+        });
+        Some((Ok(done), guard))
+    })
+    .boxed()
+}
+
+/// Why roko cut a reply whose tool call's arguments stopped being JSON:
+/// the tool and the reason [`guard_tool_arguments`] put in its finish
+/// reason; `None` for any other finish.
+fn malformed_tool_arguments(finish_reason: Option<&str>) -> Option<&str> {
+    let rest = finish_reason?.strip_prefix(crate::streaming::MALFORMED_TOOL_ARGUMENTS_FINISH)?;
+    Some(rest.trim_start_matches(':').trim())
+}
+
+/// What the model is told after roko cut its reply because a tool call's
+/// arguments stopped being JSON (bug-af5c20). `detail` is the tool and why.
+fn malformed_arguments_note(detail: &str) -> String {
+    let (tool, why) = detail.split_once(": ").unwrap_or(("", detail));
+    let call = if tool.is_empty() {
+        "a tool call".to_string()
+    } else {
+        format!("its `{tool}` call")
+    };
+    format!(
+        "Your last reply was cut: the arguments of {call} stopped being JSON ({why}), so the \
+         call was not run. Call the tool again, with its arguments as one JSON object."
+    )
+}
+
 /// What one model call streamed, so a call cut off mid-stream, or one whose
 /// stream reported no usage, still counts the usage the provider bills for
 /// it (bug-72d775).
@@ -1553,6 +1747,9 @@ impl ToolLoop {
         // Replies in a row that reached the output limit with nothing in
         // them ([`LENGTH_CUT_RETRIES`]).
         let mut length_cuts_in_a_row = 0_usize;
+        // Replies in a row cut for malformed tool-call arguments
+        // ([`MALFORMED_ARGUMENT_RETRIES`]).
+        let mut malformed_in_a_row = 0_usize;
 
         loop {
             self.prune_context_if_needed(&mut messages);
@@ -1748,6 +1945,63 @@ impl ToolLoop {
                 );
             }
 
+            // A reply roko cut because a tool call's arguments stopped being
+            // JSON (bug-af5c20) is a turn of its own whose call is not run:
+            // the model is told and asked again within the run. One more in
+            // a row ends the run as a provider glitch.
+            let finish_reason_raw = response.extract_finish_reason_raw();
+            if let Some(detail) = malformed_tool_arguments(finish_reason_raw.as_deref()) {
+                turn_traces.push(ToolLoopTurnTrace {
+                    turn: trace_turn(iterations),
+                    tool_calls: Vec::new(),
+                    tool_results: Vec::new(),
+                    reasoning: turn_reasoning,
+                    usage: turn_usage,
+                    model: turn_model,
+                    usage_source: turn_usage_source,
+                    finish_reason: finish_reason_raw.clone(),
+                    duration_ms: turn_duration_ms,
+                });
+                if malformed_in_a_row >= MALFORMED_ARGUMENT_RETRIES {
+                    tracing::warn!(
+                        iterations,
+                        detail,
+                        "tool_loop: a second reply in a row was cut for malformed tool-call \
+                         arguments; ending the run as a provider glitch"
+                    );
+                    let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
+                        .with_session(session.clone());
+                    return ToolLoopOutput {
+                        final_text: String::new(),
+                        iterations,
+                        tool_calls: all_calls,
+                        total_usage,
+                        stop_reason: StopReason::BackendError(format!(
+                            "{}: {}: {detail}",
+                            crate::provider::error_classify::PROVIDER_GLITCH_MARKER,
+                            crate::streaming::MALFORMED_TOOL_ARGUMENTS_FINISH,
+                        )),
+                        checkpoint: Some(cp),
+                        turn_traces,
+                        mcp_errors: Vec::new(),
+                    };
+                }
+                malformed_in_a_row += 1;
+                tracing::warn!(
+                    iterations,
+                    detail,
+                    "tool_loop: the reply was cut for malformed tool-call arguments; its call \
+                     was not run; asking again within the run"
+                );
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": malformed_arguments_note(detail),
+                }));
+                iterations += 1;
+                continue;
+            }
+            malformed_in_a_row = 0;
+
             // Parse tool calls from the response.
             let calls = match self.translator.parse_calls(&response) {
                 Ok(c) => c,
@@ -1861,8 +2115,12 @@ impl ToolLoop {
                 // with turns left, is told what they say and goes on in the
                 // same run, its turns the try's (bug-cbbaa8). A reply cut at
                 // the output limit did not hand back: it ends the run as
-                // before, and one with no work behind it fails below.
-                let hands_back = !hit_length_limit && (!blank || !all_calls.is_empty());
+                // before, and one with no work behind it fails below. One
+                // that states a blocker outside its task's files ends the run,
+                // for roko to hand the failure on (bug-3b3bb6).
+                let hands_back = !hit_length_limit
+                    && (!blank || !all_calls.is_empty())
+                    && hand_off::stated_blocker(&final_text).is_none();
                 if hands_back
                     && let Some(note) = self.send_back(ctx, iterations, event_tx.as_ref()).await
                 {
@@ -2305,6 +2563,9 @@ impl ToolLoop {
         } else {
             guard_reasoning(stream, limit)
         };
+        // A tool call whose arguments stop being JSON is cut there, and the
+        // turn asked again (bug-af5c20).
+        let stream = guard_tool_arguments(stream);
 
         // Tee: forward every event to the caller channel while also
         // collecting into a vec for `collect_stream_to_response`. The ids
@@ -3810,6 +4071,240 @@ mod tests {
         assert_eq!(out.tool_calls.len(), 2);
     }
 
+    /// The reason [`ArgumentScan`] gives for `fragments`, fed in order.
+    fn scan(fragments: &[&str]) -> Option<&'static str> {
+        let mut scan = ArgumentScan::default();
+        fragments.iter().find_map(|fragment| scan.feed(fragment))
+    }
+
+    /// bug-af5c20: a tool call's argument text is cut once it can no longer
+    /// be the JSON object it should be. Whitespace outside strings, text
+    /// after the closing brace, a raw control character inside a string, a
+    /// first character other than `{`, or arguments too large to be real.
+    /// JSON the models send is left alone, however it is split.
+    #[test]
+    fn argument_scan_cuts_what_json_cannot_hold() {
+        let spaces_in_text = format!(r#"{{"text":"{}"}}"#, " ".repeat(1_500));
+        let fine: [&[&str]; 7] = [
+            &[r#"{"path":"core/src/a.rs","limit":400}"#],
+            &[r#"{"pa"#, r#"th":"core/src/a"#, r#".rs","limit""#, ":400}"],
+            &[r#"{"edits":[{"old":"a\nb","new":"c\"d\\"}],"n":[1,2,{"x":null}]}"#],
+            &["{\n  \"path\": \".\",\n  \"glob\": \"*.rs\"\n}\n"],
+            &["  \n{\"text\":\"漢字 and ✓ \\u00e9\"}"],
+            &[spaces_in_text.as_str()],
+            &["{}"],
+        ];
+        for fragments in fine {
+            assert_eq!(scan(fragments), None, "{fragments:?}");
+        }
+
+        let cut: [(Vec<String>, &str); 6] = [
+            (vec!["{\"path\":\"a\nb\"}".to_string()], "control character"),
+            (
+                vec![
+                    r#"{"path":"."}"#.to_string(),
+                    r#" {"path":"."}"#.to_string(),
+                ],
+                "after the closing",
+            ),
+            (vec![r#"["path"]"#.to_string()], "start"),
+            (
+                vec!["{\"path\":\".\",".to_string(), " \n".repeat(200)],
+                "whitespace",
+            ),
+            (
+                vec![format!(r#"{{"text":"{}"#, " ".repeat(2_100))],
+                "whitespace",
+            ),
+            (
+                vec![format!(r#"{{"text":"{}"#, "x".repeat(300 * 1024))],
+                "256 KB",
+            ),
+        ];
+        for (fragments, why) in cut {
+            let fragments: Vec<&str> = fragments.iter().map(String::as_str).collect();
+            let reason = scan(&fragments).unwrap_or_else(|| panic!("not cut: {why}"));
+            assert!(reason.contains(why), "{why}: {reason}");
+        }
+    }
+
+    /// bug-af5c20, the call that started it: gpt-5.4-mini on the Responses
+    /// API (round v7's A/B, p5-ship T1) opened `ls` with `{"path":".","`,
+    /// leaked its own routing tokens into the arguments and then streamed
+    /// whitespace for 300 s, 19,686 deltas, until the stall watchdog
+    /// cancelled the try. Replayed from its recording through the Responses
+    /// parser, the guard cuts it within a few hundred characters, ends the
+    /// turn as malformed and streams nothing after.
+    #[tokio::test]
+    async fn the_recorded_degenerate_ls_call_is_cut_within_a_few_hundred_characters() {
+        use futures::StreamExt;
+
+        let recording =
+            include_str!("../../tests/fixtures/sse/gpt-5.4-mini-degenerate-ls-call.sse");
+        let mut turn = crate::openai_responses::ResponsesTurn::new(Arc::default());
+        let events: Vec<Result<StreamEvent, LlmError>> = recording
+            .lines()
+            .flat_map(|line| turn.line(line))
+            .map(|item| item.map_err(|error| LlmError::Backend(error.message)))
+            .collect();
+        let recorded = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Ok(StreamEvent {
+                        kind: StreamEventKind::ToolCallDelta { .. },
+                        ..
+                    })
+                )
+            })
+            .count();
+        assert_eq!(recorded, 420, "the fixture's argument deltas");
+
+        let guarded: Vec<StreamEvent> = guard_tool_arguments(futures::stream::iter(events).boxed())
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|event| event.expect("no stream error"))
+            .collect();
+        let streamed: usize = guarded
+            .iter()
+            .map(|event| match &event.kind {
+                StreamEventKind::ToolCallDelta { json_fragment, .. } => {
+                    json_fragment.chars().count()
+                }
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            (300..450).contains(&streamed),
+            "cut after {streamed} characters of arguments"
+        );
+        let Some(StreamEventKind::Done { finish_reason }) = guarded.last().map(|e| &e.kind) else {
+            panic!("ends with a Done: {:?}", guarded.last());
+        };
+        assert!(
+            finish_reason.starts_with(crate::streaming::MALFORMED_TOOL_ARGUMENTS_FINISH),
+            "{finish_reason}"
+        );
+        assert!(finish_reason.contains("ls"), "{finish_reason}");
+        assert!(finish_reason.contains("whitespace"), "{finish_reason}");
+        let dones = guarded
+            .iter()
+            .filter(|event| matches!(event.kind, StreamEventKind::Done { .. }))
+            .count();
+        assert_eq!(dones, 1);
+    }
+
+    impl ScriptedSseBackend {
+        /// A turn that calls `echo` and derails as the recorded call did:
+        /// a second key the schema has no room for, the routing tokens, then
+        /// whitespace, in chat-completions deltas.
+        fn malformed_call(id: &str) -> Vec<String> {
+            let delta = |arguments: &str, first: bool| {
+                let mut call =
+                    serde_json::json!({"index": 0, "function": {"arguments": arguments}});
+                if first {
+                    call["id"] = serde_json::json!(id);
+                    call["type"] = serde_json::json!("function");
+                    call["function"]["name"] = serde_json::json!("echo");
+                }
+                let chunk = serde_json::json!({"choices": [{"delta": {"tool_calls": [call]}}]});
+                format!("data: {chunk}")
+            };
+            let mut lines = vec![
+                delta(r#"{"path":".",""#, true),
+                delta("} to=functions.echo  result to=functions.echo \"", false),
+            ];
+            lines.extend(std::iter::repeat_n(delta(" \n", false), 400));
+            lines.push(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
+            );
+            lines.push("data: [DONE]".to_string());
+            lines
+        }
+    }
+
+    /// bug-af5c20: a streamed reply whose tool call's arguments stop being
+    /// JSON is cut there. Its call is not run, the reply stays out of the
+    /// conversation, and the model is told and asked again within the run,
+    /// on both APIs' events (the recorded Responses call above, chat
+    /// completions' here).
+    #[tokio::test]
+    async fn a_malformed_tool_argument_stream_is_cut_and_asked_again() {
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", r#"{"path":"src"}"#),
+            ScriptedSseBackend::malformed_call("call-bad"),
+            ScriptedSseBackend::tool_call("call-2", r#"{"path":"."}"#),
+            ScriptedSseBackend::answer("Listed the tree."),
+        ]);
+        let out = run_scripted_sse(&backend).await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "Listed the tree.");
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call-1", "call-2"], "the malformed call never ran");
+        let cut = &out.turn_traces[1];
+        assert!(cut.tool_calls.is_empty());
+        let finish = cut.finish_reason.as_deref().unwrap_or_default();
+        assert!(
+            finish.starts_with(crate::streaming::MALFORMED_TOOL_ARGUMENTS_FINISH),
+            "{finish}"
+        );
+        assert!(finish.contains("echo"), "{finish}");
+        assert!(cut.duration_ms.is_some());
+
+        // The call after the cut is sent what the cut call was sent, and a
+        // note; the cut reply is not in the conversation.
+        let sent = backend.sent.lock();
+        assert_eq!(sent.len(), 4);
+        let (cut_call, retry) = (&sent[1], &sent[2]);
+        assert_eq!(&retry[..cut_call.len()], &cut_call[..]);
+        let added = &retry[cut_call.len()..];
+        assert_eq!(added.len(), 1, "{added:?}");
+        assert_eq!(added[0]["role"], "user");
+        let note = added[0]["content"].as_str().expect("the note is text");
+        assert!(note.contains("`echo`"), "{note}");
+        assert!(note.contains("not run"), "{note}");
+        assert!(note.contains("JSON"), "{note}");
+    }
+
+    /// bug-af5c20: the ask is once. Two malformed replies in a row end the
+    /// run as a provider glitch, which provider health classes as such, not
+    /// as a stall or an unknown failure; a malformed reply after one that
+    /// acted is asked again.
+    #[tokio::test]
+    async fn two_malformed_tool_argument_streams_in_a_row_end_the_run_as_a_provider_glitch() {
+        let backend = ScriptedSseBackend::new(vec![ScriptedSseBackend::malformed_call("call-bad")]);
+        let out = run_scripted_sse(&backend).await;
+        assert_eq!(backend.calls(), 2);
+        assert!(out.tool_calls.is_empty());
+        let StopReason::BackendError(message) = &out.stop_reason else {
+            panic!("expected a provider glitch, got {:?}", out.stop_reason);
+        };
+        assert!(
+            message.starts_with("provider_glitch: malformed_tool_arguments"),
+            "{message}"
+        );
+        assert_eq!(
+            crate::provider::error_classify::classify_failure_text(&message.to_lowercase()),
+            "provider_glitch"
+        );
+        assert_eq!(out.turn_traces.len(), 2);
+
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::malformed_call("call-bad-1"),
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::malformed_call("call-bad-2"),
+            ScriptedSseBackend::answer("done"),
+        ]);
+        let out = run_scripted_sse(&backend).await;
+        assert_eq!(backend.calls(), 4);
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call-1"]);
+    }
+
     /// A [`HandOffCheck`] whose checks fail the first `red` times they run,
     /// then pass, and that sends the model back at most `bound` times.
     #[derive(Debug)]
@@ -3947,6 +4442,29 @@ mod tests {
             })
             .collect();
         assert_eq!(results, [true, false]);
+    }
+
+    /// bug-3b3bb6: a model that hands back with a `Blocked:` line says the
+    /// cause of its failure lies in a file outside its task's: the run ends
+    /// there, its checks not asked, so roko can hand the failure to the task
+    /// that owns that file instead of sending the model back to work around
+    /// it.
+    #[tokio::test]
+    async fn a_hand_off_that_states_a_blocker_ends_the_run() {
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::answer(
+                "The renders are too quiet.\nBlocked: tools/render/main.cpp — it renders init \
+                 at -33 dBFS\nLesson: none",
+            ),
+        ]);
+        let check = ScriptedChecks::new(usize::MAX, 2);
+        let (out, _) = run_scripted_hand_offs(&backend, Arc::clone(&check), 25).await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(backend.calls(), 2, "a tool turn and the hand-off");
+        assert_eq!(check.runs.load(Ordering::SeqCst), 0);
+        assert!(out.final_text.contains("Blocked: tools/render/main.cpp"));
     }
 
     /// bug-cbbaa8: the check bounds how many times the model goes back, and

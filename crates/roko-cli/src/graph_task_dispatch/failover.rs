@@ -621,6 +621,11 @@ impl GraphTaskDispatcher {
             self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
             self.budget_ledger
                 .settle(&spec.plan_id, None, refused_cost_usd)?;
+            // Its calls are on the plan's books now, so a resume after a
+            // crash charges the try only for its calls since (bug-b7f6a8).
+            if let Some(allowance) = allowance {
+                allowance.book_recorded_calls();
+            }
             // The attempt's verdict counts it beside the call that runs
             // (bug-8bcd98).
             if let Some(progress) = progress {
@@ -3995,6 +4000,75 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             "{refused:?}"
         );
         assert_eq!(requests.lock().len(), probed, "no probe");
+    }
+
+    /// gap-d2ad57: a rung whose probe failed for any reason but billing stays
+    /// skipped for a day, with no call. `roko learn probes clear <model>`
+    /// removes its verdict, so the next run probes the rung again, and a
+    /// provider that now makes the call runs it; `--all` clears every
+    /// verdict.
+    #[tokio::test]
+    async fn a_cleared_probe_is_probed_again() {
+        use crate::dispatch::RoutingLadder;
+        use crate::dispatch::rung_probe::{RungProbe, RungProbes, clear_probes, probe_ladder};
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "probe-1",
+                "echo",
+                serde_json::json!({ "text": "roko rung probe" }),
+            ),
+            final_turn("done"),
+        ]);
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &temp.path().join("claude-models.log"));
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+        mid_api.base_url = Some(base_url);
+        let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+        let run_started_ms = chrono::Utc::now().timestamp_millis();
+        let path = RungProbes::path(temp.path());
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        // An hour-old failure that is no billing one: it stands for a day.
+        let blank = RungProbe {
+            passed: false,
+            reason: "empty_response: the model answered with reasoning only".to_string(),
+            probed_at_ms: run_started_ms - 3_600_000,
+        };
+        let probes = RungProbes {
+            models: [("mid-1".to_string(), blank)].into(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+
+        let failed = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
+        assert!(failed.contains_key("mid-1"), "{failed:?}");
+        assert!(
+            requests.lock().is_empty(),
+            "a standing verdict is not probed"
+        );
+
+        let cleared = clear_probes(temp.path(), Some("mid-1")).expect("cleared");
+        assert_eq!(cleared, ["mid-1"]);
+        let again = clear_probes(temp.path(), Some("mid-1")).expect("nothing to clear");
+        assert!(again.is_empty(), "{again:?}");
+        let failed = probe_ladder(&config, &ladder, temp.path(), run_started_ms).await;
+        assert!(
+            failed.is_empty(),
+            "the cleared rung is probed and runs: {failed:?}"
+        );
+        assert!(!requests.lock().is_empty(), "the rung was probed again");
+        assert!(RungProbes::load(&path).models["mid-1"].passed);
+
+        // `--all` clears every verdict.
+        let cleared = clear_probes(temp.path(), None).expect("cleared");
+        assert_eq!(cleared, ["mid-1"]);
+        assert!(RungProbes::load(&path).models.is_empty());
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

@@ -512,7 +512,8 @@ pub(crate) fn dedupe_entries_for_ingest(
 ///
 /// Returns a list of confirmation records for each (existing, new) pair
 /// where the entries are similar enough to indicate independent
-/// confirmation of the same insight.
+/// confirmation of the same insight. An existing entry still in a run's
+/// batch, or one a person retired, is never confirmed (bug-2ad4fa).
 pub(crate) fn detect_confirmations(
     existing: &[KnowledgeEntry],
     new_entries: &[KnowledgeEntry],
@@ -523,6 +524,11 @@ pub(crate) fn detect_confirmations(
     for new_entry in new_entries {
         for existing_entry in existing {
             if existing_entry.id == new_entry.id {
+                continue;
+            }
+            // A run's uncommitted entry gains nothing from the run that wrote
+            // it, and a retired one stays as a person left it (bug-2ad4fa).
+            if existing_entry.commit_batch.is_some() || existing_entry.deprecated {
                 continue;
             }
             if !entries_are_similar(existing_entry, new_entry) {

@@ -2,7 +2,7 @@
 id = "bug-f30f36"
 kind = "bug"
 title = "A streamed Anthropic API tool turn ran no tools: the collected stream kept no content blocks, so the tool loop found no tool call in a streamed reply and the try ended empty_response after one call, which left the Anthropic API unusable for agent work; its parser also dropped the reply's thinking (thinking_delta and signature_delta read as unknown), so a follow-up would have gone without the thinking block and signature the API requires"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/provider"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "56077878e"
 source = "round v7 roko-effort, found while building gap-0eb14e; the lead's ask (file p2 and fix)"
 discovered_from = "agent:roko-effort (round v7, gap-0eb14e)"
 anchors = ["crates/roko-agent/src/provider/anthropic_api/stream.rs::AnthropicStreamState", "crates/roko-agent/src/tool_loop/mod.rs::collect_stream_to_response", "crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::AnthropicTranslator"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-0eb14e", "bug-0e0dd9"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_streamed_anthropic_tool_turn_sends_its_thinking_back' crates/roko-agent/src && cargo test -p roko-agent --lib -- a_streamed_anthropic_tool_turn_sends_its_thinking_back"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T05:22:19Z"
+commit = "2d6510089"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-27T02:21:26Z"
+forced = false
+evidence = "Merged as 2d6510089 (branch 730ac57f6). Post-merge verify by the roster's rule, in roko-effort's worktree detached at 2d6510089 on its APFS target clone: the item's [[verify]] passes (a_streamed_anthropic_tool_turn_sends_its_thinking_back ok; log roko-effort/logs/postmerge-f30f36-unit-0e0dd9.log). The $0 proof, against a stand-in Messages API that enforces the API's rule: red on main (c7c25701b: empty_response, the ls call never dispatched), green on the branch, and the stand-in's 400 fires as the loop's error on a mutant that drops the thinking blocks (unit-f30f36-2.log). Lib suites green on the branch (acp 237, agent 2426, cli 4067, core 2049, learn 1411, serve 1087). Still owed: the live check against the real API (about a cent), which needs an Anthropic key."
 +++
 
 ## Problem

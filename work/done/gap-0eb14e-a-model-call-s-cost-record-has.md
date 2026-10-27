@@ -2,7 +2,7 @@
 id = "gap-0eb14e"
 kind = "gap"
 title = "A model call's cost record has no time to first token: call_cost says how long a call took but not when its first token came, so a call slow to start and one slow to finish read the same; only a try's first call has one"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool_loop"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "db7d63f67"
 source = "round v7 roko-effort, the phase 5.2 usage read (run 13260e60), the lead's ask"
 discovered_from = "agent:roko-effort (round v7, phase 5.2 usage read)"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::StreamTally", "crates/roko-agent/src/tool_loop/mod.rs::CallFacts", "crates/roko-cli/src/graph_task_dispatch/call_cost.rs::MeteredCalls", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-1ba0ac", "gap-ece700"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_call_record_says_when_its_first_token_came' crates/roko-agent/src && cargo test -p roko-agent --lib -- a_call_record_says_when_its_first_token_came"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T02:36:06Z"
+commit = "32038180f"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-27T00:40:35Z"
+forced = false
+evidence = "Merged as 32038180f (branch ce3a4651d). Post-merge verify by the roster's rule, in roko-effort's worktree detached at 32038180f: the item's [[verify]] passes (grep finds the test; a_call_record_says_when_its_first_token_came ok; log roko-effort/logs/postmerge-0eb14e-32038180f.log). On the branch: fmt, clippy (core, agent, learn, cli, serve, acp), check --tests and the lib suites green (acp 237, agent 2424, cli 4057, core 2049, learn 1411, serve 1086, 0 failed); hub_ipc 7/7 after the IPC frame boxed its event. $0 CLI rehearsal (rehearse.sh, a stand-in Responses model that reasons 3 s in silence): PASS, its call_cost row reads first_token_ms 3007, wall_ms 3008 (roko-effort/responses/checks/rehearsal-20261027-030533)."
 +++
 
 ## Problem

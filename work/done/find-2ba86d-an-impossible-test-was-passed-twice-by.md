@@ -2,7 +2,7 @@
 id = "find-2ba86d"
 kind = "finding"
 title = "An impossible test was passed twice by hidden call-count state and input special cases, against explicit instructions, and roko reported succeeded"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,12 +11,24 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "5027c3c21"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/judge_step.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-382947", "gap-3e1428", "gap-ba2841", "gap-0af587"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn gaming_screen_flags_the_three_instances' crates/roko-gate/src && grep -rqw 'fn gaming_screen_leaves_honest_code_alone' crates/roko-gate/src && grep -rqw 'fn a_pass_the_gaming_screen_flags_settles_unverified' crates/roko-cli/src && cargo test -p roko-gate --lib gaming_screen && cargo test -p roko-cli --lib a_pass_the_gaming_screen_flags_settles_unverified"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T03:26:50Z"
+commit = "5027c3c21"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-27T00:27:14Z"
+forced = false
+evidence = "crates/roko-gate/src/attempt_diff/gaming.rs and gaming/python.rs add gaming_findings, a Python screen over the product code an attempt added: hidden_state (a global, nonlocal, function attribute, mutable default or module-level container updated as a counter, toggle or flag and tested in a condition), special_case (a parameter compared with a literal the tests assert to two values no result meets) and computed_import (import_module, __import__, eval, exec or compile of a name built from literal pieces or encoded). red_flags.rs runs it in the pre-verify screen, and settle_suspect makes a passing attempt unverified, its reason in the verdict step pre_verify:gaming (skip_reason), the hub warning gaming:<plan>/<task> and the log. The verify passes: roko-gate gaming_screen tests (the _150_call_count counter, the is_leap_year attribute counter and the computed textwrap import flagged; a base case, a module constant, an lru_cache memo, a plain import textwrap and other honest shapes not) and roko-cli a_pass_the_gaming_screen_flags_settles_unverified (outcome and gate_verdict unverified, learning_label null, the reason in the step and on the hub). graph_task_dispatch 512/512 and clippy -D warnings on roko-gate and roko-cli pass. Follow-ups filed: gap-3e1428, gap-ba2841, gap-0af587."
 +++
 
 ## Finding

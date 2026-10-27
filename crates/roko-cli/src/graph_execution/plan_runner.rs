@@ -2701,6 +2701,13 @@ async fn run_graph_plan_body(
                     .map(|plan| (plan.id.clone(), graph_task_dispatcher.checkout_writes(&plan.id)))
                     .filter(|(_, writes)| !writes.is_empty())
                     .collect::<std::collections::BTreeMap<_, _>>(),
+                // Why the gaming screen left each task it flagged
+                // unverified, by plan and task (gap-0af587).
+                "gaming_flagged": plans
+                    .iter()
+                    .map(|plan| (plan.id.clone(), graph_task_dispatcher.gaming_flags(&plan.id)))
+                    .filter(|(_, flags)| !flags.is_empty())
+                    .collect::<std::collections::BTreeMap<_, _>>(),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
                     "discarded": batch_discarded,
@@ -2795,6 +2802,13 @@ async fn run_graph_plan_body(
                 short_oid(&work.commit),
                 work.review_command()
             );
+        }
+        // Tasks the gaming screen left unverified, with why (gap-0af587).
+        for plan in &plans {
+            let note = gaming_flagged_note(&graph_task_dispatcher.gaming_flags(&plan.id));
+            if !note.is_empty() {
+                println!("Plan {}{note}", plan.id);
+            }
         }
         // Checks that changed the person's checkout, not their own worktree
         // (bug-b7d9ad).
@@ -4125,6 +4139,34 @@ fn checkout_written_note(
     )
 }
 
+/// What a plan's end says of the tasks the gaming screen left `unverified`
+/// (find-2ba86d, gap-0af587): each task with why, the reason its last try's
+/// verdict gives, from those reasons by task; empty without any.
+fn gaming_flagged_note(flags: &std::collections::BTreeMap<String, String>) -> String {
+    flags
+        .iter()
+        .map(|(task, reason)| format!(". Task {task} is unverified: {reason}"))
+        .collect()
+}
+
+/// Why a plan's end says its unverified tasks are: they ran no verify step,
+/// or, when the end names such tasks, changed the person's checkout while
+/// they ran (bug-b7d9ad) or passed their checks on a change the gaming screen
+/// flagged (find-2ba86d).
+fn unverified_why(checkout_written: bool, gaming_flagged: bool) -> String {
+    let mut causes = vec!["ran no verify step"];
+    if checkout_written {
+        causes.push("changed your checkout while they ran");
+    }
+    if gaming_flagged {
+        causes.push("passed their checks on a change the gaming screen flagged");
+    }
+    match causes.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{}, or {last}", rest.join(", ")),
+        _ => causes.concat(),
+    }
+}
+
 /// Run one admitted plan to a terminal checkpoint.
 ///
 /// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
@@ -4821,16 +4863,15 @@ async fn run_one_plan(
         ctx.workdir,
         &ctx.graph_task_dispatcher.checkout_writes(&plan.id),
     );
+    // Tasks the gaming screen left unverified, with why (gap-0af587).
+    let gaming_flagged = gaming_flagged_note(&ctx.graph_task_dispatcher.gaming_flags(&plan.id));
+    let why = unverified_why(!checkout_written.is_empty(), !gaming_flagged.is_empty());
+    let notes = format!("{gaming_flagged}{unverified_at}{checkout_written}");
     if outcome == PlanOutcome::Unverified {
-        let why = if checkout_written.is_empty() {
-            "ran no verify step"
-        } else {
-            "ran no verify step, or changed your checkout while they ran"
-        };
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}' is unverified: {} task(s) {why}{unverified_at}{checkout_written}",
+                "plan '{}' is unverified: {} task(s) {why}{notes}",
                 plan.id, task_verdicts.unverified
             ),
         );
@@ -4838,15 +4879,15 @@ async fn run_one_plan(
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': task(s) {} ran no verify step{unverified_at}{checkout_written}",
+                "plan '{}': task(s) {} {why}{notes}",
                 plan.id,
                 work.tasks.join(", ")
             ),
         );
-    } else if !checkout_written.is_empty() {
+    } else if !checkout_written.is_empty() || !gaming_flagged.is_empty() {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
-            &format!("plan '{}'{checkout_written}", plan.id),
+            &format!("plan '{}'{gaming_flagged}{checkout_written}", plan.id),
         );
     }
     // Why each failed task failed, in the run's events, so a host can tell
@@ -9514,6 +9555,38 @@ exec sleep 60
         assert_eq!(
             status(false, passed, false, false),
             GraphCheckpointStatus::Failed
+        );
+    }
+
+    /// gap-0af587: a plan's end names each task the gaming screen left
+    /// unverified with its reason, and says why its unverified tasks are
+    /// without claiming that none of them ran a check.
+    #[test]
+    fn a_plans_end_names_the_gaming_screens_reasons() {
+        let flags = BTreeMap::from([
+            ("T1".to_string(), "hidden_state `money.py`".to_string()),
+            ("T3".to_string(), "special_case `dates.py`".to_string()),
+        ]);
+        assert_eq!(
+            gaming_flagged_note(&flags),
+            ". Task T1 is unverified: hidden_state `money.py`. Task T3 is unverified: \
+             special_case `dates.py`"
+        );
+        assert_eq!(gaming_flagged_note(&BTreeMap::new()), "");
+
+        assert_eq!(unverified_why(false, false), "ran no verify step");
+        assert_eq!(
+            unverified_why(true, false),
+            "ran no verify step, or changed your checkout while they ran"
+        );
+        assert_eq!(
+            unverified_why(false, true),
+            "ran no verify step, or passed their checks on a change the gaming screen flagged"
+        );
+        assert_eq!(
+            unverified_why(true, true),
+            "ran no verify step, changed your checkout while they ran, or passed their checks \
+             on a change the gaming screen flagged"
         );
     }
 

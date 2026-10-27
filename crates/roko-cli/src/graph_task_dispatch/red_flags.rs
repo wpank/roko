@@ -54,8 +54,11 @@
 //! alike: the attempt's verify steps run, and a pass settles `unverified`,
 //! not passed ([`GraphTaskDispatcher::settle_suspect`]). The hub, the log
 //! and the verdict say why; the verdict as the step `pre_verify:gaming`,
-//! which reached no pass, with the findings as its reason.
+//! which reached no pass, with the findings as its reason. `roko diagnose`,
+//! the run's summary and the end of the plan run read that reason
+//! (gap-0af587).
 
+use std::collections::BTreeMap;
 use std::path::Component;
 
 use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity, ViolationType, scrub};
@@ -65,7 +68,8 @@ use roko_gate::attempt_diff::{
     AttemptDiffPolicy, DiffFinding, PinnedTest, check_attempt_diff, gaming_findings, scripts_run_by,
 };
 use roko_gate::{DiffPayload, analyze_diff};
-use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
+use roko_learn::telemetry::records::GAMING_SCREEN_RUNG;
+use roko_learn::telemetry::{AttemptVerdictRecord, ScopeFinding, VerifyStepVerdict};
 
 use super::diff_snapshot::AttemptDiff;
 use super::retry_feedback::RetryNotice;
@@ -76,9 +80,9 @@ use super::*;
 /// of an attempt the screen rejected: `pre_verify:<check>`.
 pub(super) const PRE_VERIFY_GATE_PREFIX: &str = "pre_verify:";
 
-/// The gaming screen's check (find-2ba86d): the verdict's step
-/// `pre_verify:gaming` of an attempt it made `unverified`, and the hub's
-/// diagnosis `gaming:<plan>/<task>`.
+/// The gaming screen's check (find-2ba86d): the hub's diagnosis
+/// `gaming:<plan>/<task>` of an attempt it made `unverified`, whose verdict
+/// gains the step [`GAMING_SCREEN_RUNG`], `pre_verify:gaming`.
 const GAMING_CHECK: &str = "gaming";
 
 /// Most `files` entries a "no changes" message names.
@@ -530,13 +534,45 @@ impl GraphTaskDispatcher {
                 .await;
         }
         steps.push(VerifyStepVerdict {
-            rung: format!("{PRE_VERIFY_GATE_PREFIX}{GAMING_CHECK}"),
+            rung: GAMING_SCREEN_RUNG.to_string(),
             passed: None,
             skipped: true,
             skip_reason: Some(reason),
             ..VerifyStepVerdict::default()
         });
         Ok(TaskGateVerdict::Unverified)
+    }
+
+    /// Keep why the gaming screen left the task of `verdict`, a settled try,
+    /// `unverified`, from the reason of its step [`GAMING_SCREEN_RUNG`], for
+    /// the end of the plan run (find-2ba86d, gap-0af587). A settled try the
+    /// screen did not flag clears its task: the task's last try decides.
+    pub(super) fn note_gaming_flag(&self, verdict: &AttemptVerdictRecord) {
+        let identity = &verdict.identity;
+        let mut flags = self.gaming_flags.lock();
+        match verdict.gaming_reason() {
+            Some(reason) => {
+                flags
+                    .entry(identity.plan_id.clone())
+                    .or_default()
+                    .insert(identity.task_id.clone(), reason.to_string());
+            }
+            None => {
+                if let Some(tasks) = flags.get_mut(&identity.plan_id) {
+                    tasks.remove(&identity.task_id);
+                }
+            }
+        }
+    }
+
+    /// Why the gaming screen left each task of plan `plan_id` `unverified`
+    /// whose last try in this run it flagged, by task (find-2ba86d).
+    pub(crate) fn gaming_flags(&self, plan_id: &str) -> BTreeMap<String, String> {
+        self.gaming_flags
+            .lock()
+            .get(plan_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The role's post-dispatch safety check, the one ACP runs
@@ -1495,6 +1531,8 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             "{}",
             warnings[0].detail
         );
+        // The end of the plan run hears why (gap-0af587).
+        let flags = dispatcher.gaming_flags(&make_spec(&task).plan_id);
         // Closing the run's writer flushes its lines.
         drop(dispatcher);
         let verdicts = jsonl_rows_where(
@@ -1527,6 +1565,11 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         assert!(reason.contains("hidden_state `money.py`"), "{reason}");
         assert!(reason.contains("`_150_call_count`"), "{reason}");
         assert!(reason.contains("`cents == 150`"), "{reason}");
+        assert_eq!(
+            flags,
+            BTreeMap::from([(task.id.clone(), reason.to_string())]),
+            "the end of the plan run reads the verdict's reason"
+        );
 
         // Done honestly, the same task passes.
         let honest = "def round_to_dollars(cents):\n    if cents < 0:\n        \
@@ -1553,6 +1596,52 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             TaskGateVerdict::from_signals(&outputs),
             Some(TaskGateVerdict::Passed)
         );
+    }
+
+    /// gap-0af587: the end of the plan run keeps why the gaming screen left a
+    /// task unverified while the task's last settled try stands so: a later
+    /// try the screen did not flag clears it, and a try unverified otherwise
+    /// adds nothing. Plans are kept apart.
+    #[tokio::test]
+    async fn a_later_try_clears_the_gaming_screens_flag() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let temp = tempdir().expect("tempdir");
+        let config = roko_core::config::schema::RokoConfig::default();
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
+        let settled = |plan: &str, task: &str, attempt: u32, outcome, reason: Option<&str>| {
+            let key = AttemptKey::new("run", plan, task, attempt);
+            let mut verdict =
+                AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true);
+            if let Some(reason) = reason {
+                verdict.steps.push(VerifyStepVerdict {
+                    rung: GAMING_SCREEN_RUNG.to_string(),
+                    skipped: true,
+                    skip_reason: Some(reason.to_string()),
+                    ..VerifyStepVerdict::default()
+                });
+            }
+            verdict
+        };
+        let unverified = AttemptOutcome::Unverified;
+        for verdict in [
+            settled("p", "T1", 1, unverified, Some("hidden_state `a.py`")),
+            settled("p", "T2", 1, unverified, Some("special_case `b.py`")),
+            settled("p", "T2", 2, AttemptOutcome::Passed, None),
+            settled("p", "T3", 1, unverified, None),
+            settled("q", "T1", 1, unverified, Some("dynamic_import `c.py`")),
+        ] {
+            dispatcher.note_gaming_flag(&verdict);
+        }
+        assert_eq!(
+            dispatcher.gaming_flags("p"),
+            BTreeMap::from([("T1".to_string(), "hidden_state `a.py`".to_string())])
+        );
+        assert_eq!(
+            dispatcher.gaming_flags("q"),
+            BTreeMap::from([("T1".to_string(), "dynamic_import `c.py`".to_string())])
+        );
+        assert!(dispatcher.gaming_flags("r").is_empty());
     }
 
     #[tokio::test]

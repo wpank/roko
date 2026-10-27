@@ -8,9 +8,10 @@
 //! `.roko/learn/gate-failures.jsonl` (failed verify steps),
 //! `.roko/learn/gate-gaming-alerts.jsonl` (gate-gaming alerts),
 //! `.roko/episodes.jsonl` (failure reasons) and the run's
-//! `.roko/runs/<run>/attempts.jsonl` (tool policies). The Runner-v2 snapshot at
-//! `.roko/state/state-snapshot.json` is read only for a plan without a Graph
-//! checkpoint.
+//! `.roko/runs/<run>/attempts.jsonl` (tool policies, checks that changed the
+//! person's checkout, and why the gaming screen left a task unverified). The
+//! Runner-v2 snapshot at `.roko/state/state-snapshot.json` is read only for a
+//! plan without a Graph checkpoint.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
@@ -298,6 +299,11 @@ pub struct TaskDiagnosis {
     /// listed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub checkout_written: Vec<String>,
+    /// Why the gaming screen left the task `unverified` although its checks
+    /// passed: the reason its last try's verdict gives (find-2ba86d). Set for
+    /// a task completed `unverified` only; always listed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gaming_flagged: Option<String>,
 }
 
 /// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
@@ -457,6 +463,9 @@ struct RunRecords {
     /// The paths of the person's checkout each task's checks changed, from
     /// the run's `attempts.jsonl` (bug-b7d9ad).
     checkout_written: BTreeMap<String, BTreeSet<String>>,
+    /// Why the gaming screen left each task whose last try it flagged
+    /// `unverified`, by task, from the run's `attempts.jsonl` (find-2ba86d).
+    gaming_flagged: BTreeMap<String, String>,
 }
 
 impl RunRecords {
@@ -489,6 +498,7 @@ impl RunRecords {
                 .collect(),
             tool_policies: recorded_tool_policies(&run, plan_id),
             checkout_written: recorded_checkout_writes(&run, plan_id),
+            gaming_flagged: recorded_gaming_flags(&run, plan_id),
         }
     }
 
@@ -542,6 +552,19 @@ fn recorded_checkout_writes(
         }
     }
     writes
+}
+
+/// Why the gaming screen left each task of `plan_id` whose last try in `run`
+/// it flagged `unverified`, by task, from their verdicts (find-2ba86d).
+fn recorded_gaming_flags(
+    run: &roko_learn::telemetry::report::RunRecords,
+    plan_id: &str,
+) -> BTreeMap<String, String> {
+    run.gaming_flags()
+        .into_iter()
+        .filter(|flag| flag.plan_id == plan_id)
+        .map(|flag| (flag.task_id, flag.reason))
+        .collect()
 }
 
 /// The gate-gaming alerts in `.roko/learn/gate-gaming-alerts.jsonl` that
@@ -867,6 +890,14 @@ fn diagnose_tasks(
             // Listed for every task that did not complete; a completed task's
             // history only with `--verbose`.
             let listed = verbose || state != TaskState::Completed;
+            let gate_verdict = checkpoint.recorded.get(task_id).copied().flatten();
+            // Why the gaming screen left it unverified, while it stands so
+            // (find-2ba86d).
+            let gaming_flagged = records
+                .gaming_flagged
+                .get(task_id)
+                .filter(|_| gate_verdict == Some(TaskGateVerdict::Unverified))
+                .cloned();
             let mut diagnosis = TaskDiagnosis {
                 task_id: task_id.to_string(),
                 title: task.map(|task| task.title.clone()),
@@ -878,7 +909,7 @@ fn diagnose_tasks(
                 } else {
                     Vec::new()
                 },
-                gate_verdict: checkpoint.recorded.get(task_id).copied().flatten(),
+                gate_verdict,
                 attempt_count: attempts.len(),
                 failed_attempts: attempts.iter().filter(|attempt| !attempt.success).count(),
                 timed_out_attempts: attempts.iter().filter(|attempt| attempt.timed_out).count(),
@@ -892,6 +923,7 @@ fn diagnose_tasks(
                     .get(task_id)
                     .map(|paths| paths.iter().cloned().collect())
                     .unwrap_or_default(),
+                gaming_flagged,
             };
             diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
             diagnosis
@@ -1076,11 +1108,17 @@ fn describe_task(
                     paths.join(", ")
                 )
             });
-            let verdict = match (task.gate_verdict, &written) {
-                (Some(TaskGateVerdict::Unverified), Some(written)) => {
+            let verdict = match (task.gate_verdict, &task.gaming_flagged, &written) {
+                // Its checks passed, but the gaming screen flagged its change
+                // (find-2ba86d): its verdict says why.
+                (Some(TaskGateVerdict::Unverified), Some(reason), written) => match written {
+                    Some(written) => format!("; unverified: {reason}; {written}"),
+                    None => format!("; unverified: {reason}"),
+                },
+                (Some(TaskGateVerdict::Unverified), None, Some(written)) => {
                     format!("; unverified: it changed nothing in its own tree, and {written}")
                 }
-                (verdict, written) => {
+                (verdict, _, written) => {
                     let verdict = match verdict {
                         Some(TaskGateVerdict::Passed) => "; its verify steps passed",
                         Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
@@ -1890,8 +1928,9 @@ fn collect_total_cost_usd(workdir: &Path, plan_id: &str) -> Option<f64> {
 // ---------------------------------------------------------------------------
 
 /// The report for a person: the status, then each task that did not complete
-/// (every task with `verbose`) with why, the verify step it failed and its
-/// attempts, then what to do next. `--json` prints the report itself.
+/// or completed `unverified` (every task with `verbose`) with why, the verify
+/// step it failed and its attempts, then what to do next. `--json` prints the
+/// report itself.
 pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
     let mut out = String::new();
     let (plan_id, status) = (&report.plan_id, &report.status);
@@ -1931,10 +1970,16 @@ pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
         }
     }
 
+    // A task completed unverified is shown: it is why its plan is, and the
+    // line says why it is (gap-0af587).
     let shown: Vec<&TaskDiagnosis> = report
         .tasks
         .iter()
-        .filter(|task| verbose || task.state != TaskState::Completed)
+        .filter(|task| {
+            verbose
+                || task.state != TaskState::Completed
+                || task.gate_verdict == Some(TaskGateVerdict::Unverified)
+        })
         .collect();
     for task in &shown {
         out.push('\n');
@@ -3187,6 +3232,152 @@ title = "Tidy the changelog"
             .find(|task| task["task_id"] == "T2")
             .expect("T2");
         assert!(t2_json.get("checkout_written").is_none(), "{t2_json}");
+    }
+
+    /// gap-0af587: a task the gaming screen left unverified, whose last
+    /// try's verdict in the run's `attempts.jsonl` carries the step
+    /// `pre_verify:gaming` (find-2ba86d), is described with that step's
+    /// reason, in text and JSON, not as having no verify steps. A task that
+    /// has none keeps that wording, a task whose flagged try was followed by
+    /// a pass says it passed, and another plan's flag is not this plan's.
+    /// The text shows the unverified tasks without `--verbose`.
+    #[test]
+    fn diagnose_names_the_gaming_screens_reason() {
+        use roko_learn::telemetry::records::GAMING_SCREEN_RUNG;
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig, VerifyStepVerdict,
+        };
+
+        const REASON: &str = "the checks passed, but the change may pass them without doing \
+                              the task: hidden_state `money.py`: `round_to_dollars` keeps \
+                              `_150_call_count` across calls, a module global; it adds to it \
+                              (line 7) and tests it in a condition (line 8), so one input can \
+                              get different answers on different calls";
+
+        let workspace = workspace();
+        let root = workspace.path();
+        let dir = root.join("plans/programme").join(PLAN_ID);
+        let plan = Plan {
+            id: PLAN_ID.to_string(),
+            tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
+            dir,
+        };
+        let mut checkpoint = start_plan_checkpoint(root, &plan).expect("checkpoint");
+        let mut recorder = checkpoint.take_recorder();
+        let unverified = || {
+            let mut outputs = vec![
+                Signal::builder(Kind::AgentOutput)
+                    .body(Body::text("done"))
+                    .build(),
+            ];
+            TaskGateVerdict::Unverified.stamp(&mut outputs);
+            outputs
+        };
+        for (task_id, outputs) in [
+            ("T1", unverified()),
+            ("T2", unverified()),
+            ("T3", passed_output()),
+            ("T4", passed_output()),
+        ] {
+            recorder
+                .record(PLAN_ID, task_id, 0, outputs)
+                .expect("record");
+        }
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Unverified)
+            .expect("finish");
+        let run_id = inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("read checkpoint")
+            .expect("checkpoint")
+            .manifest
+            .run_id;
+
+        let verdict = |plan: &str, task: &str, attempt: u32, outcome| {
+            let key = AttemptKey::new(run_id.as_str(), plan, task, attempt);
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true)
+        };
+        let flagged = |plan: &str, task: &str, attempt: u32| {
+            let mut verdict = verdict(plan, task, attempt, AttemptOutcome::Unverified);
+            verdict.steps = vec![
+                VerifyStepVerdict {
+                    rung: "verify:0/structural".into(),
+                    passed: Some(true),
+                    ..VerifyStepVerdict::default()
+                },
+                VerifyStepVerdict {
+                    rung: "verify:1/test".into(),
+                    passed: Some(true),
+                    ..VerifyStepVerdict::default()
+                },
+                VerifyStepVerdict {
+                    rung: GAMING_SCREEN_RUNG.into(),
+                    passed: None,
+                    skipped: true,
+                    skip_reason: Some(REASON.into()),
+                    ..VerifyStepVerdict::default()
+                },
+            ];
+            verdict
+        };
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        for record in [
+            verdict(PLAN_ID, "T1", 1, AttemptOutcome::Unverified),
+            verdict(PLAN_ID, "T2", 1, AttemptOutcome::GateFailed),
+            flagged(PLAN_ID, "T2", 2),
+            verdict(PLAN_ID, "T3", 1, AttemptOutcome::Passed),
+            flagged(PLAN_ID, "T4", 1),
+            verdict(PLAN_ID, "T4", 2, AttemptOutcome::Passed),
+            flagged("other-plan", "T1", 1),
+        ] {
+            assert!(writer.submit(record));
+        }
+        assert_eq!(writer.close().written, 7);
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        let t2 = task(&report, "T2");
+        assert_eq!(t2.gaming_flagged.as_deref(), Some(REASON));
+        assert_eq!(t2.reason, format!("completed; unverified: {REASON}"));
+        assert!(!t2.reason.contains("no verify steps"), "{}", t2.reason);
+        let t1 = task(&report, "T1");
+        assert_eq!(t1.gaming_flagged, None);
+        assert_eq!(t1.reason, "completed; it has no verify steps");
+        let t4 = task(&report, "T4");
+        assert_eq!(t4.gaming_flagged, None);
+        assert_eq!(t4.reason, "completed; its verify steps passed");
+
+        let json = serde_json::to_value(&report).expect("serialize");
+        let tasks = json["tasks"].as_array().expect("tasks");
+        let task_json = |task_id: &str| {
+            tasks
+                .iter()
+                .find(|task| task["task_id"] == task_id)
+                .unwrap_or_else(|| panic!("{task_id} in {json}"))
+        };
+        assert_eq!(task_json("T2")["gaming_flagged"], REASON);
+        assert_eq!(
+            task_json("T2")["reason"],
+            format!("completed; unverified: {REASON}")
+        );
+        for task_id in ["T1", "T3", "T4"] {
+            let task = task_json(task_id);
+            assert!(task.get("gaming_flagged").is_none(), "{task}");
+        }
+
+        let text = render_text(&report, false);
+        assert!(text.contains("T2 [completed] Wire the parser"), "{text}");
+        let why = format!("\n    completed; unverified: {REASON}\n");
+        assert!(text.contains(&why), "{text}");
+        assert!(text.contains("T1 [completed] Write the parser"), "{text}");
+        assert!(
+            text.contains("\n    completed; it has no verify steps\n"),
+            "{text}"
+        );
+        assert!(!text.contains("T3 [completed]"), "{text}");
+        assert!(!text.contains("T4 [completed]"), "{text}");
+        assert!(text.contains("2 completed tasks not shown"), "{text}");
     }
 
     #[test]

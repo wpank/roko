@@ -791,6 +791,9 @@ impl GraphTaskDispatcher {
         // raises the plan's budget alerts it crossed (backlog 2116).
         self.announce_budget_alerts(&spec.plan_id);
         self.credit_reflex_rule(spec, task, settled).await;
+        // Whether the gaming screen left the task unverified, for the end of
+        // the plan run (gap-0af587).
+        self.note_gaming_flag(&settled.verdict);
         let standing = self
             .gate_retry_context
             .ladder_standing(&spec.plan_id, &task.id);

@@ -51,7 +51,9 @@ use roko_learn::telemetry::{
 use roko_serve::runtime::{names_run, short_run_id};
 use serde::{Deserialize, Serialize};
 
-use crate::graph_execution::delivery::{DELIVERY_CHECKS_EXTENSION, DeliveryCheck};
+use crate::graph_execution::delivery::{
+    DELIVERY_BUILD_TREES_EXTENSION, DELIVERY_CHECKS_EXTENSION, DeliveryBuildTrees, DeliveryCheck,
+};
 use crate::graph_task_dispatch::micro_usd_to_usd;
 use crate::runner::plan_loader::Plan;
 use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
@@ -3123,6 +3125,9 @@ pub struct RecordedBatchDelivery {
     pub checks: Vec<DeliveryCheck>,
     /// The log holding everything those checks wrote, when it was written.
     pub check_log: Option<String>,
+    /// What those checks started from, such as a cold check, when the
+    /// receipt says (bug-2f70cd).
+    pub build_trees: Option<DeliveryBuildTrees>,
     /// Whether it delivered only the verified tasks of a plan that did not
     /// finish (bug-74164c).
     pub partial: bool,
@@ -3152,6 +3157,10 @@ pub fn recorded_batch_delivery(workdir: &Path, plan_id: &str) -> Option<Recorded
         check_log: receipt["regression_evidence_ref"]
             .as_str()
             .map(str::to_string),
+        build_trees: serde_json::from_value(
+            receipt["extensions"][DELIVERY_BUILD_TREES_EXTENSION].clone(),
+        )
+        .ok(),
         partial: batch["partial"].as_bool().unwrap_or(false),
     })
 }
@@ -6353,18 +6362,25 @@ depends_on = ["T1"]
 
     /// gap-4ec59f: `roko plan status` finds where a delivered plan's work
     /// went in its checkpoint, and nothing for a plan whose delivery failed.
+    /// bug-2f70cd: with what its check started from, such as a cold check.
     #[test]
     fn recorded_batch_delivery_reads_only_a_delivered_plan() {
         let dir = tempdir().expect("tempdir");
+        let cold = "a cold check: the regression checkout starts from no build trees";
         for (plan, state) in [("p-delivered", "delivered"), ("p-conflict", "conflict")] {
             let checkpoint = dir.path().join(".roko/state/graph").join(plan);
             std::fs::create_dir_all(&checkpoint).expect("checkpoint dir");
             let manifest = serde_json::json!({
-                "extensions": {BATCH_EXTENSION: {"value": {
-                    "branch": "roko/batch/run-1",
-                    "state": state,
-                    "merge_commit": "a".repeat(40),
-                }}}
+                "extensions": {
+                    BATCH_EXTENSION: {"value": {
+                        "branch": "roko/batch/run-1",
+                        "state": state,
+                        "merge_commit": "a".repeat(40),
+                    }},
+                    DELIVERY_EXTENSION: {"value": {"receipt": {"extensions": {
+                        DELIVERY_BUILD_TREES_EXTENSION: {"cold": true, "started_from": cold},
+                    }}}},
+                }
             });
             std::fs::write(checkpoint.join("checkpoint.json"), manifest.to_string())
                 .expect("checkpoint");
@@ -6377,6 +6393,10 @@ depends_on = ["T1"]
                 merge_commit: "a".repeat(40),
                 checks: Vec::new(),
                 check_log: None,
+                build_trees: Some(DeliveryBuildTrees {
+                    cold: true,
+                    started_from: cold.to_string(),
+                }),
                 partial: false,
             })
         );

@@ -14,6 +14,9 @@ last_verified = 2026-10-27
 source = "find-2ba86d (hermes-plugin-roko dogfood 2026-10-13, run ff24ef90), split out 2026-10-27"
 anchors = ["crates/roko-gate/src/spec_quality.rs::score_task", "crates/roko-gate/src/attempt_diff/gaming.rs::contradictions"]
 links = { depends_on = [], blocks = [], related = ["find-2ba86d"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_task_whose_tests_assert_one_call_to_two_values_fails_its_spec_check' crates/roko-gate/src && grep -q '\"HF2\", \"HF3\", \"HF6\"' crates/roko-cli/src/spec_gate.rs && cargo test -p roko-gate --lib a_task_whose_tests_assert_one_call_to_two_values_fails_its_spec_check"
 +++
 
 ## Problem

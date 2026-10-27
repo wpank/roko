@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::{Contradiction, Expectation, Expected, Language, Literal, ProductFile};
+use super::{Asserted, Contradiction, Expectation, Expected, Language, Literal, ProductFile};
 use crate::attempt_diff::{DiffFinding, DiffFindingKind, has_extension};
 
 /// The Python screen.
@@ -24,15 +24,12 @@ impl Language for Python {
         has_extension(path, "py")
     }
 
+    fn names(&self) -> &'static [&'static str] {
+        &["python", "python3", "py", "py3"]
+    }
+
     fn expectations(&self, text: &str) -> Vec<Expectation> {
-        let module = Module::parse(text);
-        module
-            .stmts
-            .iter()
-            .chain(module.functions.iter().flat_map(|function| &function.stmts))
-            .filter(|stmt| stmt.kind == Kind::Simple)
-            .filter_map(|stmt| assertion(&stmt.tokens))
-            .collect()
+        expectations(&Module::parse(text))
     }
 
     fn findings(
@@ -1641,11 +1638,119 @@ fn canonical_number(text: &str) -> Option<String> {
 
 // ── Test assertions ──────────────────────────────────────────────────────
 
+/// What the test code of `module` asserts about calls
+/// ([`Language::expectations`]).
+///
+/// Each scope is read in order: the module's own statements (scope 0), then
+/// each function's (1 on). An assertion is placed in its scope after the
+/// statements before it there that can change state ([`changes_state`]). It
+/// counts only about a call whose arguments are all constants
+/// ([`Call::constant`]) and that is no method of an object the code makes or
+/// is given ([`object_names`]): `next(it)`, `q.pop(0)` and `rng.random()`
+/// may return one value and then another.
+fn expectations(module: &Module) -> Vec<Expectation> {
+    let objects = object_names(module);
+    let scopes = std::iter::once(&module.stmts)
+        .chain(module.functions.iter().map(|function| &function.stmts));
+    let mut found = Vec::new();
+    for (scope, stmts) in scopes.enumerate() {
+        let mut changes = 0;
+        for stmt in stmts {
+            if changes_state(stmt) {
+                changes += 1;
+                continue;
+            }
+            let Some((call, expected)) = assertion(&stmt.tokens) else {
+                continue;
+            };
+            let on_object = call
+                .receiver
+                .as_ref()
+                .is_some_and(|receiver| objects.contains(receiver));
+            if call.constant && !on_object {
+                let at = Asserted {
+                    text: 0,
+                    scope,
+                    changes,
+                };
+                found.push(call.expect(expected, at));
+            }
+        }
+    }
+    found
+}
+
+/// Whether running `stmt` can change what a call returns: anything but a
+/// check ([`is_check`]), an import, a docstring, `pass`, or the `def` or
+/// `class` that binds a name.
+fn changes_state(stmt: &Stmt) -> bool {
+    let tokens = &stmt.tokens[..];
+    match stmt.kind {
+        Kind::Header => !matches!(stmt.keyword.as_str(), "def" | "class"),
+        Kind::Simple => {
+            let quiet = is_check(tokens)
+                || tokens.iter().all(|token| matches!(token.tok, Tok::Str(_)))
+                || matches!(tokens, [token] if token.is_name("pass") || token.is_op("..."))
+                || tokens
+                    .first()
+                    .is_some_and(|token| token.is_name("import") || token.is_name("from"));
+            !quiet
+        }
+        Kind::Condition | Kind::Match | Kind::Case => true,
+    }
+}
+
+/// Whether a simple statement only checks: an `assert`, or a call of an
+/// assertion method or function (`self.assertEqual(…)`,
+/// `mock.assert_called_once()`).
+fn is_check(tokens: &[Token]) -> bool {
+    if tokens.first().is_some_and(|token| token.is_name("assert")) {
+        return true;
+    }
+    let Some(open) = tokens.iter().position(|token| token.is_op("(")) else {
+        return false;
+    };
+    open > 0
+        && matching(tokens, open).is_some_and(|close| close + 1 == tokens.len())
+        && tokens[open - 1]
+            .name()
+            .is_some_and(|name| name.starts_with("assert"))
+}
+
+/// The names test code binds to objects it makes or is given, whose methods
+/// may keep state: what its assignments, loops, `with` and `except` clauses
+/// and walruses bind (not its imports, `def`s and `class`es), every
+/// function's parameters, and `self` and `cls`.
+fn object_names(module: &Module) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = ["self", "cls"].map(String::from).into();
+    let stmts = module
+        .stmts
+        .iter()
+        .chain(module.functions.iter().flat_map(|function| &function.stmts));
+    for stmt in stmts {
+        let binds_code = match stmt.kind {
+            Kind::Header => matches!(stmt.keyword.as_str(), "def" | "class"),
+            Kind::Simple => stmt
+                .tokens
+                .first()
+                .is_some_and(|token| token.is_name("import") || token.is_name("from")),
+            _ => false,
+        };
+        if !binds_code {
+            names.extend(bound_names(std::slice::from_ref(stmt)));
+        }
+    }
+    for function in &module.functions {
+        names.extend(function.params.iter().cloned());
+    }
+    names
+}
+
 /// What a test statement asserts about a call: `assert f(x) == 2`,
 /// `assert 2 == f(x)`, `assert f(x) is None`, `assert f(x)`,
 /// `assert not f(x)`, and `self.assertEqual`, `assertIs`, `assertTrue`,
 /// `assertFalse` and `assertIsNone` on a call and a literal.
-fn assertion(tokens: &[Token]) -> Option<Expectation> {
+fn assertion(tokens: &[Token]) -> Option<(Call, Expected)> {
     if tokens.first()?.is_name("assert") {
         let expression = split_top_level(&tokens[1..], ",")[0];
         return asserted(expression);
@@ -1665,20 +1770,20 @@ fn assertion(tokens: &[Token]) -> Option<Expectation> {
             let second = arguments.get(1)?;
             equal(first, second).or_else(|| equal(second, first))
         }
-        "assertTrue" => call(first).map(|call| call.expect(Expected::Truthy)),
-        "assertFalse" => call(first).map(|call| call.expect(Expected::Falsy)),
-        "assertIsNone" => call(first).map(|call| call.expect(Expected::Equal(Literal::Nothing))),
+        "assertTrue" => call(first).map(|call| (call, Expected::Truthy)),
+        "assertFalse" => call(first).map(|call| (call, Expected::Falsy)),
+        "assertIsNone" => call(first).map(|call| (call, Expected::Equal(Literal::Nothing))),
         _ => None,
     }
 }
 
 /// What `assert expression` asserts about a call.
-fn asserted(expression: &[Token]) -> Option<Expectation> {
+fn asserted(expression: &[Token]) -> Option<(Call, Expected)> {
     if expression.first()?.is_name("not") {
-        return call(&expression[1..]).map(|call| call.expect(Expected::Falsy));
+        return call(&expression[1..]).map(|call| (call, Expected::Falsy));
     }
     if let Some(call) = call(expression) {
-        return Some(call.expect(Expected::Truthy));
+        return Some((call, Expected::Truthy));
     }
     let mut depth = 0;
     for (at, token) in expression.iter().enumerate() {
@@ -1692,10 +1797,10 @@ fn asserted(expression: &[Token]) -> Option<Expectation> {
 }
 
 /// A call, `call_tokens`, asserted equal to a literal, `value_tokens`.
-fn equal(call_tokens: &[Token], value_tokens: &[Token]) -> Option<Expectation> {
+fn equal(call_tokens: &[Token], value_tokens: &[Token]) -> Option<(Call, Expected)> {
     let call = call(call_tokens)?;
     let (value, span) = literal(value_tokens)?;
-    (span == value_tokens.len()).then(|| call.expect(Expected::Equal(value)))
+    (span == value_tokens.len()).then_some((call, Expected::Equal(value)))
 }
 
 /// A call a test asserts about.
@@ -1704,16 +1809,23 @@ struct Call {
     arguments: String,
     text: String,
     literals: Vec<Literal>,
+    /// The name the function is called on, `q` of `q.pop(0)`; `None` for a
+    /// plain name.
+    receiver: Option<String>,
+    /// Whether its arguments are constants only, one at least
+    /// ([`constant_arguments`]).
+    constant: bool,
 }
 
 impl Call {
-    fn expect(self, expected: Expected) -> Expectation {
+    fn expect(self, expected: Expected, at: Asserted) -> Expectation {
         Expectation {
             function: self.function,
             arguments: self.arguments,
             call: self.text,
             literals: self.literals,
             expected,
+            at,
         }
     }
 }
@@ -1736,6 +1848,11 @@ fn call(tokens: &[Token]) -> Option<Call> {
         return None;
     }
     let function = tokens[open - 1].name()?.to_string();
+    let receiver = if open > 1 {
+        tokens[0].name().map(str::to_string)
+    } else {
+        None
+    };
     let inner = &tokens[open + 1..tokens.len() - 1];
     let mut literals = Vec::new();
     let mut at = 0;
@@ -1755,7 +1872,35 @@ fn call(tokens: &[Token]) -> Option<Call> {
         arguments,
         text,
         literals,
+        receiver,
+        constant: constant_arguments(inner),
     })
+}
+
+/// Whether a call's arguments, `inner`, are constants only, one at least:
+/// literals ([`literal`]), the tuples, lists, sets and dicts they make, and
+/// keyword names. A name, an f-string or another call can depend on state.
+fn constant_arguments(inner: &[Token]) -> bool {
+    let mut has_literal = false;
+    let mut at = 0;
+    while at < inner.len() {
+        if let Some((_, span)) = literal(&inner[at..]) {
+            has_literal = true;
+            at += span;
+            continue;
+        }
+        let keyword =
+            inner[at].name().is_some() && inner.get(at + 1).is_some_and(|next| next.is_op("="));
+        let structure = matches!(
+            &inner[at].tok,
+            Tok::Op(op) if matches!(op.as_str(), "," | "(" | ")" | "[" | "]" | "{" | "}" | ":" | "=")
+        );
+        if !keyword && !structure {
+            return false;
+        }
+        at += 1;
+    }
+    has_literal
 }
 
 /// A token as call arguments compare it: a literal by its value.

@@ -46,7 +46,7 @@ use regex::Regex;
 
 mod gaming;
 
-pub use gaming::gaming_findings;
+pub use gaming::{Contradiction, Expected, Literal, gaming_findings, test_contradictions};
 
 /// How a path changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

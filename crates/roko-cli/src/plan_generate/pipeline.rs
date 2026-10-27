@@ -2289,8 +2289,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             accept_blocks::check_sources(&validated, &accept, &plan_dir)?;
             match spec_scores(&validated, workdir_ref, &spec_config) {
                 Some(scores) if !scores.hard_fails.is_empty() => Err(format!(
-                    "generated plan has spec hard fails; every check must be able to fail \
-                     and every context file must exist:\n{}",
+                    "generated plan has spec hard fails; every check must be able to fail, \
+                     every context file must exist, and no test or criterion may assert one \
+                     call to two values:\n{}",
                     scores
                         .hard_fails
                         .iter()

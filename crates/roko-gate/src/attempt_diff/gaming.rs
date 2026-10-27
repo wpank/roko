@@ -36,9 +36,10 @@
 //! - **special case** ([`DiffFindingKind::SpecialCase`]): a function
 //!   compares a parameter with a literal in a condition, and the tests the
 //!   attempt changed assert one call with that literal to return two values
-//!   that no one result meets. A comparison with a literal alone, such as a
-//!   base case (`if n == 0: return 1`), is not flagged: honest code is full
-//!   of them.
+//!   that no one result meets, with nothing between the two assertions that
+//!   could change what it returns ([`test_contradictions`]). A comparison with
+//!   a literal alone, such as a base case (`if n == 0: return 1`), is not
+//!   flagged: honest code is full of them.
 //! - **computed import** ([`DiffFindingKind::ComputedImport`]): code imports
 //!   or evaluates (`importlib.import_module`, `__import__`, `eval`, `exec`,
 //!   `compile`) a name it builds from literals at run time, spelled in
@@ -57,6 +58,10 @@
 //! Python. A language plugs in as a [`Language`] in [`LANGUAGES`]: the files
 //! it covers, what its test code asserts about calls, and its findings in a
 //! product file.
+//!
+//! The finder of contradictory tests is public, as [`test_contradictions`]:
+//! the spec gate runs it over a task's tests and acceptance criteria before
+//! any attempt (gap-ba2841).
 
 mod python;
 
@@ -74,7 +79,12 @@ trait Language: Sync {
     /// Whether the language's screen reads `path`.
     fn covers(&self, path: &str) -> bool;
 
-    /// What the test code `text` asserts about the results of calls.
+    /// The names a fenced code block's info string gives the language,
+    /// lowercase.
+    fn names(&self) -> &'static [&'static str];
+
+    /// What the test code `text` asserts about the results of calls, each
+    /// assertion placed in its scope ([`Asserted`], `text` 0).
     fn expectations(&self, text: &str) -> Vec<Expectation>;
 
     /// The findings in `file`, a product file the attempt changed, given
@@ -99,6 +109,56 @@ fn language_of(path: &str) -> Option<&'static dyn Language> {
         .find(|language| language.covers(path))
 }
 
+/// The language `name` names, as a fenced code block's info string does
+/// (`python`, `py`) or as a file's path does (`tests/test_money.py`).
+fn language_named(name: &str) -> Option<&'static dyn Language> {
+    let lower = name.trim().to_ascii_lowercase();
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|language| language.names().contains(&lower.as_str()) || language.covers(name))
+}
+
+/// The calls that test code asserts to return two values no one result
+/// meets, one per call: the finder behind the screen's special cases, for
+/// any test text (gap-ba2841).
+///
+/// Each of `texts` is a language and test code in it: the language as a
+/// fenced code block's info string names it (`python`, `py`) or as a file's
+/// path does (`tests/test_money.py`). A text in a language the screen does
+/// not read (it reads Python) asserts nothing here. The texts are read
+/// together, so an assertion in one can contradict one in another, and each
+/// [`Contradiction`] says which texts its two values come from.
+///
+/// Two assertions about one call contradict each other when no one result
+/// meets both, and nothing between them can change what the call returns:
+/// in one scope (a test function, or a text's own statements), no statement
+/// but a check, an import or a docstring stands between them; in two
+/// scopes, none stands before either. Only a call whose arguments are all
+/// constants counts (`round_to_dollars(150)`, not `next(it)` or `f()`), and
+/// not a method of an object the test code makes or is given (`q.pop(0)`):
+/// such a call can return one value and then another without contradicting
+/// anything.
+#[must_use]
+pub fn test_contradictions(texts: &[(&str, &str)]) -> Vec<Contradiction> {
+    let mut expectations = Vec::new();
+    for (index, (language, text)) in texts.iter().enumerate() {
+        let Some(language) = language_named(language) else {
+            continue;
+        };
+        expectations.extend(
+            language
+                .expectations(text)
+                .into_iter()
+                .map(|mut expectation| {
+                    expectation.at.text = index;
+                    expectation
+                }),
+        );
+    }
+    contradictions(&expectations)
+}
+
 /// The suspect findings in what an attempt changed (find-2ba86d).
 ///
 /// They are hidden state, special cases the tests contradict themselves on,
@@ -109,16 +169,12 @@ fn language_of(path: &str) -> Option<&'static dyn Language> {
 /// new is unknown.
 #[must_use]
 pub fn gaming_findings(changes: &[AttemptChange]) -> Vec<DiffFinding> {
-    let mut expectations = Vec::new();
-    for change in changes {
-        if change.kind == ChangeKind::Deleted || !is_test_path(&change.path) {
-            continue;
-        }
-        if let (Some(text), Some(language)) = (change.after.as_deref(), language_of(&change.path)) {
-            expectations.extend(language.expectations(text));
-        }
-    }
-    let contradictions = contradictions(&expectations);
+    let tests: Vec<(&str, &str)> = changes
+        .iter()
+        .filter(|change| change.kind != ChangeKind::Deleted && is_test_path(&change.path))
+        .filter_map(|change| Some((change.path.as_str(), change.after.as_deref()?)))
+        .collect();
+    let contradictions = test_contradictions(&tests);
     let mut findings = Vec::new();
     for change in changes {
         let path = change.path.as_str();
@@ -180,7 +236,7 @@ fn added_lines(before: Option<&str>, after: &str) -> Vec<bool> {
 
 /// A literal in code, compared by value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Literal {
+pub enum Literal {
     /// A number, in canonical decimal form: `1.0` and `True` are `1`.
     Number(String),
     /// A string's text.
@@ -213,7 +269,7 @@ impl std::fmt::Display for Literal {
 
 /// What a test asserts a call returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Expected {
+pub enum Expected {
     /// Equal to the literal.
     Equal(Literal),
     /// A value true in a condition (`assert f(x)`, `assertTrue`).
@@ -263,21 +319,53 @@ pub(super) struct Expectation {
     pub(super) literals: Vec<Literal>,
     /// What the test asserts it returns.
     pub(super) expected: Expected,
+    /// Where the test asserts it.
+    pub(super) at: Asserted,
+}
+
+/// Where an assertion stands in the test code read: its text, its scope
+/// there, and how many statements before it in that scope can change what a
+/// call returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Asserted {
+    /// The text, by its index among those read.
+    pub(super) text: usize,
+    /// Its scope in the text: the text's own statements, or one function's.
+    pub(super) scope: usize,
+    /// The statements before it in its scope that can change state.
+    pub(super) changes: usize,
+}
+
+impl Asserted {
+    /// Whether nothing between the assertions at `self` and `other` can
+    /// change what a call returns: in one scope, no state-changing statement
+    /// stands between them; in two, none stands before either.
+    fn same_state(self, other: Self) -> bool {
+        if (self.text, self.scope) == (other.text, other.scope) {
+            self.changes == other.changes
+        } else {
+            self.changes == 0 && other.changes == 0
+        }
+    }
 }
 
 /// A call the tests assert to return two values that no one result meets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Contradiction {
-    /// The function called.
-    pub(super) function: String,
-    /// The call, for a finding.
-    pub(super) call: String,
+pub struct Contradiction {
+    /// The function called, without the module it is called on.
+    pub function: String,
+    /// The call, near enough as the test wrote it: `round_to_dollars(150)`.
+    pub call: String,
     /// The literals among its arguments.
-    pub(super) literals: Vec<Literal>,
+    pub literals: Vec<Literal>,
     /// One value the tests assert.
-    pub(super) first: Expected,
+    pub first: Expected,
     /// Another, which contradicts the first.
-    pub(super) second: Expected,
+    pub second: Expected,
+    /// The text that asserts `first`, by its index among those read.
+    pub first_text: usize,
+    /// The text that asserts `second`.
+    pub second_text: usize,
 }
 
 /// The calls `expectations` contradict themselves on, one per call.
@@ -294,7 +382,9 @@ fn contradictions(expectations: &[Expectation]) -> Vec<Contradiction> {
         let pair = group.iter().enumerate().find_map(|(index, first)| {
             group[index + 1..]
                 .iter()
-                .find(|second| first.expected.contradicts(&second.expected))
+                .find(|second| {
+                    first.at.same_state(second.at) && first.expected.contradicts(&second.expected)
+                })
                 .map(|second| (*first, *second))
         });
         if let Some((first, second)) = pair {
@@ -304,6 +394,8 @@ fn contradictions(expectations: &[Expectation]) -> Vec<Contradiction> {
                 literals: first.literals.clone(),
                 first: first.expected.clone(),
                 second: second.expected.clone(),
+                first_text: first.at.text,
+                second_text: second.at.text,
             });
         }
     }
@@ -700,6 +792,64 @@ def wrap(text: str, width: int = 70) -> List[str]:
             [(DiffFindingKind::SpecialCase, "calendar_rules.py")],
             "{findings:?}"
         );
+    }
+
+    /// gap-ba2841: the finder reads any test text, by language, and two
+    /// texts can contradict each other. A call that state may change between
+    /// two assertions is no contradiction: a statement between them, a
+    /// method of an object the test makes, an argument that is a variable,
+    /// or no argument at all.
+    #[test]
+    fn test_contradictions_read_any_test_text() {
+        let found = test_contradictions(&[
+            ("python", "assert round_to_dollars(150) == 2\n"),
+            (
+                "tests/test_money.py",
+                "import money\n\n\ndef test_150():\n    \"\"\"Rounds.\"\"\"\n    \
+                 assert money.round_to_dollars(150) == 3\n",
+            ),
+        ]);
+        let [contradiction] = found.as_slice() else {
+            panic!("one contradiction: {found:?}");
+        };
+        assert_eq!(contradiction.call, "round_to_dollars(150)");
+        assert_eq!(
+            (
+                contradiction.first.to_string(),
+                contradiction.second.to_string()
+            ),
+            ("2".to_string(), "3".to_string())
+        );
+        assert_eq!(
+            (contradiction.first_text, contradiction.second_text),
+            (0, 1)
+        );
+        // After the same set-up, nothing changes between the two.
+        let set_up = "def test():\n    money = load()\n    assert round_to_dollars(150) == 2\n    \
+                      assert round_to_dollars(150) == 3\n";
+        assert_eq!(test_contradictions(&[("py", set_up)]).len(), 1);
+        // A language the screen does not read asserts nothing.
+        let rust = [("rust", "assert f(1) == 2"), ("rust", "assert f(1) == 3")];
+        assert!(test_contradictions(&rust).is_empty());
+        let stateful = [
+            "def test():\n    assert get(\"k\") is None\n    put(\"k\", 1)\n    \
+             assert get(\"k\") == 1\n",
+            "def test():\n    queue = [1, 2]\n    assert queue.pop(0) == 1\n    \
+             assert queue.pop(0) == 2\n",
+            "class T(unittest.TestCase):\n    def test(self):\n        \
+             self.assertEqual(self.counter.next(1), 1)\n        \
+             self.assertEqual(self.counter.next(1), 2)\n",
+            "def test():\n    it = iter([1, 2])\n    assert next(it) == 1\n    assert next(it) == 2\n",
+            "def test():\n    assert tick() == 1\n    assert tick() == 2\n",
+        ];
+        for text in stateful {
+            let found = test_contradictions(&[("python", text)]);
+            assert!(found.is_empty(), "{text}: {found:?}");
+        }
+        // In two scopes, an assertion after set-up contradicts no other.
+        let scopes = "def test_a():\n    assert get(\"k\") is None\n\n\ndef test_b():\n    \
+                      put(\"k\", 1)\n    assert get(\"k\") == 1\n";
+        assert!(test_contradictions(&[("python", scopes)]).is_empty());
     }
 
     /// Only what the attempt added counts: a counter the file held before

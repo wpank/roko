@@ -2,7 +2,7 @@
 id = "gap-326182"
 kind = "gap"
 title = "The implementer's rule 1 says to use read_file only for noted lines and undeclared task files, which taken literally forbids the tests and headers a try needs (phase 5.2's read six): say 'don't read again what the prompt shows; read the lines a note names, and anything else you need'"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-compose/templates"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "4337b91ca"
 source = "round-v7 roko-ladder, gap-744bd0's measurement on phase 5.2 (run 13260e60), the lead's wording"
 discovered_from = "agent:roko-ladder (round v7)"
 anchors = ["crates/roko-compose/src/templates/implementer.rs::IMPLEMENTER_ROLE_IDENTITY"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-744bd0", "gap-5db3d9"], 
 
 [[verify]]
 command = "grep -rqw 'fn implementer_may_read_what_the_prompt_lacks' crates/roko-compose/src && cargo test -p roko-compose implementer_may_read_what_the_prompt_lacks"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:07:08Z"
+commit = "f99855681"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "f99855681: the implementer's rule 1 reads 'If this prompt has a \"Declared source context\" section, don't read again what it shows: read the lines a note there says are not shown, and anything else you need. Otherwise read the files listed in the task's read_files and files fields' (the lead's wording), 59 bytes shorter than gap-744bd0's (244 against 303), so a model that takes the rule literally still reads the tests and headers its prompt lacks, as phase 5.2's only try needed six. Test implementer_may_read_what_the_prompt_lacks, red at 01:31 on the old rule; gap-744bd0's implementer_works_from_its_declared_files passes, and the implementer's system prompt snapshot follows (rule 1 twice). Chain on work/gap-326182 f99855681 (main 00ecbd158, a fresh clone of roko-v7-target): red at 01:31; green targeted 10/10 roko-cli and the implementer tests, lib suites roko-cli 4053/0 and roko-compose 529/0, roko-compose's integration tests pass (the implementer snapshot), the bin's CLI parse tests 7/7, clippy -D warnings and nightly fmt clean."
 +++
 
 ## Problem

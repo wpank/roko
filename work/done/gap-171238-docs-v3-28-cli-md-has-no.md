@@ -2,7 +2,7 @@
 id = "gap-171238"
 kind = "gap"
 title = "docs/v3/28-CLI.md has no section for roko safety, effects, showcase, audit or demo"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs"]
 created = 2026-10-26
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "fc94ae369"
 source = "gap-fd9dfb (2026-10-26)"
 discovered_from = "gap-fd9dfb"
 anchors = ["docs/v3/28-CLI.md"]
@@ -22,6 +23,17 @@ command = "for c in safety effects showcase audit demo; do grep -q \"^### .roko 
 
 [[verify]]
 command = "for p in '^roko safety release --tool <tool> --scope <scope> --reason <why>' '^roko effects approve <effect-id>' '^roko showcase passphrase hash' '^roko audit reveal <run-id>' '^roko demo warm' '(#safety-and-audits)' 'roko started for an agent or a check' 'by_source'; do grep -q -- \"$p\" docs/v3/28-CLI.md || exit 1; done"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T00:57:29Z"
+commit = "fc94ae369"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T00:27:18Z"
+forced = false
+evidence = "docs/v3/28-CLI.md gains a section per command, written from the clap definitions (main.rs Command and DemoCmd, commands/{safety,effects,showcase,audit}.rs) and the code behind them: roko safety, roko effects and roko audit in a new section 11 \"Safety and audits\" (the safety release refusals of find-d05b5e and the via of its audit line included), roko showcase after roko deploy, roko demo at the end of Utilities, plus the table of contents and the ROKO_AUDIT_HOME and ROKO_SHOWCASE_PASSPHRASE_HASH rows. Both [[verify]] commands pass (the five headings; a synopsis per command, the TOC entry and the release refusal and by_source), and tools/docs_integrity/check_markdown_links.py docs/v3/28-CLI.md passes. Filed gap-362b00, bug-a1cff1, gap-d2b605 and gap-19e1e3."
 +++
 
 ## Problem

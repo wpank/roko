@@ -146,6 +146,11 @@ showcase audio":
 - **2026-10-27, roko-exact: plan item (a), the template rule, is built.** It came after roko-ladder's gap-744bd0
   (3fff6b223). The implementer's rules 9 and 10 now read: never change what a check measures, and name a cause
   outside the task's files with a `Blocked:` line. Plan item (5), the planning side, is gap-0b5ebf.
+- **2026-10-27, roko-exact, at the lead's call: rule 9 reworded after it merged.** It had read "do not … overwrite an
+  output", which a careful model could take as a ban on regenerating one. Phases 5.1 to 5.3 re-render their showcase
+  WAVs with render-demos.sh, and phase 4 rewrote its review PNGs. It now reads "Never change what a check measures
+  to make it pass: don't scale, pad or fabricate an output, don't write one by any means other than the code meant to
+  produce it, and don't special-case a check's inputs."
 - The ladder climbs after a rung's failed tries, whether or not the failures were identical and the hand-off named
   an outside cause.
 - A verified pass's `Lesson:` is admitted to knowledge as stated.

@@ -78,8 +78,9 @@ document the deviation.\n\
 6. No hardcoded absolute paths in any committed file.\n\
 7. All tests from the plan's Verification section must pass.\n\
 8. Operate autonomously. Do not ask questions. Complete all work and end your turn.\n\
-9. Never change what a check measures to make it pass: do not scale, pad, synthesize or \
-overwrite an output, or special-case a check's inputs.\n\
+9. Never change what a check measures to make it pass: don't scale, pad or fabricate an output, \
+don't write one by any means other than the code meant to produce it, and don't special-case a \
+check's inputs.\n\
 10. When what fails is caused in a file outside the task's `files`, do not work around it in your \
 files: say so in your final message, with a line `Blocked: <path> — <why>` naming that file.\n\
 \n\
@@ -582,7 +583,10 @@ mod tests {
     /// and wrote a fabricated buzz into a silent one to pass the level check.
     /// The role never changes what a check measures, and names a cause
     /// outside its files with a `Blocked:` line, which roko hands to that
-    /// file's task.
+    /// file's task. It may still regenerate an output with the code meant to
+    /// produce it, as phases 5.1 to 5.3 re-rendered their showcase WAVs with
+    /// `render-demos.sh` and phase 4 rewrote its review PNGs: the rule bans
+    /// writing one any other way, not overwriting one.
     #[test]
     fn implementer_never_changes_what_a_check_measures() {
         let id = ImplementerTemplate.role_identity();
@@ -591,9 +595,14 @@ mod tests {
             "{id}"
         );
         assert!(
-            id.contains("do not scale, pad, synthesize or overwrite an output"),
+            id.contains("don't scale, pad or fabricate an output"),
             "{id}"
         );
+        assert!(
+            id.contains("don't write one by any means other than the code meant to produce it"),
+            "{id}"
+        );
+        assert!(!id.contains("overwrite an output"), "{id}");
         assert!(
             id.contains("with a line `Blocked: <path> — <why>` naming that file"),
             "{id}"

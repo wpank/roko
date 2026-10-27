@@ -170,7 +170,12 @@ fn create_tool_loop_backend_with_api_key(
         .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
         .with_poster(poster);
 
-    if let Some(budget) = thinking_budget(model, options.thinking.as_ref(), max_tokens) {
+    // A model that thinks adaptively asks for that at its effort: Claude 4.7
+    // and later refuse a manual budget (bug-0e0dd9). Any other thinking
+    // model keeps its budget.
+    if let Some(effort) = adaptive_thinking(model, options.thinking.as_ref()) {
+        backend = backend.with_adaptive_thinking(effort);
+    } else if let Some(budget) = thinking_budget(model, options.thinking.as_ref(), max_tokens) {
         backend = backend.with_thinking_budget(budget);
     }
     if let Some(ref env_var) = provider.api_key_env {
@@ -337,6 +342,10 @@ struct AnthropicMessagesBackend {
     /// When `Some`, the backend includes the `thinking` block in requests
     /// and sends the `anthropic-beta: extended-thinking-*` header.
     thinking_budget: Option<u32>,
+    /// When `Some`, the effort at which requests ask for adaptive thinking
+    /// (`thinking.type: "adaptive"` with `output_config.effort`), in place
+    /// of a budget (bug-0e0dd9).
+    adaptive_thinking: Option<&'static str>,
 }
 
 impl AnthropicMessagesBackend {
@@ -356,6 +365,7 @@ impl AnthropicMessagesBackend {
             poster: Box::new(ReqwestPoster::new()),
             api_key_env: None,
             thinking_budget: None,
+            adaptive_thinking: None,
         }
     }
 
@@ -367,6 +377,25 @@ impl AnthropicMessagesBackend {
     fn with_thinking_budget(mut self, budget: u32) -> Self {
         self.thinking_budget = Some(budget);
         self
+    }
+
+    fn with_adaptive_thinking(mut self, effort: &'static str) -> Self {
+        self.adaptive_thinking = Some(effort);
+        self
+    }
+
+    /// Ask for the model's thinking in `body`: adaptive at its effort, else
+    /// its manual budget, else none (bug-0e0dd9).
+    fn set_thinking(&self, body: &mut Value) {
+        if let Some(effort) = self.adaptive_thinking {
+            body["thinking"] = json!({ "type": "adaptive" });
+            body["output_config"] = json!({ "effort": effort });
+        } else if let Some(budget) = self.thinking_budget {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+            });
+        }
     }
 
     fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
@@ -484,12 +513,7 @@ impl AnthropicMessagesBackend {
             "stream": true,
         });
 
-        if let Some(budget) = self.thinking_budget {
-            body["thinking"] = json!({
-                "type": "enabled",
-                "budget_tokens": budget,
-            });
-        }
+        self.set_thinking(&mut body);
 
         if !system_prompt.is_empty() {
             let mut system = Value::String(system_prompt.join("\n"));
@@ -543,12 +567,7 @@ impl AnthropicMessagesBackend {
             "tools": tools,
         });
 
-        if let Some(budget) = self.thinking_budget {
-            body["thinking"] = json!({
-                "type": "enabled",
-                "budget_tokens": budget,
-            });
-        }
+        self.set_thinking(&mut body);
 
         if !system_prompt.is_empty() {
             let mut system = Value::String(system_prompt.join("\n"));
@@ -1039,6 +1058,37 @@ fn thinking_budget(
         );
     }
     Some(budget)
+}
+
+/// The effort at which `model` asks for adaptive thinking, when its profile
+/// says it thinks adaptively ([`ModelProfile::thinks_adaptively`]): its
+/// reasoning effort, which is the request's or `[agent] default_effort`
+/// unless the profile names one (bug-0e0dd9). `None` for any other model,
+/// and when the request turns thinking off; a request for thinking on a
+/// profile that does not say it thinks keeps it, as a budget would.
+fn adaptive_thinking(
+    model: &ModelProfile,
+    thinking: Option<&roko_core::foundation::ThinkingConfig>,
+) -> Option<&'static str> {
+    use roko_core::agent::ReasoningEffort;
+
+    if !model.thinks_adaptively() {
+        return None;
+    }
+    match thinking {
+        None if !model.supports_thinking => return None,
+        Some(thinking) if thinking.kind == roko_core::foundation::ThinkingMode::Disabled => {
+            return None;
+        }
+        _ => {}
+    }
+    Some(match model.reasoning_effort.unwrap_or_default() {
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::High => "high",
+        ReasoningEffort::Max => "max",
+        // Medium, roko's default level, and any level added later.
+        _ => "medium",
+    })
 }
 
 /// Default thinking budget by model-family substring.

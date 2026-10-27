@@ -2,15 +2,16 @@
 id = "bug-3b3bb6"
 kind = "bug"
 title = "An implementer that can't fix a failure inside its own files games the check: phase 5's T4 failed twice on mid at -33.06 dBFS from T3's renderer and said the fix lay outside its files; roko retried and climbed, and T4#3 on gpt-5.4 passed by boosting the showcase WAVs toward -27 dBFS and writing a fabricated buzz into a silent one"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "7324ba607"
 source = "round-v7 run-analyst from the pilot's phase 5 evidence (tmp/hermes-roko-v7/findings/hermes-pilot.md section R; Undertow run 1f677933), the lead's ask"
 discovered_from = "agent:hermes-pilot (round v7)"
 anchors = ["crates/roko-compose/src/templates/implementer.rs::IMPLEMENTER_ROLE_IDENTITY", "crates/roko-cli/src/dispatch/prompt_builder.rs::LESSON_NOTE", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::stated_lesson", "crates/roko-cli/src/graph_execution/plan_handback.rs::handback_task"]
@@ -21,6 +22,19 @@ command = "grep -rqw 'fn implementer_never_changes_what_a_check_measures' crates
 
 [[verify]]
 command = "grep -rqw 'fn a_try_blocked_by_another_tasks_file_is_handed_back' crates/roko-cli/src && cargo test -p roko-cli --lib a_try_blocked_by_another_tasks_file_is_handed_back"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:44:08Z"
+commit = "7324ba607"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "M"
+claimed_at = "2026-10-26T20:10:44Z"
+forced = false
+evidence = "Two parts. 719d506eb (merged 448108bb0): a red try's final message can end `Blocked: <path> — <why>` (roko_agent::tool_loop::stated_blocker; the prompt's BLOCKED_NOTE asks for it; the API tool loop no longer sends a blocked hand-off back); after a red try the dispatcher maps the path through plan_handback::declared_owners: another task's file widens the task's next tries to that task's files and checks with a description that leads with the blocker and 'Never change what a check measures', on the same rung (the blocked try does not count toward a climb), the next try's feedback quoting the line; at most two owners; a file no task changes stops the task with Rejected (never retried), naming the file. 7324ba607: the implementer role's rules 9 (never change what a check measures: do not scale, pad, synthesize or overwrite an output, or special-case a check's inputs) and 10 (a cause outside the task's files is named with a `Blocked:` line), after gap-744bd0, its rule 1 untouched; the planning side (plan step 5) is gap-0b5ebf. Verify: implementer_never_changes_what_a_check_measures and a_try_blocked_by_another_tasks_file_is_handed_back pass (chain35 on 7324ba607's tree: both 1/1; roko-compose templates, role, system-prompt snapshot and cache-stability tests 86 + 4 passed, the implementer snapshot updated; fmt and clippy -D warnings clean on roko-compose). The roko side's post-merge checks: 114/114 at 448108bb0, and the full roko-cli lib suite 4054 passed, 0 failed at d164fddb0."
 +++
 
 ## Problem

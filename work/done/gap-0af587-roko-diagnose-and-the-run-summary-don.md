@@ -2,7 +2,7 @@
 id = "gap-0af587"
 kind = "gap"
 title = "roko diagnose and the run summary don't say why the gaming screen left a task unverified: diagnose says 'it has no verify steps'"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,12 +11,24 @@ subsystem = ["roko-cli/commands"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "ee5bd215d"
 source = "find-2ba86d follow-up, 2026-10-27"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::describe_task", "crates/roko-serve/src/routes/runs.rs::summarize_run"]
 links = { depends_on = [], blocks = [], related = ["find-2ba86d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn diagnose_names_the_gaming_screens_reason' crates/roko-cli/src && cargo test -p roko-cli --lib diagnose_names_the_gaming_screens_reason"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T10:22:54Z"
+commit = "ee5bd215d"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T08:31:11Z"
+forced = false
+evidence = "ee5bd215d: roko-learn adds GAMING_SCREEN_RUNG (the pre_verify:gaming step red_flags::settle_suspect writes), AttemptVerdictRecord::gaming_reason and RunRecords::gaming_flags (each task whose last try the screen flagged, with the reason). roko diagnose reads them: TaskDiagnosis::gaming_flagged in --json and \"completed; unverified: <reason>\" in place of \"it has no verify steps\", which a task without verify steps keeps; the text lists tasks completed unverified without --verbose. GET /api/runs/{id}/summary (and MCP run_status) gains gaming_flagged [{plan_id, task_id, attempt, reason}], documented in docs/v3/26-HTTP-API.md. roko plan run keeps each task's reason from its settled tries (GraphTaskDispatcher::note_gaming_flag/gaming_flags): its graph.plan_unverified event and the run's end print \"Task T is unverified: <reason>\", and --json gains gaming_flagged. Verify passes: diagnose_names_the_gaming_screens_reason; also gaming_flags_are_the_tasks_whose_last_try_was_flagged, a_runs_summary_says_why_the_gaming_screen_left_a_task_unverified, a_later_try_clears_the_gaming_screens_flag, a_plans_end_names_the_gaming_screens_reasons. roko-cli lib 4086 passed (gist test skipped), roko-learn lib 1412 and roko-serve lib 1090 passed; clippy -D warnings clean on the three crates. Follow-up gap-2f557f: roko run and plan run's undelivered-work line still say no check ran."
 +++
 
 ## Problem

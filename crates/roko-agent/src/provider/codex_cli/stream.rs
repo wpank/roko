@@ -381,13 +381,20 @@ mod tests {
         let cost = cost.expect("the snapshot lists gpt-5.5");
         let expected = (600.0 * 5.0 + 400.0 * 0.50 + 100.0 * 30.0) / 1e6;
         assert!((cost - expected).abs() < 1e-12, "{cost}");
+
+        // gpt-5.6-sol, roko.toml's Codex model (gap-ceffb3): the same turn at $4, $0.40 and
+        // $20 per million.
+        let cost = turn_cost(&parse_stream_line_with_model(PRICED_TURN, Some("gpt-5.6-sol")));
+        let cost = cost.expect("the snapshot lists gpt-5.6-sol");
+        let expected = (600.0 * 4.0 + 400.0 * 0.40 + 100.0 * 20.0) / 1e6;
+        assert!((cost - expected).abs() < 1e-12, "{cost}");
     }
 
     /// backlog 6106: a model the snapshot does not list, an empty slug or no
     /// model at all has an unknown cost, never the Codex CLI default's.
     #[test]
     fn an_unlisted_codex_model_has_no_cost() {
-        for model in [Some("gpt-5.6-sol"), Some("codex-mini"), Some(""), None] {
+        for model in [Some("gpt-9-future"), Some("codex-mini"), Some(""), None] {
             let events = parse_stream_line_with_model(PRICED_TURN, model);
             assert_eq!(turn_cost(&events), None, "{model:?}");
         }

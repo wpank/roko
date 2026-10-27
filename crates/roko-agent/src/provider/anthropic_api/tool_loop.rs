@@ -2440,4 +2440,164 @@ data: {}\n\
             "no room below max_tokens"
         );
     }
+
+    /// A stand-in for the Messages API serving a model that thinks only
+    /// adaptively, as Claude 4.7 and later do (bug-0e0dd9). A request that
+    /// asks for manual extended thinking gets the API's 400; one that asks
+    /// for adaptive thinking at an effort gets an answer, its thinking
+    /// omitted as these models omit it by default. It keeps each request's
+    /// body.
+    fn serve_adaptive_only() -> (String, Arc<Mutex<Vec<Value>>>) {
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stand-in");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("stand-in address")
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&requests);
+        std::thread::spawn(move || {
+            for _ in 0..3 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let request = read_request_body(&mut stream);
+                let adaptive = request["thinking"] == json!({"type": "adaptive"})
+                    && request["output_config"]["effort"].is_string();
+                let response = if adaptive {
+                    let mut events = vec![message_start("msg_a1")];
+                    events.extend(thinking_events(0, &[""], "EosnCkYICxIM"));
+                    events.extend([
+                        json!({"type": "content_block_start", "index": 1,
+                            "content_block": {"type": "text", "text": ""}}),
+                        json!({"type": "content_block_delta", "index": 1,
+                            "delta": {"type": "text_delta", "text": "ok"}}),
+                        json!({"type": "content_block_stop", "index": 1}),
+                        json!({"type": "message_delta",
+                            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                            "usage": {"output_tokens": 9}}),
+                        json!({"type": "message_stop"}),
+                    ]);
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
+                        sse_reply(&events)
+                    )
+                } else {
+                    let body = json!({"type": "error", "error": {
+                        "type": "invalid_request_error",
+                        "message": "\"thinking.type.enabled\" is not supported for this model. \
+                            Use \"thinking.type.adaptive\" and \"output_config.effort\" to \
+                            control thinking behavior.",
+                    }})
+                    .to_string();
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                kept.lock().expect("requests lock").push(request);
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (base_url, requests)
+    }
+
+    /// bug-0e0dd9: Claude 4.7 and later refuse manual extended thinking
+    /// (`thinking.type: "enabled"` with `budget_tokens`) with a 400, and roko
+    /// asked every thinking Claude model for it. A profile whose
+    /// `thinking_level` is `"adaptive"` now asks for adaptive thinking at the
+    /// model's effort, streamed and answered alike, so the stand-in for such
+    /// a model answers; a profile that says nothing keeps its budget.
+    #[tokio::test]
+    async fn an_adaptive_claude_profile_asks_for_adaptive_thinking() {
+        use futures::StreamExt;
+        use roko_core::agent::ReasoningEffort;
+
+        let adaptive = ModelProfile {
+            slug: "claude-opus-5-5".to_string(),
+            thinking_level: Some("adaptive".to_string()),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..thinking_opus()
+        };
+        let (base_url, requests) = serve_adaptive_only();
+        let backend = create_tool_loop_backend_with_api_key(
+            "test-key".to_string(),
+            &ProviderConfig {
+                base_url: Some(base_url),
+                ..ProviderConfig::default()
+            },
+            &adaptive,
+            &AgentOptions::default(),
+            Box::new(ReqwestPoster::new()),
+        )
+        .expect("backend");
+        let streamed = backend
+            .stream_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await;
+        let sent = requests.lock().expect("requests lock").clone();
+        let events: Vec<_> = streamed
+            .unwrap_or_else(|error| panic!("{error}; sent {}", sent[0]["thinking"]))
+            .collect()
+            .await;
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(StreamEvent {
+                    kind: StreamEventKind::TextDelta(text),
+                    ..
+                }) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "ok");
+        assert_eq!(sent[0]["thinking"], json!({"type": "adaptive"}));
+        assert_eq!(sent[0]["output_config"], json!({"effort": "high"}));
+
+        // The answered request asks the same, with no extended-thinking beta.
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let answered = create_tool_loop_backend_with_api_key(
+            "test-key".to_string(),
+            &ProviderConfig::default(),
+            &adaptive,
+            &AgentOptions::default(),
+            Box::new(RecordingPoster {
+                requests: Arc::clone(&recorded),
+            }),
+        )
+        .expect("backend");
+        answered
+            .send_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .expect("turn");
+        let request = recorded.lock().expect("requests lock").remove(0);
+        assert_eq!(request.body["thinking"], json!({"type": "adaptive"}));
+        assert_eq!(request.body["output_config"], json!({"effort": "high"}));
+        assert!(
+            !request
+                .headers
+                .iter()
+                .any(|(name, _)| name == "anthropic-beta"),
+            "{:?}",
+            request.headers
+        );
+
+        // A profile that says nothing of adaptive thinking keeps its budget.
+        let (budgeted, beta) = sent_thinking(None).await;
+        assert_eq!(
+            budgeted,
+            Some(json!({"type": "enabled", "budget_tokens": 32_768}))
+        );
+        assert!(beta.is_some());
+    }
 }

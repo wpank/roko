@@ -2,15 +2,16 @@
 id = "bug-41e2de"
 kind = "bug"
 title = "The run-level workflow_complete episode and plan-authoring episodes still record started_at equal to completed_at"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/feedback_service", "roko-cli/agent_episode"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "66502fd41"
 source = "status-quo-2026-10-15#finding-24"
 anchors = ["crates/roko-learn/src/feedback_service.rs::build_episode_from_workflow", "crates/roko-cli/src/agent_episode.rs::build_capture_episode", "crates/roko-learn/src/episode_logger.rs::Episode", "crates/roko-cli/src/runtime_feedback/episodes.rs"]
 lane = "rust-cold"
@@ -21,6 +22,17 @@ command = "grep -rqw 'fn workflow_episode_starts_before_it_completes' crates/rok
 
 [[verify]]
 command = "grep -rqw 'fn capture_episode_starts_before_it_completes' crates/roko-cli/ && cargo test -p roko-cli capture_episode_starts_before_it_completes"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T09:53:54Z"
+commit = "66502fd41"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T08:30:54Z"
+forced = false
+evidence = "run_prompt reads Utc::now() beside the Instant that times the Graph run and passes it as FeedbackEvent::WorkflowComplete.started_at; feedback_service::build_episode_from_workflow and agent_episode::build_capture_episode (fed by agent_exec::run_agent_capture_impl and generate_plan) place the episode with the new Episode::set_timing(started_at, duration_ms): it starts when its work began, read from the clock then, and completes duration_ms later. Verify: cargo test -p roko-learn workflow_episode_starts_before_it_completes (1 passed) and cargo test -p roko-cli capture_episode_starts_before_it_completes (1 passed); roko_run_episodes_start_before_they_complete and plan_generate_episode_starts_before_it_completes pass. A $0 live check (fake claude_cli providers, fresh HOME) of roko run --plan --dry-run and roko run --complexity simple wrote no episode with equal start and end (main binary, same script: two). The research capture copy and ACP episodes are filed as bug-232a67."
 +++
 
 ## Problem

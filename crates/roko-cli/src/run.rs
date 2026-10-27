@@ -662,6 +662,8 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             });
     }
 
+    // The run's `workflow_complete` episode starts here (bug-41e2de).
+    let started_at = Utc::now();
     let started = std::time::Instant::now();
     // The Graph run takes this run's id, so its attempt records and manifest
     // land in `run_dir` beside the plan (bug-ccc7c4).
@@ -767,7 +769,15 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             })
     };
     let frozen = model_config.learning.frozen;
-    record_workflow_feedback(layout.root(), &report, outcome, duration, frozen).await;
+    record_workflow_feedback(
+        layout.root(),
+        &report,
+        outcome,
+        started_at,
+        duration,
+        frozen,
+    )
+    .await;
     Ok(report)
 }
 
@@ -1067,13 +1077,16 @@ fn task_output(snapshot: &DashboardSnapshot, plan_id: &str) -> String {
 
 /// Record the run's gate verdicts and completion through the learning
 /// feedback service, which appends them to `learn/efficiency.jsonl` and one
-/// `workflow_complete` episode to the root episode log. A `frozen` run
-/// (decision 2218) records none of it: the episode, and the knowledge
-/// outcomes the service credits for the run, are learned state (bug-dd20bd).
+/// `workflow_complete` episode to the root episode log. The episode starts at
+/// `started_at`, the clock read as the run began, and lasts `duration`
+/// (bug-41e2de). A `frozen` run (decision 2218) records none of it: the
+/// episode, and the knowledge outcomes the service credits for the run, are
+/// learned state (bug-dd20bd).
 async fn record_workflow_feedback(
     roko_dir: &Path,
     report: &WorkflowRunReport,
     outcome: String,
+    started_at: chrono::DateTime<Utc>,
     duration: std::time::Duration,
     frozen: bool,
 ) {
@@ -1098,6 +1111,7 @@ async fn record_workflow_feedback(
         outcome,
         total_cost_usd: report.cost.unwrap_or_default(),
         total_tokens: report.token_usage,
+        started_at,
         duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
     };
     for event in gate_events.chain(std::iter::once(completion)) {
@@ -1703,6 +1717,74 @@ frozen = {frozen}
             assert_eq!(recorded, !frozen, "frozen = {frozen}: {efficiency:?}");
             assert_eq!(workflow, !frozen, "frozen = {frozen}: {episodes:?}");
         }
+    }
+
+    /// bug-41e2de: a `roko run` writes no episode that lasted a while yet
+    /// starts as it completes. The run's `workflow_complete` episode starts
+    /// as the run began, read from the clock then, and completes the run's
+    /// duration later, before `run_prompt` returns.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roko_run_episodes_start_before_they_complete() {
+        let tmp = fake_agent_workspace(
+            r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+"#,
+        );
+        let before = Utc::now();
+        let report = run_prompt(PromptRun {
+            prompt: "Say done",
+            workdir: tmp.path(),
+            tier: "focused",
+            overrides: &CliOverrides::default(),
+            max_retries: Some(0),
+            quiet: true,
+            state_hub: None,
+            run_id: None,
+            cancel: None,
+            domain: None,
+            max_usd: None,
+            origin: RunOrigin::Cli,
+            no_holdout: false,
+            no_audit: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
+        })
+        .await
+        .expect("roko run completes");
+        let after = Utc::now();
+        assert!(report.success);
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &tmp.path().join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("read the episode log");
+        for episode in &episodes {
+            assert!(
+                episode.started_at < episode.completed_at || episode.duration_secs <= 0.0,
+                "the {} episode of {} lasted {} s but starts as it completes",
+                episode.kind,
+                episode.task_id,
+                episode.duration_secs
+            );
+        }
+        let workflow = episodes
+            .iter()
+            .find(|episode| episode.kind == "workflow_complete")
+            .expect("the run's workflow_complete episode");
+        assert!(
+            before <= workflow.started_at && workflow.completed_at <= after,
+            "the run's episode, {} to {}, lies within the run, {before} to {after}",
+            workflow.started_at,
+            workflow.completed_at
+        );
+        assert_eq!(
+            (workflow.completed_at - workflow.started_at).num_milliseconds(),
+            i64::try_from(workflow.usage.wall_ms).expect("a duration")
+        );
     }
 
     /// A run with learning frozen keeps its episodes in its own run directory

@@ -1707,6 +1707,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let effective_model = Some(planner_model.as_str());
         let plan_agent_command =
             command_from_config(workdir_ref).unwrap_or_else(|| "claude".to_string());
+        // The plan-authoring episode starts here (bug-41e2de).
+        let plan_started_at = chrono::Utc::now();
         let plan_started = Instant::now();
         eprintln!("  Generating plan: {slug}");
         // Every planner call is the strategist with read-only tools under the
@@ -1757,6 +1759,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &task_prompt,
                 &output,
                 false,
+                plan_started_at,
                 plan_started.elapsed().as_millis() as u64,
                 None,
                 distiller,
@@ -1886,6 +1889,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &task_prompt,
                 &output,
                 false,
+                plan_started_at,
                 plan_started.elapsed().as_millis() as u64,
                 None,
                 distiller,
@@ -2881,6 +2885,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &task_prompt,
                 &output,
                 false,
+                plan_started_at,
                 plan_started.elapsed().as_millis() as u64,
                 None,
                 distiller,
@@ -3057,6 +3062,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             &task_prompt,
             &output,
             outcome.fully_successful(),
+            plan_started_at,
             plan_started.elapsed().as_millis() as u64,
             None,
             distiller,
@@ -4106,6 +4112,58 @@ mod tests {
         )
         .expect("roko.toml");
         calls
+    }
+
+    /// bug-41e2de: a generated plan's episode starts as its planner work
+    /// began, read from the clock then, and completes that work's wall time
+    /// later, before generation returns. No episode the generation writes
+    /// lasted a while yet starts as it completes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_generate_episode_starts_before_it_completes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        let before = chrono::Utc::now();
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let after = chrono::Utc::now();
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &workdir.join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("read the episode log");
+        for episode in &episodes {
+            assert!(
+                episode.started_at < episode.completed_at || episode.duration_secs <= 0.0,
+                "the {} episode of {} lasted {} s but starts as it completes",
+                episode.kind,
+                episode.task_id,
+                episode.duration_secs
+            );
+        }
+        let episode = episodes
+            .iter()
+            .find(|episode| episode.task_id == "plan:generate:widget")
+            .expect("the plan-generate episode");
+        assert!(
+            before <= episode.started_at && episode.completed_at <= after,
+            "the episode, {} to {}, lies within the generation, {before} to {after}",
+            episode.started_at,
+            episode.completed_at
+        );
+        assert!(episode.usage.wall_ms > 0, "the planner call took time");
+        assert_eq!(
+            (episode.completed_at - episode.started_at).num_milliseconds(),
+            i64::try_from(episode.usage.wall_ms).expect("a duration")
+        );
     }
 
     /// 3218: generation scores its plan. A stub planner whose first plan has

@@ -254,6 +254,7 @@ impl KnowledgeStore {
 
         // Detect confirmations by comparing new entries against existing ones.
         let confirmations = detect_confirmations(&existing, &entries);
+        let mut counted = Vec::new();
         let episodes_of = |id: &str| -> Vec<String> {
             let confirming = entries.iter().find(|entry| entry.id == id);
             confirming.map_or_else(Vec::new, |entry| entry.source_episodes.clone())
@@ -276,14 +277,16 @@ impl KnowledgeStore {
                 .collect();
             self.append_pending(&held)?;
         } else if !confirmations.is_empty() {
-            // Apply tier promotions for confirmed entries.
+            // Apply tier promotions for confirmed entries; a repeat from a
+            // pass that confirmed the entry already counts nothing.
             let mut updated_existing = existing;
             for confirmation in &confirmations {
                 if let Some(entry) = updated_existing
                     .iter_mut()
                     .find(|e| e.id == confirmation.confirmed_entry_id)
+                    && confirm_by_repeat(entry, &episodes_of(&confirmation.confirming_entry_id))
                 {
-                    confirm_by_repeat(entry, &episodes_of(&confirmation.confirming_entry_id));
+                    counted.push(confirmation.clone());
                 }
             }
             self.rewrite_all(&updated_existing)?;
@@ -304,11 +307,10 @@ impl KnowledgeStore {
         file.flush().context("flush knowledge entry")?;
         file.sync_all().context("sync knowledge entry")?;
 
-        // Append confirmation records to the sibling JSONL file; a held
-        // confirmation's record waits for its run's delivery too.
-        if self.commit_batch.is_none() && !confirmations.is_empty() {
-            self.append_confirmations(&confirmations)?;
-        }
+        // Append the records of the confirmations that counted to the sibling
+        // JSONL file; a held confirmation's record waits for its run's
+        // delivery too.
+        self.append_confirmations(&counted)?;
 
         self.register_temporal_entries(&entries);
 

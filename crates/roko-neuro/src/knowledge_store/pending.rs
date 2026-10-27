@@ -137,27 +137,22 @@ impl KnowledgeStore {
         Ok(rows.into_iter().map(|row| row.batch).collect())
     }
 
-    /// Apply `batch`'s held confirmations to `entries`, each pass and each
-    /// repeat once however often it was held, and skip an entry a person
-    /// has retired since. Returns how many applied and the confirmation
-    /// records of the repeats. The caller holds the write lock and rewrites
-    /// `entries`.
+    /// Apply `batch`'s held confirmations to `entries`, and skip an entry a
+    /// person has retired since. A run confirms an entry at most once, by
+    /// the first of its held confirmations that counts; a later pass that
+    /// surfaced the entry is only noted, as a pass that confirmed it already
+    /// is (gap-1220c5). Returns how many applied and the confirmation records
+    /// of the repeats that counted. The caller holds the write lock and
+    /// rewrites `entries`.
     pub(crate) fn apply_pending(
         &self,
         batch: &str,
         entries: &mut [KnowledgeEntry],
     ) -> Result<(usize, Vec<KnowledgeConfirmationRecord>)> {
         let rows = self.pending_confirmations()?;
-        let mut seen = HashSet::new();
+        let mut confirmed = HashSet::new();
         let (mut applied, mut records) = (0, Vec::new());
         for row in rows.into_iter().filter(|row| row.batch == batch) {
-            let key = match &row.by {
-                PendingBy::Surfaced { context, .. } => (row.entry.clone(), context.clone()),
-                PendingBy::Repeat { confirming, .. } => (row.entry.clone(), confirming.clone()),
-            };
-            if !seen.insert(key) {
-                continue;
-            }
             let Some(entry) = entries
                 .iter_mut()
                 .find(|entry| entry.id == row.entry && !entry.deprecated)
@@ -165,9 +160,15 @@ impl KnowledgeStore {
                 continue;
             };
             applied += 1;
-            match &row.by {
+            if confirmed.contains(&row.entry) {
+                if let PendingBy::Surfaced { episode, .. } = &row.by {
+                    note_surfacing(entry, episode);
+                }
+                continue;
+            }
+            let counted = match &row.by {
                 PendingBy::Surfaced { context, episode } => {
-                    confirm_by_surfacing(entry, context, episode);
+                    confirm_by_surfacing(entry, context, episode)
                 }
                 PendingBy::Repeat {
                     confirming,
@@ -177,14 +178,20 @@ impl KnowledgeStore {
                     source_episodes.extend(episodes.iter().cloned());
                     source_episodes.sort();
                     source_episodes.dedup();
-                    confirm_by_repeat(entry, episodes);
-                    records.push(KnowledgeConfirmationRecord {
-                        created_at: row.at,
-                        source_episodes,
-                        confirmed_entry_id: row.entry.clone(),
-                        confirming_entry_id: confirming.clone(),
-                    });
+                    let counted = confirm_by_repeat(entry, episodes);
+                    if counted {
+                        records.push(KnowledgeConfirmationRecord {
+                            created_at: row.at,
+                            source_episodes,
+                            confirmed_entry_id: row.entry.clone(),
+                            confirming_entry_id: confirming.clone(),
+                        });
+                    }
+                    counted
                 }
+            };
+            if counted {
+                confirmed.insert(row.entry);
             }
         }
         Ok((applied, records))
@@ -214,16 +221,43 @@ impl KnowledgeStore {
     }
 }
 
+/// Whether `entry` counts a confirmation from `episode` already: a context
+/// that is the episode, as a repeat records it, or that ends with it, as a
+/// surfacing pass's `plan:task:episode` does.
+fn counts_episode(entry: &KnowledgeEntry, episode: &str) -> bool {
+    entry.distinct_contexts.iter().any(|context| {
+        context == episode
+            || context
+                .strip_suffix(episode)
+                .is_some_and(|rest| rest.ends_with(':'))
+    })
+}
+
 /// Count a verified pass that surfaced `entry` in `context` as one
-/// confirmation of it, once per context, and re-evaluate its tier.
-pub(crate) fn confirm_by_surfacing(entry: &mut KnowledgeEntry, context: &str, episode: &str) {
-    if !entry.source_episodes.iter().any(|known| known == episode) {
-        entry.source_episodes.push(episode.to_string());
-    }
-    if !entry.distinct_contexts.iter().any(|known| known == context) {
+/// confirmation of it, once per context, and re-evaluate its tier. A pass
+/// confirms an entry once, whether it surfaced it, repeated it or both
+/// (gap-1220c5). Returns whether it counted.
+pub(crate) fn confirm_by_surfacing(
+    entry: &mut KnowledgeEntry,
+    context: &str,
+    episode: &str,
+) -> bool {
+    let counted = !counts_episode(entry, episode)
+        && !entry.distinct_contexts.iter().any(|known| known == context);
+    if counted {
         entry.distinct_contexts.push(context.to_string());
         entry.confirmation_count = entry.confirmation_count.saturating_add(1);
         entry.confidence = (entry.confidence + 0.03).clamp(0.0, 1.0);
+    }
+    note_surfacing(entry, episode);
+    counted
+}
+
+/// Note `episode`, a verified pass that surfaced `entry`, as one of its
+/// sources, and re-evaluate its tier by its confirmations.
+fn note_surfacing(entry: &mut KnowledgeEntry, episode: &str) {
+    if !entry.source_episodes.iter().any(|known| known == episode) {
+        entry.source_episodes.push(episode.to_string());
     }
     let count = entry.confirmation_count as usize;
     if let Some(tier) = TierProgression::evaluate_tier_progression_v2(entry, count, 0).tier() {
@@ -234,10 +268,19 @@ pub(crate) fn confirm_by_surfacing(entry: &mut KnowledgeEntry, context: &str, ep
 /// Count `episodes`, the sources of a lesson that repeats `entry`, as one
 /// confirmation of it, and promote it by the confirmation thresholds: 2
 /// confirmations make a transient entry working, and 3 contexts a working one
-/// consolidated (P2-15).
-pub(crate) fn confirm_by_repeat(entry: &mut KnowledgeEntry, episodes: &[String]) {
+/// consolidated (P2-15). A pass confirms an entry once, whether it surfaced
+/// it, repeated it or both, so a repeat whose episodes the entry counts
+/// already counts nothing (gap-1220c5). Returns whether it counted.
+pub(crate) fn confirm_by_repeat(entry: &mut KnowledgeEntry, episodes: &[String]) -> bool {
+    let fresh: Vec<&String> = episodes
+        .iter()
+        .filter(|episode| !counts_episode(entry, episode))
+        .collect();
+    if !episodes.is_empty() && fresh.is_empty() {
+        return false;
+    }
     entry.confirmation_count = entry.confirmation_count.saturating_add(1);
-    for episode in episodes {
+    for episode in fresh {
         if !entry.distinct_contexts.contains(episode) {
             entry.distinct_contexts.push(episode.clone());
         }
@@ -262,6 +305,7 @@ pub(crate) fn confirm_by_repeat(entry: &mut KnowledgeEntry, episodes: &[String])
             "knowledge tier progression"
         );
     }
+    true
 }
 
 #[cfg(test)]
@@ -386,7 +430,7 @@ mod tests {
     /// its own lesson that repeats it, confirm that lesson only when the run
     /// delivers. Until the run's end both wait beside its batch; an
     /// undelivered run's commit drops them, and a delivered run's applies
-    /// them, with the repeat's confirmation record.
+    /// them as one confirmation, the repeat's, with its record.
     #[test]
     fn an_undelivered_run_confirms_nothing() {
         for delivered in [false, true] {
@@ -435,10 +479,10 @@ mod tests {
             let after = read(&store, "kn-loudness");
             if delivered {
                 assert_eq!(decision, Some(CommitDecision::Committed));
-                assert_eq!(after.confirmation_count, before.confirmation_count + 2);
+                assert_eq!(after.confirmation_count, before.confirmation_count + 1);
                 assert_eq!(
                     after.distinct_contexts.len(),
-                    before.distinct_contexts.len() + 2
+                    before.distinct_contexts.len() + 1
                 );
                 let records = store.read_confirmations().expect("records");
                 assert_eq!(records.len(), 1, "the repeat's record: {records:?}");
@@ -537,5 +581,59 @@ mod tests {
             confirmations(&read(&store, "kn-loudness")),
             confirmations(&after)
         );
+    }
+
+    /// gap-1220c5: one pass that surfaces a committed lesson and restates it
+    /// confirms it once, not once per path, and writes one record, the
+    /// repeat's. An unguarded run confirms per pass; a guarded run confirms
+    /// an entry at most once per batch, whatever its passes did.
+    #[test]
+    fn a_pass_that_surfaces_and_restates_an_entry_confirms_it_once() {
+        let transient = || KnowledgeEntry {
+            confirmation_count: 0,
+            distinct_contexts: Vec::new(),
+            tier: KnowledgeTier::Transient,
+            ..committed_lesson()
+        };
+
+        // Unguarded: each pass confirms the lesson once.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko_dir = temp.path().join(".roko");
+        let store = KnowledgeStore::for_roko_dir(&roko_dir);
+        store.rewrite_all(&[transient()]).expect("seed the store");
+        let lifecycle = RuntimeKnowledgeLifecycle::for_roko_dir(&roko_dir);
+        let first = pass("off:p5-1:T1:1", "T1", Some(REPEAT), &["kn-loudness"]);
+        lifecycle.ingest_observation(first).expect("T1#1");
+        let once = read(&store, "kn-loudness");
+        assert_eq!(once.confirmation_count, 1, "{once:?}");
+        assert_eq!(once.distinct_contexts.len(), 1, "{once:?}");
+        assert_eq!(store.read_confirmations().expect("records").len(), 1);
+        let second = pass("off:p5-1:T2:1", "T2", None, &["kn-loudness"]);
+        lifecycle.ingest_observation(second).expect("T2#1");
+        assert_eq!(read(&store, "kn-loudness").confirmation_count, 2);
+        assert_eq!(store.read_confirmations().expect("records").len(), 1);
+
+        // Guarded: the run's two passes confirm it once, when it delivers.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko_dir = temp.path().join(".roko");
+        let learn_dir = roko_dir.join("learn");
+        let store = KnowledgeStore::for_roko_dir(&roko_dir);
+        store.rewrite_all(&[transient()]).expect("seed the store");
+        let batch = "run-1220c5-once";
+        let lifecycle = RuntimeKnowledgeLifecycle::for_roko_dir(&roko_dir).with_commit_batch(batch);
+        let first = pass("run:p5-1:T1:1", "T1", Some(REPEAT), &["kn-loudness"]);
+        lifecycle.ingest_observation(first).expect("T1#1");
+        let second = pass("run:p5-1:T2:1", "T2", None, &["kn-loudness"]);
+        lifecycle.ingest_observation(second).expect("T2#1");
+        assert_eq!(store.pending_confirmations().expect("the ledger").len(), 3);
+        let delivered = Delivery::Delivered("the run delivered plan p5-1".to_string());
+        assert_eq!(
+            settle(&store, &learn_dir, batch, delivered),
+            Some(CommitDecision::Committed)
+        );
+        let after = read(&store, "kn-loudness");
+        assert_eq!(after.confirmation_count, 1, "{after:?}");
+        assert_eq!(after.distinct_contexts.len(), 1, "{after:?}");
+        assert_eq!(store.read_confirmations().expect("records").len(), 1);
     }
 }

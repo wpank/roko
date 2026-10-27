@@ -2,15 +2,16 @@
 id = "gap-55f878"
 kind = "gap"
 title = "The specs epic's two exit tests were never written: spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_twin (backlog 3200) and spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin (spec-e57870)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_validate", "roko-gate/spec_quality"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "fb9d20e9a"
 source = "status-quo-2026-10-15#finding-27"
 anchors = ["crates/roko-cli/tests/plan_validate.rs", "crates/roko-cli/src/commands/plan.rs::validate_before_run", "crates/roko-gate/src/spec_quality.rs::score_task"]
 lane = "rust-cold"
@@ -21,6 +22,17 @@ command = "grep -rqw 'fn spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_
 
 [[verify]]
 command = "grep -rqw 'fn spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_validate spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T09:43:01Z"
+commit = "fb9d20e9a"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T08:30:55Z"
+forced = false
+evidence = "Two exit tests in crates/roko-cli/tests/plan_validate.rs (fb9d20e9a), run through the CLI over inline fixture plans. spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_twin: the exact plan passes plan validate --strict --spec-quality with 0 diagnostics at band A (100.0) and passes the spec gate of plan run --dry-run; its twin, whose check ends in `|| true` (HF2), is refused by plan run in a dry run and a real run with \"plans/twin/tasks.toml T1: HF2: step 1: ends in `|| true`\" and starts no attempt. spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin: plan validate --strict --spec-quality rejects the weak plan with exactly PLAN_038, PLAN_CONCURRENT_OVERLAP and PLAN_TIER_SIZE, its grep-only check scored SQ04 0.25 (structural, a score by the find-70edcb decision), and passes the fixed twin with 0 diagnostics. Both [[verify]] commands pass; plan_validate 27/27, plan_validation 38/38; nightly fmt; clippy -p roko-cli --no-deps -D warnings clean."
 +++
 
 ## Problem
@@ -72,3 +84,13 @@ Both `[[verify]]` commands pass.
 ## Notes
 
 Parent: spec-e57870. Tests only; if a test exposes a gate bug, file it rather than widening this item.
+
+2026-10-27 (fb9d20e9a): both tests are in `crates/roko-cli/tests/plan_validate.rs`, over inline fixture plans for a
+small Python project whose checks run planner-written tests; neither exposed a gate bug.
+- The 3200 twin's check ends in `|| true` (HF2). A grep for a string the task writes (plan step 1's other option)
+  can fail until the task writes the string, so it is not a cannot-fail step: the gate scores it and lets it run,
+  as decision 3201 says.
+- The spec-e57870 weak plan's grep-only check has no PLAN code, because find-70edcb's 2026-10-15 decision keeps a
+  file-scoped step a spec-quality score (only a cannot-fail step is to become a default warning). The test checks
+  that step's SQ04 (class `structural`, 0.25) beside PLAN_038, PLAN_CONCURRENT_OVERLAP and PLAN_TIER_SIZE, so
+  plan step 4's wait for find-70edcb does not apply.

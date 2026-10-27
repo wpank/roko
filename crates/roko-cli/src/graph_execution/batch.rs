@@ -1149,6 +1149,7 @@ mod tests {
                 evidence_ref: None,
                 checks: Vec::new(),
                 stopped_by: None,
+                build_trees: None,
             }
         }
 

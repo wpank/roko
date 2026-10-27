@@ -95,11 +95,30 @@ pub struct DeliveryRegressionOutcome {
     /// What stopped the check before it ended, such as `cancel` (bug-7b62ff):
     /// the delivery is then cancelled, not failed.
     pub stopped_by: Option<String>,
+    /// What the check started from, when it ran; the receipt keeps it under
+    /// [`DELIVERY_BUILD_TREES_EXTENSION`], passed or failed (bug-2f70cd).
+    pub build_trees: Option<DeliveryBuildTrees>,
 }
 
 /// Receipt extension holding the [`DeliveryCheck`]s of a delivery's
 /// whole-plan check (backlog 3111).
 pub const DELIVERY_CHECKS_EXTENSION: &str = "roko.delivery.checks@1";
+
+/// Receipt extension holding what a delivery's whole-plan check started
+/// from, a [`DeliveryBuildTrees`] (bug-2f70cd).
+pub const DELIVERY_BUILD_TREES_EXTENSION: &str = "roko.delivery.build_trees@1";
+
+/// What a delivery's whole-plan check started from (gap-dc24dd), as its
+/// receipt records it, whether the check passed or failed (bug-2f70cd).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeliveryBuildTrees {
+    /// Whether it was a cold check (`[meta] cold_verify`): from no build
+    /// trees and an empty cargo target dir.
+    pub cold: bool,
+    /// The build trees it started from, as its check log's first line says
+    /// them.
+    pub started_from: String,
+}
 
 /// The most output lines a [`DeliveryCheck`] keeps; its evidence log keeps
 /// all of them.
@@ -552,7 +571,7 @@ impl GitDeliveryBackend {
     async fn regression_output(
         &self,
         commit: &str,
-    ) -> Result<(Vec<DeliveryCheck>, String), String> {
+    ) -> Result<(Vec<DeliveryCheck>, String, DeliveryBuildTrees), String> {
         let checkout = regression_checkout_path(&self.workdir);
         let _held = tokio::select! {
             held = lock_regression_checkout(&checkout) => held?,
@@ -639,7 +658,11 @@ impl GitDeliveryBackend {
                 break;
             }
         }
-        Ok((checks, log))
+        let build_trees = DeliveryBuildTrees {
+            cold: self.cold,
+            started_from: build_trees,
+        };
+        Ok((checks, log, build_trees))
     }
 
     /// The build trees the regression check at `checkout` starts from
@@ -1030,9 +1053,10 @@ impl DeliveryBackend for GitDeliveryBackend {
                 evidence_ref: None,
                 checks: Vec::new(),
                 stopped_by: None,
+                build_trees: None,
             };
         }
-        let (checks, log) = match self.regression_output(merge_commit).await {
+        let (checks, log, build_trees) = match self.regression_output(merge_commit).await {
             Ok(ran) => ran,
             Err(summary) => {
                 return DeliveryRegressionOutcome {
@@ -1043,6 +1067,7 @@ impl DeliveryBackend for GitDeliveryBackend {
                     // A check that ends while the run stops, before a step
                     // or between them, was stopped (bug-7b62ff).
                     stopped_by: self.stop.requested().map(|stop| stop.label().to_string()),
+                    build_trees: None,
                 };
             }
         };
@@ -1089,6 +1114,7 @@ impl DeliveryBackend for GitDeliveryBackend {
             evidence_ref,
             stopped_by: checks.iter().find_map(|check| check.stopped_by.clone()),
             checks,
+            build_trees: Some(build_trees),
         }
     }
 
@@ -1399,6 +1425,17 @@ impl CliCompletionDeliveryService {
                             .extensions
                             .insert(DELIVERY_CHECKS_EXTENSION.to_string(), checks);
                     }
+                    // What the check started from, passed or failed: a passed
+                    // cold check is otherwise recorded only in the plan's
+                    // check log, which its next delivery overwrites
+                    // (bug-2f70cd).
+                    if let Some(build_trees) = &outcome.build_trees
+                        && let Ok(build_trees) = serde_json::to_value(build_trees)
+                    {
+                        receipt
+                            .extensions
+                            .insert(DELIVERY_BUILD_TREES_EXTENSION.to_string(), build_trees);
+                    }
 
                     // A stop request that cut the check short cancels the
                     // delivery: the check did not fail (bug-7b62ff).
@@ -1446,6 +1483,7 @@ impl CliCompletionDeliveryService {
                     self.store.update(receipt);
                     info!(
                         delivery_id = %receipt.request.delivery_id,
+                        summary = %outcome.summary,
                         "delivery regression passed"
                     );
                 }
@@ -1801,6 +1839,7 @@ mod tests {
                     evidence_ref: None,
                     checks: Vec::new(),
                     stopped_by: Some("cancel".to_string()),
+                    build_trees: None,
                 };
             }
             if self.regression_succeeds.load(Ordering::Relaxed) {
@@ -1810,6 +1849,7 @@ mod tests {
                     evidence_ref: Some("/tmp/regression.log".to_string()),
                     checks: Vec::new(),
                     stopped_by: None,
+                    build_trees: None,
                 }
             } else {
                 DeliveryRegressionOutcome {
@@ -1818,6 +1858,7 @@ mod tests {
                     evidence_ref: Some("/tmp/regression-fail.log".to_string()),
                     checks: Vec::new(),
                     stopped_by: None,
+                    build_trees: None,
                 }
             }
         }
@@ -3248,6 +3289,64 @@ mod tests {
         assert!(
             root.join("build/built").exists(),
             "the person's tree is gone"
+        );
+    }
+
+    /// bug-2f70cd: every delivery's receipt says what its whole-plan check
+    /// started from, passed or failed. A passed check's summary used to be
+    /// dropped, so a cold check that passed was recorded only in the plan's
+    /// check log, which its next delivery overwrites.
+    #[tokio::test]
+    async fn a_passed_cold_check_s_receipt_says_it_ran_cold() {
+        let record = tempfile::tempdir().unwrap();
+        let mut receipts = Vec::new();
+        for (cold, step) in [(true, "test ! -e build"), (false, "exit 1")] {
+            let repo = diverged_repo();
+            let path = repo.path();
+            git(path, &["checkout", "--quiet", "-b", "work"]);
+            let backend = GitDeliveryBackend::new(path.to_path_buf())
+                .with_regression_steps(vec![step.to_string()])
+                .with_regression_target_dir(record.path().join(format!("target-{cold}")))
+                .with_cold_check(cold);
+            let service = CliCompletionDeliveryService::new(Arc::new(backend));
+            let request = CompletionDeliveryRequest {
+                publish: false,
+                ..git_request(&format!("d-git-build-trees-{cold}"), path)
+            };
+            receipts.push(service.deliver(request).await.unwrap());
+        }
+
+        let [passed, failed] = receipts.as_slice() else {
+            unreachable!("two deliveries");
+        };
+        assert_eq!(
+            passed.state,
+            CompletionDeliveryState::Delivered,
+            "{:?}",
+            passed.error
+        );
+        assert_eq!(failed.state, CompletionDeliveryState::RegressionFailed);
+        let build_trees = |receipt: &CompletionDeliveryReceiptV1| -> DeliveryBuildTrees {
+            serde_json::from_value(receipt.extensions[DELIVERY_BUILD_TREES_EXTENSION].clone())
+                .expect("the receipt's build trees")
+        };
+        assert_eq!(
+            build_trees(passed),
+            DeliveryBuildTrees {
+                cold: true,
+                started_from: "a cold check: the regression checkout starts from no build \
+                               trees and an empty cargo target dir"
+                    .to_string(),
+            }
+        );
+        assert_eq!(
+            build_trees(failed),
+            DeliveryBuildTrees {
+                cold: false,
+                started_from: "a warm check: neither the regression checkout nor your \
+                               checkout has build trees"
+                    .to_string(),
+            }
         );
     }
 }

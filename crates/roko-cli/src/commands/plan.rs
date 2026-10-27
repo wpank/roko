@@ -2142,6 +2142,9 @@ async fn cmd_plan_dir_status(
                         }))
                         .collect::<Vec<_>>(),
                     "check_log": delivery.check_log,
+                    // What the checks started from, such as a cold check
+                    // (bug-2f70cd).
+                    "build_trees": delivery.build_trees,
                 })),
                 "tasks": task_entries,
             }))?
@@ -2170,6 +2173,9 @@ async fn cmd_plan_dir_status(
             }
             if let Some(log) = &delivery.check_log {
                 println!("plan check log:  {log}");
+            }
+            if let Some(build_trees) = &delivery.build_trees {
+                println!("plan check from: {}", build_trees.started_from);
             }
         }
         println!();

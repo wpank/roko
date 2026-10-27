@@ -268,19 +268,20 @@ The one entry point for work. `roko run` takes a prompt or an existing plan dire
 
 ```
 roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
-                              [--complexity trivial|simple|standard|complex]
+                              [--complexity trivial|simple|medium|complex]
                               [--context <path>...] [--no-cascade] [--provider <name>]
                               [--workdir <path>] [--max-retries <n>] [--domain <label>]
                               [--serve] [--share] [--fresh] [--resume-plan [<path>]]
+                              [--no-holdout] [--no-audit]
 ```
 
 | Arg/Flag | Default | Description |
 |---|---|---|
 | `<prompt...>` or `<plan-dir>` | required | A natural-language request (quote it), or a plan directory such as `plans/<slug>` or `plans/`. |
 | `--plan` | false | Always write a plan first, whatever the size of the prompt. |
-| `--dry-run` | false | With `--plan`: write the plan and stop. Without it: show the size, route and gates the prompt would get, and run nothing. |
-| `--yes` | false | Run a written plan without asking first. |
-| `--complexity <level>` | auto | Force the size: `trivial` and `simple` run one task; `standard` and `complex` write a plan. |
+| `--dry-run` | false | With `--plan`: write the plan and stop. Without it: show the size, route and gates the prompt would get, and run nothing. With a plan directory: preview the plan, as `roko plan run --dry-run` does. |
+| `--yes`, `-y` | false | Run a written plan without asking first. |
+| `--complexity <level>` | auto | Force the size: `trivial` and `simple` run one task; `medium` and `complex` write a plan. `standard` is accepted for `medium`. |
 | `--context <path>` | -- | Extra context for the planner: files, directories or globs (repeatable). |
 | `--no-cascade` | false | Disable cascade routing for this run. |
 | `--provider <name>` | config | Override the provider for this run. |
@@ -291,6 +292,12 @@ roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
 | `--share` | false | Generate a shareable URL (starts serve if needed). One-task runs only. |
 | `--fresh` | false | Plan directory only: archive existing state and start from scratch. |
 | `--resume-plan [<path>]` | -- | Plan directory only: resume from the last checkpoint (default `.roko/state/graph/`). |
+| `--no-holdout` | false | Maximize mode for this run alone (decision 4115), as `[experiments] maximize = true` is for every run: every holdout rate and the routing exploration rate are 0, so no learning loop is withheld, no route explores, and the spec gate holds out none of its decisions (`[spec_quality] holdout_frac` counts as 0). Every decision is still logged. |
+| `--no-audit` | false | Run no audits for this run alone (decision 7103), as `[audit] enabled = false` does for every run: no green attempt is drawn for a deep audit (see [`roko audit`](#roko-audit)), so audits spend nothing. |
+
+`--no-holdout` and `--no-audit` apply however the prompt runs: as one task, or as a plan written
+first. With a plan directory they apply as on `roko plan run`, which refuses them while a server
+owns the workspace.
 
 The global flags (`--model`, `--role`, `--json`, `--effort`, `--quiet`) apply as usual. For
 the full set of plan-run options (budgets, worktrees, topology, the inline TUI), use
@@ -628,9 +635,10 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--max-retries <n>] [--max-tasks <n>] [--dry-run]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget] [--frozen-learning]
-              [--dangerously-skip-permissions]
+              [--no-holdout] [--no-audit] [--dangerously-skip-permissions]
               [--log-file <path>] [--worktree-per-task | --no-worktree-per-task]
               [--rich-topology] [--promote <branch>]
+              [--max-parallel-plans <n>] [--fail-fast]
 ```
 
 | Arg/Flag | Default | Description |
@@ -639,7 +647,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--engine <engine>` | `graph` | `graph` is the sole engine. `legacy`/`runner-v2` are accepted but exit with a deprecation error. |
 | `--workdir <path>` | cwd | Working directory (repo root). |
 | `--resume-plan [<path>]` | -- | Resume from checkpoint. Default resume path: `.roko/state/graph/`. Alias: `--resume-state`. |
-| `--approval` | false | Launch the connected inline TUI while the plan runs. Alias: `--tui`. |
+| `--approval` | false | Accepted, and changes nothing: the run opens the inline TUI whenever stdout is a terminal, unless `--no-tui`, `--quiet` or `--json` is given. Alias: `--tui`. |
 | `--no-tui` | false | Suppress auto-enabled TUI in interactive terminals. |
 | `--max-retries <n>` | config | Maximum retry attempts per task. |
 | `--max-tasks <n>` | config | Maximum concurrent tasks per plan; `0` keeps configured behavior. |
@@ -647,20 +655,25 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--fresh` | false | Archive existing state and start from scratch. |
 | `--force-resume` | false | Archive mismatched fingerprint and start a new run. |
 | `--force` | false | Skip disk-space pre-check. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling. |
-| `--no-budget` | false | Disable the per-plan cost ceiling. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling (`[budget] max_plan_usd`) for this run. `0` removes the plan ceiling; the per-task and daily ceilings still apply. |
+| `--no-budget` | false | Disable budget enforcement for this run: no plan, per-task or daily ceiling stops a dispatch, and spend is still recorded. Not with `--budget-override`. |
 | `--frozen-learning` | false | Hold learned state fixed for this run, as `[learning] frozen = true` does for every run: the run reads learned state and writes none, while telemetry stays on (decision 2218). Its manifest records `ablation_flags = ["learning_frozen"]`. Refused when a server owns the workspace. |
+| `--no-holdout` | false | Maximize mode for this run alone (decision 4115), as `[experiments] maximize = true` is for every run: every holdout rate and the routing exploration rate are 0, so no learning loop is withheld, no route explores, and the spec gate holds out none of its decisions (`[spec_quality] holdout_frac` counts as 0). Every decision is still logged. Refused when a server owns the workspace. |
+| `--no-audit` | false | Run no audits for this run alone (decision 7103), as `[audit] enabled = false` does for every run: no green attempt is drawn for a deep audit (see [`roko audit`](#roko-audit)), so audits spend nothing. Refused when a server owns the workspace. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
 | `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
 | `--no-worktree-per-task` | false | Run every task in the shared working tree, whatever `[runner] worktree_per_task` says: tasks edit your checkout directly. |
 | `--rich-topology` | false | Use the 5-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
 | `--promote <branch>` | -- | Once every plan is delivered, promote the batch into BRANCH and tag it `roko/run/<run-id>`. A BRANCH checked out anywhere is not moved: the promotion is parked at `refs/roko/delivered/run-<run-id>`. Needs per-task worktrees. |
+| `--max-parallel-plans <n>` | `[conductor] max_parallel_plans` (1) | Run up to N plans of a plan set at the same time, N from 1 to 64. Plans start in execution order once their `depends_on_plan` prerequisites have succeeded, and plans that write or build overlapping parts of the working tree never run at the same time. Each plan keeps its own plan ceiling. With per-task worktrees, each plan that finishes is delivered into the run's batch branch in turn. |
+| `--fail-fast` | false | Start no further plans after the first plan fails. Plans already running finish; the rest are reported as blocked. A plan that ends unverified (no task failed, but some ran no verify step) does not count as failed here. Without the flag, every plan whose prerequisites succeeded runs. Within one plan, `[meta] failure_policy` (else `[conductor] plan_failure_policy`) decides whether a failed task stops the plan's other tasks. |
 
 ```bash
 roko plan run plans/                            # Run all plans
 roko plan run plans/my-plan                     # Run one plan
-roko plan run plans/ --approval                 # With inline TUI
+roko plan run plans/ --no-tui                   # Plain log output instead of the inline TUI
+roko plan run plans/ --max-parallel-plans 3     # Up to 3 independent plans at once
 roko plan run plans/ --dry-run                  # Preview without executing
 roko plan run plans/ --fresh                    # Archive old state, start clean
 roko plan run plans/ --resume-plan              # Resume from last checkpoint
@@ -679,18 +692,20 @@ Write a plan from a prompt, a spec file, your notes, or backlog specs. An agent 
 then run it with `roko run plans/<slug>`.
 
 ```
-roko plan generate <source...> [--from-file <path>] [--context <path>...]
+roko plan generate [<source...>] [--from-file <path>] [--context <path>...]
                    [--from-notes] [--tag <tag>] [--from-backlog <ids>]
+                   [--max-usd <usd>]
 ```
 
 | Arg/Flag | Description |
 |---|---|
-| `<source...>` | Free-text prompt, or path to a file (a written spec, requirements, notes). |
-| `--from-file <path>` | Treat source as a file path. |
+| `<source...>` | The request as free text (quote it). To write the plan from a file (a written spec, requirements, notes), pass the file with `--from-file`. |
+| `--from-file <path>` | Read the request from this file instead of `<source...>`. The plan's slug is the file's stem. |
 | `--context <path>` | Additional context files/dirs/globs (repeatable). |
 | `--from-notes` | Read notes from `.roko/notes/` and generate one plan per cluster. |
 | `--tag <tag>` | Filter notes by tag when using `--from-notes`. |
 | `--from-backlog <ids>` | Generate one plan per backlog spec, read from `tmp/backlog/<id>-*.md`. Comma-separated IDs: `--from-backlog 206,120`. |
+| `--max-usd <usd>` | What one plan's planner calls may cost together, in USD. Once they have cost this much, generation makes no further planner call: a retry it needs stops it with an error that names the cap, and an improvement it would ask for is skipped. Default `[authoring] max_generation_usd` (2.0); `0` sets no cap. With `--from-notes` or `--from-backlog`, each plan has its own cap. |
 
 ```bash
 roko plan generate "Add OAuth2 login"

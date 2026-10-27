@@ -2,7 +2,7 @@
 id = "bug-217107"
 kind = "bug"
 title = "The shared provider-failure classifier reads Anthropic's authentication_error (the Claude CLI's expired OAuth token) as unknown, not an auth failure"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/provider"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "b0cd36b7f"
 source = "gap-466060 (worker, 2026-10-27)"
 discovered_from = "gap-466060: provider_error_kind's copy named it auth_failure through any 'authentication'; the shared classifier it now delegates to does not"
 anchors = ["crates/roko-agent/src/provider/error_classify.rs::is_auth_failure_text"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-466060"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn anthropic_authentication_error_is_an_auth_failure' crates/roko-agent/ && cargo test -p roko-agent --lib anthropic_authentication_error_is_an_auth_failure"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T10:40:48Z"
+commit = "b0cd36b7f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T10:25:54Z"
+forced = false
+evidence = "b0cd36b7f: error_classify::is_auth_failure_text counts authentication_error, the error type Anthropic sends with a 401 for a bad or expired credential and the Claude CLI passes on as API Error: 401 {...\"type\":\"authentication_error\"...} (the text of its expired OAuth token). classify_failure_text names that text auth_failure now, and so does model_call_service::provider_error_kind, which delegates to it through classify_call_failure_text (gap-466060). A permission_error 403 stays unknown (bug-80f0d0). The verify passes: the grep finds fn anthropic_authentication_error_is_an_auth_failure, and cargo test -p roko-agent --lib anthropic_authentication_error_is_an_auth_failure ran 1 test, passed, exit 0. provider_error_kind_delegates_to_the_shared_classifier moves both texts (the expired-token text and authentication_error: invalid x-api-key) from the cases where the old copy answered otherwise to those where it agrees. roko-agent lib: 2433 passed, 4 ignored. clippy -p roko-agent --no-deps -- -D warnings and nightly fmt are clean."
 +++
 
 ## Problem

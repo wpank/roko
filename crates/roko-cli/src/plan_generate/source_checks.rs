@@ -3014,18 +3014,24 @@ mod tests {
         assert_eq!(coverage.kept.len(), 9, "{:#?}", coverage.detail_lines());
 
         // A criterion that only quotes a step's command joins that step;
-        // one that quotes two steps' commands, or none, stays as it is.
+        // one that quotes two steps' commands, a part that two steps'
+        // commands share, or none, stays as it is.
         let mut orphan = TasksFile::parse_str(
             "[meta]\nplan = \"p\"\ntotal = 1\nstatus = \"ready\"\n\n\
              [[task]]\nid = \"T1\"\ntitle = \"The presets\"\nstatus = \"ready\"\n\
              role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/src/presets.cpp\"]\n\
              acceptance = [\"AC1: the presets are as named.\", \
              \"AC2: `tools/spec.sh 5 presets` still passes.\", \
-             \"AC3: `tools/spec.sh 5 presets` and `tools/spec.sh 5_1 render` pass.\"]\n\n\
+             \"AC3: `tools/spec.sh 5 presets` and `tools/spec.sh 5_1 render` pass.\", \
+             \"AC4: `tools/render-demos.sh` refreshes the demos.\"]\n\n\
              [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5 presets\"\n\
              covers = [\"AC1\"]\n\n\
              [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5_1 render\"\n\
-             covers = [\"AC1\"]\n",
+             covers = [\"AC1\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\n\
+             command = \"tools/render-demos.sh && tools/spec.sh 5_1 demos\"\ncovers = [\"AC1\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\n\
+             command = \"tools/render-demos.sh && tools/spec.sh 5 demos\"\ncovers = [\"AC1\"]\n",
         )
         .expect("a plan");
         assert_eq!(
@@ -3033,7 +3039,9 @@ mod tests {
             ["T1: step 1 covers AC2, which quotes its command `tools/spec.sh 5 presets`"]
         );
         assert_eq!(orphan.tasks[0].verify[0].covers, ["AC1", "AC2"]);
-        assert_eq!(orphan.tasks[0].verify[1].covers, ["AC1"]);
+        for step in &orphan.tasks[0].verify[1..] {
+            assert_eq!(step.covers, ["AC1"], "{}", step.command);
+        }
     }
 
     /// gap-8b1f4f: round v7's phase-4.3 re-ask draft (Undertow 2ac4b36)

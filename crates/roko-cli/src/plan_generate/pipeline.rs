@@ -13,8 +13,8 @@
 //! 2026-10-02 (tmp/workflow-audit).
 
 use super::{
-    accept_blocks, dry_run_fs, file_paths, overview, runnable, sizes, source_checks, source_reads,
-    symbol_reads,
+    accept_blocks, check_reads, dry_run_fs, file_paths, overview, runnable, sizes, source_checks,
+    source_reads, symbol_reads,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -941,16 +941,26 @@ fn repair_generated_draft(
         }
     }
     // bug-417c4a: the documents the plan is written from are no part of a
-    // task's reads, and a generated task may read as many files as it owns.
+    // task's reads, and a generated task may read as many files as it owns;
+    // gap-5db3d9: nor are its checks' tests and its sources' headers.
     for task in &mut plan.tasks {
         let keep = policy.max_read_files_for(task);
+        let uncounted: Vec<String> = task
+            .context
+            .iter()
+            .flat_map(|context| &context.read_files)
+            .filter(|read| {
+                !crate::plan_policy::counts_toward_read_budget(sources, task, &read.path)
+            })
+            .map(|read| read.path.clone())
+            .collect();
         let Some(context) = task.context.as_mut() else {
             continue;
         };
         let mut counted = 0;
         let mut dropped = Vec::new();
         context.read_files.retain(|read_file| {
-            if sources.contains(&read_file.path) {
+            if uncounted.contains(&read_file.path) {
                 return true;
             }
             counted += 1;
@@ -961,7 +971,8 @@ fn repair_generated_draft(
         });
         if !dropped.is_empty() {
             repairs.push(format!(
-                "{}: kept its first {keep} read_files besides the plan's sources and dropped {}",
+                "{}: kept the first {keep} of its read_files that count toward its read budget \
+                 and dropped {}",
                 task.id,
                 dropped.join(", ")
             ));
@@ -2054,6 +2065,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // bug-3d0414: a criterion no step covers that quotes one
                 // step's command whole is that step's.
                 repairs.extend(source_checks::cover_quoted_criteria(&mut parsed));
+                // gap-5db3d9: a task reads the test each of its new checks
+                // runs, as the source names it, and the header of each source
+                // it changes and reads, outside its read budget; the lane that
+                // runs the plan still caps its reads.
+                repairs.extend(check_reads::repair_check_reads(
+                    &mut parsed,
+                    workdir_ref,
+                    &size_sources,
+                    policy,
+                    crate::plan_policy::PlanExecutionPolicy::for_environment()
+                        .max_read_files_per_task,
+                ));
                 // gap-4dd77d: a task over its tier's size limits takes the
                 // smallest tier it fits, as the size check suggests, instead
                 // of a new draft; a task no tier fits still goes back.

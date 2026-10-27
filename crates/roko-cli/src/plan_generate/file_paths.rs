@@ -156,7 +156,7 @@ fn listed_elsewhere(plan: &TasksFile, index: usize, path: &str) -> bool {
 
 /// The workspace's files by name, relative, outside hidden directories,
 /// build output and vendored code.
-fn workspace_files(root: &Path) -> HashMap<String, Vec<String>> {
+pub(super) fn workspace_files(root: &Path) -> HashMap<String, Vec<String>> {
     let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
     let mut pending = vec![std::path::PathBuf::new()];
     let mut visited = 0;

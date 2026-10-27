@@ -2,15 +2,16 @@
 id = "gap-ceffb3"
 kind = "gap"
 title = "No dated price snapshot covers claude-sonnet-4-6 or every model roko.toml routes to"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-core/pricing"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "33afa8124"
 source = "backlog wave reports 2026-10-02 (PK12 gap-08120e)"
 discovered_from = "gap-08120e"
 anchors = ["crates/roko-core/src/pricing_snapshot.rs::pricing_snapshot_builtin_copy_is_the_newest_file", "config/prices/2026-09-28.toml", "roko.toml"]
@@ -21,6 +22,17 @@ command = "grep -rq 'slug = \"claude-sonnet-4-6\"' config/prices/*.toml && cargo
 
 [[verify]]
 command = "grep -rq 'slug = \"glm-5.1\"' config/prices/*.toml && grep -rqw 'fn pricing_snapshot_builtin_prices_the_default_models' crates/roko-core/src/ && cargo test -p roko-core pricing_snapshot_builtin_prices_the_default_models"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T02:43:15Z"
+commit = "33afa8124"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T00:27:17Z"
+forced = false
+evidence = "config/prices/2026-10-27.toml (prices-2026-10-27, 20 rows; every rate read on 2026-10-27 from the provider page its source_url names, and the 10 rows of prices-2026-09-28 re-read and unchanged) prices claude-sonnet-4-6, glm-5.1, gpt-5.6-sol and every other model roko.toml routes to that a provider page prices, and is the built-in copy (BUILTIN_SNAPSHOT_ID and BUILTIN_SNAPSHOT_TOML in crates/roko-core/src/pricing_snapshot.rs). gemma-4-31b, glm-5v-turbo, llama-3.3-70b-versatile and sonar have no published per-token rate and stay out (gap-67aecd). Both verifies pass (cargo test -p roko-core pricing_snapshot_builtin_copy_is_the_newest_file, and pricing_snapshot_builtin_prices_the_default_models); roko-core lib 2050/2050 and clippy -p roko-core clean; the snapshot readers outside roko-core pass (roko-agent 85, roko-learn 132, roko-serve 43 and roko-cli lib 320 filtered tests, roko bin learn_self_model 5); validate.py price-snapshot passes on the new file."
 +++
 
 ## Problem

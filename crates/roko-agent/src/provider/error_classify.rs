@@ -392,13 +392,20 @@ pub const AUTH_FAILURE_MARKER: &str = "authentication failed";
 
 /// Whether lowercase failure text says the provider refused the caller's
 /// credentials: a CLI that is not logged in, a 401, an invalid API key, a 403
-/// forbidden, or a typed auth failure's own rendering ([`AUTH_FAILURE_MARKER`]).
+/// forbidden, Anthropic's `authentication_error`, or a typed auth failure's
+/// own rendering ([`AUTH_FAILURE_MARKER`]).
+///
+/// Anthropic sends `authentication_error` with its 401 for a bad or expired
+/// credential, and the Claude CLI passes it on as `API Error: 401 {…}`, the
+/// text of an expired OAuth token, where no status word is near the 401
+/// (bug-217107). Its 403, `permission_error`, is not a credential failure.
 fn is_auth_failure_text(lower: &str) -> bool {
     lower.contains("not logged in")
         || lower.contains("please run /login")
         || lower.contains("invalid api key")
         || lower.contains("invalid_api_key")
         || lower.contains("unauthorized")
+        || lower.contains("authentication_error")
         || lower.contains(AUTH_FAILURE_MARKER)
         || mentions_http_401(lower)
         || (lower.contains("403") && lower.contains("forbidden"))
@@ -1082,6 +1089,34 @@ mod tests {
             classify_failure_text(&text.to_ascii_lowercase()),
             "auth_failure",
             "{text}"
+        );
+    }
+
+    /// bug-217107: Anthropic's `authentication_error` is a credential failure,
+    /// so the provider is quarantined at once rather than retried as unknown.
+    /// The Claude CLI passes it on with its 401 as `API Error: 401 {…}`, which
+    /// is what an expired OAuth token looks like, and no status word stands
+    /// near that 401. Anthropic's 403, `permission_error`, is not one: the key
+    /// is good and may not do this one thing (bug-80f0d0).
+    #[test]
+    fn anthropic_authentication_error_is_an_auth_failure() {
+        for text in [
+            "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\
+             \"message\":\"OAuth token has expired. Please obtain a new token or refresh your \
+             existing token.\"},\"request_id\":\"req_011CUWxKpLmNvQrTzY\"}",
+            "authentication_error: invalid x-api-key",
+        ] {
+            let lower = text.to_ascii_lowercase();
+            assert_eq!(classify_failure_text(&lower), "auth_failure", "{text}");
+            assert_eq!(classify_call_failure_text(&lower), "auth_failure", "{text}");
+        }
+        let permission = "API Error: 403 {\"type\":\"error\",\"error\":{\"type\":\
+                          \"permission_error\",\"message\":\"Your API key does not have \
+                          permission to use the specified resource.\"}}";
+        assert_eq!(
+            classify_failure_text(&permission.to_ascii_lowercase()),
+            "unknown",
+            "{permission}"
         );
     }
 

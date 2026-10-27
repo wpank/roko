@@ -384,7 +384,10 @@ mod tests {
 
         // gpt-5.6-sol, roko.toml's Codex model (gap-ceffb3): the same turn at $4, $0.40 and
         // $20 per million.
-        let cost = turn_cost(&parse_stream_line_with_model(PRICED_TURN, Some("gpt-5.6-sol")));
+        let cost = turn_cost(&parse_stream_line_with_model(
+            PRICED_TURN,
+            Some("gpt-5.6-sol"),
+        ));
         let cost = cost.expect("the snapshot lists gpt-5.6-sol");
         let expected = (600.0 * 4.0 + 400.0 * 0.40 + 100.0 * 20.0) / 1e6;
         assert!((cost - expected).abs() < 1e-12, "{cost}");

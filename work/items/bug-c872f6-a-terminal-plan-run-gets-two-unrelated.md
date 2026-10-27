@@ -68,6 +68,26 @@ split.
 3. Add the test `cli_plan_run_uses_one_run_id_for_records_and_events`: a fake-provider plan run without a caller id
    writes its manifest and its event index under the same id.
 
+## Design
+
+roko-exact, 2026-10-27.
+
+- **One id.** `run_graph_plan_observed` gets the id the run's events go under (`graph-<uuid>`, or the evidence
+  collector's). When no caller named the run, it now passes that id to the body as the caller's id too. That covers
+  the terminal's `roko plan run`, and a `--log-file` run, which passed `None` the same way.
+  - A single plan's fresh checkpoint, and with it `.roko/runs/<id>/` (manifest and attempts), takes the id. So do the
+    run's batch branch (`roko/batch/<id>`) and its knowledge batch, as for a run serve or `roko run` names.
+  - `status.json` and the `events-by-run` index already took it.
+- **Printed.**
+  - At the start, `Run <id>` goes to stderr for a run no caller named. It is left out under `--quiet` and `--json`.
+  - The closing summary adds `Run <id>`, and `Plan <plan>: run <plan run>` for a plan whose records keep another id:
+    a resumed checkpoint keeps its recorded run, and a set of plans keeps one run per plan.
+  - `--json` adds `run_id` and `plan_runs`.
+- **Unchanged.**
+  - A resumed checkpoint keeps the run it recorded, so a resume's events go under the resuming invocation's id. Its
+    summary names both.
+  - A set of several plans keeps one records run per plan. Two plans can't share one `.roko/runs/<id>/`.
+
 ## Done when
 
 - The `[[verify]]` passes.

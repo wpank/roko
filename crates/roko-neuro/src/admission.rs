@@ -1383,9 +1383,9 @@ impl AmacGate {
 /// Compute a tag+keyword overlap similarity between two [`KnowledgeEntry`]
 /// values, returning a value in `[0.0, 1.0]`.
 ///
-/// The algorithm mirrors the overlap heuristics used in [`KnowledgeStore`]
-/// deduplication (`MIN_TAG_OVERLAP` / `MIN_KEYWORD_OVERLAP`), but returns a
-/// continuous score instead of a binary signal.
+/// The algorithm uses tag and keyword overlap, as [`KnowledgeStore`]
+/// confirmation once did (`AMAC_MIN_TAG_OVERLAP` / `AMAC_MIN_KEYWORD_OVERLAP`
+/// here), but returns a continuous score instead of a binary signal.
 fn entry_overlap_similarity(a: &KnowledgeEntry, b: &KnowledgeEntry) -> f64 {
     // Tag overlap: Jaccard-like intersection / union.
     let a_tags: std::collections::BTreeSet<&str> = a.tags.iter().map(String::as_str).collect();

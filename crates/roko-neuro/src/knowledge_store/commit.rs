@@ -122,26 +122,38 @@ impl KnowledgeBatch {
     }
 
     /// Commit the batch: its entries lose the batch id, so that every run's
-    /// retrieval sees them. Returns how many.
+    /// retrieval sees them, and the confirmations its run held apply, with
+    /// their records (gap-1220c5). Returns how many entries.
     ///
     /// # Errors
     ///
-    /// The store's read or rewrite error.
+    /// The store's, the ledger's or the confirmation log's read or write
+    /// error.
     pub fn commit(&self) -> anyhow::Result<usize> {
-        self.store.update_entries(|entry| {
-            let held = self.holds(entry);
-            if held {
+        let _guard = self.store.lock_writes();
+        let mut entries = self.store.read_all()?;
+        let mut held = 0;
+        for entry in &mut entries {
+            if self.holds(entry) {
                 entry.commit_batch = None;
+                held += 1;
             }
-            held
-        })
+        }
+        let (applied, records) = self.store.apply_pending(&self.batch, &mut entries)?;
+        if held > 0 || applied > 0 {
+            self.store.rewrite_all(&entries)?;
+        }
+        self.store.append_confirmations(&records)?;
+        self.store.drop_pending(&self.batch)?;
+        Ok(held)
     }
 
-    /// Roll the batch back: delete its entries. Returns how many.
+    /// Roll the batch back: delete its entries, and drop the confirmations
+    /// its run held (gap-1220c5). Returns how many entries.
     ///
     /// # Errors
     ///
-    /// The store's read or rewrite error.
+    /// The store's or the ledger's read or rewrite error.
     pub fn discard(&self) -> anyhow::Result<usize> {
         let _guard = self.store.lock_writes();
         let mut entries = self.store.read_all()?;
@@ -152,6 +164,7 @@ impl KnowledgeBatch {
             self.store.rewrite_all(&entries)?;
             self.store.synchronize_temporal_entries(&entries);
         }
+        self.store.drop_pending(&self.batch)?;
         Ok(removed)
     }
 
@@ -367,7 +380,8 @@ impl CommitCheck for KnowledgeChecks {
 /// entries losing the batch id; rolled back, the entries deleted, which a
 /// batch whose run did not deliver always is (bug-2ad4fa); or observed,
 /// committed with a row that records the rollback that would have happened.
-/// `None` when the batch holds no entry.
+/// `None` when the batch holds no entry; the confirmations its run held then
+/// settle by its delivery alone (gap-1220c5).
 ///
 /// The store's first proposal commits an empty baseline version first, so
 /// that a rollback in enforce mode has a version to keep.
@@ -388,6 +402,15 @@ pub fn propose_batch(
         .entries()
         .map_err(|error| store_error(store, &error))?;
     if entries.is_empty() {
+        // A run that stored no lesson can still hold confirmations: they
+        // settle by its delivery alone, with no version to propose
+        // (gap-1220c5).
+        let settled = match checks.delivery {
+            Delivery::Delivered(_) => state.commit(),
+            Delivery::Undelivered(_) => state.discard(),
+        };
+        settled.map_err(|error| store_error(store, &error))?;
+        KnowledgeStore::release_batch(batch);
         return Ok(None);
     }
     let mut guarded = GuardedStore::open(learn_dir, KNOWLEDGE_STORE, mode)?;
@@ -404,13 +427,15 @@ pub fn propose_batch(
     Ok(Some(decision))
 }
 
-/// The batches `store` holds besides `live`, sorted: at a run's start, the
-/// orphans of runs that ended before they proposed theirs, as a run that
-/// crashed leaves its batch (gap-6ff99a).
+/// The batches `store` holds besides `live`, sorted.
+///
+/// At a run's start these are the orphans of runs that ended before they
+/// proposed theirs, as a run that crashed leaves its batch (gap-6ff99a). A
+/// batch that holds only confirmations is one too (gap-1220c5).
 ///
 /// # Errors
 ///
-/// The store's read error.
+/// The store's or the ledger's read error.
 pub fn orphaned_batches(
     store: &KnowledgeStore,
     live: Option<&str>,
@@ -418,11 +443,15 @@ pub fn orphaned_batches(
     let entries = store
         .read_all()
         .map_err(|error| store_error(store, &error))?;
-    let batches: BTreeSet<String> = entries
+    let mut batches: BTreeSet<String> = entries
         .into_iter()
         .filter_map(|entry| entry.commit_batch)
-        .filter(|batch| Some(batch.as_str()) != live)
         .collect();
+    let held = store
+        .pending_batches()
+        .map_err(|error| store_error(store, &error))?;
+    batches.extend(held);
+    batches.retain(|batch| Some(batch.as_str()) != live);
     Ok(batches.into_iter().collect())
 }
 

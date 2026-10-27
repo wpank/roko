@@ -80,6 +80,67 @@ little evidence.
    - `an_undelivered_run_confirms_nothing`: a cancelled run's pass leaves the committed entries it surfaced and
      resembled unconfirmed.
 
+### Design and measurement (roko-learnguard, 2026-10-26)
+
+**What counts as a confirmation.** An ingested lesson confirms an existing entry when two things hold:
+- they share a topical tag: a file or a package, which leaves out what every lesson of a run carries (`lesson`,
+  `runtime`, the kind names, and `plan:*`, `gate:*`, `task:*`, `model:*`);
+- their content words overlap by a Jaccard similarity of at least 0.17. Words of two characters or fewer, and
+  prompt assembly's query stopwords, are left out.
+
+`MIN_TAG_OVERLAP` stays at 1, over topical tags now. `MIN_KEYWORD_OVERLAP`, a count of 2 that "the" and "so" met,
+becomes `MIN_CONTENT_JACCARD`. The promotion thresholds (2 confirmations, 3 contexts) don't change.
+
+**No recorded decision covers these constants or the rule.** I searched `work/` (items, done, closed, parked, the
+`dec-*` and `q-*` records), `tmp/cybernetic-harness/DECISIONS.md` and
+`tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md`. The only rules are the design docs' promotion thresholds,
+which stand.
+
+**Measured on a read-only copy of Undertow's store** (2026-10-26 21:49: 55 entries, 796 confirmation records), with
+`tmp/hermes-roko-v7/roko-learnguard/bin/confirm-report.py`, log `logs/confirm-report.log`:
+- **The replay is faithful:** its mirror of the old rule reproduces all 796 records.
+- **The new rule keeps 3 of the 796.**
+- **The gamed lesson:** 31 rows name `runtime_3c3b9654100195f1`, and 0 survive. Run 1f677933's lessons confirmed 230
+  pairs, and 0 survive.
+- **Phases 0 to 4:** of their 414 rows, 2 survive, and both are real repeats:
+  - phase 1's envelope lesson, said twice in other words ("`double` precision, not `float`" by T3#1 and T3#2);
+  - phase 4.1's and 4.2's "the budget script rewrites the tracked 1x review PNGs directly".
+- **The third survivor** is phase 5.1's "preset fixes need a paired master_gain trim" confirming phase 5's lesson on
+  master_gain trimming.
+- **The closest pair dropped** is two different facts about `tools/spec.sh`, at 0.152. The real repeats measured
+  0.194 to 0.217.
+- **The 43 rows of plan-writing distiller insights** have no topical tags, and none survive (see bug-f8655e).
+- **One survivor wouldn't count now.** The envelope pair is two tries of one task in one run. Under bug-2ad4fa a
+  run doesn't confirm its own uncommitted lessons, so that confirmation would no longer happen either.
+- **Again after phase 5.2** (run 13260e60, a copy taken 2026-10-27 01:24: 58 entries, 854 records, log
+  `logs/confirm-report-5-2.log`):
+  - its new lesson, "The phase 5 demo script is deterministic …", made 38 confirmations under the old rule, and 0
+    survive;
+  - the 20 new distiller rows are dropped too;
+  - the same 3 real repeats stand.
+  - Its run's guard rows v16 and v17 already carry bug-2ad4fa's `delivered` check: "the run delivered plan
+    p5-2-the-presets-as-named".
+
+**roko's own store** (205 entries, 9,696 resolvable records) is mostly templated dream and hypothesis entries with
+near-identical text. They still match: 2,756 of 9,312 pairs at 0.17. That is a separate problem, the templates
+themselves (bug-7e0556), not this rule.
+
+**Confirming only on delivery.**
+- **The ledger:** a guarded run's confirmations of committed entries wait in
+  `.roko/neuro/knowledge-pending-confirmations.jsonl`, one row per confirmation, tagged with the run's batch. A row
+  is either `surfaced` (a pass's context and episode) or `repeat` (the confirming lesson and its episodes).
+- **Commit:** `KnowledgeBatch::commit` applies them. Each pass and each repeat counts once, however often it was
+  held, and an entry retired since gets nothing. The repeats' records are written then.
+- **Rollback:** `discard` drops them.
+- **A batch with no lesson:** `propose_batch` settles its held confirmations by delivery alone.
+  `orphaned_batches` counts a batch that holds only confirmations.
+- **No batch (`off`):** confirmations apply at once, as before.
+- **Reinforcement stays immediate.** The balance bumps (retrieved, gated, cited, quoted) are no confirmation.
+
+**A resume is a new batch.** The serve gives a resume a new uuid, and the CLI a new id. Its start rolls the dead
+run's batch back, held confirmations included. `a_resumed_run_applies_its_pending_confirmations_once` covers it, a
+pass that reaches the sink twice included.
+
 ## Done when
 
 - The `[[verify]]` commands pass.

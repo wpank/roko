@@ -11,6 +11,7 @@ pub mod commit;
 mod crud;
 mod gc;
 pub mod memory_index;
+pub mod pending;
 mod query;
 pub mod retire;
 pub(crate) mod scoring;

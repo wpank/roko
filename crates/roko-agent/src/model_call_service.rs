@@ -3291,6 +3291,14 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                 "auth_failure",
             ),
             ("Error: 403 Forbidden", "auth_failure"),
+            // Anthropic's authentication_error: the Claude CLI's text for an
+            // expired OAuth token, and a bad key (bug-217107).
+            (
+                "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\
+                 \"authentication_error\",\"message\":\"OAuth token has expired.\"}}",
+                "auth_failure",
+            ),
+            ("authentication_error: invalid x-api-key", "auth_failure"),
             (
                 "You've hit your session limit · resets 4pm (Europe/Berlin)",
                 "provider_exhausted",
@@ -3363,19 +3371,6 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             ("forbidden: region not supported", "unknown", "auth_failure"),
             ("Permission denied (os error 13)", "unknown", "auth_failure"),
             ("stream ended after 1403 tokens", "unknown", "auth_failure"),
-            // Anthropic's authentication_error is a credential failure the
-            // shared classifier does not name yet (bug-217107).
-            (
-                "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\
-                 \"authentication_error\",\"message\":\"OAuth token has expired.\"}}",
-                "unknown",
-                "auth_failure",
-            ),
-            (
-                "authentication_error: invalid x-api-key",
-                "unknown",
-                "auth_failure",
-            ),
             // A stream broken mid-response is a transient server failure
             // (bug-9b65dc).
             (

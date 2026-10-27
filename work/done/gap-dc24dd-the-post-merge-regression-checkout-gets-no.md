@@ -116,6 +116,10 @@ So the shape is **warm by default for speed, plus a way to force a cold delivery
   roko never clears, so there it only logs a warning.
 - **Which mode ran.** The delivery's check log opens with the build trees the check started from: given, the
   checkout's own, none, or cold. A cold check's summary in the receipt ends ", from no build trees (a cold check)".
+  - **Correction, 2026-10-27 (bug-2f70cd):** that held only for a failed check. A passed check's summary was kept
+    nowhere, so a passed cold check was recorded only in the plan's check log, which its next delivery overwrites.
+    Since bug-2f70cd every receipt whose check ran holds `roko.delivery.build_trees@1` (`cold`, `started_from`),
+    passed or failed, the pass log line carries the summary, and `roko plan status` shows `plan check from:`.
 - **Which mode a plan's final delivery uses** is stated in `docs/v3/depth/04-execution/worktree-isolation.md`
   (Warm Build Trees): warm like every delivery, unless the plan sets `cold_verify`, as a project's last phase should.
 - **Tests:** `the_regression_checkout_starts_with_the_workdirs_build_trees` (given, relocated, then kept across

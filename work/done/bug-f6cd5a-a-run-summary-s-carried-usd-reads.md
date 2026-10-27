@@ -2,15 +2,16 @@
 id = "bug-f6cd5a"
 kind = "bug"
 title = "A run summary's carried_usd reads -0.0 on a run that carried nothing: an empty f64 sum starts from -0.0, so a raw JSON reader sees a negative zero spend"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-serve/runs"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "9c8c78abb"
 source = "round-v7 roko-recovery, the P-51/P-53 scratch serve (2026-10-26 22:18), the lead's ask"
 discovered_from = "agent:roko-recovery (round v7, roko-main-2ca53cb61)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::run_summary"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-b7f6a8"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_resumed_runs_summary_says_what_its_plans_carried' crates/roko-serve/src && ! grep -q 'carried.values().sum::<f64>()' crates/roko-serve/src/routes/runs.rs && cargo test -p roko-serve --lib -- a_resumed_runs_summary_says_what_its_plans_carried"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:47:32Z"
+commit = "9f7a84116"
+by = "roko-recovery (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 9f7a84116 with bug-693bb3 (branch work/bug-693bb3 at 96ff7f0e0). Post-merge verify at 9f7a84116: the grep finds the test, the empty-sum line is gone, and a_resumed_runs_summary_says_what_its_plans_carried passes (a run that carried nothing serializes \"carried_usd\":0.0, a resumed run 0.375). Live: on the pilot's second P-51/P-53 pass the runs that carried nothing read carried_usd 0.0 (f930947e), the resumed ones 0.205 and 0.492."
 +++
 
 ## Problem

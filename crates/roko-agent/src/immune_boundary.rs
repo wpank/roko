@@ -491,7 +491,7 @@ impl ImmuneScreenedAgent {
             let mut tool_work = false;
             let mut first_output = None;
             while let Some(event) = buffer_rx.recv().await {
-                if first_output.is_none() && is_model_output(&event.kind) {
+                if first_output.is_none() && event.kind.is_model_output() {
                     first_output = Some(started.elapsed());
                 }
                 tool_work |= matches!(
@@ -1039,21 +1039,6 @@ fn is_tool_work_signal(signal: &Signal) -> bool {
             .get("tool_calls")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|calls| !calls.is_empty())
-}
-
-/// Whether `kind` is model output, whose first arrival ends a call's time to
-/// first token: text, reasoning or a tool call (gap-7a8474). Usage, the end
-/// of a turn and a tool's own result are not.
-fn is_model_output(kind: &StreamEventKind) -> bool {
-    match kind {
-        StreamEventKind::TextDelta(_)
-        | StreamEventKind::ToolCallStart { .. }
-        | StreamEventKind::ToolCallDelta { .. }
-        | StreamEventKind::ToolCallEnd { .. } => true,
-        // An empty one only says a reasoning call is alive (gap-1ba0ac).
-        StreamEventKind::ReasoningDelta(text) => !text.is_empty(),
-        _ => false,
-    }
 }
 
 /// Bytes `event` adds to its model call's stream. A tool result is host

@@ -372,6 +372,81 @@ fn status_works_offline_with_filesystem() {
     );
 }
 
+/// `roko status` in `workdir`, as JSON with `json`: its stdout.
+fn roko_status(workdir: &std::path::Path, json: bool) -> String {
+    let mut command = Command::cargo_bin("roko").expect("roko binary");
+    command.isolated().current_dir(workdir);
+    if json {
+        command.arg("--json");
+    }
+    let assert = command
+        .args(["status", "--workdir"])
+        .arg(workdir)
+        .assert()
+        .success();
+    String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
+}
+
+/// gap-2bec05: `roko status --json` counts the recorded calls whose cost is
+/// unknown, which its total leaves out, and the text prints them beside the
+/// total. A call priced at $0 is free, not unpriced.
+#[test]
+fn status_json_reports_unpriced_call_count() {
+    let tmp = TempDir::new().expect("tempdir");
+    init_workspace(tmp.path());
+    let learn = tmp.path().join(".roko").join("learn");
+    fs::create_dir_all(&learn).expect("create learn dir");
+    let costs = learn.join("costs.jsonl");
+    // A `.roko/learn/costs.jsonl` row: one per call. A row written before
+    // backlog 2109 does not say whether its call was priced.
+    let row = |cost_usd: f64, priced: Option<bool>| {
+        let mut row = serde_json::json!({
+            "timestamp": "2026-10-02T12:00:00+00:00",
+            "model": "test-model",
+            "provider": "test",
+            "role": "implementer",
+            "plan_id": "demo",
+            "task_id": "T1",
+            "complexity_band": "focused",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_tokens": 0,
+            "cost_usd": cost_usd,
+            "duration_ms": 1000,
+            "success": true,
+            "session_id": "",
+        });
+        if let Some(priced) = priced {
+            row["priced"] = priced.into();
+        }
+        row.to_string() + "\n"
+    };
+    let status_json = || -> serde_json::Value {
+        let stdout = roko_status(tmp.path(), true);
+        serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|err| panic!("status --json is not JSON: {err}\n{stdout}"))
+    };
+
+    let priced = [row(0.25, Some(true)), row(0.0, Some(true))].concat();
+    fs::write(&costs, &priced).expect("write costs");
+    let parsed = status_json();
+    assert_eq!(parsed["unpriced_calls"], 0, "{parsed}");
+    assert_eq!(parsed["total_cost_usd"], 0.25, "{parsed}");
+    let text = roko_status(tmp.path(), false);
+    assert!(text.contains("  Total:    $0.2500\n"), "{text}");
+    assert!(!text.contains("Unpriced"), "{text}");
+
+    // A call roko could not price, and an older row with $0 for its tokens.
+    let unpriced = [row(0.0, Some(false)), row(0.0, None)].concat();
+    fs::write(&costs, priced + &unpriced).expect("write costs");
+    let parsed = status_json();
+    assert_eq!(parsed["unpriced_calls"], 2, "{parsed}");
+    assert_eq!(parsed["total_cost_usd"], 0.25, "{parsed}");
+    let text = roko_status(tmp.path(), false);
+    let line = "  Unpriced: 2 calls, whose cost is unknown and not in the total\n";
+    assert!(text.contains(line), "{text}");
+}
+
 #[test]
 fn plan_list_works_offline() {
     let tmp = TempDir::new().expect("tempdir");

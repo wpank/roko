@@ -2,15 +2,16 @@
 id = "bug-693bb3"
 kind = "bug"
 title = "After a run's process dies, serve's plan rows still say running: the plan list, the plan detail and resumable_run.status read the Graph checkpoint's stale running and tasks.toml's tasks_done 0, so a chat host tells the person the plan is still running and never offers the resume"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
 size = "M"
 subsystem = ["roko-cli/plan", "roko-cli/serve_runtime", "roko-serve/runs"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "9c8c78abb"
 source = "round-v7 hermes-pilot P-51 window (2026-10-26 22:33, scratch serve :6697, roko-main-2ca53cb61), the lead's ask"
 discovered_from = "agent:roko-recovery (round v7)"
 anchors = ["crates/roko-cli/src/plan.rs::overlay_graph_checkpoint_status", "crates/roko-cli/src/serve_runtime.rs::checkpoint_run_of", "crates/roko-serve/src/interrupted_runs.rs"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-b7f6a8", "bug-df0e79", "
 
 [[verify]]
 command = "grep -rqw 'fn a_dead_runs_plan_reads_interrupted_everywhere' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_dead_runs_plan_reads_interrupted_everywhere"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:47:31Z"
+commit = "9f7a84116"
+by = "roko-recovery (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 9f7a84116 (branch work/bug-693bb3 at 96ff7f0e0, with bug-f6cd5a). Post-merge verify at 9f7a84116 in my worktree: the grep finds the test and a_dead_runs_plan_reads_interrupted_everywhere passes (the plan list, the plan detail and resumable_run as the run goes dead, live, failed). Branch at 96ff7f0e0: lib suites roko-cli 4054, roko-serve 1087, roko-learn 1411, roko-core 2049 passed, none failed; roko-cli cli_fallback 26/26 and tui_tabs 26/26 (plan list, TUI); nightly fmt; clippy --workspace -D warnings clean; also a_run_without_a_manifest_runs_while_the_runner_lock_is_held, passed_tasks_count_a_task_once_across_a_resume and a_run_has_stopped_when_its_process_is_gone_or_it_closed. $0 kill matrix (tmp/hermes-roko-v7/roko-recovery/runs/fix-693bb3-96ff7f0e0, binary bin/roko-693bb3-96ff7f0e0): new check E7 (after the crash serve's plan rows say interrupted with the committed passed tasks) 22/22, E1/E2/E3/E5 88/88; E4 (bug-df0e79's CLI plan status, bug-c872f6) and E6 (bug-4fadf8, c-verify vacuous) stay with their items. Live: the pilot's second P-51/P-53 pass (10-27 02:39-02:45, chat with all models fake, the fenced serve on roko-693bb3-96ff7f0e0) passed: recov read 'interrupted (3s ago)' with T1 kept and $0.205 carried and resumed on the first ask; fails resumed with $0.492 carried; the serve-side watcher (p51/p51-4f829cc10/watch.jsonl) matches every turn."
 +++
 
 ## Problem

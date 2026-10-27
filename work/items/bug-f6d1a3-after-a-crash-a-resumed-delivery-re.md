@@ -9,7 +9,7 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-26
-updated = 2026-10-26
+updated = 2026-10-27
 last_verified = 2026-10-26
 source = "round-v7 roko-recovery kill matrix (tmp/hermes-roko-v7/findings/roko-recovery.md, tmp/hermes-roko-v7/roko-recovery/runs/roko-main-4d22b94e8), the lead's ask"
 discovered_from = "agent:roko-recovery (round v7, 4d22b94e8)"
@@ -73,6 +73,13 @@ branches confuse the one step a person must do by hand, merging the batch. The r
   e'.
 - A failed resume leaves no new branch.
 - Test `a_resumed_delivery_continues_the_dead_runs_batch` passes.
+
+## Progress
+
+**2026-10-27, part 4 is done** (round v7 roko-recovery). `roko show plans` counts the tasks the checkpoint committed
+a pass for and says the plan was interrupted. bug-693bb3's overlay does the counting, and bug-df0e79 reads the state.
+In the kill matrix (`tmp/hermes-roko-v7/roko-recovery/runs/fix-df0e79-454815ee6`), e-delivery and e-ref now read
+`interrupted | tasks 2/2 done`. Parts 1 to 3 are open.
 
 ## Notes
 

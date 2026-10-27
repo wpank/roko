@@ -904,7 +904,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     "plan '{plan_id}' not found.\n  hint: run `roko plan list` to see available plans, or `roko plan create` to create a new one"
                 );
             };
-            let summary = roko_cli::plan::summarize_plan_info(&plan_info);
+            let mut summary = roko_cli::plan::summarize_plan_info(&plan_info);
+            // What the plan's Graph run left, as `plan list` says it
+            // (bug-df0e79).
+            roko_cli::plan::overlay_graph_checkpoint_status(
+                &wd,
+                std::slice::from_mut(&mut summary),
+            );
             let tasks_path = roko_cli::plan::tasks_path(&plan_info);
             let stable_id = roko_cli::plan::stable_plan_id(&plan_info);
 
@@ -2077,12 +2083,20 @@ async fn cmd_plan_dir_status(
     // terminal state to `.roko/state/graph/<safe-plan-id>/checkpoint.json`
     // rather than updating tasks.toml or the legacy executor snapshot. Read it
     // here so that `plan status` reflects the same data as `plan list`.
-    let graph_status = roko_cli::graph_checkpoint::canonical_checkpoint_status(workdir, plan_id);
+    // A run whose process died reads interrupted, as serve says it
+    // (bug-df0e79).
+    let graph_status =
+        roko_cli::graph_checkpoint::canonical_checkpoint_status_now(workdir, plan_id);
     let checkpoint_succeeded =
         graph_status == Some(roko_cli::graph_checkpoint::GraphCheckpointStatus::Succeeded);
     if checkpoint_succeeded && done_tasks == 0 && effective_total > 0 {
         // The graph engine completed all tasks; tasks.toml wasn't updated.
         done_tasks = effective_total;
+    } else if let Ok(Some(inspection)) =
+        roko_cli::graph_checkpoint::inspect_canonical_checkpoint(workdir, plan_id)
+    {
+        // The tasks the checkpoint committed a pass for (bug-df0e79).
+        done_tasks = done_tasks.max(inspection.passed_tasks());
     }
 
     // Derive the human-readable status string.
@@ -2142,6 +2156,9 @@ async fn cmd_plan_dir_status(
                         }))
                         .collect::<Vec<_>>(),
                     "check_log": delivery.check_log,
+                    // What the checks started from, such as a cold check
+                    // (bug-2f70cd).
+                    "build_trees": delivery.build_trees,
                 })),
                 "tasks": task_entries,
             }))?
@@ -2170,6 +2187,9 @@ async fn cmd_plan_dir_status(
             }
             if let Some(log) = &delivery.check_log {
                 println!("plan check log:  {log}");
+            }
+            if let Some(build_trees) = &delivery.build_trees {
+                println!("plan check from: {}", build_trees.started_from);
             }
         }
         println!();
@@ -3732,6 +3752,57 @@ mod tests {
         assert_eq!(plan_status_label(None, 0, 2), "not started");
         assert_eq!(plan_status_label(None, 1, 2), "in progress");
         assert_eq!(plan_status_label(None, 2, 2), "complete");
+    }
+
+    /// bug-df0e79: `plan status` says a plan whose run's process died
+    /// stopped, `interrupted`, as `roko serve` and `plan list` say it, and a
+    /// plan whose run's process lives running.
+    #[test]
+    fn plan_status_reports_a_dead_runs_interruption() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let dir = tempdir().expect("tempdir");
+        let checkpoint_dir = dir.path().join(".roko/state/graph/demo-plan");
+        std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir");
+        std::fs::write(
+            checkpoint_dir.join("checkpoint.json"),
+            r#"{"status":"running","run_id":"run-a"}"#,
+        )
+        .expect("checkpoint");
+        let run_by = |pid: u32, started_at: String| {
+            let mut manifest = RunProvenanceManifest::new("run-a", "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at,
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest
+                .store(&RokoLayout::for_project(dir.path()).run_dir("run-a"))
+                .expect("store the run manifest");
+        };
+        let status_now = || {
+            let status = roko_cli::graph_checkpoint::canonical_checkpoint_status_now(
+                dir.path(),
+                "demo-plan",
+            );
+            // tasks.toml says one of two tasks is done.
+            plan_status_label(status, 1, 2)
+        };
+        let mut gone = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let dead_pid = gone.id();
+        gone.wait().expect("reap true");
+
+        run_by(
+            dead_pid,
+            (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+        );
+        assert_eq!(status_now(), "interrupted");
+        run_by(std::process::id(), chrono::Utc::now().to_rfc3339());
+        assert_eq!(status_now(), "running");
     }
 
     #[test]

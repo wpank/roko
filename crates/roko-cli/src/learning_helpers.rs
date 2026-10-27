@@ -191,6 +191,13 @@ mod tests {
     #[tokio::test]
     async fn distillation_spend_is_recorded() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        // A plan write runs no gate, so only `distill_ungated` distils it
+        // (bug-f8655e).
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            "[learning]\ndistill_ungated = true\n",
+        )
+        .expect("write roko.toml");
         let mut runtime = LearningRuntime::open_for_project(tmp.path())
             .await
             .expect("open learning runtime");

@@ -1116,8 +1116,10 @@ fn config_live_output_to_dispatcher(
 
 #[allow(clippy::too_many_arguments)]
 /// The run checkpoint `preview` records, as `roko serve` reports it
-/// (bug-cbdb6b): resumable when the run stopped part way, with tasks passed
-/// and tasks left, and its checkpoint resumes. A `running` checkpoint whose
+/// (bug-cbdb6b): resumable when the run stopped part way with tasks passed,
+/// and its checkpoint resumes. That includes a run whose tasks all passed but
+/// whose delivery a crash cut (bug-4fadf8): a resume replays every task and
+/// runs only the delivery, `delivery_pending`. A `running` checkpoint whose
 /// run has stopped (`run_stopped`), because its process died, reads
 /// `interrupted` (bug-693bb3); while its process lives it is that run's,
 /// running. A
@@ -1142,10 +1144,12 @@ fn checkpoint_run_of(
     };
     let passed_tasks = preview.recorded_tasks.clone();
     let stopped = status.stopped_part_way() && status != GraphCheckpointStatus::Running;
+    let resumable = continues && stopped && !passed_tasks.is_empty();
     Some(CheckpointRun {
         run_id,
         status: status.as_str().to_string(),
-        resumable: continues && stopped && !passed_tasks.is_empty() && !tasks_left.is_empty(),
+        resumable,
+        delivery_pending: resumable && tasks_left.is_empty(),
         passed_tasks,
         tasks_left,
         continues,
@@ -1157,7 +1161,8 @@ fn checkpoint_run_of(
 }
 
 /// The run a checkpoint `set_aside` records, as `roko serve` reports it. A
-/// resume would have continued it when it named the tasks it passed or left.
+/// resume would have continued it when it named the tasks it passed or left,
+/// and a run that passed every task would have delivered them (bug-4fadf8).
 /// A run set aside still `running` had stopped: setting it aside took the
 /// workspace from it (bug-693bb3).
 fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Option<CheckpointRun> {
@@ -1166,12 +1171,12 @@ fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Opt
         GraphCheckpointStatus::Running => GraphCheckpointStatus::Interrupted,
         status => status,
     };
+    let resumable = status.stopped_part_way() && !set_aside.passed_tasks.is_empty();
     Some(CheckpointRun {
         run_id: set_aside.run_id.clone()?,
         status: status.as_str().to_string(),
-        resumable: status.stopped_part_way()
-            && !set_aside.passed_tasks.is_empty()
-            && !set_aside.tasks_left.is_empty(),
+        resumable,
+        delivery_pending: resumable && set_aside.tasks_left.is_empty(),
         passed_tasks: set_aside.passed_tasks.clone(),
         tasks_left: set_aside.tasks_left.clone(),
         continues: !set_aside.passed_tasks.is_empty() || !set_aside.tasks_left.is_empty(),
@@ -2700,6 +2705,53 @@ depends_on = ["T9"]
         let (status, done, run_status, resumable) = read().await;
         assert!(status.starts_with("failed"), "{status}");
         assert_eq!((done, run_status.as_str(), resumable), (1, "failed", true));
+    }
+
+    /// bug-4fadf8: a run whose tasks all passed but whose delivery a crash
+    /// cut is resumable, for its delivery alone. One with tasks left is
+    /// resumable as before; one that finished, or passed nothing, is not.
+    #[test]
+    fn a_stopped_run_whose_tasks_all_passed_is_resumable_for_its_delivery() {
+        use crate::graph_checkpoint::{GraphCheckpointStatus, ResumeAction, ResumePreview};
+
+        let tasks = |ids: &[&str]| ids.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let run = |status, passed: &[&str], left: &[&str]| {
+            let preview = ResumePreview {
+                manifest: PathBuf::from("checkpoint.json"),
+                run_id: Some("run-cut".to_string()),
+                status: Some(status),
+                fingerprint_match: None,
+                action: ResumeAction::Resume,
+                reason: None,
+                restored_tasks: tasks(passed),
+                tasks_to_run: tasks(left),
+                cause: None,
+                recorded_tasks: tasks(passed),
+                spent_micro_usd: None,
+            };
+            let run = checkpoint_run_of(&preview, true).expect("a run");
+            (run.status, run.resumable, run.delivery_pending)
+        };
+        assert_eq!(
+            run(GraphCheckpointStatus::Running, &["T1", "T2"], &[]),
+            ("interrupted".to_string(), true, true)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Failed, &["T1", "T2"], &[]),
+            ("failed".to_string(), true, true)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Failed, &["T1"], &["T2"]),
+            ("failed".to_string(), true, false)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Succeeded, &["T1", "T2"], &[]),
+            ("succeeded".to_string(), false, false)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Interrupted, &[], &["T1", "T2"]),
+            ("interrupted".to_string(), false, false)
+        );
     }
 }
 

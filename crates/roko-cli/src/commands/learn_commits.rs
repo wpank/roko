@@ -21,7 +21,7 @@ use roko_learn::homeostasis::lkg;
 use roko_learn::model_call_feedback::discard_unsaved_router_observations;
 use roko_learn::router_commit::ROUTER_STORE;
 use roko_neuro::KnowledgeStore;
-use roko_neuro::knowledge_store::commit::{KNOWLEDGE_STORE, LaterBatches};
+use roko_neuro::knowledge_store::commit::{KNOWLEDGE_STORE, LaterBatches, lock_knowledge_guard};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -169,6 +169,14 @@ pub(crate) fn rollback(workdir: &Path, store: StoreName, to: u64) -> Result<Opti
     let mode = match (store, config.learning.guarded_commit) {
         (StoreName::Harness, _) | (_, GuardedCommitMode::Enforce) => GuardMode::Enforce,
         _ => GuardMode::Observe,
+    };
+    // A distillation proposes to the knowledge store's guard outside any run
+    // (bug-f8655e), so the runner lock alone doesn't hold it still.
+    let _knowledge_guard = match store {
+        StoreName::Knowledge => {
+            Some(lock_knowledge_guard(&learn_dir).context("lock the knowledge store's guard")?)
+        }
+        StoreName::Router | StoreName::Harness => None,
     };
     let mut guarded = GuardedStore::open(&learn_dir, store.dir(), mode)?;
     let previous = guarded.current();

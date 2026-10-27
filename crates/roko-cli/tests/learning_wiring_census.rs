@@ -652,11 +652,13 @@ fn loop_census_routed_task_logs_fallback_decision() {
 /// entry, which the prompts of T1, T2 and T3 include, L-know's arm being
 /// forced to its learned policy. T1's verified pass reinforces it: the
 /// knowledge lifecycle's receipt for T1's attempt counts a gated
-/// reinforcement, and the entry takes T1's confirmation and episode, while
-/// T2's two failures count against it without weakening it. The loop census
-/// credits L-know with those inclusions: four measured opportunities on the
-/// learned arm, all exposed, and episodes that carry the entry's id, so no
-/// reason flags the loop.
+/// reinforcement, while T2's two failures count against it without
+/// weakening it. T1's confirmation of the entry waits for the run's
+/// delivery, and T2 fails the plan, so the run confirms nothing
+/// (gap-1220c5): the entry gains no confirmation and no episode of T1's.
+/// The loop census credits L-know with those inclusions: four measured
+/// opportunities on the learned arm, all exposed, and episodes that carry
+/// the entry's id, so no reason flags the loop.
 #[test]
 fn l_know_census_credits_a_reinforced_knowledge_entry() {
     let (temp, run_dir, log) = run_loop_census();
@@ -684,15 +686,24 @@ fn l_know_census_credits_a_reinforced_knowledge_entry() {
         .find(|receipt| receipt["episode_id"] == t1_key)
         .unwrap_or_else(|| panic!("no lifecycle receipt for T1: {receipts:#?}"));
     assert_eq!(receipt["gated_reinforcements"], 1, "{receipt}");
+    assert_eq!(receipt["held_confirmations"], 1, "{receipt}");
     let entries = jsonl(&neuro.join("knowledge.jsonl"));
     let entry = entries
         .iter()
         .find(|entry| entry["id"] == KNOWLEDGE_ID)
         .expect("the seeded entry is kept");
-    assert_eq!(entry["confirmation_count"], 1, "{entry}");
+    assert_eq!(
+        entry["confirmation_count"], 0,
+        "the run delivered nothing: {entry}"
+    );
     assert_eq!(entry["contradiction_count"], 2, "two T2 failures: {entry}");
     let sources = entry["source_episodes"].as_array().expect("episodes");
-    assert!(sources.iter().any(|source| source == t1_key), "{entry}");
+    assert!(!sources.iter().any(|source| source == t1_key), "{entry}");
+    let pending = neuro.join("knowledge-pending-confirmations.jsonl");
+    assert!(
+        jsonl(&pending).is_empty(),
+        "the rollback drops T1's held confirmation"
+    );
 
     // The census credits L-know with the inclusions.
     let registry = Registry::embedded().expect("the embedded loop registry");

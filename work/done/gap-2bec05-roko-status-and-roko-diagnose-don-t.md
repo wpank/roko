@@ -2,15 +2,16 @@
 id = "gap-2bec05"
 kind = "gap"
 title = "roko status and roko diagnose don't surface unpriced-call counts, text or JSON"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "125489b7d"
 source = "backlog wave reports 2026-10-02 (PK07 gap-f548c1)"
 discovered_from = "gap-f548c1"
 anchors = ["crates/roko-cli/src/commands/status.rs", "crates/roko-cli/src/commands/diagnose.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger"]
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn status_json_reports_unpriced_call_count' crates/roko-cli/ && cargo test -p roko-cli status_json_reports_unpriced_call_count"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T00:31:23Z"
+commit = "125489b7d"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-26T16:06:45Z"
+forced = false
+evidence = "roko status --json now reports unpriced_calls beside total_cost_usd (SessionStatus field, set in commands/util.rs cmd_status from CostsLog::unpriced_calls over .roko/learn/costs.jsonl); its text cost summary line and SessionStatus text share status::unpriced_calls_summary. roko diagnose text prints \"N of M agent calls unpriced: cost unknown, not in the spend\" in render_text when the run has any (its JSON already had run_state.unpriced_calls). Code in 1b40a30c8, merged with main in 3d71bd283. Proof on that tree: the verify cargo test -p roko-cli status_json_reports_unpriced_call_count passes (cli_fallback test runs the roko binary over priced, free, flagged-unpriced and legacy $0 rows: 0 then 2, total 0.25); cargo test -p roko-cli unpriced passes incl. commands::diagnose::tests::diagnose_reports_unpriced_call_count and status::tests::unpriced_calls_show_beside_the_total; cargo clippy -p roko-cli --no-deps -- -D warnings is clean; a scratch workspace run of the built binary showed unpriced_calls 2 in status --json and the new diagnose line."
 +++
 
 ## Problem
@@ -53,6 +65,14 @@ The counter is tracked and used internally for budget-ceiling logic (see the sep
 2111, already tracked inside gap-f548c1) and recorded into episode extras
 (`crates/roko-cli/src/runtime_feedback/episodes.rs:309-312`, key `"helper_unpriced_calls"`), but never read back by
 `status` or `diagnose`.
+
+2026-10-26: the source report described gap-f548c1's branch, which merged after this item was written.
+`3eed76595` (backlog 2109) made `roko status`'s text print `Unpriced: N calls` in its cost summary
+(`CostsLog::unpriced_calls` over `.roko/learn/costs.jsonl`) and gave `roko diagnose`'s JSON
+`run_state.unpriced_calls` (the run's `costs.jsonl` rows, counted with `roko_learn::costs_log::is_unpriced`). Still
+missing then: `roko status --json` had no count, `roko diagnose`'s text had no line, and no test covered either
+command. The budget ledger's counters live only in the running process, so `costs.jsonl` stays the one source both
+commands read.
 
 ## Plan
 

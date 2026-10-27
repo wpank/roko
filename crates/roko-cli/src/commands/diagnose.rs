@@ -588,7 +588,18 @@ fn build_graph_report(
     verbose: bool,
 ) -> DiagnoseReport {
     let mut notes = Vec::new();
-    let status = checkpoint.manifest.status;
+    // A run whose process died never wrote its end: it reads interrupted, as
+    // serve says it (bug-df0e79).
+    let stopped = checkpoint.manifest.status == GraphCheckpointStatus::Running
+        && crate::graph_checkpoint::running_checkpoint_has_stopped(
+            workdir,
+            &checkpoint.manifest.run_id,
+        );
+    let status = if stopped {
+        GraphCheckpointStatus::Interrupted
+    } else {
+        checkpoint.manifest.status
+    };
     let since_ms = checkpoint
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
@@ -1907,6 +1918,17 @@ pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
             out,
             "  {completed} of {total} tasks completed, {failed} failed"
         );
+        // Calls whose cost is unknown, which the spend leaves out
+        // (gap-2bec05).
+        let unpriced = run_state.unpriced_calls;
+        if unpriced > 0 {
+            let calls = run_state.total_agent_calls.max(unpriced);
+            let suffix = plural(calls);
+            let _ = writeln!(
+                out,
+                "  {unpriced} of {calls} agent call{suffix} unpriced: cost unknown, not in the spend"
+            );
+        }
     }
 
     let shown: Vec<&TaskDiagnosis> = report
@@ -2960,6 +2982,54 @@ title = "Tidy the changelog"
         assert!(verbose.contains(completed), "{verbose}");
     }
 
+    /// gap-2bec05: the report counts the run's agent calls whose cost is
+    /// unknown, which its spend leaves out, in its JSON and in its text. An
+    /// earlier run's unpriced call is not the run's, and a call priced at $0
+    /// is free, not unpriced.
+    #[test]
+    fn diagnose_reports_unpriced_call_count() {
+        let workspace = failed_run();
+        let costs = workspace.path().join(".roko/learn/costs.jsonl");
+        let earlier = CostRecord {
+            priced: Some(false),
+            ..attempt("T2", "2026-09-28T09:10:00+00:00", false, 0.0)
+        };
+        roko_core::io::append_jsonl(&costs, &earlier).expect("append");
+
+        // T2's first attempt in the run recorded $0 for its tokens.
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        let run_state = report.run_state.as_ref().expect("run state");
+        assert_eq!(run_state.unpriced_calls, 1);
+        assert_eq!(run_state.total_agent_calls, 3);
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(json["run_state"]["unpriced_calls"], 1);
+        let text = render_text(&report, false);
+        let line = "\n  1 of 3 agent calls unpriced: cost unknown, not in the spend\n";
+        assert!(text.contains(line), "{text}");
+
+        let free = CostRecord {
+            priced: Some(true),
+            ..attempt("T2", "2026-09-29T07:20:00.100+00:00", false, 0.0)
+        };
+        write_jsonl(
+            &costs,
+            &[
+                earlier,
+                attempt("T1", "2026-09-29T07:10:00.000+00:00", true, 0.25),
+                free,
+            ],
+        );
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        assert_eq!(
+            report.run_state.as_ref().expect("run state").unpriced_calls,
+            0
+        );
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(json["run_state"]["unpriced_calls"], 0);
+        let text = render_text(&report, false);
+        assert!(!text.contains("unpriced"), "{text}");
+    }
+
     /// gap-baab0a: an attempt's tool policy, recorded in its verdict in the
     /// run's `attempts.jsonl`, is listed with its task, with the operation
     /// the broker stopped it at. A verdict without one, and another plan's,
@@ -3289,6 +3359,61 @@ title = "Tidy the changelog"
             "never ran: dependency T2 did not complete"
         );
         assert!(report.failed_task.is_none());
+    }
+
+    /// bug-df0e79: a run whose process died left its checkpoint `running`.
+    /// The report says it was interrupted, as `roko serve` does, and stops
+    /// telling the person to check whether it still runs; a run whose
+    /// process lives still reads running.
+    #[test]
+    fn graph_report_of_a_dead_run_reads_interrupted() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let workspace = workspace();
+        let root = workspace.path();
+        record_run(root, &["T1"], 0, GraphCheckpointStatus::Running);
+        let run_id = crate::graph_checkpoint::inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("inspect")
+            .expect("a checkpoint")
+            .manifest
+            .run_id;
+        let run_by = |pid: u32, started_at: String| {
+            let mut manifest = RunProvenanceManifest::new(&run_id, "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at,
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest
+                .store(&RokoLayout::for_project(root).run_dir(&run_id))
+                .expect("store the run manifest");
+        };
+        let mut gone = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let dead_pid = gone.id();
+        gone.wait().expect("reap true");
+
+        run_by(
+            dead_pid,
+            (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+        );
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert_eq!(report.status, "interrupted");
+        assert!(
+            report
+                .suggested_recovery
+                .iter()
+                .all(|line| !line.contains("still says `running`")),
+            "{:?}",
+            report.suggested_recovery
+        );
+
+        run_by(std::process::id(), Utc::now().to_rfc3339());
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert_eq!(report.status, "running");
     }
 
     #[test]

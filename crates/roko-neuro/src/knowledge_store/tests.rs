@@ -1508,8 +1508,167 @@ mod tests {
             now,
         );
 
-        // Meets MIN_TAG_OVERLAP but not MIN_KEYWORD_OVERLAP.
+        // Meets MIN_TAG_OVERLAP but not MIN_CONTENT_JACCARD.
         assert!(!entries_are_similar(&existing, &one_keyword));
+    }
+
+    /// gap-1220c5: what every lesson of a run carries (`plan:`, `lesson`,
+    /// `runtime`, `gate:` and kind tags) and a few common words confirm
+    /// nothing. Undertow's lessons: phase 5's gamed lesson no longer
+    /// "confirms" phase 5's install-path lesson, nor two lessons whose only
+    /// common tags are the run's; the closest pair that states two different
+    /// facts about `tools/spec.sh` stays apart. Phase 1's, 4's and 5's real
+    /// repeats, which share a file and say the same thing in other words,
+    /// still confirm each other.
+    #[test]
+    fn run_generic_tags_confirm_nothing() {
+        let now = Utc::now();
+        let generic = [
+            "strategy_fragment",
+            "runtime",
+            "gate:passed",
+            "gate:verify-0:test-",
+            "lesson",
+        ];
+        let lesson = |id: &str, content: &str, tags: &[&str]| {
+            let mut all: Vec<&str> = tags.to_vec();
+            all.extend(generic);
+            entry(
+                KnowledgeKind::StrategyFragment,
+                id,
+                content,
+                &all,
+                0.87,
+                &[id],
+                now,
+            )
+        };
+        let gamed = lesson(
+            "gamed",
+            "some current factory presets still render too quiet or even silent, so \
+             `tools/render-demos.sh` must compensate locally for showcase artifacts rather than \
+             assuming preset levels already meet the demo spec.",
+            &[
+                "tools/render-demos.sh",
+                "artifacts/audio/init.wav",
+                "plan:p5-ship",
+                "tools",
+                "artifacts",
+            ],
+        );
+        let install = lesson(
+            "install",
+            "the plugin build artifacts live under `build/plugin/plugin/Undertow_artefacts/RelWithDebInfo/`, \
+             not directly under `build/plugin/plugin/`, so install scripts should copy from the generated \
+             bundle paths.",
+            &["tools/install.sh", "plan:p5-ship", "tools"],
+        );
+        assert!(!entries_are_similar(&gamed, &install));
+        assert!(!entries_are_similar(&install, &gamed));
+
+        let only_the_run = lesson(
+            "renders",
+            "offline renders of the demo presets must run from the tools directory so the \
+             showcase artifacts land beside the script.",
+            &["plan:p5-ship"],
+        );
+        let other_file = lesson(
+            "fonts",
+            "the editor's fonts must be embedded so the showcase artifacts render the same on \
+             every machine.",
+            &["plugin/ui/Fonts.cpp", "plan:p5-ship"],
+        );
+        assert!(!entries_are_similar(&only_the_run, &other_file));
+
+        let spec_rerun = lesson(
+            "spec-rerun",
+            "The `tools/spec.sh` script re-runs `cmake --preset` every invocation (about 30s), so \
+             running the built test binary directly from `build/core/tests/spec/` is much faster \
+             for iteration; use the script only for final verification.",
+            &[
+                "CMakeLists.txt",
+                "CMakePresets.json",
+                "plan:p0-undertow-foundation",
+                "cmake",
+                "core",
+            ],
+        );
+        let spec_targets = lesson(
+            "spec-targets",
+            "`tools/spec.sh` expects spec-target programs to be added to CMake before `tests/spec`, \
+             or render-related specs won’t see the built executable path.",
+            &[
+                "CMakeLists.txt",
+                "tools/render/CMakeLists.txt",
+                "plan:p5-ship",
+                "tools",
+            ],
+        );
+        assert!(!entries_are_similar(&spec_rerun, &spec_targets));
+
+        let repeats = [
+            (
+                lesson(
+                    "budget-4-1",
+                    "the phase 4 budget script regenerates the tracked 1x review images directly, \
+                     while the 2x previews remain outside the committed set.",
+                    &[
+                        "artifacts/ui/editor-idle.png",
+                        "plan:p4-1-bone-only-for-the-one-number",
+                        "artifacts",
+                    ],
+                ),
+                lesson(
+                    "budget-4-2",
+                    "the phase 4.2 budget check rewrites the tracked 1x review PNGs directly, so \
+                     status-render changes must be followed by a fresh budget run before committing.",
+                    &[
+                        "artifacts/ui/editor-idle.png",
+                        "plan:p4-2-the-editor-laid-out-as-designed",
+                        "artifacts",
+                    ],
+                ),
+            ),
+            (
+                lesson(
+                    "envelope-1",
+                    "The envelope must track level and rates in `double` precision, not `float` — when \
+                     the decay approaches sustain, `sustain + (level - sustain) * rate` in float loses \
+                     enough mantissa bits that the level gets stuck at a fixed point far from the threshold.",
+                    &["core/src/envelope.cpp", "plan:p1-undertow-voice", "core"],
+                ),
+                lesson(
+                    "envelope-2",
+                    "The envelope (and filter) internal state must use `double`, not `float` — float \
+                     precision causes exponential decay to stall at ~6e-5 from the target because \
+                     `(level - sustain) * multiplier` rounds to the same float when the distance is \
+                     small, preventing convergence to the Sustain stage.",
+                    &["core/src/envelope.cpp", "plan:p1-undertow-voice", "core"],
+                ),
+            ),
+            (
+                lesson(
+                    "loudness-5",
+                    "In this repo, preset-level loudness matching is enforced by spec, so even when the \
+                     preset list/API is correct, `master_gain` often needs per-preset trimming to land \
+                     near -18 dBFS RMS.",
+                    &["core/src/presets.cpp", "plan:p5-ship", "core"],
+                ),
+                lesson(
+                    "loudness-5-1",
+                    "in this repo, preset spectrum fixes on the final filter often need a paired \
+                     master_gain trim to keep the loudness check passing.",
+                    &[
+                        "core/src/presets.cpp",
+                        "plan:p5-1-the-renders-as-they-play",
+                        "core",
+                    ],
+                ),
+            ),
+        ];
+        for (existing, repeat) in &repeats {
+            assert!(entries_are_similar(existing, repeat), "{}", repeat.id);
+        }
     }
 
     #[test]

@@ -1067,16 +1067,14 @@ fn is_loopback_addr(addr: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
 }
 
-/// Validate that a bind address is safe to expose.
-///
-/// Loopback addresses are always allowed. Public addresses require either
-/// authentication or an explicit acknowledgement of the risk.
 /// Emit a startup warning when auth is enabled but no credential is configured.
 ///
 /// When `serve.auth.enabled = true` (the default) but no API key is set and no
 /// Privy app ID is configured, every inbound request will be rejected with 401.
 /// This is the safe posture, but it is almost always a misconfiguration that
-/// the operator should know about immediately.
+/// the operator should know about immediately. A Privy app id without an
+/// allow-list is warned about here; on a public bind [`validate_bind_safety`]
+/// has refused to start by then.
 pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConfig) {
     if !auth.enabled {
         return;
@@ -1150,8 +1148,50 @@ pub fn validate_showcase_mode(config: &RokoConfig, passphrase_hash: Option<&str>
     );
 }
 
+/// Refuse to start on a bind address that is not safe to expose.
+///
+/// Loopback addresses are always allowed. A public address needs auth on
+/// (`serve.auth.enabled`, the default) or, with auth off, an explicit
+/// acknowledgement of the risk (`serve.acknowledge_public_risk`).
+///
+/// With auth on, a Privy app id (`serve.auth.privy_app_id`, the gate that
+/// turns Privy JWT auth on) also needs an allow-list: `privy_allowed_users`,
+/// `privy_allowed_roles` or `privy_workspace_id`. Without one every Privy JWT
+/// is rejected, so serve refuses to start instead of failing at the first
+/// login (S11 G0b). `serve.acknowledge_public_risk` does not lift that
+/// refusal, and on a loopback bind the same setup only logs a warning. With
+/// auth off no JWT is checked, so the app id plays no part there.
+///
+/// Every serve start checks this before it listens: [`ServerBuilder`] (behind
+/// `roko serve`, which `roko serve --detach` starts as a child),
+/// [`run_server_with_state`] and `roko daemon`.
+///
+/// # Errors
+///
+/// Returns an error naming the settings to change when the bind is public and
+/// one of those rules fails.
 pub fn validate_bind_safety(addr: &str, serve: &ServeConfig) -> Result<()> {
-    if is_loopback_addr(addr) || serve.auth.enabled {
+    if is_loopback_addr(addr) {
+        return Ok(());
+    }
+
+    let auth = &serve.auth;
+    if auth.enabled {
+        if auth.privy_app_id.is_some()
+            && !crate::routes::middleware::privy_allow_list_configured(auth)
+        {
+            anyhow::bail!(
+                "Public bind refused: {hint}\n\
+                 Attempted to bind to: {addr}\n\
+                 Add one of them to `[serve.auth]` in roko.toml, for example \
+                 `privy_allowed_users = [\"did:privy:...\"]` (`roko whoami` prints a signed-in \
+                 user's id), or turn Privy JWT auth off by unsetting `serve.auth.privy_app_id` \
+                 wherever it is set (roko.toml, ~/.roko/config.toml or \
+                 ROKO__SERVE__AUTH__PRIVY_APP_ID).\n\
+                 `serve.acknowledge_public_risk = true` does not lift this check.",
+                hint = crate::routes::middleware::PRIVY_ALLOW_LIST_HINT,
+            );
+        }
         return Ok(());
     }
 
@@ -4148,8 +4188,8 @@ mod tests {
     use super::{
         RokoConfig, ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
         resolve_bind_with_port_env, run_cold_archival_tick, run_server_with_state,
-        serve_api_or_spa_fallback, start_telemetry_producer_bridge, validate_showcase_mode,
-        warn_if_auth_misconfigured,
+        serve_api_or_spa_fallback, start_telemetry_producer_bridge, validate_bind_safety,
+        validate_showcase_mode, warn_if_auth_misconfigured,
     };
 
     use axum::body::{Body, to_bytes};
@@ -5188,6 +5228,67 @@ mod tests {
             assert!(message.contains("half configured"), "{message}");
             assert_eq!(message.matches(" must ").count(), 1, "{message}");
         }
+    }
+
+    /// S11 G0b (gap-083a14): with auth on, a public bind with a Privy app id and no allow-list
+    /// refuses to start, and the error names the settings that fix it. Any one allow-list lets
+    /// it start, `acknowledge_public_risk` does not, and a loopback bind keeps starting.
+    #[test]
+    fn non_loopback_bind_refuses_privy_without_allowlist() {
+        let mut privy = RokoConfig::default().serve;
+        privy.auth.privy_app_id = Some("privy-app".to_string());
+        assert!(privy.auth.enabled, "auth is on by default");
+
+        for addr in ["0.0.0.0:6677", "[::]:6677", "192.0.2.10:6677"] {
+            let message = validate_bind_safety(addr, &privy)
+                .expect_err(addr)
+                .to_string();
+            for needle in [
+                "serve.auth.privy_app_id",
+                "serve.auth.privy_allowed_users",
+                "serve.auth.privy_allowed_roles",
+                "serve.auth.privy_workspace_id",
+                "acknowledge_public_risk",
+                addr,
+            ] {
+                assert!(message.contains(needle), "{needle} missing from: {message}");
+            }
+        }
+
+        let mut acknowledged = privy.clone();
+        acknowledged.acknowledge_public_risk = true;
+        assert!(validate_bind_safety("0.0.0.0:6677", &acknowledged).is_err());
+
+        let mut workspace = privy.clone();
+        workspace.auth.privy_workspace_id = Some("org_abc123".to_string());
+        let mut roles = privy.clone();
+        roles.auth.privy_allowed_roles = vec!["admin".to_string()];
+        let mut users = privy.clone();
+        users.auth.privy_allowed_users = vec!["did:privy:operator".to_string()];
+        for (allow_list, serve) in [("workspace", workspace), ("roles", roles), ("users", users)] {
+            let result = validate_bind_safety("0.0.0.0:6677", &serve);
+            assert!(result.is_ok(), "{allow_list}: {result:?}");
+        }
+
+        for addr in ["127.0.0.1:6677", "[::1]:6677", "localhost:6677"] {
+            let result = validate_bind_safety(addr, &privy);
+            assert!(result.is_ok(), "{addr}: {result:?}");
+        }
+
+        // With auth off no JWT is checked, so only the auth-off rule applies.
+        let mut auth_off = privy.clone();
+        auth_off.auth.enabled = false;
+        auth_off.acknowledge_public_risk = true;
+        assert!(validate_bind_safety("0.0.0.0:6677", &auth_off).is_ok());
+        auth_off.acknowledge_public_risk = false;
+        let message = validate_bind_safety("0.0.0.0:6677", &auth_off)
+            .expect_err("auth off without the acknowledgement")
+            .to_string();
+        assert!(message.contains("Public bind requires"), "{message}");
+
+        // Without an app id Privy is off, and a public bind with auth on starts.
+        let no_privy = RokoConfig::default().serve;
+        assert!(validate_bind_safety("0.0.0.0:6677", &no_privy).is_ok());
     }
 
     // ── live_agent_output_honours_the_bind ───────────────────────────────────

@@ -2,15 +2,16 @@
 id = "gap-f1dd0c"
 kind = "gap"
 title = "A chat host's plan write is distilled on its planner's model, with no setting to change it: round v7's 17 plan-writing distillations sent ~12.5k tokens each for a median of 14 back, cost $0.233 ($0.032-0.036 a write on gpt-5.4), and yielded one empty knowledge entry"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "074f31340"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 7), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/learning_helpers.rs::distillation_model_caller_on", "crates/roko-neuro/src/episode_completion.rs::spawn_recorded_episode_distillation"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-143b5c", "bug-5b04d3", "
 
 [[verify]]
 command = "grep -rqw 'fn plan_writing_distillation_uses_the_cheapest_tool_loop_model' crates/roko-cli/src && cargo test -p roko-cli --lib plan_writing_distillation_uses_the_cheapest_tool_loop_model"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T03:24:04Z"
+commit = "074f31340"
+by = "roko-learnguard"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-27T02:35:15Z"
+forced = false
+evidence = "Superseded by bug-f8655e (074f31340): the episode distiller distils an episode only when it passed a gate, unless [learning] distill_ungated = true, so a plan write, which runs no gate, makes no distillation call and its cost goes away whatever model the distiller would use. With distill_ungated = true a plan write is distilled as before, on the planner's model for a chat host (bug-a0432b), through the knowledge guard."
 +++
 
 ## Problem

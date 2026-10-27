@@ -1031,7 +1031,8 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
 /// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
 /// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
 /// bug-ccc7c4). A resumed checkpoint keeps its recorded run, a set of several
-/// plans mints one run per plan, and a `--log-file` run mints its own.
+/// plans mints one run per plan, and a `--log-file` run mints its own. A run
+/// no caller names takes the id its events go under ([`run_graph_plan_observed`]).
 pub async fn run_graph_plan_in_run(
     params: GraphPlanRunParams,
     run_id: Option<String>,
@@ -1046,12 +1047,22 @@ pub async fn run_graph_plan_in_run(
 }
 
 /// [`run_graph_plan_in_run`] without a `log_file`, whose `status.json` and
-/// workspace event log name the run `observed_run_id`.
+/// workspace event log name the run `observed_run_id`. A run no caller named
+/// (`run_id` is `None`: the terminal's `roko plan run`, and a `--log-file`
+/// run) takes that id for its records, its batch and its knowledge batch too,
+/// and says it at its start: a single plan's fresh checkpoint used to mint a
+/// `graph-<plan>-<uuid>` of its own, so the run's attempt records and its
+/// events, which serve's summary reads, had two unrelated ids, and the run
+/// printed neither (bug-c872f6).
 pub(crate) async fn run_graph_plan_observed(
     params: GraphPlanRunParams,
     run_id: Option<String>,
     observed_run_id: String,
 ) -> anyhow::Result<i32> {
+    if run_id.is_none() && !params.quiet && !params.json {
+        eprintln!("Run {observed_run_id}");
+    }
+    let run_id = run_id.or_else(|| Some(observed_run_id.clone()));
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
@@ -2651,12 +2662,25 @@ async fn run_graph_plan_body(
         )
     };
 
+    // Each plan's run, by which its records are kept: the run's own id for a
+    // single plan's fresh checkpoint, a resumed checkpoint's recorded run, or
+    // one run per plan of a set (bug-c872f6).
+    let plan_runs: std::collections::BTreeMap<String, String> = plans
+        .iter()
+        .filter_map(|plan| {
+            graph_task_dispatcher
+                .plan_run_id(&plan.id)
+                .map(|plan_run| (plan.id.clone(), plan_run))
+        })
+        .collect();
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "engine": "graph",
                 "dry_run": false,
+                "run_id": run_id,
+                "plan_runs": plan_runs,
                 "succeeded": all_succeeded,
                 "plan_count": plan_count,
                 "total_tasks": total_tasks,
@@ -2724,6 +2748,16 @@ async fn run_graph_plan_body(
                 "Graph Engine complete: {} plan(s), {} task(s), ${:.2}",
                 plan_count, total_tasks, total_cost_usd,
             );
+        }
+        // The run's id, which `roko diagnose`, serve's summary and the
+        // records take, and each plan's run kept apart from it (bug-c872f6).
+        if let Some(run_id) = &run_id {
+            println!("Run {run_id}");
+        }
+        for (plan_id, plan_run) in &plan_runs {
+            if run_id.as_ref() != Some(plan_run) {
+                println!("Plan {plan_id}: run {plan_run}");
+            }
         }
         // Name the plans that did not succeed, such as one whose delivery
         // into the batch branch failed its regression check (spec-f830c4),
@@ -10816,6 +10850,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         }
     }
 
+    /// bug-c872f6: a terminal `roko plan run` names no run id, and its
+    /// records (`.roko/runs/graph-<plan>-<uuid>/`) and its events (the index
+    /// serve's summary reads, `status.json`) took two unrelated ids. A run no
+    /// caller names now takes one id for its records, its events, its status
+    /// and its batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cli_plan_run_uses_one_run_id_for_records_and_events() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+
+        let exit_code = run_graph_plan(worktree_run_params(repo))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let runs: Vec<String> = std::fs::read_dir(repo.join(".roko/runs"))
+            .expect("the run records")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join("manifest.json").is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let [run_id] = runs.as_slice() else {
+            panic!("one run's records: {runs:?}");
+        };
+        assert!(run_id.starts_with("graph-"), "{run_id}");
+        let status: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/status.json")).expect("status.json"),
+        )
+        .expect("status json");
+        assert_eq!(status["run_id"], run_id.as_str(), "{status}");
+        let index = roko_fs::run_index::run_index_path(&repo.join(".roko/events.jsonl"), run_id)
+            .expect("the run's index path");
+        let indexed = std::fs::read_to_string(&index).expect("the run's event index");
+        assert!(
+            indexed.contains("\"RunCompleted\"") || indexed.contains("run_completed"),
+            "{indexed}"
+        );
+        let checkpoint: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        assert_eq!(checkpoint["run_id"], run_id.as_str());
+        assert_eq!(
+            checkpoint["extensions"]["roko.batch@1"]["value"]["branch"],
+            format!("roko/batch/{run_id}")
+        );
+    }
+
     /// spec-f830c4: a `--worktree-per-task` run of two plans delivers each
     /// into the run's batch branch, the second starting from the first's
     /// work, records the delivery in each plan's checkpoint, promotes the
@@ -10903,6 +10986,50 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         let verdicts: usize = runs.iter().map(|run| run.verdicts.len()).sum();
         assert!(verdicts >= 2, "{verdicts}");
         assert!(runs.iter().all(|run| run.checkout_writes().is_empty()));
+    }
+
+    /// bug-4fadf8: a run whose task passed but whose delivery a crash cut
+    /// (roko-recovery's kill point e: the run never wrote its end, so its
+    /// checkpoint says running and records no delivery, and its batch branch
+    /// never moved) resumes without running the task again, and delivers
+    /// into the resuming run's batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivery_cut_run_resumes_with_no_task_attempt_and_delivers() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let first = run_graph_plan_in_run(worktree_run_params(repo), Some("run-cut".into()))
+            .await
+            .expect("run the plan");
+        assert_eq!(first, EXIT_SUCCESS);
+        let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&checkpoint).expect("checkpoint"))
+                .expect("checkpoint json")
+        };
+        let mut manifest = read();
+        manifest["status"] = serde_json::json!("running");
+        let extensions = manifest["extensions"].as_object_mut().expect("extensions");
+        extensions.remove("roko.batch@1");
+        extensions.remove("roko.delivery@1");
+        std::fs::write(&checkpoint, serde_json::to_vec(&manifest).expect("json")).expect("write");
+        git_in(repo, &["branch", "-D", "roko/batch/run-cut"]);
+
+        let again = run_graph_plan_in_run(worktree_run_params(repo), Some("run-resume".into()))
+            .await
+            .expect("resume the plan");
+
+        assert_eq!(again, EXIT_SUCCESS);
+        let attempts = std::fs::read_to_string(repo.join(".roko/runs/run-resume/attempts.jsonl"))
+            .unwrap_or_default();
+        assert!(
+            !attempts.contains("roko.attempt_open"),
+            "no task ran again: {attempts}"
+        );
+        let record = &read()["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["state"], "delivered", "{record}");
+        assert_eq!(record["branch"], "roko/batch/run-resume", "{record}");
+        let files = git_stdout(repo, &["ls-tree", "--name-only", "roko/batch/run-resume"]);
+        assert!(files.contains("alpha.txt"), "{files}");
     }
 
     /// bug-b7d9ad: what roko writes in the person's checkout during a run,

@@ -2,15 +2,16 @@
 id = "bug-4fadf8"
 kind = "bug"
 title = "A chat host's plain plan_run or the portal's Run button silently sets aside a run whose tasks all passed but whose delivery a crash cut, and redoes every task: bug-cbdb6b's refusal needs tasks left, and the Run button never asks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-serve/plans"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "a65a75e37"
 source = "round-v7 roko-recovery kill matrix (tmp/hermes-roko-v7/findings/roko-recovery.md, tmp/hermes-roko-v7/roko-recovery/runs/roko-main-4d22b94e8), the lead's ask"
 discovered_from = "agent:roko-recovery (round v7, 4d22b94e8)"
 anchors = ["crates/roko-cli/src/serve_runtime.rs::checkpoint_run_of", "crates/roko-serve/src/routes/plans/run_control.rs::start_plan_run_with", "crates/roko-serve/src/routes/plans/run_control.rs::execute_plan"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-cbdb6b"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_plain_plan_run_over_an_undelivered_passed_run_is_refused' crates/roko-serve/src && cargo test -p roko-serve a_plain_plan_run_over_an_undelivered_passed_run_is_refused"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T02:40:36Z"
+commit = "1993238b9"
+by = "roko-ladder (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-27T01:28:08Z"
+forced = false
+evidence = "1993238b9: checkpoint_run_of and set_aside_run count a stopped run whose tasks all passed as resumable, with delivery_pending true when no task is left (roko-recovery's kill points e and e' leave a running checkpoint with every task passed and no delivery record); the resumable_run refusal for it reads 'Plan p has a run that can be resumed: <id> (interrupted) passed T1 and T2, and its delivery didn't finish. Pass resume=true to deliver it, so no task runs again, or fresh=true to start over and run every task again', with delivery_pending in its details, and GET /api/plans/{id}'s resumable_run names such a run. Closed on the chat half: the portal's Run button (apps/portal, execute with no body under contract P-7) moved to gap-0eb763 (design B, the portal reads resumable_run first), and option A, a 409 from execute, is a decision on Will's list. Tests: a_plain_plan_run_over_an_undelivered_passed_run_is_refused and a_stopped_run_whose_tasks_all_passed_is_resumable_for_its_delivery, red on the old rule (not resumable; the old refusal read 'and no tasks are left ... so only no tasks run'); a_delivery_cut_run_resumes_with_no_task_attempt_and_delivers, which passes on the old code too since the resume itself worked. Chain 02:53-03:25 on a fresh clone of roko-v7-target: targeted 3/3 roko-cli and 5/5 roko-serve (with bug-cbdb6b's four), lib suites roko-cli 4066/0 and roko-serve 1088/0, clippy -D warnings and nightly fmt clean. $0 proof on roko-recovery's kill matrix with bin/roko-4fadf8-a65a75e37, e-delivery and e-ref on both run paths: E6 passes on all four rows where main 96ff7f0e0 failed all four, the plain plan_run refused with the delivery wording; E1, E2, E3, E5 and E7 pass; E4 fails as on main (bug-df0e79, bug-c872f6)."
 +++
 
 ## Problem

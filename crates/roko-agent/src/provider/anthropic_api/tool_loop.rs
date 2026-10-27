@@ -2181,8 +2181,9 @@ data: {}\n\
     /// the loop found no tool call in a streamed reply; with one found, the
     /// follow-up would have gone without the thinking block the API
     /// requires. Against a stand-in that holds roko to that rule, the loop
-    /// streams the reasoning, runs `ls`, sends the thinking block back
-    /// unchanged and gets the answer.
+    /// streams the reasoning, dispatches the `ls` call (this dispatcher's
+    /// policy refuses it, and the refusal goes back as its result), sends
+    /// the thinking block back unchanged and gets the answer.
     #[tokio::test]
     async fn a_streamed_anthropic_tool_turn_sends_its_thinking_back() {
         use crate::tool_loop::StopReason;
@@ -2233,7 +2234,7 @@ data: {}\n\
         assert_eq!(
             (out.tool_calls.len(), requests.len()),
             (1, 2),
-            "ls runs and the follow-up goes: {:?}",
+            "the ls call is dispatched and the follow-up goes: {:?}",
             out.stop_reason
         );
         assert!(

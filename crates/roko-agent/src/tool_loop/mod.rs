@@ -230,6 +230,13 @@ pub struct StreamEvent {
     /// When the request this event answers was sent, when its backend says:
     /// the loop times the call's first token from it (gap-0eb14e).
     pub sent_at: Option<std::time::Instant>,
+    /// The reply's own content blocks, when its backend assembles them from
+    /// the stream: the Anthropic API's thinking blocks with their
+    /// signatures, text and tool calls (bug-f30f36). A turn's `Done`
+    /// carries them, and [`collect_stream_to_response`] keeps them as the
+    /// response's `content`, so the reply goes back to its provider as it
+    /// came.
+    pub blocks: Option<serde_json::Value>,
 }
 
 impl StreamEvent {
@@ -242,6 +249,7 @@ impl StreamEvent {
             model: None,
             session: None,
             sent_at: None,
+            blocks: None,
         }
     }
 
@@ -263,6 +271,13 @@ impl StreamEvent {
     #[must_use]
     pub fn with_sent_at(mut self, sent_at: Option<std::time::Instant>) -> Self {
         self.sent_at = sent_at;
+        self
+    }
+
+    /// This event, carrying the reply's own content `blocks` (bug-f30f36).
+    #[must_use]
+    pub fn with_blocks(mut self, blocks: Option<serde_json::Value>) -> Self {
+        self.blocks = blocks;
         self
     }
 }
@@ -443,6 +458,9 @@ pub async fn collect_stream_to_response(
     let mut ttft_ms: Option<u64> = None;
     // The model the stream's chunks last named (bug-bfd241).
     let mut model: Option<String> = None;
+    // The reply's own content blocks, when its backend assembled them
+    // (bug-f30f36).
+    let mut blocks: Option<serde_json::Value> = None;
     // The session ids they last named, each on its own.
     let mut session = SessionState::default();
     // Track in-progress tool calls: key -> (real_id, name, accumulated_args).
@@ -458,6 +476,9 @@ pub async fn collect_stream_to_response(
         let event = event?;
         if event.model.is_some() {
             model = event.model;
+        }
+        if event.blocks.is_some() {
+            blocks = event.blocks;
         }
         if let Some(named) = event.session {
             session.session_id = named.session_id.or(session.session_id);
@@ -604,6 +625,13 @@ pub async fn collect_stream_to_response(
             })
             .collect();
         json["tool_calls"] = serde_json::Value::Array(top_level);
+    }
+
+    // The reply's own content blocks, which a translator that reads them
+    // (Anthropic's) sends back as the reply: thinking blocks first, with
+    // their signatures, unchanged (bug-f30f36).
+    if let Some(blocks) = blocks {
+        json["content"] = blocks;
     }
 
     // Stash TTFT in metadata for downstream consumers.

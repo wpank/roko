@@ -14,7 +14,7 @@
 // - `error` — provider error
 // - `ping` — keep-alive (ignored)
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use roko_core::sse::parse_sse_lines;
 use serde_json::Value;
@@ -30,6 +30,9 @@ const MAX_TOOL_JSON_BYTES: usize = 1024 * 1024; // 1 MiB
 
 /// Maximum number of concurrent tool blocks tracked.
 const MAX_CONCURRENT_TOOL_BLOCKS: usize = 64;
+
+/// Maximum number of content blocks one reply keeps.
+const MAX_CONTENT_BLOCKS: usize = 1024;
 
 /// Incremental SSE line decoder that handles arbitrary chunk boundaries.
 ///
@@ -103,6 +106,11 @@ impl SseLineDecoder {
 pub(crate) struct AnthropicStreamState {
     /// Map of block index -> in-progress tool block state.
     tool_blocks: HashMap<u64, ToolBlockState>,
+    /// The reply's content blocks by index, as the API sent them: thinking
+    /// with its signature, redacted thinking, text and tool calls. The
+    /// turn's `Done` carries them, so a tool-use follow-up sends them back
+    /// unchanged, as the API requires of thinking blocks (bug-f30f36).
+    blocks: BTreeMap<u64, Value>,
     /// Initial usage from `message_start` (input tokens, cache counts).
     initial_usage: Option<InitialUsage>,
     /// Whether we have emitted a Done event.
@@ -128,6 +136,7 @@ impl AnthropicStreamState {
     pub fn new() -> Self {
         Self {
             tool_blocks: HashMap::new(),
+            blocks: BTreeMap::new(),
             initial_usage: None,
             done_emitted: false,
         }
@@ -136,6 +145,27 @@ impl AnthropicStreamState {
     /// Returns true if a `Done` event has been emitted.
     pub fn is_done(&self) -> bool {
         self.done_emitted
+    }
+
+    /// The turn's `Done`, carrying the reply's content blocks in order.
+    fn done(&mut self, finish_reason: String) -> StreamEvent {
+        self.done_emitted = true;
+        let blocks = std::mem::take(&mut self.blocks);
+        StreamEvent::now(StreamEventKind::Done { finish_reason })
+            .with_blocks((!blocks.is_empty()).then(|| Value::Array(blocks.into_values().collect())))
+    }
+
+    /// Append `text` to the `field` of the kept block at `index`.
+    fn append(&mut self, index: u64, field: &str, text: &str) {
+        let Some(block) = self.blocks.get_mut(&index).and_then(Value::as_object_mut) else {
+            return;
+        };
+        if let Value::String(value) = block
+            .entry(field)
+            .or_insert_with(|| Value::String(String::new()))
+        {
+            value.push_str(text);
+        }
     }
 
     /// Process one SSE line pair (event type + data) and return events.
@@ -220,6 +250,17 @@ impl AnthropicStreamState {
         let block = json.get("content_block").unwrap_or(&Value::Null);
         let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
 
+        // Every block is kept as the API sent it, and its deltas fill it in
+        // (bug-f30f36).
+        if block.is_object() {
+            if self.blocks.len() >= MAX_CONTENT_BLOCKS {
+                return Err(LlmError::Backend(format!(
+                    "exceeded {MAX_CONTENT_BLOCKS} content blocks"
+                )));
+            }
+            self.blocks.insert(index, block.clone());
+        }
+
         match block_type {
             "tool_use" => {
                 if self.tool_blocks.len() >= MAX_CONCURRENT_TOOL_BLOCKS {
@@ -276,17 +317,34 @@ impl AnthropicStreamState {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                self.append(index, "text", &text);
                 Ok(vec![StreamEvent::now(StreamEventKind::TextDelta(text))])
             }
-            "thinking" => {
+            // An empty one, as `display: "omitted"` sends, only says the
+            // call is alive.
+            "thinking_delta" => {
                 let thinking = delta
                     .get("thinking")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                self.append(index, "thinking", &thinking);
                 Ok(vec![StreamEvent::now(StreamEventKind::ReasoningDelta(
                     thinking,
                 ))])
+            }
+            // One comes just before a thinking block closes: it carries the
+            // full thinking, encrypted, for the follow-up (bug-f30f36).
+            "signature_delta" => {
+                if let Some(signature) = delta.get("signature").and_then(Value::as_str)
+                    && let Some(block) = self.blocks.get_mut(&index).and_then(Value::as_object_mut)
+                {
+                    block.insert(
+                        "signature".to_string(),
+                        Value::String(signature.to_string()),
+                    );
+                }
+                Ok(Vec::new())
             }
             "input_json_delta" => {
                 let partial_json = delta
@@ -334,6 +392,9 @@ impl AnthropicStreamState {
                 serde_json::from_str(&tool_block.json_acc)
                     .unwrap_or_else(|_| Value::String(tool_block.json_acc.clone()))
             };
+            if let Some(block) = self.blocks.get_mut(&index).and_then(Value::as_object_mut) {
+                block.insert("input".to_string(), args.clone());
+            }
 
             Ok(vec![StreamEvent::now(StreamEventKind::ToolCallEnd {
                 id: tool_block.id,
@@ -390,10 +451,7 @@ impl AnthropicStreamState {
                 "stop_sequence" => "stop_sequence",
                 other => other,
             };
-            events.push(StreamEvent::now(StreamEventKind::Done {
-                finish_reason: finish_reason.to_string(),
-            }));
-            self.done_emitted = true;
+            events.push(self.done(finish_reason.to_string()));
         }
 
         Ok(events)
@@ -401,10 +459,7 @@ impl AnthropicStreamState {
 
     fn handle_message_stop(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
         if !self.done_emitted {
-            self.done_emitted = true;
-            Ok(vec![StreamEvent::now(StreamEventKind::Done {
-                finish_reason: "stop".to_string(),
-            })])
+            Ok(vec![self.done("stop".to_string())])
         } else {
             Ok(Vec::new())
         }
@@ -571,7 +626,7 @@ mod tests {
         let events = state
             .process_sse_event(
                 "content_block_delta",
-                r#"{"index":0,"delta":{"type":"thinking","thinking":"reasoning step"}}"#,
+                r#"{"index":0,"delta":{"type":"thinking_delta","thinking":"reasoning step"}}"#,
             )
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1181,13 +1236,16 @@ event: message_start\n\
 data: {\"message\":{\"id\":\"msg_4\",\"usage\":{\"input_tokens\":30,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
 \n\
 event: content_block_start\n\
-data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"index\":0,\"delta\":{\"type\":\"thinking\",\"thinking\":\"Let me think\"}}\n\
+data: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"index\":0,\"delta\":{\"type\":\"thinking\",\"thinking\":\" about this.\"}}\n\
+data: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" about this.\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCgIYAhIM\"}}\n\
 \n\
 event: content_block_stop\n\
 data: {\"index\":0}\n\
@@ -1245,6 +1303,79 @@ data: {}\n\
             })
             .collect();
         assert_eq!(text, vec!["The answer is 42."]);
+
+        // The turn's Done carries the reply's blocks: the thinking with its
+        // signature, then the text (bug-f30f36).
+        let blocks = all_events
+            .iter()
+            .find_map(|e| match e.kind {
+                StreamEventKind::Done { .. } => e.blocks.clone(),
+                _ => None,
+            })
+            .expect("the Done carries the reply's blocks");
+        assert_eq!(
+            blocks,
+            serde_json::json!([
+                {"type": "thinking", "thinking": "Let me think about this.", "signature": "EqQBCgIYAhIM"},
+                {"type": "text", "text": "The answer is 42."},
+            ])
+        );
+    }
+
+    /// bug-f30f36: a redacted thinking block streams no deltas and is kept
+    /// as the API sent it, and a tool call is kept with its input, so the
+    /// follow-up sends both back unchanged.
+    #[test]
+    fn anthropic_stream_keeps_redacted_thinking_and_tool_input() {
+        let mut state = AnthropicStreamState::new();
+        let frames = [
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIwxtE3rAFBa8cr3qpPkNRj2YfWXGmKDxH4mPnZ5sQ7vB5URj"}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":0}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"ls","input":{}}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"src\"}"}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":1}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":30}}"#,
+            ),
+        ];
+        let mut events = Vec::new();
+        for (event_type, data) in frames {
+            events.extend(state.process_sse_event(event_type, data).unwrap());
+        }
+
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e.kind, StreamEventKind::ReasoningDelta(_))),
+            "redacted thinking has no text to stream"
+        );
+        let done = events.last().expect("the Done");
+        assert!(
+            matches!(&done.kind, StreamEventKind::Done { finish_reason } if finish_reason == "tool_calls")
+        );
+        assert_eq!(
+            done.blocks,
+            Some(serde_json::json!([
+                {"type": "redacted_thinking", "data": "EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIwxtE3rAFBa8cr3qpPkNRj2YfWXGmKDxH4mPnZ5sQ7vB5URj"},
+                {"type": "tool_use", "id": "toolu_01", "name": "ls", "input": {"path": "src"}},
+            ]))
+        );
     }
 
     /// Simulate a truncated stream (no message_stop).

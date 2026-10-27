@@ -1924,10 +1924,13 @@ event: message_start\n\
 data: {\"message\":{\"id\":\"msg_s5\",\"usage\":{\"input_tokens\":15,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
 \n\
 event: content_block_start\n\
-data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"index\":0,\"delta\":{\"type\":\"thinking\",\"thinking\":\"Let me think.\"}}\n\
+data: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think.\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCgIYAhIM\"}}\n\
 \n\
 event: content_block_stop\n\
 data: {\"index\":0}\n\
@@ -1990,6 +1993,262 @@ data: {}\n\
             })
             .collect();
         assert_eq!(text, vec!["The answer."]);
+    }
+
+    /// The thinking block the stand-in's first reply sends: its summary
+    /// text and its signature, which carries the full thinking encrypted.
+    fn stand_in_thinking() -> Value {
+        json!({
+            "type": "thinking",
+            "thinking": "The user wants the files listed, so I'll call ls.",
+            "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds",
+        })
+    }
+
+    /// One streamed Messages reply: each event as an SSE frame.
+    fn sse_reply(events: &[Value]) -> String {
+        events
+            .iter()
+            .map(|event| {
+                let kind = event["type"].as_str().unwrap_or_default();
+                format!("event: {kind}\ndata: {event}\n\n")
+            })
+            .collect()
+    }
+
+    /// The `message_start` of the stand-in's reply `id`.
+    fn message_start(id: &str) -> Value {
+        json!({"type": "message_start", "message": {
+            "id": id, "type": "message", "role": "assistant", "content": [],
+            "model": "claude-sonnet-4-5", "stop_reason": null, "stop_sequence": null,
+            "usage": {"input_tokens": 120, "output_tokens": 1},
+        }})
+    }
+
+    /// A thinking block at `index`, streamed as the API streams one: it
+    /// opens empty, its text comes in `thinking_delta`s, and one
+    /// `signature_delta` comes just before it closes.
+    fn thinking_events(index: u64, parts: &[&str], signature: &str) -> Vec<Value> {
+        let mut events = vec![json!({"type": "content_block_start", "index": index,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""}})];
+        for part in parts {
+            events.push(json!({"type": "content_block_delta", "index": index,
+                "delta": {"type": "thinking_delta", "thinking": part}}));
+        }
+        events.push(json!({"type": "content_block_delta", "index": index,
+            "delta": {"type": "signature_delta", "signature": signature}}));
+        events.push(json!({"type": "content_block_stop", "index": index}));
+        events
+    }
+
+    /// The stand-in's first reply: it thinks, then calls `ls`.
+    fn thinking_tool_reply() -> String {
+        let thinking = stand_in_thinking();
+        let text = thinking["thinking"].as_str().unwrap_or_default();
+        let signature = thinking["signature"].as_str().unwrap_or_default();
+        let (first, rest) = text.split_at(text.len() / 2);
+        let mut events = vec![message_start("msg_01")];
+        events.extend(thinking_events(0, &[first, rest], signature));
+        events.extend([
+            json!({"type": "content_block_start", "index": 1, "content_block":
+                {"type": "tool_use", "id": "toolu_01", "name": "ls", "input": {}}}),
+            json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": "{}"}}),
+            json!({"type": "content_block_stop", "index": 1}),
+            json!({"type": "message_delta",
+                "delta": {"stop_reason": "tool_use", "stop_sequence": null},
+                "usage": {"output_tokens": 40}}),
+            json!({"type": "message_stop"}),
+        ]);
+        sse_reply(&events)
+    }
+
+    /// The stand-in's answer once `ls` has run: it thinks, then says so.
+    fn answer_reply() -> String {
+        let mut events = vec![message_start("msg_02")];
+        events.extend(thinking_events(0, &["ls listed them."], "Es8CCkYICxIM"));
+        events.extend([
+            json!({"type": "content_block_start", "index": 1,
+                "content_block": {"type": "text", "text": ""}}),
+            json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "text_delta", "text": "listed"}}),
+            json!({"type": "content_block_stop", "index": 1}),
+            json!({"type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                "usage": {"output_tokens": 12}}),
+            json!({"type": "message_stop"}),
+        ]);
+        sse_reply(&events)
+    }
+
+    /// Whether `request`'s last assistant turn starts with the stand-in's
+    /// thinking block, text and signature unchanged: what the API requires
+    /// of a tool-use follow-up while thinking is on.
+    fn starts_with_its_thinking(request: &Value) -> bool {
+        request["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().rev().find(|m| m["role"] == "assistant"))
+            .and_then(|turn| turn["content"].as_array())
+            .and_then(|content| content.first())
+            == Some(&stand_in_thinking())
+    }
+
+    /// The body of the HTTP request on `stream`, read to its Content-Length.
+    fn read_request_body(stream: &mut std::net::TcpStream) -> Value {
+        use std::io::Read;
+
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).expect("read the request");
+            assert!(read > 0, "the request closed early");
+            buf.extend_from_slice(&chunk[..read]);
+            let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buf.len() >= end + 4 + length {
+                return serde_json::from_slice(&buf[end + 4..end + 4 + length])
+                    .expect("the request body is json");
+            }
+        }
+    }
+
+    /// A stand-in for the Messages API that holds a thinking tool loop to
+    /// the API's rule (bug-f30f36). Its first reply streams thinking in the
+    /// API's own event shapes and calls `ls`. A follow-up whose last
+    /// assistant turn does not start with that thinking block, text and
+    /// signature unchanged, gets the API's 400; one that does gets the
+    /// answer. It keeps each request's body.
+    fn serve_thinking_tool_loop() -> (String, Arc<Mutex<Vec<Value>>>) {
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stand-in");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("stand-in address")
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&requests);
+        std::thread::spawn(move || {
+            for turn in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let request = read_request_body(&mut stream);
+                let response = if turn == 0 || starts_with_its_thinking(&request) {
+                    let reply = if turn == 0 {
+                        thinking_tool_reply()
+                    } else {
+                        answer_reply()
+                    };
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{reply}"
+                    )
+                } else {
+                    let body = json!({"type": "error", "error": {
+                        "type": "invalid_request_error",
+                        "message": "messages.1.content.0.type: Expected `thinking` or \
+                            `redacted_thinking`, but found `tool_use`. When `thinking` is \
+                            enabled, a final `assistant` message must start with a thinking \
+                            block.",
+                    }})
+                    .to_string();
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                kept.lock().expect("requests lock").push(request);
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (base_url, requests)
+    }
+
+    /// bug-f30f36: a streamed tool turn with thinking on keeps its thinking.
+    /// The parser read the API's `thinking_delta` and `signature_delta` as
+    /// unknown deltas, and the collected stream kept no content blocks, so
+    /// the loop found no tool call in a streamed reply; with one found, the
+    /// follow-up would have gone without the thinking block the API
+    /// requires. Against a stand-in that holds roko to that rule, the loop
+    /// streams the reasoning, dispatches the `ls` call (this dispatcher's
+    /// policy refuses it, and the refusal goes back as its result), sends
+    /// the thinking block back unchanged and gets the answer.
+    #[tokio::test]
+    async fn a_streamed_anthropic_tool_turn_sends_its_thinking_back() {
+        use crate::tool_loop::StopReason;
+
+        let (base_url, requests) = serve_thinking_tool_loop();
+        let (registry, tools, resolver) = tool_registry_for_options(
+            &ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "claude-sonnet-4-5".to_string(),
+                context_window: 200_000,
+                supports_tools: true,
+                tool_format: "anthropic_blocks".to_string(),
+                ..Default::default()
+            },
+            &AgentOptions {
+                tools: Some("ls".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("tools");
+        let dispatcher = build_tool_dispatcher(registry, resolver);
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-5")
+            .with_base_url(base_url)
+            .with_thinking_budget(2_048);
+        let tool_loop = ToolLoop::new(Arc::new(AnthropicTranslator), dispatcher, Arc::new(backend));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamEvent>(256);
+        let reasoning = tokio::spawn(async move {
+            let mut reasoning = String::new();
+            while let Some(event) = rx.recv().await {
+                if let StreamEventKind::ReasoningDelta(text) = event.kind {
+                    reasoning.push_str(&text);
+                }
+            }
+            reasoning
+        });
+
+        let out = tool_loop
+            .run_streaming(
+                "system",
+                "list the files",
+                &tools,
+                &ToolContext::testing("."),
+                tx,
+            )
+            .await;
+
+        let requests = requests.lock().expect("requests lock").clone();
+        assert_eq!(
+            (out.tool_calls.len(), requests.len()),
+            (1, 2),
+            "the ls call is dispatched and the follow-up goes: {:?}",
+            out.stop_reason
+        );
+        assert!(
+            starts_with_its_thinking(&requests[1]),
+            "the follow-up's last assistant turn: {}; the run: {:?}",
+            requests[1]["messages"],
+            out.stop_reason
+        );
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "listed");
+        assert_eq!(
+            reasoning.await.expect("the forwarded events"),
+            "The user wants the files listed, so I'll call ls.ls listed them."
+        );
     }
 
     /// Records each request, which the test keeps reading after the backend

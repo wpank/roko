@@ -2,15 +2,16 @@
 id = "gap-dc24dd"
 kind = "gap"
 title = "The post-merge regression checkout gets no warm build trees from the person's checkout, so a workspace's first delivery check builds every CMake tree cold: roko-ladder's 5.1 rehearsal built core there from nothing while its attempt worktrees all got warm core and plugin trees"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "e4665d964"
 source = "round-v7 roko-speed, the lead's question on roko-ladder's 5.1 rehearsal (tmp/hermes-roko-v7/roko-ladder/rehearsals/p51)"
 discovered_from = "agent:roko-speed (round v7)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::reset_regression_checkout", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-6754ab", "gap-b6b7a1", "
 
 [[verify]]
 command = "grep -rqw 'fn the_regression_checkout_starts_with_the_workdirs_build_trees' crates/roko-cli/src && cargo test -p roko-cli --lib the_regression_checkout_starts_with_the_workdirs_build_trees"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:12:55Z"
+commit = "e4665d964"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T19:30:29Z"
+forced = false
+evidence = "chain49 on main f5045c0e6 with the change (e4665d964): fmt and clippy (the six packages) green; 27 targeted tests pass, among them the_regression_checkout_starts_with_the_workdirs_build_trees (on APFS: the person's build tree given and relocated to the regression checkout, then kept by the next delivery, the check log saying which), a_cold_regression_check_starts_from_no_build_trees (a cold_verify check sees no build tree and an empty cargo target dir; summary and log say cold), key_sets_cover_every_parsed_field with cold_verify set, and the delivery and warm-tree tests; lib suites: roko-agent 2415, roko-core 2049, roko-learn 1405, roko-runtime 213, roko-serve 1086 green; roko-cli 4044 passed, 1 failed: the known load flake bug-5c77d6 (case 2 judged Unverified), which passed alone twice on the same build (chain49b)"
 +++
 
 ## Problem
@@ -89,6 +101,26 @@ So the shape is **warm by default for speed, plus a way to force a cold delivery
 - A delivery check can be forced cold, from no build trees, and its record says which mode it ran in.
 - The docs say which mode a plan's final delivery uses.
 - The `[[verify]]` passes.
+
+## What was built
+
+- **Warm by default.** `GitDeliveryBackend::prepare_build_trees` (`delivery.rs`) runs after the reset. The
+  regression checkout gets a warm copy of each of the person's checkout's build trees it lacks, through
+  `give_build_trees` and `[gates] warm_build_dirs`, which the plan run now passes to `deliver_plan_to_batch`. A tree
+  from an earlier delivery stays.
+- **A cold check on demand: `[meta] cold_verify = true`** in the plan's `tasks.toml` (`TaskMeta::cold_verify`, in
+  `META_KEYS`). The checkout's untracked and git-ignored files are removed (`git clean -ffdxq`), its build trees
+  with them. The regression's cargo target dir (`.roko/state/regression-target`) is emptied, and nothing is given.
+  It is a plan key, not a config key or run flag, because shipping is a property of the plan: a ship phase's
+  `tasks.toml` carries it. Without `--worktree-per-task` the whole-plan check runs in the person's checkout, which
+  roko never clears, so there it only logs a warning.
+- **Which mode ran.** The delivery's check log opens with the build trees the check started from: given, the
+  checkout's own, none, or cold. A cold check's summary in the receipt ends ", from no build trees (a cold check)".
+- **Which mode a plan's final delivery uses** is stated in `docs/v3/depth/04-execution/worktree-isolation.md`
+  (Warm Build Trees): warm like every delivery, unless the plan sets `cold_verify`, as a project's last phase should.
+- **Tests:** `the_regression_checkout_starts_with_the_workdirs_build_trees` (given, relocated, then kept across
+  deliveries; skipped without copy-on-write), `a_cold_regression_check_starts_from_no_build_trees`, and
+  `key_sets_cover_every_parsed_field` with `cold_verify` set.
 
 ## Notes
 

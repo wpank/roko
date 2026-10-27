@@ -860,6 +860,7 @@ fn prompt_tasks_file(
             failure_policy: None,
             workspace_rungs: None,
             verify: Vec::new(),
+            cold_verify: false,
             approval: None,
             allow_unverified,
             // A chat host's run holds what would act on the outside world

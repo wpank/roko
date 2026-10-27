@@ -2043,6 +2043,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     workdir_ref,
                     &probe,
                 ));
+                // bug-3d0414: a criterion no step covers that quotes one
+                // step's command whole is that step's.
+                repairs.extend(source_checks::cover_quoted_criteria(&mut parsed));
                 // gap-4dd77d: a task over its tier's size limits takes the
                 // smallest tier it fits, as the size check suggests, instead
                 // of a new draft; a task no tier fits still goes back.

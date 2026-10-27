@@ -91,6 +91,11 @@ and commit message say a cold check's summary says so, which holds only for a fa
   the service, each receipt read back) and `recorded_batch_delivery_reads_only_a_delivered_plan` (the record read
   from a checkpoint).
 
+- **Not done, left for the next round (the lead's call, 2026-10-27):** the $0 CLI rerun with this change's binary,
+  which would show the receipt's `roko.delivery.build_trees@1` and `plan status`'s `plan check from:` line on a real
+  run. The proof in `tmp/hermes-roko-v7/roko-speed/runs/dc24dd-proof` ran on the pre-fix binary f9328a636; rerun it
+  with `PLUGIN=1 bench/run-cold.sh <binary> <label>`, which now ends with `plan status`.
+
 ## Notes
 
 - Found by roko-speed (round v7) while running the lead's $0 CLI proof of gap-dc24dd's cold check, 2026-10-27. It

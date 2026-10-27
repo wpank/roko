@@ -1924,10 +1924,13 @@ event: message_start\n\
 data: {\"message\":{\"id\":\"msg_s5\",\"usage\":{\"input_tokens\":15,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
 \n\
 event: content_block_start\n\
-data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\
+data: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"index\":0,\"delta\":{\"type\":\"thinking\",\"thinking\":\"Let me think.\"}}\n\
+data: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think.\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCgIYAhIM\"}}\n\
 \n\
 event: content_block_stop\n\
 data: {\"index\":0}\n\

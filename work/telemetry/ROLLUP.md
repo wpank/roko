@@ -2,24 +2,24 @@
 
 Not for workers: no view, skill prompt or `work.py next` reads this, and no metric here is a target.
 
-DEFINITIONS.md sha256 `ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720` · report date 2026-10-27 · HEAD `f4ef01181` · prices `prices-2026-09-28`. Every figure is observational; costs are API-equivalent (subscription). Percentiles are by nearest rank; times are UTC.
+DEFINITIONS.md sha256 `ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720` · report date 2026-10-27 · HEAD `7f4b5fa62` · prices `prices-2026-09-28`. Every figure is observational; costs are API-equivalent (subscription). Percentiles are by nearest rank; times are UTC.
 
-Inputs: 1801 live events, 705 backfill events (tabled apart), 0 invalid event rows skipped, 0 harvested call rows.
+Inputs: 1819 live events, 705 backfill events (tabled apart), 0 invalid event rows skipped, 0 harvested call rows.
 
 ## All merged items
 
 | Metric | Value | Coverage |
 |---|---|---|
-| Merged items | 200 | |
-| Attempts (1 / 2 / 3+; mean) | 153 / 3 / 0; 1.02 | 156 of 200 merged items (78%) |
-| First-try merges | 132/140 (94%) | 140 of 200 merged items (70%) |
-| Claim-to-merge hours (median / p90) | 4.97 / 11.64 | 156 of 200 merged items (78%) |
-| Conflict rate (abandoned over a conflict: 2) | 1/160 (1%) | 160 of 200 merged items (80%) |
-| Post-merge verify failures | 2/149 (1%) | 149 of 200 merged items (74%) |
-| Escapes (150 pending) | 0/50 (0%) | 50 of 200 merged items (25%) |
-| Interventions per item (items with one) | 0.03 (3/122 (2%)) | 122 of 200 merged items (61%) |
-| Unassisted merge share | 119/122 (98%) | 122 of 200 merged items (61%) |
-| Cost per merged item, USD (median / p90; total) | – / –; 0 | 0 of 200 merged items (0%) |
+| Merged items | 208 | |
+| Attempts (1 / 2 / 3+; mean) | 161 / 3 / 0; 1.02 | 164 of 208 merged items (79%) |
+| First-try merges | 140/148 (95%) | 148 of 208 merged items (71%) |
+| Claim-to-merge hours (median / p90) | 4.97 / 11.45 | 164 of 208 merged items (79%) |
+| Conflict rate (abandoned over a conflict: 2) | 1/168 (1%) | 168 of 208 merged items (81%) |
+| Post-merge verify failures | 2/157 (1%) | 157 of 208 merged items (75%) |
+| Escapes (158 pending) | 0/50 (0%) | 50 of 208 merged items (24%) |
+| Interventions per item (items with one) | 0.02 (3/130 (2%)) | 130 of 208 merged items (62%) |
+| Unassisted merge share | 127/130 (98%) | 130 of 208 merged items (62%) |
+| Cost per merged item, USD (median / p90; total) | – / –; 0 | 0 of 208 merged items (0%) |
 | Orchestration overhead, USD (per merged item) | 0 (0.00) | 0 unjoined call rows |
 
 ## By day of first merge
@@ -38,14 +38,14 @@ Inputs: 1801 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | 2026-10-20 | 2 | 2/2 (100%) | 27.53 | – | 2 of 2 merged items (100%) |
 | 2026-10-21 | 8 | 7/8 (88%) | 3.96 | – | 8 of 8 merged items (100%) |
 | 2026-10-26 | 24 | 14/14 (100%) | 5.66 | – | 14 of 24 merged items (58%) |
-| 2026-10-27 | 17 | 11/11 (100%) | 3.64 | – | 11 of 17 merged items (65%) |
+| 2026-10-27 | 25 | 19/19 (100%) | 3.02 | – | 19 of 25 merged items (76%) |
 
 
 ## By executor
 
 | Group | Merged | First-try | Claim→merge h (median) | Cost USD (median) | Coverage (first-try) |
 |---|---|---|---|---|---|
-| claude-agent | 159 | 132/140 (94%) | 4.97 | – | 140 of 159 merged items (88%) |
+| claude-agent | 167 | 140/148 (95%) | 4.97 | – | 148 of 167 merged items (89%) |
 | claude-session | 8 | 0/0 | – | – | 0 of 8 merged items (0%) |
 | unknown | 33 | 0/0 | 3.69 | – | 0 of 33 merged items (0%) |
 
@@ -57,7 +57,7 @@ Inputs: 1801 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | bug × ? | 3 | 0/0 | 3.66 | – | 0 of 3 merged items (0%) |
 | bug × L | 1 | 0/0 | 2.30 | – | 0 of 1 merged items (0%) |
 | bug × M | 26 | 17/18 (94%) | 4.96 | – | 18 of 26 merged items (69%) |
-| bug × S | 66 | 46/47 (98%) | 4.98 | – | 47 of 66 merged items (71%) |
+| bug × S | 68 | 48/49 (98%) | 4.97 | – | 49 of 68 merged items (72%) |
 | decision × S | 1 | 0/0 | – | – | 0 of 1 merged items (0%) |
 | finding × ? | 2 | 0/0 | 3.69 | – | 0 of 2 merged items (0%) |
 | finding × L | 1 | 1/1 (100%) | 3.02 | – | 1 of 1 merged items (100%) |
@@ -65,8 +65,8 @@ Inputs: 1801 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | finding × S | 2 | 2/2 (100%) | 16.60 | – | 2 of 2 merged items (100%) |
 | gap × ? | 3 | 0/0 | – | – | 0 of 3 merged items (0%) |
 | gap × L | 8 | 4/7 (57%) | 3.73 | – | 7 of 8 merged items (88%) |
-| gap × M | 30 | 19/19 (100%) | 4.97 | – | 19 of 30 merged items (63%) |
-| gap × S | 47 | 37/40 (92%) | 4.98 | – | 40 of 47 merged items (85%) |
+| gap × M | 31 | 20/20 (100%) | 4.97 | – | 20 of 31 merged items (65%) |
+| gap × S | 52 | 42/45 (93%) | 4.97 | – | 45 of 52 merged items (87%) |
 | question × ? | 1 | 0/0 | – | – | 0 of 1 merged items (0%) |
 | question × L | 1 | 0/0 | – | – | 0 of 1 merged items (0%) |
 | question × S | 2 | 2/2 (100%) | 15.91 | – | 2 of 2 merged items (100%) |
@@ -80,12 +80,12 @@ Inputs: 1801 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | Group | Merged | First-try | Claim→merge h (median) | Cost USD (median) | Coverage (first-try) |
 |---|---|---|---|---|---|
 | bench | 41 | 34/38 (89%) | 4.97 | – | 38 of 41 merged items (93%) |
-| docs | 8 | 7/7 (100%) | 7.82 | – | 7 of 8 merged items (88%) |
+| docs | 10 | 9/9 (100%) | 7.82 | – | 9 of 10 merged items (90%) |
 | frontend | 4 | 4/4 (100%) | 3.60 | – | 4 of 4 merged items (100%) |
-| none | 64 | 33/34 (97%) | 3.96 | – | 34 of 64 merged items (53%) |
+| none | 66 | 35/36 (97%) | 3.96 | – | 36 of 66 merged items (55%) |
 | paper | 10 | 5/6 (83%) | 6.40 | – | 6 of 10 merged items (60%) |
-| rust-cold | 37 | 27/27 (100%) | 5.32 | – | 27 of 37 merged items (73%) |
-| rust-hot | 33 | 19/21 (90%) | 5.66 | – | 21 of 33 merged items (64%) |
+| rust-cold | 39 | 29/29 (100%) | 4.97 | – | 29 of 39 merged items (74%) |
+| rust-hot | 35 | 21/23 (91%) | 4.97 | – | 23 of 35 merged items (66%) |
 | tracker | 3 | 3/3 (100%) | 7.82 | – | 3 of 3 merged items (100%) |
 
 

@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_manifest/1",
  "date": "2026-10-27",
- "head": "f4ef01181",
+ "head": "7f4b5fa62",
  "files": [
   {
    "path": "work/telemetry/events/77905789-33b9-4ee7-a991-11163bda14bc.jsonl",
@@ -395,8 +395,13 @@
   },
   {
    "path": "work/telemetry/events/work-batch-2026-10-27-0930.jsonl",
-   "sha256": "3357b2015165a0a6479a5241def5af52e7e12b4ffc8d1c89f0901e7c6ebf99fa",
-   "rows": 8
+   "sha256": "d3e60e43f58aee606375a19dd113b5980017a25535e1f6783ac5ac9f8f533673",
+   "rows": 20
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-27-1125.jsonl",
+   "sha256": "5926f478afb711cba9eb2be842a79583a5f7b204ce1459c636d6a74019d24199",
+   "rows": 6
   },
   {
    "path": "work/telemetry/DEFINITIONS.md",
@@ -410,8 +415,8 @@
   },
   {
    "path": "work/{done,closed}/*.md [closed]",
-   "sha256": "e95c6ca6b43338f719c5e3f88187f23a5c4182d7bab1d4ed518a62146e716178",
-   "rows": 1436
+   "sha256": "a3a5db315239b3423f5ef8a06fa2a5a374de2900da0f192c1d08a8ff86432b41",
+   "rows": 1444
   }
  ]
 }

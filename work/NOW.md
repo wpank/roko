@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 4 anchor gone · 154 changed since checked · 6 mentioned in commits · 29 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 4 anchor gone · 152 changed since checked · 6 mentioned in commits · 29 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [gap-e44df9](items/gap-e44df9-cursor-cli-attempts-answer-each-acp-permission.md) Cursor CLI attempts answer each ACP permission request with roko's command guard instead of running with --force · size M · verified 2026-10-15
 
-_7 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_6 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -28,7 +28,7 @@ _1 more open · on hold: gap-85f86a · `goal = "whitepaper"`_
 - **P2** [gap-3e1428](items/gap-3e1428-a-chat-host-s-run-checks-none.md) A chat host's run checks none of the request's explicit constraints against the change: the LLM judge is off by default, and its helper model failed every call in the 2026-10-13 dogfood · size M · verified 2026-10-27
 - **P2** [bug-a56ba1](items/bug-a56ba1-a-substituted-call-s-cost-row-says.md) A substituted call's cost row says priced when the model that served it has no rate, so later runs count its unknown cost as $0 [bug] · size S · verified 2026-10-16
 
-_18 more open · `goal = "truth"`_
+_21 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -36,7 +36,7 @@ _18 more open · `goal = "truth"`_
 - **P2** [gap-af4082](items/gap-af4082-a-later-task-s-try-can-rewrite.md) A later task's try can rewrite a file an earlier task delivered and checked: diff_scope = record only logs it, nothing re-runs the earlier task's checks or tells the agent (T3 try 4 broke T1's CMakePresets.json after try 3 passed 5 of 6 tests) · size M · verified 2026-10-19
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 
-_10 more open · 1 blocked · on hold: gap-634954 · 5 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_9 more open · 1 blocked · on hold: gap-634954 · 5 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -60,7 +60,7 @@ _23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TR
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_24 more open · on hold: find-70edcb · 5 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_26 more open · on hold: find-70edcb · 5 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -102,4 +102,4 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 
 _9 more open · on hold: gap-8636f8 · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
-17 open items have no goal (later); they are listed in `STATUS.md`.
+16 open items have no goal (later); they are listed in `STATUS.md`.

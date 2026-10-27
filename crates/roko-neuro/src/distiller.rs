@@ -28,6 +28,22 @@ const DEFAULT_CONFIDENCE: f64 = 0.75;
 const DISTILLER_SOURCE: &str = "distiller";
 const MAX_DISTILLED_TAGS: usize = 12;
 const MAX_DISTILLED_SOURCE_EPISODES: usize = 32;
+/// Phrases of a candidate that describes the episode it was distilled from,
+/// or the "Episode corpus" the prompt shows, rather than the repository
+/// (bug-f8655e). Undertow's plan-writing distillations said "The task
+/// category in the observed episode is scaffolding." and "… anchor it to
+/// the plan_id/task_id naming used in the corpus.".
+const EPISODE_SELF_DESCRIPTION: [&str; 9] = [
+    "observed episode",
+    "this episode",
+    "the episode indicates",
+    "episode corpus",
+    "this corpus",
+    "the corpus",
+    "task category",
+    "task_category",
+    "plan:generate:",
+];
 const MIN_MULTI_EPISODE_SUPPORT: usize = 2;
 
 /// Backend contract for episode distillation.
@@ -205,7 +221,7 @@ impl DistillationCandidate {
         episode_affect: &BTreeMap<String, EpisodeAffectSnapshot>,
     ) -> Option<KnowledgeEntry> {
         let content = self.content.trim();
-        if content.is_empty() {
+        if content.is_empty() || describes_the_episode(content) {
             return None;
         }
 
@@ -495,7 +511,17 @@ fn knowledge_kind_tag(kind: KnowledgeKind) -> &'static str {
     kind.as_str()
 }
 
-fn episode_source_id(episode: &Episode) -> &str {
+/// Whether `content` describes the episode it was distilled from, or the
+/// corpus the distiller was shown, rather than the repository (bug-f8655e).
+fn describes_the_episode(content: &str) -> bool {
+    let content = content.to_lowercase();
+    EPISODE_SELF_DESCRIPTION
+        .iter()
+        .any(|phrase| content.contains(phrase))
+}
+
+/// The id an episode is known by as a knowledge entry's source.
+pub(crate) fn episode_source_id(episode: &Episode) -> &str {
     if episode.episode_id.trim().is_empty() {
         &episode.id
     } else {
@@ -787,6 +813,64 @@ mod tests {
         episode.model = "claude-sonnet-4-5".to_string();
         episode.success = success;
         episode
+    }
+
+    /// bug-f8655e: a candidate that describes the episode it came from, or
+    /// the corpus the distiller was shown, is no knowledge of the repository
+    /// and is dropped. Undertow's twelve distilled entries all came from
+    /// plan-writing turns: the floor drops the six that talk about their
+    /// episode or corpus and leaves the generic planning advice, which
+    /// evidence first keeps out instead. A lesson about the repository's own
+    /// episode logger stays.
+    #[tokio::test]
+    async fn a_candidate_that_describes_its_episode_is_dropped() {
+        const DROPPED: [&str; 6] = [
+            "A planning task with id pattern \"plan:generate:<plan_id>\" can complete \
+             successfully in a single agent turn with no recorded external actions.",
+            "This corpus includes metadata fields for plan-generation episodes such as \
+             complexity_band, role, task_category, task_kind, backend/provider, hashes, and \
+             usage timings.",
+            "For plan-generation tasks, produce a comprehensive implementation plan with explicit \
+             phases and verification steps; the episode indicates a successful strategist plan \
+             was generated for a shipping-oriented scaffold task.",
+            "For planning/scaffolding tasks, produce a complete implementation plan rather than \
+             code, and anchor it to the plan_id/task_id naming used in the corpus.",
+            "The observed episode is a successful plan-generation turn for task \
+             plan:generate:p5-1-the-renders-as-they-play, using model gpt-5.4-mini and provider \
+             openai.",
+            "The task category in the observed episode is scaffolding.",
+        ];
+        const KEPT: [&str; 7] = [
+            "For plan-generation tasks, produce a detailed scaffolding plan with explicit step \
+             structure and implementation sequencing rather than a minimal outline.",
+            "For plan-generation tasks, produce a concise implementation plan focused on \
+             scaffolding and keep it grounded in the task metadata rather than speculative \
+             details.",
+            "Do not infer durable project facts from a single planning-only episode; treat \
+             standalone strategist plans as provisional unless corroborated by implementation or \
+             test episodes.",
+            "For planning tasks, generate a scaffolded implementation plan from the prompt and \
+             metadata, then keep the plan concise and task-specific.",
+            "For scaffolding tasks, the Strategist can generate a complete plan in a single turn \
+             without external actions.",
+            "A successful plan-generation episode can be recorded with zero tool use and still \
+             count as a completed planning step.",
+            "The episode logger rotates .roko/episodes.jsonl once it passes the configured size.",
+        ];
+        let candidates: Vec<Value> = DROPPED
+            .iter()
+            .chain(KEPT.iter())
+            .map(|content| json!({"kind": "insight", "content": content, "confidence": 0.72}))
+            .collect();
+        let backend = MockBackend::new(json!({ "entries": candidates }).to_string());
+        let distiller = Distiller::with_backend(backend);
+
+        let entries = distiller
+            .distill(&[episode("signal-a", "ep-a", true)])
+            .await
+            .expect("distill");
+        let contents: Vec<&str> = entries.iter().map(|entry| entry.content.as_str()).collect();
+        assert_eq!(contents, KEPT);
     }
 
     #[tokio::test]

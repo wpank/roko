@@ -83,6 +83,56 @@ batch of a run, and any check on whether the episode delivered.
      removes it;
    - `a_plan_write_distills_no_entry_without_evidence`.
 
+### Design (roko-learnguard, with the lead's answers, 2026-10-27)
+
+**One choke point.** All three triggers end in `episode_completion.rs::distill_episode`: the CLI's captures, the
+serve's webhook dispatches and ACP. The change is all there.
+
+**Evidence first.** An episode is distilled only when it succeeded and passed at least one gate, failing none.
+- Plan writes, research, direct agent calls and ACP turns run no gate, so by default they make no distillation
+  call and add no entry.
+- `[learning] distill_ungated = true` restores the old behaviour, still through the guard. It is documented in
+  `docs/v3/depth/21-config/01-schema-sections.md`.
+- A frozen workspace distils nothing.
+- Undertow's store held 12 distiller entries, all from plan-writing turns, and none was about the repository. That
+  is why the knob defaults to off.
+
+**Through the guard.** Under `guarded_commit` = `observe` or `enforce`, a distillation ingests into its own batch,
+`distill:<episode>`, and proposes it at once with `propose_batch`.
+- The checks are the anchors and the invariants.
+- The `delivered` precondition comes from the episode: "episode <id> passed its 2 gates".
+- The row's actor is `distiller`, and its reason is `knowledge:distill:<episode>`.
+- `roko learn commits` lists it, and `roko learn rollback knowledge` removes it.
+- `off` writes the entries straight to the store, as before.
+- Under a guard, a failed episode is not distilled at all: its batch could never commit.
+
+**One lock for the knowledge guard.** `lock_knowledge_guard` is the `.lock` sibling of the guard's commits.jsonl.
+- `propose_batch` holds it from opening the guard until the batch is settled, which covers run ends, orphan recovery
+  and distillations. `roko learn rollback knowledge` holds it too.
+- On the old code, 7 of 8 concurrent proposals failed, writing over each other
+  (`concurrent_proposals_take_one_version_each`).
+
+**The self-description floor.** The distiller drops a candidate that talks about its episode, or about the "Episode
+corpus" its prompt shows, rather than the repository. The phrases are "observed episode", "this episode", "the
+episode indicates", "episode corpus", "this corpus", "the corpus", "task category", "task_category" and
+"plan:generate:".
+- Of Undertow's 12, it drops the 6 that talk about their episode or corpus.
+- The other 6 are generic planning advice, which evidence first keeps out.
+- A lesson about the repository's own episode logger stays.
+
+**Accepted: the orphan race.** A plan run's start rolls back every batch but its own as an orphan. A distillation's
+batch exists only between its write and its proposal, a few milliseconds in one blocking task. A run that starts in
+that window rolls the batch back, and the row says orphan. It loses one distillation.
+
+**Not built: joining a plan run's batch** (plan item 1b). No plan run distils: Graph runs install no
+episode-completion hook, and their own lessons already wait in the run's batch through the knowledge lifecycle.
+
+**Filed separately: the guard's depth.** The guard keeps 5 versions, and a committed distillation is one of them.
+Five gated webhook dispatches in a serve push a plan run's version out of `roko learn rollback`'s reach: gap-f54be7
+(p3). It isn't built here.
+
+**gap-f1dd0c** is closed as superseded: plan writes no longer distil without evidence.
+
 ## Done when
 
 - The `[[verify]]` passes.

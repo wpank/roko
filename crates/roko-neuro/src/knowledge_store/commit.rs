@@ -24,13 +24,17 @@
 //!
 //! A person's rollback ([`LaterBatches`]) deletes the batches committed
 //! after the version rolled back to.
+//!
+//! Every proposal and rollback holds [`lock_knowledge_guard`]: a
+//! distillation proposes its batch the moment it writes it (bug-f8655e),
+//! beside runs' ends and a person's rollback, in this process or another.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use roko_learn::guarded_commit::{
-    CheckOutcome, CommitCheck, CommitDecision, GuardError, GuardMode, GuardedState, GuardedStore,
-    Proposer,
+    COMMITS_DIR, COMMITS_FILE, CheckOutcome, CommitCheck, CommitDecision, GuardError, GuardMode,
+    GuardedState, GuardedStore, Proposer,
 };
 use roko_learn::router_commit::ANCHORS_FILE;
 use serde::Deserialize;
@@ -413,6 +417,10 @@ pub fn propose_batch(
         KnowledgeStore::release_batch(batch);
         return Ok(None);
     }
+    let _lock = lock_knowledge_guard(learn_dir).map_err(|source| GuardError::Io {
+        path: guard_dir(learn_dir).display().to_string(),
+        source,
+    })?;
     let mut guarded = GuardedStore::open(learn_dir, KNOWLEDGE_STORE, mode)?;
     if guarded.current().is_none() {
         let reason = "baseline: the store before its first guarded batch";
@@ -425,6 +433,27 @@ pub fn propose_batch(
     }
     KnowledgeStore::release_batch(batch);
     Ok(Some(decision))
+}
+
+/// Lock the knowledge store's guard under `learn_dir` until the returned
+/// file drops.
+///
+/// The lock holds off every other proposal or rollback, in this process or
+/// another (bug-f8655e). Without it, two proposals read the same next
+/// version, and one writes its snapshot and row over the other's.
+///
+/// # Errors
+///
+/// The guard directory's or the lock file's create error, or the lock's.
+pub fn lock_knowledge_guard(learn_dir: &Path) -> std::io::Result<std::fs::File> {
+    let dir = guard_dir(learn_dir);
+    std::fs::create_dir_all(&dir)?;
+    roko_fs::log_rotation::lock_jsonl(&dir.join(COMMITS_FILE))
+}
+
+/// The knowledge store's guard directory under `learn_dir`.
+fn guard_dir(learn_dir: &Path) -> std::path::PathBuf {
+    learn_dir.join(COMMITS_DIR).join(KNOWLEDGE_STORE)
 }
 
 /// The batches `store` holds besides `live`, sorted.
@@ -783,5 +812,82 @@ mod tests {
         assert!(!delivered.passed, "{delivered:?}");
         let expected = format!("{ORPHAN_UNDELIVERED}; the batch's 1 lesson was not kept");
         assert_eq!(delivered.reason, expected);
+    }
+
+    /// bug-f8655e: distillations propose their batches beside each other and
+    /// beside runs' ends. Proposals at once each take a version of their
+    /// own: none writes its snapshot or row over another's.
+    #[test]
+    fn concurrent_proposals_take_one_version_each() {
+        const BATCHES: usize = 8;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko_dir = temp.path().join(".roko");
+        let learn_dir = roko_dir.join("learn");
+        let store = KnowledgeStore::for_roko_dir(&roko_dir);
+        let seeded: Vec<KnowledgeEntry> = (0..BATCHES)
+            .map(|n| KnowledgeEntry {
+                commit_batch: Some(format!("distill:ep-{n}")),
+                ..entry(
+                    &format!("kn-{n}"),
+                    &format!("Lesson {n}: module {n} rebuilds when header {n} changes."),
+                    &["core"],
+                    0.7,
+                )
+            })
+            .collect();
+        store.rewrite_all(&seeded).expect("seed the store");
+
+        let start = std::sync::Barrier::new(BATCHES);
+        let decisions: Vec<Option<CommitDecision>> = std::thread::scope(|scope| {
+            let proposals: Vec<_> = (0..BATCHES)
+                .map(|n| {
+                    let (store, learn_dir, start) = (&store, &learn_dir, &start);
+                    scope.spawn(move || {
+                        let batch = format!("distill:ep-{n}");
+                        let checks = KnowledgeChecks::new(store, &batch, Vec::new(), delivered());
+                        let proposer = Proposer::evolved(
+                            "distiller",
+                            KNOWLEDGE_STORE,
+                            format!("knowledge:{batch}"),
+                        );
+                        start.wait();
+                        propose_batch(
+                            store,
+                            &batch,
+                            learn_dir,
+                            GuardMode::Observe,
+                            &checks,
+                            &proposer,
+                        )
+                        .expect("proposed")
+                    })
+                })
+                .collect();
+            proposals
+                .into_iter()
+                .map(|proposal| proposal.join().expect("a proposal thread"))
+                .collect()
+        });
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| *decision == Some(Committed)),
+            "{decisions:?}"
+        );
+
+        // The baseline, then one version per batch, each its own.
+        let guarded = GuardedStore::open(&learn_dir, KNOWLEDGE_STORE, GuardMode::Observe)
+            .expect("the knowledge store's guard");
+        let rows = guarded.rows().expect("its rows");
+        assert_eq!(rows.len(), BATCHES + 1, "{rows:#?}");
+        let versions: BTreeSet<u64> = rows.iter().map(|row| row.version).collect();
+        assert_eq!(versions.len(), BATCHES + 1, "{rows:#?}");
+        assert!(
+            store
+                .read_all()
+                .expect("read")
+                .iter()
+                .all(|entry| entry.commit_batch.is_none())
+        );
     }
 }

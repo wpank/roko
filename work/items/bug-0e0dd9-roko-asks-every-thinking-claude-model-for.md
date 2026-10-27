@@ -93,3 +93,24 @@ model from 4.7 on, it still can't make a single call with thinking on, and think
   profile still sends `enabled` + `budget_tokens`.
 - **Still owed:** the live check against the real API (about a cent, one adaptive and one older model). It needs an
   Anthropic key, which is on Will's list.
+
+## Status (2026-10-27, parked at the round's 06:00 timebox: built and green on its branch, not merged)
+
+- **Done, on branch `work/bug-0e0dd9`** (6766fc1a5, based on main 2d6510089):
+  - 477f6184c adds the stand-in test, `an_adaptive_claude_profile_asks_for_adaptive_thinking`. Its stand-in serves
+    an adaptive-only model and answers manual thinking with the API's 400.
+  - 6766fc1a5 is the fix, taking the design's second option. `ModelProfile::thinks_adaptively` reads `thinking_level
+    = "adaptive"`, and `adaptive_thinking` picks the effort. `set_thinking` writes `thinking: {type: "adaptive"}` and
+    `output_config.effort` in the streamed and the answered body, with no budget and no beta header. Any other
+    profile keeps `enabled` + `budget_tokens`.
+- **Last check** (04:29 to 04:52, log `roko-effort/logs/postmerge-f30f36-unit-0e0dd9.log`):
+  - **Red** at 477f6184c (main plus the test): `http 400: "thinking.type.enabled" is not supported for this model
+    ...; sent {"budget_tokens":32768,"type":"enabled"}`.
+  - **Green** at 6766fc1a5: the test passes, and fmt, clippy (6 crates), check --tests and 54 targeted tests are
+    green.
+  - **Lib suites** at 6766fc1a5, green: acp 237, agent 2427, cli 4071, core 2049, learn 1411, serve 1088.
+- **Left:**
+  - the lead's review, then merging main in (main moved past 2d6510089) and the merge through
+    `lead/merge-when-free.sh`;
+  - the `[[verify]]`, detached at the merge sha;
+  - the live check against the real API, which needs an Anthropic key.

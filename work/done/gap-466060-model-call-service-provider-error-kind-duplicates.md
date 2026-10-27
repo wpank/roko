@@ -2,7 +2,7 @@
 id = "gap-466060"
 kind = "gap"
 title = "model_call_service::provider_error_kind duplicates the unified provider-error classifier"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/model-call-service"]
 created = 2026-10-02
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "e1050464d"
 source = "backlog wave reports 2026-10-02 (PK01 gap-625195)"
 discovered_from = "gap-625195 (backlog task 1113, implemented at d562b56b2, did not cover this call site)"
 anchors = ["crates/roko-agent/src/model_call_service.rs::provider_error_kind", "crates/roko-agent/src/provider/error_classify.rs::classify_failure_text"]
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = ["bug-217107", "gap-354ea9", "
 
 [[verify]]
 command = "grep -rqw 'fn provider_error_kind_delegates_to_the_shared_classifier' crates/roko-agent/ && cargo test -p roko-agent provider_error_kind_delegates_to_the_shared_classifier"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T09:41:43Z"
+commit = "e1050464d"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T08:30:55Z"
+forced = false
+evidence = "e1050464d: model_call_service::provider_error_kind is one line now, error_classify::classify_call_failure_text(&message.to_ascii_lowercase()). classify_call_failure_text (error_classify.rs) returns the class classify_failure_text gives, except that text it calls unknown is context_overflow (context window, context length, context overflow) or content_policy (content policy, safety policy). So the two extra classes of the copy survive, and the other callers of classify_failure_text (Graph dispatch, failover, the ladder, the rung probe, ACP learning) are unchanged. A comparison over 130 failure texts found ten cases where the copy answered otherwise. The item lists them, and provider_error_kind_delegates_to_the_shared_classifier pins examples of each to the shared answer next to the old one: model not found is model_not_found; login and key failures are auth_failure, ahead of rate limit and timeout; a bare 403, a lone forbidden, permission denied and authentication_error are no longer auth failures; broken streams are server_error; refused connections and DNS failures are unknown instead of timeout; 504 is unknown; 502 or 503 digits outrank context words; empty_response and provider_glitch keep their names. The verify passes: cargo test -p roko-agent provider_error_kind_delegates_to_the_shared_classifier ran 1 test in the lib target and passed, 0 ran elsewhere, exit 0. call_failure_text_names_context_overflow_and_content_policy covers the variant. roko-agent lib: 2432 passed, 4 ignored. clippy -p roko-agent --no-deps -- -D warnings and nightly fmt --check are clean. Filed bug-217107 (authentication_error reads as unknown, p2), gap-354ea9 (no class for a connection that never opened, p3) and bug-4cde49 (bare 429/502/503 digits, and 504 has no class, p3)."
 +++
 
 ## Problem

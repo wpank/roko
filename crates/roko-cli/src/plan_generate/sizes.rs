@@ -137,7 +137,7 @@ fn sized_items(source: &str) -> Vec<Sized> {
 /// letters and digits, with a letter, and no space (`rumble.h`,
 /// `core/CMakeLists.txt`), and the short form `PluginProcessor.h/.cpp` for its
 /// two files. A test filter (`P2.04*`) is no file.
-fn code_span_files(text: &str) -> Vec<String> {
+pub(super) fn code_span_files(text: &str) -> Vec<String> {
     static SPAN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"`([^`\s]+)`").expect("valid code span regex"));
     let mut files = Vec::new();

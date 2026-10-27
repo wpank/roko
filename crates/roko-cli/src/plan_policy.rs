@@ -33,6 +33,12 @@ const FAST_MAX_DECLARED_CONTEXT_BYTES: usize = 24 * 1024;
 const FAST_MAX_SERIAL_OWNERS_PER_FILE: usize = 2;
 const ANCHOR_CONTEXT_RADIUS: usize = 8;
 
+/// Extensions of the source files a CMake target lists (bug-daa54e).
+pub(crate) const CMAKE_SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "m", "mm"];
+
+/// File extensions of C and C++ headers.
+pub(crate) const C_HEADERS: &[&str] = &["h", "hh", "hpp", "hxx"];
+
 /// Binding default-template task ceiling for plan generation and regeneration
 /// (the `default` plan template).
 pub const DEFAULT_GENERATED_TASK_LIMIT: usize = 8;
@@ -431,7 +437,8 @@ pub fn validate_plan_budgets(
             policy.max_files_per_task,
         );
         // bug-60ad88: the documents the plan is written from, which every
-        // task reads, are no part of a task's own budget.
+        // task reads, are no part of a task's own budget; gap-5db3d9: nor
+        // are its checks' tests and its sources' headers.
         check_count(
             &mut issues,
             task,
@@ -441,7 +448,7 @@ pub fn validate_plan_budgets(
                 context
                     .read_files
                     .iter()
-                    .filter(|read| !tasks.meta.sources.contains(&read.path))
+                    .filter(|read| counts_toward_read_budget(&tasks.meta.sources, task, &read.path))
                     .count()
             }),
             policy.max_read_files_for(task),
@@ -696,6 +703,115 @@ fn check_count(
             format!("{label} has {count} entries; limit is {limit}"),
         ));
     }
+}
+
+/// Whether `task`'s read of `path` counts toward its read budget
+/// (`PLAN_BUDGET_READ_FILES`). The documents the plan is written from,
+/// `sources`, do not: every task reads them (bug-60ad88). Nor do a test one of
+/// the task's checks runs ([`test_run_by`]) and the header of a source it
+/// changes ([`header_beside`]), which generation declares for it
+/// (gap-5db3d9).
+#[must_use]
+pub(crate) fn counts_toward_read_budget(sources: &[String], task: &TaskDef, path: &str) -> bool {
+    !sources.iter().any(|source| source == path)
+        && !task
+            .verify
+            .iter()
+            .any(|step| test_run_by(&step.command, path))
+        && !header_beside(path, &task.files)
+}
+
+/// The name a test file goes by: its file name up to the first `.`, without
+/// its test affix, as `presets` of `presets_test.cpp`, `lowpass` of
+/// `test_lowpass.py` and `cart` of `cart.test.ts`. `None` for a file not
+/// named as a test.
+#[must_use]
+pub(crate) fn test_affix_stem(path: &str) -> Option<&str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let (stem, extensions) = name.split_once('.')?;
+    let stem = if extensions.starts_with("test.") || extensions.starts_with("spec.") {
+        stem
+    } else {
+        ["_tests", "_test", "_spec"]
+            .iter()
+            .find_map(|affix| stem.strip_suffix(affix))
+            .or_else(|| stem.strip_prefix("test_"))?
+    };
+    (!stem.is_empty()).then_some(stem)
+}
+
+/// Whether the check `command` runs the test file `path` (gap-5db3d9): one
+/// of its commands has for a word the file's path; or, for a file named as a
+/// test, its name without the extension, as a program or a target names it
+/// (`ctest -R presets_test`, `cargo test --test widget_tests`); or its name
+/// without the test affix ([`test_affix_stem`]) and, for another word, one of
+/// the file's directories, or that directory after a prefix of letters. So
+/// `tools/spec.sh 5_2 presets` runs `tests/spec/p5_2/presets_test.cpp`, and
+/// not `tests/spec/p5/presets_test.cpp`, which `tools/spec.sh 5 presets` runs.
+#[must_use]
+pub(crate) fn test_run_by(command: &str, path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let target = name.split('.').next().unwrap_or(name);
+    let stem = test_affix_stem(path);
+    let directories: Vec<&str> = path.split('/').rev().skip(1).collect();
+    let names_directory = |word: &str| {
+        !word.is_empty()
+            && directories.iter().any(|directory| {
+                directory
+                    .strip_suffix(word)
+                    .is_some_and(|prefix| prefix.chars().all(|c| c.is_ascii_alphabetic()))
+            })
+    };
+    command.split(['&', '|', ';', '\n']).any(|part| {
+        let words: Vec<&str> = part
+            .split_whitespace()
+            .map(|word| word.trim_matches(['\'', '"']).trim_start_matches("./"))
+            .collect();
+        words.iter().any(|word| {
+            *word == path || (stem.is_some() && word.rsplit('/').next() == Some(target))
+        }) || stem.is_some_and(|stem| {
+            words.contains(&stem) && words.iter().any(|word| names_directory(word))
+        })
+    })
+}
+
+/// Whether `header` is the header of one of the C or C++ sources `files`
+/// (gap-5db3d9): the source's name with a header's extension, in the source's
+/// directory or under the `include` directory beside the `src` directory the
+/// source is in, as `core/include/undertow/presets.h` is of
+/// `core/src/presets.cpp`.
+#[must_use]
+pub(crate) fn header_beside(header: &str, files: &[String]) -> bool {
+    let extension_in = |path: &Path, extensions: &[&str]| {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extensions.contains(&extension))
+    };
+    let header = Path::new(header);
+    if !extension_in(header, C_HEADERS) {
+        return false;
+    }
+    let header_dir = header.parent().unwrap_or(Path::new(""));
+    files.iter().map(Path::new).any(|source| {
+        let source_dir = source.parent().unwrap_or(Path::new(""));
+        extension_in(source, CMAKE_SOURCES)
+            && source.file_stem() == header.file_stem()
+            && (source_dir == header_dir || include_beside_src(source_dir, header_dir))
+    })
+}
+
+/// Whether `header_dir` is under the `include` directory beside the `src`
+/// directory `source_dir` is in or under (`core/include/undertow` for
+/// `core/src`).
+fn include_beside_src(source_dir: &Path, header_dir: &Path) -> bool {
+    let mut root = PathBuf::new();
+    for part in source_dir.components() {
+        if part.as_os_str() == "src" {
+            return header_dir.starts_with(root.join("include"));
+        }
+        root.push(part);
+    }
+    false
 }
 
 /// Validate paths, regular-file identity, and explicit symbol anchors before
@@ -2445,6 +2561,121 @@ mod tests {
             fast.iter().any(|issue| issue.code == "PLAN_VERIFY_OWNER"),
             "{fast:?}"
         );
+    }
+
+    /// gap-5db3d9: the test a check runs is the one its words name, and
+    /// neither that test nor the header of a source the task changes counts
+    /// toward the task's read budget.
+    #[test]
+    fn a_checks_test_and_a_sources_header_count_toward_no_read_budget() {
+        for (path, stem) in [
+            ("tests/spec/p5_2/presets_test.cpp", Some("presets")),
+            ("tests/test_lowpass.py", Some("lowpass")),
+            ("web/cart.test.ts", Some("cart")),
+            ("spec/models/user_spec.rb", Some("user")),
+            ("crates/seq/tests/sequencer_tests.rs", Some("sequencer")),
+            ("core/src/presets.cpp", None),
+            ("tests/_test.cpp", None),
+        ] {
+            assert_eq!(test_affix_stem(path), stem, "{path}");
+        }
+        for (command, path, runs) in [
+            (
+                "tools/spec.sh 5_2 presets",
+                "tests/spec/p5_2/presets_test.cpp",
+                true,
+            ),
+            (
+                "tools/spec.sh 5 presets",
+                "tests/spec/p5_2/presets_test.cpp",
+                false,
+            ),
+            (
+                "tools/spec.sh 5 presets",
+                "tests/spec/p5/presets_test.cpp",
+                true,
+            ),
+            (
+                "tools/spec.sh 5_1 render",
+                "tests/spec/p5/render_test.cpp",
+                false,
+            ),
+            (
+                "tools/spec.sh 4 display 'P4.06*'",
+                "tests/spec/p4/display_test.cpp",
+                true,
+            ),
+            (
+                "tools/render-demos.sh && tools/spec.sh 5_1 demos",
+                "tests/spec/p5_1/demos_test.cpp",
+                true,
+            ),
+            // Each command of a step runs its own tests.
+            (
+                "tools/spec.sh 5_2 presets && tools/spec.sh 5 demos",
+                "tests/spec/p5/presets_test.cpp",
+                false,
+            ),
+            (
+                "ctest --test-dir build -R presets_test",
+                "tests/spec/p5/presets_test.cpp",
+                true,
+            ),
+            (
+                "cargo test --test sequencer_tests",
+                "crates/seq/tests/sequencer_tests.rs",
+                true,
+            ),
+            (
+                "python3 -m pytest tests/test_lowpass.py",
+                "tests/test_lowpass.py",
+                true,
+            ),
+            ("tools/spec.sh 5_2 presets", "core/src/presets.cpp", false),
+        ] {
+            assert_eq!(test_run_by(command, path), runs, "{command} / {path}");
+        }
+        let source = ["core/src/presets.cpp".to_string()];
+        for (header, beside) in [
+            ("core/include/undertow/presets.h", true),
+            ("core/src/presets.h", true),
+            ("include/presets.h", false),
+            ("core/include/undertow/params.h", false),
+            ("core/src/presets.cpp", false),
+        ] {
+            assert_eq!(header_beside(header, &source), beside, "{header}");
+        }
+        assert!(header_beside(
+            "include/widget.hpp",
+            &["src/widget.cc".to_string()]
+        ));
+
+        let mut plan_task = task();
+        plan_task.files = source.to_vec();
+        plan_task.verify = vec![VerifyStep {
+            phase: "test".into(),
+            command: "tools/spec.sh 5_2 presets".into(),
+            fail_msg: None,
+            timeout_ms: 1_000,
+            scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
+        }];
+        let sources = ["docs/specs/phase-5.2-presets.md".to_string()];
+        for (path, counts) in [
+            ("docs/specs/phase-5.2-presets.md", false),
+            ("tests/spec/p5_2/presets_test.cpp", false),
+            ("core/include/undertow/presets.h", false),
+            ("tests/spec/p5/presets_test.cpp", true),
+            ("core/include/undertow/params.h", true),
+            ("core/src/presets.cpp", true),
+        ] {
+            assert_eq!(
+                counts_toward_read_budget(&sources, &plan_task, path),
+                counts,
+                "{path}"
+            );
+        }
     }
 
     /// Two tasks, T1 and T2, that both write `src/lib.rs`, in a plan that

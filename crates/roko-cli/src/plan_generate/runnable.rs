@@ -23,6 +23,7 @@ use std::time::Duration;
 use regex::Regex;
 
 use super::source_checks::shell_segments;
+use crate::plan_policy::{C_HEADERS, CMAKE_SOURCES};
 use crate::task_parser::{TaskDef, TasksFile};
 
 /// Programs a step may use that need no check: shell builtins and the
@@ -600,12 +601,6 @@ pub fn implementers_without_a_shell(plan: &TasksFile) -> Vec<(String, String)> {
         })
         .collect()
 }
-
-/// Extensions of the source files a CMake target lists (bug-daa54e).
-const CMAKE_SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "m", "mm"];
-
-/// File extensions of C and C++ headers.
-const C_HEADERS: &[&str] = &["h", "hh", "hpp", "hxx"];
 
 /// Give each implementer task that writes C or C++ files and has no verify
 /// step a check that builds them with the workspace's CMake (bug-8723fc):

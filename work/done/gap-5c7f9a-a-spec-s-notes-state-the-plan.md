@@ -2,7 +2,7 @@
 id = "gap-5c7f9a"
 kind = "gap"
 title = "A spec's notes state the plan's task count (phase 4.1: \"One task\"), and nothing compares it with the draft: 4.1's plan had 2 tasks, the split went unasked and unsaid"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "a9a7a191f"
 source = "round-v7-team-lead#task-count-lint"
 discovered_from = "agent:hermes-pilot (round v7, phase 4.1 op 7cda5da7), the lead's ask"
 anchors = ["crates/roko-cli/src/plan_generate/sizes.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/plan_generate/source_checks.rs::regeneration_prompt"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-dc5d7c", "bug-3d0414"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_draft_with_a_different_task_count_than_the_notes_is_asked_again' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_draft_with_a_different_task_count_than_the_notes_is_asked_again"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T02:39:14Z"
+commit = "9c8c78abb"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 9c8c78abb (branch 1e85f7775; main 73630b8a8 merged in at d0c050bb2, no file in common). Post-merge verify in my worktree, detached at 9c8c78abb: the grep finds the test, and a_draft_with_a_different_task_count_than_the_notes_is_asked_again passes (1 of 1). The test runs phase 4.1's spec at Undertow 8643c98 (fixture tests/fixtures/p4_1_tasks, the notes' \"One task\"): its two-task draft (op 7cda5da7) is asked again once in the coverage re-ask, which names the stated count, and a one-task answer is kept; a second two-task answer is written with the warning line among the repairs. the_notes_state_the_task_count reads 1 from 4.1 and 5.2 and 7 from the phase-5 fixture, and nothing from \"not any one task's\". Branch suites: plan_generate and plan_policy 201/201; roko-cli lib 4060 passed, 0 failed; nightly fmt; clippy -p roko-cli -D warnings clean."
 +++
 
 ## Problem

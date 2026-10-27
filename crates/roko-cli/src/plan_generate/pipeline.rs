@@ -1912,6 +1912,14 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let no_new_files = size_sources
             .iter()
             .any(|text| file_paths::says_no_new_files(text));
+        // gap-5c7f9a: the task count the notes for the planner state, and a
+        // draft's count when it differs.
+        let stated_tasks = sizes::stated_task_count(&size_sources);
+        let count_off = |plan: &str| -> Option<(usize, usize)> {
+            let stated = stated_tasks?;
+            let drafted = TasksFile::parse_str(plan).ok()?.tasks.len();
+            (drafted != stated).then_some((stated, drafted))
+        };
         // gap-0fb7d9: with the draft it validates, what roko changed in it.
         let extract_and_validate =
             |raw: &str| -> std::result::Result<(String, Vec<String>), String> {
@@ -2496,11 +2504,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let mut checks_regenerated = false;
         if let Ok(candidate) = &validated_toml
             && let Some((coverage, unrunnable, unchecked)) = assess(candidate)
-            && (coverage.unkept() > 0 || !unrunnable.is_empty() || !unchecked.is_empty())
+            && (coverage.unkept() > 0
+                || !unrunnable.is_empty()
+                || !unchecked.is_empty()
+                || count_off(candidate).is_some())
             && !skip_for_cap("keep the source checks it left out")
         {
             let missing = (coverage.unkept(), unrunnable.len() + unchecked.len());
+            let tasks = count_off(candidate);
             let mut parts = Vec::new();
+            if let Some((stated, drafted)) = tasks {
+                parts.push(format!(
+                    "the plan has {drafted} task(s) where the source's notes state {stated}"
+                ));
+            }
             if coverage.unkept() > 0 {
                 parts.push(format!(
                     "{} of the source's {} checks are not kept as verify steps",
@@ -2529,6 +2546,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &coverage,
                 &unrunnable,
                 &unchecked,
+                tasks,
             );
             let retry = clock
                 .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
@@ -2554,11 +2572,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         keep_draft(&retry.output, &error);
                         Err(format!("its plan does not validate: {error}"))
                     }
-                    Ok(better) if missing_of(&better) >= missing => {
+                    // gap-5c7f9a: as many checks kept and the notes' task
+                    // count met is better too.
+                    Ok(better)
+                        if (missing_of(&better), count_off(&better).is_some())
+                            >= (missing, tasks.is_some()) =>
+                    {
                         let (unkept, problems) = missing_of(&better);
+                        let count =
+                            count_off(&better).map_or_else(String::new, |(stated, drafted)| {
+                                format!(", and {drafted} task(s) where the notes state {stated}")
+                            });
                         Err(format!(
                             "it leaves {unkept} source check(s) unkept and {problems} step(s) or \
-                             task(s) that cannot pass or be seen, against {} and {} before",
+                             task(s) that cannot pass or be seen{count}, against {} and {} before",
                             missing.0, missing.1
                         ))
                     }
@@ -2685,7 +2712,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         // gap-0fb7d9: what roko changed in the draft it writes.
-        let repairs = validated_toml.as_ref().map_or_else(
+        let mut repairs = validated_toml.as_ref().map_or_else(
             |_| Vec::new(),
             |validated| {
                 repairs_for
@@ -2695,6 +2722,23 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     .unwrap_or_default()
             },
         );
+        // gap-5c7f9a: a plan that splits its tasks other than the notes do
+        // is written, and says so.
+        if let Ok(plan) = &validated_toml
+            && let Some((stated, drafted)) = count_off(plan)
+        {
+            let asked = if checks_regenerated {
+                ", after asking the planner once more"
+            } else {
+                ""
+            };
+            let line = format!(
+                "the plan has {drafted} task(s) where the source's notes for the planner state \
+                 {stated}{asked}: check the split before it runs"
+            );
+            eprintln!("warning: {line}");
+            repairs.push(line);
+        }
         if let Ok(validated_toml) = validated_toml {
             report(
                 "writing",
@@ -5259,6 +5303,104 @@ mod tests {
             (17, 0, 0, 17),
             "{checks:?}"
         );
+    }
+
+    /// gap-5c7f9a: round v7's phase-4.1 notes give the plan one task, "One
+    /// task, about 5 lines: **Bone only for the one number** (…)", and its
+    /// write from chat (op 7cda5da7) had two, the colours and the PNGs; nothing
+    /// said so. A draft whose task count differs from the notes' is asked
+    /// again in the coverage re-ask, and a one-task answer is kept; a second
+    /// two-task answer is written, with a warning line among the repairs.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_draft_with_a_different_task_count_than_the_notes_is_asked_again() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p4_1_tasks");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let two = std::fs::read_to_string(fixture.join("two-tasks.toml")).expect("two tasks");
+        let one = std::fs::read_to_string(fixture.join("one-task.toml")).expect("one task");
+        let workspace = |workdir: &Path| {
+            cmake_workspace(workdir);
+            let code = |lines: usize, held: &[&str]| {
+                let mut text: String = held.iter().map(|line| format!("{line}\n")).collect();
+                text.push_str(&"// code\n".repeat(lines));
+                text
+            };
+            for (file, text) in [
+                (
+                    "plugin/ui/Look.cpp",
+                    code(70, &["Look::Look() {}", "void Look::drawRotarySlider() {}"]),
+                ),
+                (
+                    "plugin/ui/Status.cpp",
+                    code(90, &["void Status::paint() {}"]),
+                ),
+                ("artifacts/ui/editor-idle.png", "png".to_string()),
+                ("artifacts/ui/editor-playing.png", "png".to_string()),
+                ("artifacts/ui/editor-clipping.png", "png".to_string()),
+                ("docs/specs/phase-4.1-bone.md", spec.clone()),
+            ] {
+                let path = workdir.join(file);
+                std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+                std::fs::write(&path, text).expect("a file");
+            }
+            for script in ["tools/spec.sh", "tools/check.sh"] {
+                let path = workdir.join(script);
+                std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+                std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("a script");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("permissions");
+            }
+        };
+        let warning = "the plan has 2 task(s) where the source's notes for the planner state 1, \
+                       after asking the planner once more: check the split before it runs";
+        for (answers, tasks, warned) in [
+            ([two.as_str(), one.as_str()], 1, false),
+            ([two.as_str(), two.as_str()], 2, true),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            workspace(workdir);
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &answers,
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let source = PlanSource::Text {
+                text: &spec,
+                kind: "prompt",
+            };
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(source, "p4-1-bone-only-for-the-one-number", workdir)
+            };
+            let (_, outcome) = generate_plan(request)
+                .await
+                .unwrap_or_else(|error| panic!("{tasks} task(s): {error:#}"));
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), 2, "asked again once");
+            let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the ask");
+            assert!(
+                again.contains(
+                    "The source's notes for the planner state 1 task, and your plan below has 2"
+                ),
+                "{again}"
+            );
+            let written = TasksFile::parse(
+                &workdir.join("plans/p4-1-bone-only-for-the-one-number/tasks.toml"),
+            )
+            .expect("the plan");
+            assert_eq!(written.tasks.len(), tasks);
+            assert_eq!(
+                outcome.repairs.iter().any(|line| line == warning),
+                warned,
+                "{:?}",
+                outcome.repairs
+            );
+        }
     }
 
     /// bug-8723fc: in a CMake workspace (Undertow's phase 2), the plan writer

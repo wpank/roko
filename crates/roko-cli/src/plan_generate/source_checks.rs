@@ -1969,8 +1969,19 @@ pub(super) fn regeneration_prompt(
     coverage: &SourceCoverage,
     unrunnable: &[Unrunnable],
     unchecked: &[Unchecked],
+    tasks: Option<(usize, usize)>,
 ) -> String {
     let mut problems = String::new();
+    // gap-5c7f9a: the notes' split is the source's own design.
+    if let Some((stated, drafted)) = tasks {
+        let _ = writeln!(
+            problems,
+            "The source's notes for the planner state {stated} task{}, and your plan below has \
+             {drafted}: write the plan as the notes split it, one plan task for each task they \
+             list, with the files and checks they give it.",
+            if stated == 1 { "" } else { "s" }
+        );
+    }
     let missing = coverage.missing();
     if !missing.is_empty() {
         problems.push_str(
@@ -3086,7 +3097,7 @@ mod tests {
 
         let block = planner_block(&checks, "The spec states");
         assert!(block.contains(NEVER_DROPPED), "{block}");
-        let again = regeneration_prompt("Finish the editor.", "[meta]", &after, &[], &[]);
+        let again = regeneration_prompt("Finish the editor.", "[meta]", &after, &[], &[], None);
         assert!(again.contains(NEVER_DROPPED), "{again}");
     }
 
@@ -3112,7 +3123,7 @@ mod tests {
         )
         .expect("a plan");
         let coverage = SourceCoverage::of(&checks, &plan, &[]);
-        let again = regeneration_prompt("Spin the widget.", "[meta]", &coverage, &[], &[]);
+        let again = regeneration_prompt("Spin the widget.", "[meta]", &coverage, &[], &[], None);
         assert!(again.contains(SELF_CONTAINED), "{again}");
 
         let prose = source_checks("## Verification\n\n- the widget spins\n");

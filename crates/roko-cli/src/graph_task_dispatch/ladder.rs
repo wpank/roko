@@ -219,8 +219,8 @@ impl GraphTaskDispatcher {
              outside it: fix those providers, or pin a model (`--model`, or the task's \
              `model_hint`), then resume the plan. A rung refused on its provider's billing is \
              probed again when the next run starts, so recharge and resume; any other probe \
-             verdict stands for a day, and removing its model from \
-             `.roko/learn/rung-probes.json` probes it again now",
+             verdict stands for a day, and `roko learn probes clear <model>` (or `--all`) has \
+             the next run probe it again",
             task.id,
             rungs.join("; ")
         )))

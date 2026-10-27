@@ -2,15 +2,16 @@
 id = "bug-f8655e"
 kind = "bug"
 title = "The episode distiller writes knowledge entries straight to the store, skipping the run's guarded batch: a plan write's distillation added three entries to Undertow's store at 16:44Z ('The task category in the observed episode is scaffolding.' and two like it) that no guard row, check or delivery stood behind"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-neuro/knowledge"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "074f31340"
 source = "round-v7 roko-learnguard (Undertow .roko/neuro/knowledge.jsonl, kn_9e5937f98f5b1e1c, kn_678683b3f7c9e46a, kn_e855df32713af5d9), the lead's ask"
 discovered_from = "agent:roko-learnguard (round v7)"
 anchors = ["crates/roko-neuro/src/episode_completion.rs::distill_episode", "crates/roko-cli/src/learning_helpers.rs::install_capture_distillation", "crates/roko-serve/src/dispatch.rs", "crates/roko-acp/src/bridge_events/cost.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-2ad4fa", "gap-f1dd0c", "
 
 [[verify]]
 command = "grep -rqw 'fn a_distilled_entry_goes_through_the_guard' crates/roko-neuro/src && cargo test -p roko-neuro a_distilled_entry_goes_through_the_guard"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T03:23:32Z"
+commit = "074f31340"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-27T02:34:57Z"
+forced = false
+evidence = "074f31340. crates/roko-neuro: episode_completion.rs::distill_episode, where the CLI's captures, the serve's webhook dispatches and ACP all end, distils an episode only when it succeeded and passed at least one gate, failing none; [learning] distill_ungated = true distils every episode as before, still through the guard (documented in docs/v3/depth/21-config/01-schema-sections.md); a frozen workspace distils nothing. Under observe or enforce a distillation ingests into its own batch distill:<episode> and proposes it at once (the anchors, the invariants and the episode's delivery; actor distiller, reason knowledge:distill:<episode>), so roko learn commits lists it and a rollback removes it; a failed episode is not distilled under a guard; off writes straight to the store. lock_knowledge_guard (the .lock sibling of the guard's commits.jsonl) is held by propose_batch and by roko learn rollback knowledge. The distiller drops a candidate that describes its episode or corpus (9 phrases): 6 of Undertow's 12 distiller entries; the other 6, generic planning advice, are stopped by evidence first. Accepted: the orphan race (a run starting between a distillation's write and its proposal rolls that batch back). Not built: joining a plan run's batch (no plan run distils). Filed: gap-f54be7 (p3, the guard's 5-version depth, now shared with distillations). Superseded: gap-f1dd0c. Red first on db7d63f67 (logs/f8655e-chain.log): a_distilled_entry_goes_through_the_guard (no guard row), a_plan_write_distills_no_entry_without_evidence (1 model call, want 0), distill_ungated_distils_a_gate_less_episode_through_the_guard (a failed episode distilled), off_writes_straight_to_the_store_and_frozen_distils_nothing (a frozen workspace distilled), a_candidate_that_describes_its_episode_is_dropped (all 13 kept) and concurrent_proposals_take_one_version_each (7 of 8 concurrent proposals failed); green: all pass; lib suites roko-acp 237/0, roko-cli 4067/0, roko-core 2049/0, roko-neuro 261/0, roko-serve 1087/0; provider_failover, knowledge_workflows and property_tests pass; clippy -D warnings and nightly fmt clean. Done when 2 (a plan write on a copy of Undertow's store adds no entry outside a guarded batch) is shown on the capture path by a_plan_write_distills_no_entry_without_evidence, with no model call; no live plan write was run."
 +++
 
 ## Problem

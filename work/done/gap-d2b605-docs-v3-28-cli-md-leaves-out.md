@@ -2,7 +2,7 @@
 id = "gap-d2b605"
 kind = "gap"
 title = "docs/v3/28-CLI.md leaves out flags of roko run, roko plan run and roko plan generate"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "20b475a5f"
 source = "gap-171238 (2026-10-27)"
 discovered_from = "gap-171238"
 anchors = ["docs/v3/28-CLI.md"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-171238"], supersedes = [
 
 [[verify]]
 command = "for f in '--yes`, `-y' --no-holdout --no-audit; do sed -n '/^### `roko run`$/,/^#/p' docs/v3/28-CLI.md | grep -qF \"| \\`$f\" || exit 1; done && for f in --no-holdout --no-audit --max-parallel-plans --fail-fast; do sed -n '/^#### `roko plan run`$/,/^#/p' docs/v3/28-CLI.md | grep -qF \"| \\`$f\" || exit 1; done && sed -n '/^#### `roko plan generate`$/,/^#/p' docs/v3/28-CLI.md | grep -qF '| `--max-usd'"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T09:17:15Z"
+commit = "20b475a5f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T08:30:56Z"
+forced = false
+evidence = "docs/v3/28-CLI.md gains rows, written from the clap fields and the code behind them, for --no-holdout, --no-audit and -y in roko run, for --no-holdout, --no-audit, --max-parallel-plans and --fail-fast in roko plan run, and for --max-usd in roko plan generate; it also corrects rows of those tables the code contradicts (--complexity values, --dry-run on a plan directory, --approval, --no-budget and --budget-override 0, <source...> and --from-file). The section-scoped [[verify]] passes at 20b475a5f; it fails on the previous text and on a doc with the --no-holdout row under roko plan run alone, which the old verify let pass."
 +++
 
 ## Problem

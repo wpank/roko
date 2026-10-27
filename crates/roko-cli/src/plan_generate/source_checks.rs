@@ -552,7 +552,11 @@ fn is_restatement(reason: &str, check: &str) -> bool {
 /// Point verify steps whose `covers` name a source check (`covers =
 /// ["SC3"]`) at an acceptance criterion of their task that states it, and
 /// add `ACn: SC3: <the check>` when the task has none (gap-dc5d7c): a step's
-/// `covers` names its own task's criteria (PLAN_044). Returns one line per
+/// `covers` names its own task's criteria (PLAN_044). A criterion states a
+/// check by naming its id, else its label in the source (`P5.2.05`), else by
+/// quoting its command whole (bug-3d0414: phase 5.2's planner wrote "AC2:
+/// `tools/spec.sh 5 presets` still passes …" and covered its step by `SC5`;
+/// the criterion added for `SC5` left AC2 to no step). Returns one line per
 /// cover it moved, for the log.
 pub(super) fn normalize_covers(plan: &mut TasksFile, checks: &[SourceCheck]) -> Vec<String> {
     let mut moved = Vec::new();
@@ -563,12 +567,19 @@ pub(super) fn normalize_covers(plan: &mut TasksFile, checks: &[SourceCheck]) -> 
                 let Some(check) = checks.iter().find(|check| check.id == id) else {
                     continue;
                 };
-                let stated = task
-                    .acceptance
-                    .iter()
-                    .enumerate()
-                    .find(|(_, item)| named_checks(item).contains(&id))
-                    .map(|(index, item)| ac_id(item, index));
+                let label = check_label(&check.text);
+                let first = |states: &dyn Fn(&str) -> bool| {
+                    task.acceptance.iter().position(|item| states(item))
+                };
+                let stated = first(&|item| named_checks(item).contains(&id))
+                    .or_else(|| label.and_then(|label| first(&|item| contains_token(item, label))))
+                    .or_else(|| {
+                        check
+                            .run
+                            .as_deref()
+                            .and_then(|run| first(&|item| quotes_command(item, run)))
+                    })
+                    .map(|index| ac_id(&task.acceptance[index], index));
                 let criterion = stated.unwrap_or_else(|| {
                     let taken: Vec<String> = task
                         .acceptance
@@ -600,6 +611,56 @@ pub(super) fn normalize_covers(plan: &mut TasksFile, checks: &[SourceCheck]) -> 
         }
     }
     moved
+}
+
+/// Whether `text` quotes `command` whole, in backticks (bug-3d0414).
+fn quotes_command(text: &str, command: &str) -> bool {
+    text.contains(&format!("`{command}`"))
+}
+
+/// Give each acceptance criterion of a task that no verify step covers, and
+/// that quotes exactly one of its steps' commands whole, to that step's
+/// `covers` (bug-3d0414): the criterion the planner wrote for a step that it
+/// then covered by a source check's id is that step's, so `plan validate`
+/// finds no criterion without a step (PLAN_044). Only a task whose steps use
+/// `covers`, as PLAN_044 asks. Returns one line per criterion.
+pub(super) fn cover_quoted_criteria(plan: &mut TasksFile) -> Vec<String> {
+    let mut covered = Vec::new();
+    for task in &mut plan.tasks {
+        if task.verify.iter().all(|step| step.covers.is_empty()) {
+            continue;
+        }
+        let criteria: Vec<(String, String)> = task
+            .acceptance
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (ac_id(item, index), item.clone()))
+            .collect();
+        for (id, item) in criteria {
+            if task
+                .verify
+                .iter()
+                .any(|step| step.covers.iter().any(|cover| cover.trim() == id))
+            {
+                continue;
+            }
+            let quoting: Vec<usize> = (0..task.verify.len())
+                .filter(|&index| quotes_command(&item, &task.verify[index].command))
+                .collect();
+            let &[index] = quoting.as_slice() else {
+                continue;
+            };
+            let step = &mut task.verify[index];
+            step.covers.push(id.clone());
+            covered.push(format!(
+                "{}: step {} covers {id}, which quotes its command `{}`",
+                task.id,
+                index + 1,
+                one_line(&step.command)
+            ));
+        }
+    }
+    covered
 }
 
 /// What became of a source's checks in a plan.
@@ -2894,6 +2955,74 @@ mod tests {
             tight.tasks[0].verify[1].expect,
             Some(VerifyExpect::PassOnBase)
         );
+    }
+
+    /// bug-3d0414: round v7's phase-5.2 write (op 453d4ba0, gpt-5.4-mini)
+    /// kept 9 of 9 checks but failed `plan validate --strict` with 5×
+    /// PLAN_044. The planner wrote AC1-AC5 quoting its steps' commands and
+    /// covered the steps by the checks' ids; the criteria added for those ids
+    /// left AC1-AC5 to no step. Each id now points at the planner's criterion
+    /// that quotes its command, and no criterion is added. A criterion no step
+    /// covers that quotes one step's command whole joins that step.
+    #[test]
+    fn a_criterion_that_quotes_a_steps_command_is_covered_by_it() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p5_2_criteria");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let mut plan = TasksFile::parse(&fixture.join("draft.toml")).expect("the draft");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&spec);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(checks.len(), 9, "{checks:?}");
+
+        let moved = normalize_covers(&mut plan, &checks);
+        assert_eq!(moved.len(), 8, "{moved:#?}");
+        let task = &plan.tasks[0];
+        assert_eq!(
+            task.acceptance.len(),
+            5,
+            "no criterion added: {:#?}",
+            task.acceptance
+        );
+        let covers: Vec<Vec<&str>> = task
+            .verify
+            .iter()
+            .map(|step| step.covers.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            covers,
+            [
+                vec!["AC1"],
+                vec!["AC2"],
+                vec!["AC3"],
+                vec!["AC4"],
+                vec!["AC5"]
+            ]
+        );
+        assert!(cover_quoted_criteria(&mut plan).is_empty());
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(coverage.kept.len(), 9, "{:#?}", coverage.detail_lines());
+
+        // A criterion that only quotes a step's command joins that step;
+        // one that quotes two steps' commands, or none, stays as it is.
+        let mut orphan = TasksFile::parse_str(
+            "[meta]\nplan = \"p\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"The presets\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/src/presets.cpp\"]\n\
+             acceptance = [\"AC1: the presets are as named.\", \
+             \"AC2: `tools/spec.sh 5 presets` still passes.\", \
+             \"AC3: `tools/spec.sh 5 presets` and `tools/spec.sh 5_1 render` pass.\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5 presets\"\n\
+             covers = [\"AC1\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5_1 render\"\n\
+             covers = [\"AC1\"]\n",
+        )
+        .expect("a plan");
+        assert_eq!(
+            cover_quoted_criteria(&mut orphan),
+            ["T1: step 1 covers AC2, which quotes its command `tools/spec.sh 5 presets`"]
+        );
+        assert_eq!(orphan.tasks[0].verify[0].covers, ["AC1", "AC2"]);
+        assert_eq!(orphan.tasks[0].verify[1].covers, ["AC1"]);
     }
 
     /// gap-8b1f4f: round v7's phase-4.3 re-ask draft (Undertow 2ac4b36)

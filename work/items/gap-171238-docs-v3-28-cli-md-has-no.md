@@ -9,8 +9,8 @@ goal = "release"
 size = "S"
 subsystem = ["docs"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
 source = "gap-fd9dfb (2026-10-26)"
 discovered_from = "gap-fd9dfb"
 anchors = ["docs/v3/28-CLI.md"]
@@ -19,6 +19,9 @@ links = { depends_on = [], blocks = [], related = ["gap-fd9dfb"], supersedes = [
 
 [[verify]]
 command = "for c in safety effects showcase audit demo; do grep -q \"^### .roko $c\" docs/v3/28-CLI.md || exit 1; done"
+
+[[verify]]
+command = "for p in '^roko safety release --tool <tool> --scope <scope> --reason <why>' '^roko effects approve <effect-id>' '^roko showcase passphrase hash' '^roko audit reveal <run-id>' '^roko demo warm' '(#safety-and-audits)' 'roko started for an agent or a check' 'by_source'; do grep -q -- \"$p\" docs/v3/28-CLI.md || exit 1; done"
 +++
 
 ## Problem
@@ -67,7 +70,15 @@ it exits 1 under the variables roko sets on its agents and checks.
 
 - `docs/v3/28-CLI.md` has a `### \`roko <name>\`` heading for each of `safety`, `effects`, `showcase`, `audit` and
   `demo`, and the `[[verify]]` command passes.
+- The sections give each subcommand's synopsis (the second `[[verify]]` checks one per command), the table of
+  contents lists the new "Safety and audits" section, and the `roko safety` section says that the release refuses
+  to run in a process roko started for an agent or a check, and what its audit line's `via` records (`by_source`).
 
 ## Notes
 
 - Docs only. Found while doing gap-fd9dfb.
+- Placement (2026-10-27): `roko safety`, `roko effects` and `roko audit` went into a new section 11, "Safety and
+  audits"; `roko showcase` follows `roko deploy` in "Server and deployment"; `roko demo` ends "Utilities". The
+  environment table gained `ROKO_AUDIT_HOME` and `ROKO_SHOWCASE_PASSPHRASE_HASH`. Filed while writing them:
+  gap-362b00 (`roko demo warm` caches nothing), bug-a1cff1 (`roko demo setup` exits 0 when its build fails) and
+  gap-d2b605 (28-CLI.md leaves out flags of `roko run`, `roko plan run` and `roko plan generate`).

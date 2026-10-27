@@ -3215,6 +3215,38 @@ pub fn canonical_checkpoint_status(workdir: &Path, plan_id: &str) -> Option<Grap
         .map(|manifest| manifest.status)
 }
 
+/// The status `plan_id`'s canonical checkpoint records, as it stands now: a
+/// `running` checkpoint whose run has stopped, because its process died,
+/// reads [`GraphCheckpointStatus::Interrupted`], as `roko serve` and `roko
+/// plan list` say it (bug-693bb3, bug-df0e79). `None` when it has no
+/// readable checkpoint.
+#[must_use]
+pub fn canonical_checkpoint_status_now(
+    workdir: &Path,
+    plan_id: &str,
+) -> Option<GraphCheckpointStatus> {
+    #[derive(Deserialize)]
+    struct StatusAndRun {
+        status: GraphCheckpointStatus,
+        #[serde(default)]
+        run_id: String,
+    }
+
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let recorded: StatusAndRun = serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    Some(match recorded.status {
+        GraphCheckpointStatus::Running
+            if running_checkpoint_has_stopped(workdir, &recorded.run_id) =>
+        {
+            GraphCheckpointStatus::Interrupted
+        }
+        status => status,
+    })
+}
+
 /// Task outcomes recorded by the last run in `plan_id`'s canonical
 /// checkpoint under `.roko/state/graph/`, or `None` when there are none.
 #[must_use]

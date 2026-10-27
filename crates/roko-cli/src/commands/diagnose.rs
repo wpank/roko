@@ -588,7 +588,18 @@ fn build_graph_report(
     verbose: bool,
 ) -> DiagnoseReport {
     let mut notes = Vec::new();
-    let status = checkpoint.manifest.status;
+    // A run whose process died never wrote its end: it reads interrupted, as
+    // serve says it (bug-df0e79).
+    let stopped = checkpoint.manifest.status == GraphCheckpointStatus::Running
+        && crate::graph_checkpoint::running_checkpoint_has_stopped(
+            workdir,
+            &checkpoint.manifest.run_id,
+        );
+    let status = if stopped {
+        GraphCheckpointStatus::Interrupted
+    } else {
+        checkpoint.manifest.status
+    };
     let since_ms = checkpoint
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
@@ -3289,6 +3300,61 @@ title = "Tidy the changelog"
             "never ran: dependency T2 did not complete"
         );
         assert!(report.failed_task.is_none());
+    }
+
+    /// bug-df0e79: a run whose process died left its checkpoint `running`.
+    /// The report says it was interrupted, as `roko serve` does, and stops
+    /// telling the person to check whether it still runs; a run whose
+    /// process lives still reads running.
+    #[test]
+    fn graph_report_of_a_dead_run_reads_interrupted() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let workspace = workspace();
+        let root = workspace.path();
+        record_run(root, &["T1"], 0, GraphCheckpointStatus::Running);
+        let run_id = crate::graph_checkpoint::inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("inspect")
+            .expect("a checkpoint")
+            .manifest
+            .run_id;
+        let run_by = |pid: u32, started_at: String| {
+            let mut manifest = RunProvenanceManifest::new(&run_id, "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at,
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest
+                .store(&RokoLayout::for_project(root).run_dir(&run_id))
+                .expect("store the run manifest");
+        };
+        let mut gone = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let dead_pid = gone.id();
+        gone.wait().expect("reap true");
+
+        run_by(
+            dead_pid,
+            (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+        );
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert_eq!(report.status, "interrupted");
+        assert!(
+            report
+                .suggested_recovery
+                .iter()
+                .all(|line| !line.contains("still says `running`")),
+            "{:?}",
+            report.suggested_recovery
+        );
+
+        run_by(std::process::id(), Utc::now().to_rfc3339());
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert_eq!(report.status, "running");
     }
 
     #[test]

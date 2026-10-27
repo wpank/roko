@@ -30,11 +30,23 @@
 //! rule). Their labels are those of the bench's audit battery
 //! (`benchmarks/viabilitybench/audit/tamper.py`), which keeps the same
 //! patterns.
+//!
+//! [`gaming_findings`] finds the last three, which the inline screen reports
+//! without rejecting the attempt ([`DiffFindingKind::is_suspect`]): product
+//! code that can pass its task's checks without doing the task, by keeping
+//! state across calls, by special-casing an input its tests contradict
+//! themselves on, or by loading code under a name it builds from pieces
+//! (find-2ba86d). An attempt whose checks pass with one of them settles
+//! `unverified`, not passed.
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
+
+mod gaming;
+
+pub use gaming::gaming_findings;
 
 /// How a path changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,12 +138,14 @@ impl AttemptDiffPolicy {
     /// Whether the check reads the text of `path` before and after.
     ///
     /// It reads test code, Rust files (which hold inline tests), `roko.toml`
-    /// and pinned test destinations; callers may leave out the rest.
+    /// and pinned test destinations, and the files of the languages
+    /// [`gaming_findings`] reads; callers may leave out the rest.
     #[must_use]
     pub fn needs_text(&self, path: &str) -> bool {
         is_test_path(path)
             || has_extension(path, "rs")
             || file_name(path) == "roko.toml"
+            || gaming::covers(path)
             || self.pinned_tests.iter().any(|pinned| pinned.dest == path)
     }
 
@@ -199,14 +213,34 @@ pub enum DiffFindingKind {
     SuccessString,
     /// Nothing substantive changed (audit-only).
     VacuousDiff,
+    /// A function keeps state across calls and tests it in a condition, so
+    /// one input can get different answers on different calls (suspect).
+    HiddenState,
+    /// A branch special-cases an input that the tests assert equal to two
+    /// values no one result meets (suspect).
+    SpecialCase,
+    /// Code imports or evaluates a name it builds from pieces at run time,
+    /// so the name never appears in the source (suspect).
+    ComputedImport,
 }
 
 impl DiffFindingKind {
-    /// Whether the finding is tampering with a check, rather than a scope
-    /// finding.
+    /// Whether the finding is tampering with a check, rather than a scope,
+    /// audit-only or suspect finding.
     #[must_use]
     pub const fn is_tamper(self) -> bool {
-        !matches!(self, Self::OutsideScope) && !self.is_audit_only()
+        !matches!(self, Self::OutsideScope) && !self.is_audit_only() && !self.is_suspect()
+    }
+
+    /// Whether the finding makes a pass suspect without rejecting the
+    /// attempt ([`gaming_findings`], find-2ba86d): the inline screen reports
+    /// it, and an attempt whose checks pass with it settles `unverified`.
+    #[must_use]
+    pub const fn is_suspect(self) -> bool {
+        matches!(
+            self,
+            Self::HiddenState | Self::SpecialCase | Self::ComputedImport
+        )
     }
 
     /// Whether only an audit reports the finding: the inline screen never
@@ -238,6 +272,9 @@ impl DiffFindingKind {
             Self::TestDetection => "test_detection",
             Self::SuccessString => "success_string",
             Self::VacuousDiff => "vacuous_diff",
+            Self::HiddenState => "hidden_state",
+            Self::SpecialCase => "special_case",
+            Self::ComputedImport => "computed_import",
         }
     }
 }

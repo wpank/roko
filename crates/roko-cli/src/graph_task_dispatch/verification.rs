@@ -67,7 +67,10 @@ impl GraphTaskDispatcher {
     /// implementer attempt that changed nothing is rejected there too, unless
     /// the task has authored verify steps: they probe the unchanged tree, and
     /// when they pass the task was already satisfied
-    /// (`TaskGateVerdict::AlreadySatisfied`, gap-9eb1e1).
+    /// (`TaskGateVerdict::AlreadySatisfied`, gap-9eb1e1). An attempt whose
+    /// change the gaming screen flags runs its steps, and a pass settles
+    /// `TaskGateVerdict::Unverified`, the screen's reason in its verdict
+    /// (find-2ba86d).
     ///
     /// The report lists what each verify step did, for the attempt's verdict
     /// record (backlog 2104). `theta`, the θ the attempt runs, sets the
@@ -202,6 +205,20 @@ impl GraphTaskDispatcher {
         }
         match screened {
             red_flags::Screened::Clear => verified,
+            // The change may pass its checks without doing its task
+            // (find-2ba86d): a pass is unverified.
+            red_flags::Screened::Suspect(suspect) => {
+                self.settle_suspect(
+                    spec,
+                    task,
+                    attempt_number,
+                    progress_tx,
+                    &suspect,
+                    verified,
+                    steps,
+                )
+                .await
+            }
             red_flags::Screened::UnchangedTree(_) if unverified => {
                 if let Some(progress_tx) = progress_tx {
                     let message = "unverified: the verify steps pass on the unchanged tree, but \

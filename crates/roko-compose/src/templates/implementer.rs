@@ -78,6 +78,10 @@ document the deviation.\n\
 6. No hardcoded absolute paths in any committed file.\n\
 7. All tests from the plan's Verification section must pass.\n\
 8. Operate autonomously. Do not ask questions. Complete all work and end your turn.\n\
+9. Never change what a check measures to make it pass: do not scale, pad, synthesize or \
+overwrite an output, or special-case a check's inputs.\n\
+10. When what fails is caused in a file outside the task's `files`, do not work around it in your \
+files: say so in your final message, with a line `Blocked: <path> — <why>` naming that file.\n\
 \n\
 ## Before you write any code\n\
 \n\
@@ -570,6 +574,30 @@ mod tests {
         assert!(!id.contains("use `read_file` only for"), "{id}");
         assert!(id.contains("don't read again what it shows"), "{id}");
         assert!(id.contains("anything else you need"), "{id}");
+    }
+
+    /// bug-3b3bb6: phase 5's T4 could not make its demo renders loud enough
+    /// in its own files, since T3's renderer set the level; its plan forbade
+    /// changing the renderer, and the stronger model's try boosted the renders
+    /// and wrote a fabricated buzz into a silent one to pass the level check.
+    /// The role never changes what a check measures, and names a cause
+    /// outside its files with a `Blocked:` line, which roko hands to that
+    /// file's task.
+    #[test]
+    fn implementer_never_changes_what_a_check_measures() {
+        let id = ImplementerTemplate.role_identity();
+        assert!(
+            id.contains("Never change what a check measures to make it pass"),
+            "{id}"
+        );
+        assert!(
+            id.contains("do not scale, pad, synthesize or overwrite an output"),
+            "{id}"
+        );
+        assert!(
+            id.contains("with a line `Blocked: <path> — <why>` naming that file"),
+            "{id}"
+        );
     }
 
     #[test]

@@ -713,7 +713,10 @@ pub struct ModelProfile {
     /// Cache write cost per million tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_cache_write_per_m: Option<f64>,
-    /// Provider-specific reasoning depth label.
+    /// Provider-specific reasoning depth label: Gemini's thinking level, or
+    /// `"adaptive"` for an Anthropic model that thinks adaptively (Claude
+    /// 4.6 and later), which the Anthropic API then asks for adaptive
+    /// thinking at its effort, not a manual budget (bug-0e0dd9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
     /// Maximum number of tools before behavior degrades.
@@ -802,6 +805,17 @@ pub enum OpenAiApi {
 }
 
 impl ModelProfile {
+    /// Whether this model thinks adaptively, as its `thinking_level` of
+    /// `"adaptive"` says: Claude 4.6 and later take `thinking.type:
+    /// "adaptive"` with `output_config.effort`, and 4.7 and later refuse a
+    /// manual `budget_tokens` with a 400 (bug-0e0dd9).
+    #[must_use]
+    pub fn thinks_adaptively(&self) -> bool {
+        self.thinking_level
+            .as_deref()
+            .is_some_and(|level| level.trim().eq_ignore_ascii_case("adaptive"))
+    }
+
     /// This profile with the reasoning effort `effort` names, when it names
     /// none of its own (bug-29014c): a request's effort, or `[agent]
     /// default_effort`. A label that is none of roko's levels

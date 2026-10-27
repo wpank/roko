@@ -2,7 +2,7 @@
 id = "gap-5db3d9"
 kind = "gap"
 title = "A plan declares none of the tests its checks run (1 of 73 across phases 4.3 to 5.2) nor the headers beside the sources it declares, so a try finds them itself: 5.2's only try read its three spec tests, presets.h, params.h and params.cpp before its first edit in call 7"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "2b171f0c6"
 source = "round-v7 roko-ladder, gap-744bd0's measurement on phase 5.2 (run 13260e60) and 4.3/5/5.1, the lead's ask"
 discovered_from = "agent:roko-ladder (round v7)"
 anchors = ["crates/roko-cli/src/plan_generate/source_reads.rs::repair_source_reads", "crates/roko-cli/src/plan_generate/pipeline.rs::repair_generated_draft", "crates/roko-cli/src/dispatch/prompt_builder.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-744bd0", "bug-417c4a", "
 
 [[verify]]
 command = "grep -rqw 'fn a_task_reads_the_tests_its_new_checks_run' crates/roko-cli/src && cargo test -p roko-cli --lib a_task_reads_the_tests_its_new_checks_run"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T05:50:04Z"
+commit = "2b171f0c6"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-27T01:41:41Z"
+forced = false
+evidence = "Merged 2b171f0c6 (branch 38aa65c24, with the bug-3d0414 shared-fragment test fcd55af51; main df347694b merged in at 7dc6fa498, no file in common). Post-merge verify in my worktree, detached at 2b171f0c6: the grep finds the test, and a_task_reads_the_tests_its_new_checks_run passes (1 of 1). The test runs phase 5.2's as-written draft (fixture tests/fixtures/p5_2_criteria): T1 gains core/include/undertow/presets.h and tests/spec/p5_2/presets_test.cpp, and not the p5 and p5_1 regression tests a source names; neither read counts toward a one-file budget; a second pass adds nothing. Branch suites: plan_generate and plan_policy 208/208, with the lead's three negative tests (a check that names no test adds no read; a Rust source gets no header read; two candidates that fit alike give no read and a line naming both) and one for a header the task owns; roko-cli lib 4074 passed, 0 failed; nightly fmt; clippy -p roko-cli -D warnings clean. $0 replays on the final binary of 5.2 (as written and ideal), 5 (8 tasks), 4.3 and 4.2: every check kept (9, 9, 21, 17, 19), plan validate --strict 0 diagnostics each, 24 reads added to the written plans, none wrong. The item's run measure (m744/undeclared.py on the next phases' runs) waits for a run; none yet."
 +++
 
 ## Problem

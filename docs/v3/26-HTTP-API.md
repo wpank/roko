@@ -151,7 +151,7 @@ enabled = true            # the default; false turns auth off for local use
 # The legacy single key never goes here: roko.toml is readable by agents, and
 # roko refuses to load it with a secret. Set ROKO__SERVE__AUTH__API_KEY in
 # .roko/.env (`roko config set serve.auth.api_key <key>` does).
-privy_app_id = ""
+# privy_app_id = "<app id>"  # Privy JWT auth: needs an allow-list (24-AUTH §7.2)
 
 [[serve.auth.api_keys]]
 name = "ci-bot"
@@ -170,6 +170,9 @@ launch token and prints a sign-in link, and
 `roko config set serve.auth.api_key <key>` sets a lasting key. For local use
 you can turn auth off with `serve.auth.enabled = false`, and then all routes are
 open; a bind beyond localhost also needs `serve.acknowledge_public_risk = true`.
+With auth on, a bind beyond localhost refuses to start when
+`serve.auth.privy_app_id` is set without a Privy allow-list
+([24-AUTH](24-AUTH.md) §7.2).
 
 When enabled, all `/api/*` routes require a credential. The `/health`,
 `/ready`, `/metrics`, `/webhooks/*`, and `/runs/{id}` routes are always public.

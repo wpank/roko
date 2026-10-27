@@ -14,7 +14,7 @@ last_verified = 2026-10-26
 source = "round-v7 run-analyst from the pilot's phase 5 evidence (tmp/hermes-roko-v7/findings/hermes-pilot.md section R; Undertow run 1f677933), the lead's ask"
 discovered_from = "agent:hermes-pilot (round v7)"
 anchors = ["crates/roko-compose/src/templates/implementer.rs::IMPLEMENTER_ROLE_IDENTITY", "crates/roko-cli/src/dispatch/prompt_builder.rs::LESSON_NOTE", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::stated_lesson", "crates/roko-cli/src/graph_execution/plan_handback.rs::handback_task"]
-links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-7ecea3", "gap-744bd0", "bug-cbbaa8", "bug-2ad4fa", "bug-32f73a", "bug-5e361a", "bug-8b9468"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-fc05a3", "bug-7ecea3", "gap-744bd0", "bug-cbbaa8", "bug-2ad4fa", "bug-32f73a", "bug-5e361a", "bug-8b9468", "gap-0b5ebf"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn implementer_never_changes_what_a_check_measures' crates/roko-compose/src && cargo test -p roko-compose implementer_never_changes_what_a_check_measures"
@@ -128,8 +128,10 @@ showcase audio":
 
 - **2026-10-26, roko-exact: the roko side, (b) to (d) of the plan, is built** (see Design). It covers the `Blocked:`
   line, the prompt note, the hand-back to the owner's files and checks on the same rung, and the stop for a file no
-  task changes. Plan item (a), the implementer template's rule and its verify test, follows roko-ladder's gap-744bd0.
-  Plan item (5), the planning side, is open.
+  task changes. It merged at 448108bb0.
+- **2026-10-27, roko-exact: plan item (a), the template rule, is built.** It came after roko-ladder's gap-744bd0
+  (3fff6b223). The implementer's rules 9 and 10 now read: never change what a check measures, and name a cause
+  outside the task's files with a `Blocked:` line. Plan item (5), the planning side, is gap-0b5ebf.
 - The ladder climbs after a rung's failed tries, whether or not the failures were identical and the hand-off named
   an outside cause.
 - A verified pass's `Lesson:` is admitted to knowledge as stated.

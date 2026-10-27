@@ -99,6 +99,25 @@ Then:
 - the misattributed "(P2-15)" comment in `confirm_by_repeat` goes;
 - a test proves that both paths promote the same entry the same way.
 
+### The lead's call (2026-10-27)
+
+The spec's rule wins, and this doesn't need Will. No recorded decision covers the thresholds, and the memory spec
+defines them, so making the surfacing path follow the spec isn't a reversal: it brings the code into line with its
+own spec.
+- **One promotion rule for both paths, the spec's.** Transient to Working takes 2 confirmations with confidence
+  >= 0.5. Working to Consolidated takes 3 distinct contexts, with the spec's 0.6 confidence floor.
+- **Tests:**
+  - a lesson admitted on its own pass stays Transient;
+  - it reaches Working only on a second confirmation, from another run.
+- **The replay:** on a copy of Undertow's store, count how many of the 46 admissions would be Working under the
+  spec.
+- **Existing entries stay as they are.** Don't re-tier them, and say so at the close: a migration is a separate
+  decision.
+- **Flow:** a merge request to the lead, then the lead's helpers, then a verify detached at the merge sha.
+
+Status at the end of round v7: not started. No branch and no code. It was left for the next round at the lead's
+call.
+
 ## Done when
 
 - The `[[verify]]` passes: a surfacing pass and a repeat with the same counts leave an entry on the same tier.

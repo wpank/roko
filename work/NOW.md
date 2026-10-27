@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 1 likely done · 6 anchor gone · 147 changed since checked · 7 mentioned in commits · 7 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 4 anchor gone · 154 changed since checked · 6 mentioned in commits · 29 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -24,27 +24,27 @@ _1 more open · on hold: gap-85f86a · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P1** [find-2ba86d](items/find-2ba86d-an-impossible-test-was-passed-twice-by.md) An impossible test was passed twice by hidden call-count state and input special cases, against explicit instructions, and roko reported succeeded [finding] · size L · verified 2026-10-13
 - **P2** [bug-c67afc](items/bug-c67afc-a-claude-cli-attempt-on-a-model.md) A Claude CLI attempt on a model the price snapshot lacks is labelled cost_source unknown while its cost row says priced = true, and a call that reported no usage counts as a known $0 [bug] · size S · verified 2026-10-15
+- **P2** [gap-3e1428](items/gap-3e1428-a-chat-host-s-run-checks-none.md) A chat host's run checks none of the request's explicit constraints against the change: the LLM judge is off by default, and its helper model failed every call in the 2026-10-13 dogfood · size M · verified 2026-10-27
 - **P2** [bug-a56ba1](items/bug-a56ba1-a-substituted-call-s-cost-row-says.md) A substituted call's cost row says priced when the model that served it has no rate, so later runs count its unknown cost as $0 [bug] · size S · verified 2026-10-16
 
-_13 more open · `goal = "truth"`_
+_18 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- **P1** [bug-29014c](items/bug-29014c-roko-sends-openai-no-reasoning-effort-agent.md) roko sends OpenAI no reasoning_effort: [agent] default_effort = "medium" never reaches openai_compat; build_extra_body_params (provider/openai_compat.rs:241) adds only sampling, GLM, Kimi and routing params, so the GPT-5.4 family runs at the API default (0 reasoning tokens in all 52 gpt-5.4-mini efficiency events in Undertow, phases 0-3, and in the 2026-10-21 gpt-5.4 probe) [bug] · size M · verified 2026-10-21
 - **P2** [find-fc5cdd](items/find-fc5cdd-a-golden-path-rust-task-is-gated.md) A golden-path Rust task is gated only by its accept test at verify depth V0, though its spec asks for a cargo fmt clean, clippy-free crate with a working doc example: T4 left an unformatted crate or a doc example that cannot compile in 3 of the last 6 live runs, and only T6's later edit kept the plan green [finding] · size S · verified 2026-10-19
 - **P2** [gap-af4082](items/gap-af4082-a-later-task-s-try-can-rewrite.md) A later task's try can rewrite a file an earlier task delivered and checked: diff_scope = record only logs it, nothing re-runs the earlier task's checks or tells the agent (T3 try 4 broke T1's CMakePresets.json after try 3 passed 5 of 6 tests) · size M · verified 2026-10-19
+- **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 
-_10 more open · on hold: gap-634954 · 5 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_10 more open · 1 blocked · on hold: gap-634954 · 5 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [gap-f3944c](items/gap-f3944c-cerebras-answers-http-402-payment-required-to.md) Cerebras answers HTTP 402 payment_required to every call since 2026-10-20 15:17Z, so every gpt-oss-120b run (Pilot B's roko_fixed arm, Pilot C, LOG1) is blocked until the account has credit · size S · verified 2026-10-21
+- **P1** [gap-f3944c](items/gap-f3944c-cerebras-answers-http-402-payment-required-to.md) Cerebras answers HTTP 402 payment_required to every call since 2026-10-20 15:17Z, so every gpt-oss-120b run (Pilot B's roko_fixed arm, Pilot C, LOG1) is blocked until the account has credit · size S · verified 2026-10-26
 - **P1** [gap-dd670b](items/gap-dd670b-pilot-a-s-cheap-ladder-misses-s08.md) Pilot A's cheap ladder misses S08's bands: gpt-oss-120b solves 1 of 12 level-1 runs where G0 wants 0.6, so F1 and F4 need re-knobbing before Pilot B · size M · verified 2026-10-19
 - **P1** [gap-1011ff](items/gap-1011ff-pilot-a-s-ledger-is-not-reconciled.md) Pilot A's ledger is not reconciled with the Cerebras and OpenAI usage exports, so G0's ±5% ledger check is not evaluated (needs Will's downloads) · size S · verified 2026-10-19
 
-_21 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 8 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_19 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 7 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -60,29 +60,29 @@ _23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TR
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_21 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_24 more open · on hold: find-70edcb · 5 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [bug-df0e79](items/bug-df0e79-a-dead-cli-run-reads-as-running.md) A dead CLI run reads as running forever: only serve settles a run whose process died, so plan status, diagnose and show plans keep saying running, and serve's settle misses the run's events id [bug] · size M · verified 2026-10-26
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
-- **P3** [bug-eb55eb](items/bug-eb55eb-a-claude-cli-attempt-s-verdict-records.md) A Claude CLI attempt's verdict records its cost as source unknown with no API-equivalent, and /api/models gives claude-sonnet-4-6 no cache-write price, so estimates miss most of a CLI attempt's cost [bug] · size S · verified 2026-10-17
 
-_8 more open · 1 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
 - **P1** [bug-7e0556](items/bug-7e0556-a-dream-writes-templated-entries-as-consolidated.md) A dream writes templated entries as consolidated knowledge at confidence up to 1.0, and prompts inject them ahead of real lessons, so the next task costs more [bug] · size M · verified 2026-10-16
+- **P2** [bug-fce0a7](items/bug-fce0a7-knowledge-tiers-have-two-promotion-rules-a.md) Knowledge tiers have two promotion rules: a pass that surfaces an entry re-tiers it through evaluate_tier_progression_v2 (transient to working at 1 confirmation, working to consolidated at 2), a repeat through the memory spec's 2 confirmations and 3 contexts, so every runtime lesson is Working at admission on its own pass (all 46 admissions in Undertow's store) [bug] · size M · verified 2026-10-27
 - **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
-- **P2** [gap-ad9e03](items/gap-ad9e03-the-section-bandit-drops-domain-context-the.md) The section bandit drops domain_context, the section that carries lessons, playbooks and episodes, so L-sec withholds L-know and L-play content outside their own arms · size M · verified 2026-10-16
 
-_6 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_9 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
 - **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
-- **P2** [bug-c63cca](items/bug-c63cca-about-a-dozen-roko-cli-integration-tests.md) About a dozen roko-cli integration tests pass only with a real claude CLI on PATH, so they fail on CI [bug] · size M · verified 2026-10-11
 - **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
+- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
 
 _26 more open · on hold: gap-f36019 · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
@@ -100,6 +100,6 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P1** [spec-13c7ba](items/spec-13c7ba-hermes-starts-roko-by-itself-one-roko.md) Hermes starts roko by itself: one roko serve per project, started by the plugin, and prebuilt binaries for people without Rust [spec] · size L · verified 2026-10-19
 - **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-16
 
-_8 more open · on hold: gap-8636f8 · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
+_9 more open · on hold: gap-8636f8 · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
-15 open items have no goal (later); they are listed in `STATUS.md`.
+17 open items have no goal (later); they are listed in `STATUS.md`.

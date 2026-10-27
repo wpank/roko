@@ -2,15 +2,16 @@
 id = "gap-382947"
 kind = "gap"
 title = "The attempt-diff checks flag product code that imports or evaluates a module whose name it builds at run time, so a forbidden dependency can't be loaded under a split name"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-gate/attempt-diff", "roko-cli/graph-task-dispatch"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "f4ef01181"
 source = "status-quo-2026-10-15#finding-45"
 anchors = ["crates/roko-gate/src/attempt_diff.rs::audit_only_findings", "crates/roko-gate/src/attempt_diff.rs::DiffFindingKind", "crates/roko-gate/src/attempt_diff.rs::TEST_DETECTION", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/verify_depth.rs"]
 lane = "rust-cold"
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["find-2ba86d", "gap-d76b1b", 
 
 [[verify]]
 command = "grep -rqw 'fn computed_import_in_product_code_is_flagged' crates/roko-gate/ && cargo test -p roko-gate computed_import_in_product_code_is_flagged"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T09:02:03Z"
+commit = "5027c3c21"
+by = "work-batch 2026-10-27 0127"
+executor = "claude-agent"
+via = "work-batch"
+forced = false
+evidence = "find-2ba86d (merged cc71ab7d2) added the computed_import kind to the gaming screen in crates/roko-gate/src/attempt_diff/gaming.rs and gaming/python.rs: importlib.import_module, __import__, eval, exec or compile on a name built at run time from literal pieces joined mid-word, or encoded, is flagged in product code, and a gate pass it flags settles unverified. The verify (computed_import_in_product_code_is_flagged) passed on main at d6d037c53 in the fenced post-verify (tmp/status-quo/coordinator/pv-382947.log)."
 +++
 
 ## Problem

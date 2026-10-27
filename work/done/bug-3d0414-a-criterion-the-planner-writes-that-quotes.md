@@ -2,15 +2,16 @@
 id = "bug-3d0414"
 kind = "bug"
 title = "A criterion the planner writes that quotes a step's command is left uncovered when the step covers the source check's id instead: phase 5.2's write (op 453d4ba0) kept 9 of 9 checks but failed plan validate --strict with 5x PLAN_044"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "32038180f"
 source = "round-v7-hermes-pilot#phase-5-2-write"
 discovered_from = "agent:hermes-pilot (round v7, op 453d4ba0), the lead's ask"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::normalize_covers", "crates/roko-cli/src/plan_generate/source_checks.rs::criterion_naming"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-8b1f4f", "gap-dc5d7c"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_criterion_that_quotes_a_steps_command_is_covered_by_it' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_criterion_that_quotes_a_steps_command_is_covered_by_it"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T02:14:00Z"
+commit = "c199b61b5"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged c199b61b5 (branch 1d76ccb81; main merged in at 50ba46da2). Post-merge verify in my worktree, detached at c199b61b5: the grep finds the test, and a_criterion_that_quotes_a_steps_command_is_covered_by_it passes (1 of 1). The test runs phase 5.2's as-written draft (fixture tests/fixtures/p5_2_criteria, hermes-pilot's op 453d4ba0): normalize_covers points each check id at the planner's criterion that quotes its command (8 moved), no criterion is added, AC1-AC5 are covered by their steps and all 9 checks are kept; a criterion no step covers that quotes one step's whole command joins that step, and one that quotes two steps' commands stays as it is. Branch suites: plan_generate and plan_policy 198/198; roko-cli lib green; nightly fmt; clippy -p roko-cli -D warnings clean. A $0 replay of the 5.2 draft: before, 5x PLAN_044; after, plan validate --strict reports no diagnostics."
 +++
 
 ## Problem

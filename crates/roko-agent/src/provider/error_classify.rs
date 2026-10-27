@@ -329,6 +329,44 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
     }
 }
 
+/// Classify the lowercase text of a failed provider call as the provider-call
+/// boundary records it for the circuit breaker (`model_call_service`'s
+/// `provider_error_kind`, which the API backends' outcome recorders share):
+/// [`classify_failure_text`]'s class, except that text it calls `unknown` is a
+/// `context_overflow` when it says the request outgrew the model's context
+/// window, and a `content_policy` when it says a content or safety policy
+/// blocked it, as [`ProviderError::ContextOverflow`] and
+/// [`ProviderError::ContentPolicy`] render ("context overflow", "content
+/// policy violation").
+///
+/// The boundary kept its own copy of the classifier until gap-466060; these two
+/// classes, which the copy named and [`classify_failure_text`] does not, are
+/// all it adds. Every other caller of [`classify_failure_text`] still reads
+/// both as `unknown`.
+#[must_use]
+pub fn classify_call_failure_text(lower: &str) -> &'static str {
+    match classify_failure_text(lower) {
+        "unknown" if names_context_overflow(lower) => "context_overflow",
+        "unknown" if names_content_policy(lower) => "content_policy",
+        class => class,
+    }
+}
+
+/// Whether lowercase failure text says the request outgrew the model's
+/// context window. Narrower than [`is_context_overflow_text`], which reads
+/// only the words of a 400.
+fn names_context_overflow(lower: &str) -> bool {
+    lower.contains("context window")
+        || lower.contains("context length")
+        || lower.contains("context overflow")
+}
+
+/// Whether lowercase failure text says a content or safety policy blocked the
+/// request.
+fn names_content_policy(lower: &str) -> bool {
+    lower.contains("content policy") || lower.contains("safety policy")
+}
+
 /// What roko's tool loop says when the model broke a reply in a way no
 /// prompt asks for, twice in a row: its tool call's arguments stopped being
 /// JSON (bug-af5c20). The provider served the call; the model glitched.
@@ -1045,6 +1083,52 @@ mod tests {
             "auth_failure",
             "{text}"
         );
+    }
+
+    /// gap-466060: the provider-call boundary's classifier is the shared
+    /// one, plus the context overflow and the content-policy block that the
+    /// shared classes leave unknown, in `ProviderError`'s words or a
+    /// provider's. Every other caller still reads both as unknown, and a
+    /// class the shared classifier names keeps its name.
+    #[test]
+    fn call_failure_text_names_context_overflow_and_content_policy() {
+        use crate::tool_loop::LlmError;
+
+        for (error, class) in [
+            (ProviderError::ContextOverflow, "context_overflow"),
+            (ProviderError::ContentPolicy, "content_policy"),
+        ] {
+            // As an attempt's failure text carries it.
+            let text = format!("agent error (openai): {}", LlmError::Provider(error));
+            let lower = text.to_ascii_lowercase();
+            assert_eq!(classify_call_failure_text(&lower), class, "{text}");
+            assert_eq!(classify_failure_text(&lower), "unknown", "{text}");
+        }
+        for (text, class) in [
+            (
+                "This model's maximum context length is 128000 tokens. However, your messages \
+                 resulted in 130000 tokens.",
+                "context_overflow",
+            ),
+            (
+                "input exceeds the context window of this model",
+                "context_overflow",
+            ),
+            ("Output blocked by content policy", "content_policy"),
+            (
+                "The response was blocked by the safety policy",
+                "content_policy",
+            ),
+            ("request timed out: context window exceeded", "timeout"),
+            ("server error: context window exceeded", "server_error"),
+            ("something else went wrong", "unknown"),
+        ] {
+            assert_eq!(
+                classify_call_failure_text(&text.to_ascii_lowercase()),
+                class,
+                "{text}"
+            );
+        }
     }
 
     // ── CLI classification ──────────────────────────────────────────

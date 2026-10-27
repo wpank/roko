@@ -2,15 +2,16 @@
 id = "gap-1220c5"
 kind = "gap"
 title = "Knowledge confirmations count what every lesson of a run shares: entries_are_similar needs 1 shared tag and 2 shared words, and plan:, lesson and gate:passed make that near-universal, so phase 5's gamed lesson 'confirmed' 31 committed entries; a run's passes also confirm committed entries whether or not the run delivers"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-neuro/knowledge", "roko-neuro/lifecycle"]
 created = 2026-10-26
-updated = 2026-10-26
-last_verified = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "ea7661e29"
 source = "round-v7 roko-learnguard while fixing bug-2ad4fa (Undertow run 1f677933's knowledge-confirmations.jsonl), the lead's ask"
 discovered_from = "agent:roko-learnguard (round v7)"
 anchors = ["crates/roko-neuro/src/knowledge_store/scoring.rs::entries_are_similar", "crates/roko-neuro/src/knowledge_store/scoring.rs::detect_confirmations", "crates/roko-neuro/src/knowledge_store/crud.rs::ingest", "crates/roko-neuro/src/lifecycle.rs::promote_runtime_entries"]
@@ -21,6 +22,17 @@ command = "grep -rqw 'fn run_generic_tags_confirm_nothing' crates/roko-neuro/src
 
 [[verify]]
 command = "grep -rqw 'fn an_undelivered_run_confirms_nothing' crates/roko-neuro/src && cargo test -p roko-neuro an_undelivered_run_confirms_nothing"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T00:27:52Z"
+commit = "ea7661e29"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T21:18:07Z"
+forced = false
+evidence = "ea7661e29. crates/roko-neuro: entries_are_similar (scoring.rs) counts only topical tags (a file or a package; lesson, runtime, kind names, plan:/gate:/task:/model: left out) and needs a content-word Jaccard of 0.17 with stopwords out (MIN_CONTENT_JACCARD, in place of MIN_KEYWORD_OVERLAP's count of 2); promotion thresholds unchanged, and no recorded decision names these constants. Held confirmations (knowledge_store/pending.rs): a guarded run's confirmations of committed entries (surfaced passes from the lifecycle, repeats from ingest) wait in .roko/neuro/knowledge-pending-confirmations.jsonl beside its batch; KnowledgeBatch::commit applies them once each (deduplicated, never to a retired entry) with the repeats' records, discard drops them, propose_batch settles a lesson-less batch by delivery, orphaned_batches counts confirmation-only batches; an unguarded run confirms at once; reinforcement stays immediate. Replay on a read-only copy of Undertow's store (tmp/hermes-roko-v7/roko-learnguard/bin/confirm-report.py, logs/confirm-report-5-2.log): the old rule's mirror reproduces 854/854 records; 3 survive, all real repeats (phase 1's envelope double precision, phase 4.1/4.2's budget PNGs, phase 5/5.1's master_gain trim); the gamed lesson's 31, run 1f677933's 230 and phase 5.2's 38 go; closest dropped 0.152 (two different tools/spec.sh facts). Red first: run_generic_tags_confirm_nothing, an_undelivered_run_confirms_nothing, a_resumed_run_applies_its_pending_confirmations_once and the updated a_run_does_not_confirm_its_own_provisional_lessons failed on the old code; green all pass; lib suites roko-learn 1408/0, roko-neuro 254/0, roko-cli 4049/0; clippy -D warnings and nightly fmt clean (logs/1220c5-chain.log, logs/1220c5-clippy.log)."
 +++
 
 ## Problem

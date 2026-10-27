@@ -9,7 +9,7 @@ goal = "visibility"
 size = "M"
 subsystem = ["roko-cli/commands", "roko-serve/runs"]
 created = 2026-10-26
-updated = 2026-10-26
+updated = 2026-10-27
 last_verified = 2026-10-26
 source = "round-v7 roko-recovery kill matrix (tmp/hermes-roko-v7/findings/roko-recovery.md, tmp/hermes-roko-v7/roko-recovery/runs/roko-main-4d22b94e8), the lead's ask"
 discovered_from = "agent:roko-recovery (round v7, 4d22b94e8)"
@@ -17,7 +17,7 @@ anchors = ["crates/roko-serve/src/interrupted_runs.rs::settle", "crates/roko-cli
 links = { depends_on = ["bug-c872f6"], blocks = [], related = ["bug-dceafd"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn plan_status_reports_a_dead_runs_interruption' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_reports_a_dead_runs_interruption"
+command = "grep -rqw 'fn plan_status_reports_a_dead_runs_interruption' crates/roko-cli/src && cargo test -p roko-cli --bin roko -- plan_status_reports_a_dead_runs_interruption"
 +++
 
 ## Problem
@@ -70,6 +70,25 @@ report a live run. Hosts reading serve show a CLI run as running forever. bug-dc
 4. Mark `status.json` stale when its pid is gone (`plan status` global).
 5. One run id: bug-c872f6. This item depends on it for serve's view. Without it, settling the manifest still leaves
    the events index open.
+
+## Progress
+
+**2026-10-27, the CLI views** (round v7 roko-recovery, after bug-693bb3; the lead's ask). `roko plan status <dir>`,
+`roko plan show`, `roko diagnose` and `roko show plans` now read a dead run's plan as `interrupted`, the way `roko
+serve` and `roko plan list` have since bug-693bb3. The test is the same: the run's manifest is closed, or names a
+process that is gone, or, without a manifest, no process holds the runner lock.
+- `plan status` and `diagnose` count the tasks the checkpoint passed.
+- `diagnose` no longer says "the checkpoint still says `running`" about a dead run.
+- The test lives in the binary, so the `[[verify]]` runs `--bin roko`.
+
+What's left:
+- serve's summary of a CLI run, whose events go under a second id (bug-c872f6);
+- `status.json`'s dead pid in the global `roko plan status`;
+- settling the dead invocation when a resume starts (plan steps 3 and 4).
+- Until then, the kill matrix's E4 fails on its 10 `cli` rows
+  (`tmp/hermes-roko-v7/roko-recovery/runs/fix-df0e79-454815ee6`). There `plan status`, `diagnose` and `show plans` say
+  interrupted, but serve answers the records id with a 404 and says the events id is still running. The two
+  c-verify rows miss their kill, so their run succeeds and E4 has nothing to check.
 
 ## Done when
 

@@ -2,15 +2,16 @@
 id = "gap-78cf31"
 kind = "gap"
 title = "RequireToolBeforeEdit admits an edit to a file the agent never read, once it has read any other file: T8 patched py/textutil.py having read only py/test_textutil.py"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-agent/safety"]
 created = 2026-10-18
-updated = 2026-10-18
-last_verified = 2026-10-18
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "98fb1ac61"
 source = "gp2 golden-path rerun, live run 1 review (find-4003b9, gap-f30b8e; 2026-10-18)"
 discovered_from = "gap-f30b8e"
 anchors = ["crates/roko-agent/src/safety/contract.rs::has_prior_tool", "crates/roko-agent/src/safety/contract.rs::GovernanceRule"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["q-2f780c", "bug-c8153a", "ga
 
 [[verify]]
 command = "grep -rqw 'fn a_read_of_another_file_does_not_admit_an_edit' crates/roko-agent/src && cargo test -p roko-agent --lib a_read_of_another_file_does_not_admit_an_edit"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T02:25:31Z"
+commit = "98fb1ac61"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-27T00:27:15Z"
+forced = false
+evidence = "RequireToolBeforeEdit now admits an edit of an existing file only after a successful read of that same file (98fb1ac61). record_tool_result stores the file each call names, resolved against the worktree (safety::path::resolve_file: joined, dot segments folded as the file tools fold them, symlinks resolved), and check_read_before_edit checks every file an edit changes: write_file, edit_file, multi_edit and notebook_edit by their path, file_path and notebook_path arguments, apply_patch by the file its patch names (roko-std apply_patch::patched_file, the parser the tool itself uses). A new file needs no read, a call naming no file is refused, and the refusal names the unread file (\"tool `read_file` must run on `py/textutil.py` before `apply_patch` changes it\"); red_flags::refusal_remedy points the no-changes feedback at that file. Verify passes: cargo test -p roko-agent --lib a_read_of_another_file_does_not_admit_an_edit (T8 through ToolDispatcher with the roko-std tools and the bundled implementer contract: after a read of py/test_textutil.py and a failed read of py/test_accept_word_list.py, the apply_patch of py/textutil.py, an overwrite and a patch whose path names the read file are refused naming py/textutil.py, the file is unchanged, a new file needs no read, and after a read of py/textutil.py the patch applies). Also passed: roko-agent --lib safety:: (393), --test safety_integration and --test contracts (16), roko-std --lib apply_patch (12), 26 roko-cli lib tests (red_flags and the scripted-edit dispatch tests), clippy -p roko-agent -p roko-std -p roko-cli --no-deps -D warnings; the --all-targets findings are all in old test code, none in changed lines."
 +++
 
 ## Problem

@@ -53,9 +53,10 @@ run analysis and model choice need per-call start and finish times from the reco
 ## Plan
 
 1. Each event from a streaming backend that knows when it sent its request carries that instant (`sent_at`).
-2. The loop's `StreamTally` keeps the time from that instant to the call's first token: its first non-empty text or
-   reasoning delta, or its first tool-call event. Empty reasoning deltas only say the call is alive (gap-1ba0ac)
-   and don't count.
+2. The loop's `StreamTally` keeps the time from that instant to the call's first token: its first text delta,
+   non-empty reasoning delta or tool-call event, as `StreamEventKind::is_model_output` says (the predicate the try's
+   own time to first token uses, gap-7a8474). Empty reasoning deltas only say the call is alive (gap-1ba0ac) and
+   don't count.
 3. `CallFacts` carries it as `first_token_ms`, and `call_cost` records it beside `wall_ms`, so "slow to start" and
    "slow to finish" read apart.
 4. A call that wasn't streamed, or whose backend doesn't say when it sent the request, records `null`. Never an

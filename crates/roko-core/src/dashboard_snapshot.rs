@@ -361,6 +361,14 @@ pub enum DashboardEvent {
         /// How long the call took, in ms; `None` when the loop did not say.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wall_ms: Option<u64>,
+        /// How long after its request went the call's first token came (text,
+        /// reasoning or a tool call), in ms (gap-0eb14e). Beside `wall_ms`,
+        /// which also counts any wait before the request went, it tells a
+        /// call slow to start from one slow to finish. `None` when the call
+        /// was not streamed or its stream does not say when its request
+        /// went: it is never estimated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_token_ms: Option<u64>,
         /// How the call ended (bug-8bcd98): `ok` when it returned a response;
         /// for one that failed past the loop's retries, `timeout`,
         /// `rate_limited`, `refused` or `error`, its usage what it streamed,

@@ -1273,9 +1273,13 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         });
 
         // Convert tokio mpsc::Receiver into a futures::Stream without
-        // requiring the tokio-stream crate.
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // requiring the tokio-stream crate. Each event says when the request
+        // went, so the loop can time the call's first token (gap-0eb14e).
+        let sent_at = Some(request_start);
+        let stream = futures::stream::unfold(rx, move |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|item| (item.map(|event| event.with_sent_at(sent_at)), rx))
         });
         Ok(Box::pin(stream))
     }
@@ -3000,6 +3004,79 @@ mod tests {
         assert_eq!(alive_beats(&items), 1 + 4, "{items:?}");
         assert_eq!(streamed_text(&items), "ok");
         assert_eq!(finish_reasons(&items), vec!["stop".to_string()]);
+    }
+
+    /// The time to first token and the total time of each model call a
+    /// tool loop reports to its budget.
+    #[derive(Debug, Default)]
+    struct CallTimes(Mutex<Vec<(Option<u64>, Option<u64>)>>);
+
+    impl crate::tool_loop::TurnBudget for CallTimes {
+        fn refuse_turn(&self) -> Option<String> {
+            None
+        }
+
+        fn record_turn(&self, _usage: &crate::usage::Usage) {}
+
+        fn record_call(
+            &self,
+            _usage: &crate::usage::Usage,
+            facts: crate::tool_loop::CallFacts<'_>,
+        ) {
+            let times = (facts.first_token_ms, facts.wall_ms);
+            self.0.lock().expect("call times").push(times);
+        }
+    }
+
+    /// gap-0eb14e: a call's cost record says how long after its request went
+    /// its first token came, beside how long the call took, on both OpenAI
+    /// wires. Each stand-in waits 400 ms before its first token: the chat
+    /// stream sends nothing, and the Responses stream only says it is alive,
+    /// which is no token. The chat stream then writes for 300 ms more, so it
+    /// reads as slow to start and slow to finish.
+    #[tokio::test]
+    async fn a_call_record_says_when_its_first_token_came() {
+        let wait = StdDuration::from_millis(400);
+        let (chat_url, chat) = serve_paced_sse(vec![wait, StdDuration::from_millis(300)]);
+        let (responses_url, responses) = serve_keepalives(2, wait / 2);
+        // The least time each call wrote for after its first token, with
+        // slack for a busy machine.
+        for (base_url, wire, writing_ms) in [
+            (chat_url, OpenAiApi::ChatCompletions, 200),
+            (responses_url, OpenAiApi::Responses, 0),
+        ] {
+            let backend = OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini")
+                .with_base_url(&base_url)
+                .with_wire(wire);
+            let calls = Arc::new(CallTimes::default());
+            let tool_loop = make_tool_loop(backend).with_turn_budget(calls.clone());
+            let (tx, _events) = mpsc::channel(64);
+            let out = tool_loop
+                .run_streaming(
+                    "system",
+                    "user",
+                    &test_tools(),
+                    &ToolContext::testing("/tmp"),
+                    tx,
+                )
+                .await;
+            assert_eq!(out.stop_reason, StopReason::Stop, "{wire:?}");
+
+            let calls = calls.0.lock().expect("call times").clone();
+            let [(Some(first_token_ms), Some(wall_ms))] = calls[..] else {
+                panic!("{wire:?}: one timed call, not {calls:?}");
+            };
+            assert!(
+                first_token_ms >= 400,
+                "{wire:?}: the first token came {first_token_ms} ms after the request"
+            );
+            assert!(
+                wall_ms >= first_token_ms + writing_ms,
+                "{wire:?}: the call took {wall_ms} ms, its first token {first_token_ms} ms"
+            );
+        }
+        chat.join().expect("chat server");
+        responses.join().expect("responses server");
     }
 
     /// Two Responses answers: the model reasons, then calls `echo` with

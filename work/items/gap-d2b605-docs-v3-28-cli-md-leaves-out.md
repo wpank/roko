@@ -18,7 +18,7 @@ lane = "docs"
 links = { depends_on = [], blocks = [], related = ["gap-171238"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "for f in no-holdout no-audit max-parallel-plans fail-fast max-usd; do grep -qF \"| \\`--$f\" docs/v3/28-CLI.md || exit 1; done"
+command = "for f in '--yes`, `-y' --no-holdout --no-audit; do sed -n '/^### `roko run`$/,/^#/p' docs/v3/28-CLI.md | grep -qF \"| \\`$f\" || exit 1; done && for f in --no-holdout --no-audit --max-parallel-plans --fail-fast; do sed -n '/^#### `roko plan run`$/,/^#/p' docs/v3/28-CLI.md | grep -qF \"| \\`$f\" || exit 1; done && sed -n '/^#### `roko plan generate`$/,/^#/p' docs/v3/28-CLI.md | grep -qF '| `--max-usd'"
 +++
 
 ## Problem
@@ -63,8 +63,16 @@ compare the other flag tables with `--help` of a built binary.
 
 ## Done when
 
-Each of the five flags has a row in a flag table of 28-CLI.md, and `[[verify]]` passes.
+Each of the five flags has a row in a flag table of 28-CLI.md, and `[[verify]]` passes. The verify
+reads each section on its own: `--yes`, `-y`, `--no-holdout` and `--no-audit` in §`roko run`;
+`--no-holdout`, `--no-audit`, `--max-parallel-plans` and `--fail-fast` in §`roko plan run`;
+`--max-usd` in §`roko plan generate`.
 
 ## Notes
 
 Docs only. Found while doing gap-171238.
+
+2026-10-27: the first verify passed with a row for each flag anywhere in the file, so a row for
+`--no-holdout` and `--no-audit` under `roko plan run` alone would have satisfied it, and it did
+not check `-y`. It now reads each section from its heading to the next heading, and is still a
+static check.

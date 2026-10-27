@@ -15,6 +15,7 @@ use crate::learning_helpers::{
     provider_id_for_model, record_persisted_provider_outcome, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Utc};
 use roko_core::agent::ProviderKind;
 use roko_core::agent::resolve_model;
 use roko_core::{Body, Context, Kind, Signal, Usage};
@@ -162,6 +163,8 @@ async fn run_agent_capture_impl(
     echo_output: bool,
     episode: Option<AgentExecEpisode<'_>>,
 ) -> Result<AgentCapture> {
+    // The call's episode starts here (bug-41e2de).
+    let started_at = Utc::now();
     let started = Instant::now();
     let routing_config = roko_core::config::loader::load_config_unified(opts.workdir)
         .with_context(|| format!("load routing config from {}", opts.workdir.display()))?;
@@ -315,6 +318,7 @@ async fn run_agent_capture_impl(
             opts.prompt,
             &rendered,
             exit_code == 0,
+            started_at,
             duration_ms,
             opts.resume_session,
         )
@@ -345,6 +349,9 @@ async fn run_agent_capture_impl(
 }
 
 /// Persist a lightweight learning episode for a direct agent-exec CLI path.
+///
+/// The episode starts at `started_at`, the clock read as the agent's work
+/// began, and lasts `wall_time_ms` (bug-41e2de).
 pub async fn persist_capture_episode(
     workdir: &Path,
     agent_command: &str,
@@ -354,6 +361,7 @@ pub async fn persist_capture_episode(
     prompt: &str,
     output: &str,
     success: bool,
+    started_at: DateTime<Utc>,
     wall_time_ms: u64,
     resume_session: Option<&str>,
 ) -> Result<()> {
@@ -366,6 +374,7 @@ pub async fn persist_capture_episode(
         prompt,
         output,
         success,
+        started_at,
         wall_time_ms,
         resume_session,
         None,
@@ -386,6 +395,7 @@ pub async fn persist_capture_episode_distilled_by(
     prompt: &str,
     output: &str,
     success: bool,
+    started_at: DateTime<Utc>,
     wall_time_ms: u64,
     resume_session: Option<&str>,
     distiller: Option<&str>,
@@ -406,6 +416,7 @@ pub async fn persist_capture_episode_distilled_by(
         prompt,
         output,
         success,
+        started_at,
         wall_time_ms,
         resume_session,
     );
@@ -573,6 +584,7 @@ mod tests {
     #[tokio::test]
     async fn persist_capture_episode_records_learning_episode() {
         let tmp = TempDir::new().expect("tempdir");
+        let started_at = Utc::now() - chrono::TimeDelta::minutes(1);
 
         persist_capture_episode(
             tmp.path(),
@@ -583,6 +595,7 @@ mod tests {
             "prompt body",
             "output body",
             true,
+            started_at,
             42,
             Some("sess-1"),
         )
@@ -598,6 +611,13 @@ mod tests {
         assert_eq!(episode.kind, "agent_turn");
         assert_eq!(episode.model, "claude-sonnet-4-6");
         assert!(episode.success);
+        // The logged episode keeps the call's start and lasts its 42 ms
+        // (bug-41e2de).
+        assert_eq!(episode.started_at, started_at);
+        assert_eq!(
+            (episode.completed_at - episode.started_at).num_milliseconds(),
+            42
+        );
         assert_eq!(
             episode.extra.get("task_kind"),
             Some(&serde_json::json!("plan-generate"))
@@ -659,6 +679,7 @@ tool_format = "openai_json"
             "prompt body",
             "output body",
             true,
+            Utc::now(),
             42,
             None,
         )
@@ -736,6 +757,7 @@ tool_format = "openai_json"
                 "prompt body",
                 output,
                 false,
+                Utc::now(),
                 42,
                 None,
             )

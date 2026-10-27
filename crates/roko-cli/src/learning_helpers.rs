@@ -210,6 +210,7 @@ mod tests {
             "prompt body",
             "output body",
             true,
+            chrono::Utc::now(),
             42,
             None,
         );

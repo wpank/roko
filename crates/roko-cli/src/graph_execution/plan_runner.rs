@@ -873,10 +873,31 @@ pub fn compute_plan_run_order(
     plans_dir: &Path,
     only_plans: Option<&[String]>,
 ) -> anyhow::Result<Vec<String>> {
+    Ok(compute_plan_run_set(workdir, plans_dir, only_plans)?
+        .into_iter()
+        .map(|plan| plan.id)
+        .collect())
+}
+
+/// The plans a run of `plans_dir` executes, in the order it runs them: the
+/// directory's plans, or those `only_plans` names, selected and ordered as
+/// the run selects them, so the set its `PlanSetLoaded` announces. It lets a
+/// caller know a run's plans before the run starts: serve's member list
+/// ([`compute_plan_run_order`]) and a `--log-file` run's `run.started` line
+/// (bug-bd261a).
+///
+/// It fails where the run fails to select them: an id in `only_plans` that
+/// the directory does not hold, and a set that cannot be ordered.
+pub(crate) fn compute_plan_run_set(
+    workdir: &Path,
+    plans_dir: &Path,
+    only_plans: Option<&[String]>,
+) -> anyhow::Result<Vec<crate::runner::plan_loader::Plan>> {
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
-    let plans = filter_only_plans(plans, only_plans, plans_dir)?;
-    let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
-    Ok(plan_order.order)
+    let mut plans = filter_only_plans(plans, only_plans, plans_dir)?;
+    let order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?.order;
+    plans.sort_by_key(|plan| order.iter().position(|plan_id| *plan_id == plan.id));
+    Ok(plans)
 }
 
 /// Parameters for running plans through the Graph Engine.
@@ -1255,7 +1276,9 @@ async fn run_graph_plan_body(
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
-    // batch.
+    // batch. `compute_plan_run_set` selects and orders the plans as the lines
+    // from `load_plans` to here do, before a run starts (serve's member
+    // list, `run.started`): keep them in step.
     let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
     let plan_execution_order = plan_order.order.clone();
 
@@ -6531,6 +6554,40 @@ mod tests {
         assert_eq!(entries[0].group.as_deref(), Some("portal-programme"));
         assert_eq!(entries[1].group, None);
         assert_eq!(entries[2].group, None, "outside plans/");
+    }
+
+    /// bug-bd261a: the plans a run executes, worked out before it starts, are
+    /// the ones it selects, in the order it runs them: a prerequisite before
+    /// the plan that needs it, else by id, and only the plans `only_plans`
+    /// names.
+    #[test]
+    fn compute_plan_run_set_selects_and_orders_plans_as_the_run_does() {
+        let dir = disabled_role_plan_set(
+            &[
+                ("a-needs-b", "a.txt", &["b-first"]),
+                ("b-first", "b.txt", &[]),
+                ("c-alone", "c.txt", &[]),
+            ],
+            "",
+        );
+        let plans_dir = dir.path().join("plans");
+        let selected = |only: Option<&[String]>| {
+            compute_plan_run_set(dir.path(), &plans_dir, only)
+                .map(|plans| plans.into_iter().map(|plan| plan.id).collect::<Vec<_>>())
+        };
+
+        let whole_set = ["b-first", "a-needs-b", "c-alone"];
+        assert_eq!(selected(None).expect("whole set"), whole_set);
+        assert_eq!(
+            compute_plan_run_order(dir.path(), &plans_dir, None).expect("run order"),
+            whole_set
+        );
+        let only = ["c-alone".to_string(), "b-first".to_string()];
+        assert_eq!(
+            selected(Some(&only)).expect("two plans"),
+            ["b-first", "c-alone"]
+        );
+        assert!(selected(Some(&["no-such-plan".to_string()])).is_err());
     }
 
     /// Workspace config whose only role in use is disabled, so the task

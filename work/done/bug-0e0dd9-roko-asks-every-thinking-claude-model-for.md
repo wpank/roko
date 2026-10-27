@@ -2,7 +2,7 @@
 id = "bug-0e0dd9"
 kind = "bug"
 title = "roko asks every thinking Claude model for manual extended thinking (thinking.type enabled with budget_tokens), which Claude 4.7 and later reject with a 400 and the 4.6 models deprecate, so on today's models every Anthropic API call with thinking on fails; a profile that marks a model adaptive should get thinking.type adaptive with output_config.effort"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/provider"]
 created = 2026-10-27
 updated = 2026-10-27
 last_verified = 2026-10-27
+last_verified_rev = "2ab4e7533"
 source = "round v7 roko-effort, the current Anthropic docs (platform.claude.com extended-thinking, read 2026-10-27) while fixing bug-f30f36; the lead's ask"
 discovered_from = "agent:roko-effort (round v7, bug-f30f36)"
 anchors = ["crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::thinking_budget", "crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::AnthropicMessagesBackend", "crates/roko-core/src/config/provider.rs::ModelProfile"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-f30f36"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn an_adaptive_claude_profile_asks_for_adaptive_thinking' crates/roko-agent/src && cargo test -p roko-agent --lib -- an_adaptive_claude_profile_asks_for_adaptive_thinking"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T05:27:30Z"
+commit = "2ab4e7533"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-27T05:23:30Z"
+forced = false
+evidence = "Merged as 2ab4e7533 (branch 6766fc1a5) on the lead's call after the round's timebox. Post-merge verify by the roster's rule, in roko-effort's worktree detached at 2ab4e7533 on its APFS target clone: the item's [[verify]] passes (an_adaptive_claude_profile_asks_for_adaptive_thinking ok; log roko-effort/logs/postmerge-0e0dd9-2ab4e7533.log). The $0 proof, against a stand-in Messages API for an adaptive-only model that answers manual extended thinking with the API's 400: red on main (477f6184c: http 400 \"thinking.type.enabled\" is not supported; sent enabled with budget_tokens 32768), green with the fix (the streamed request gets its answer, the answered one asks adaptive at effort high with no beta, a profile that says nothing keeps its budget). On the branch: fmt, clippy (6 crates), check --tests, 54 targeted tests and the lib suites green (acp 237, agent 2427, cli 4071, core 2049, learn 1411, serve 1088; log postmerge-f30f36-unit-0e0dd9.log). Still owed: the live check against the real API (about a cent), which needs an Anthropic key."
 +++
 
 ## Problem
@@ -94,7 +106,7 @@ model from 4.7 on, it still can't make a single call with thinking on, and think
 - **Still owed:** the live check against the real API (about a cent, one adaptive and one older model). It needs an
   Anthropic key, which is on Will's list.
 
-## Status (2026-10-27, parked at the round's 06:00 timebox: built and green on its branch, not merged)
+## Status (2026-10-27: parked at the round's 06:00 timebox, then merged as 2ab4e7533 on the lead's call)
 
 - **Done, on branch `work/bug-0e0dd9`** (6766fc1a5, based on main 2d6510089):
   - 477f6184c adds the stand-in test, `an_adaptive_claude_profile_asks_for_adaptive_thinking`. Its stand-in serves
@@ -109,8 +121,6 @@ model from 4.7 on, it still can't make a single call with thinking on, and think
   - **Green** at 6766fc1a5: the test passes, and fmt, clippy (6 crates), check --tests and 54 targeted tests are
     green.
   - **Lib suites** at 6766fc1a5, green: acp 237, agent 2427, cli 4071, core 2049, learn 1411, serve 1088.
-- **Left:**
-  - the lead's review, then merging main in (main moved past 2d6510089) and the merge through
-    `lead/merge-when-free.sh`;
-  - the `[[verify]]`, detached at the merge sha;
-  - the live check against the real API, which needs an Anthropic key.
+- **Merged** as 2ab4e7533 on the lead's call after the timebox. Its `[[verify]]` passed detached at the merge sha.
+- **Still owed:** the live check against the real API (about a cent, one adaptive and one older model). It needs an
+  Anthropic key.

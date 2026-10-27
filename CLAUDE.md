@@ -239,6 +239,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
 | `roko learn reflexes` | Show T0 reflex rules (count, top five by hits, recent demotions) |
 | `roko learn patterns` | Show failure patterns, most frequent first (`--graduate`: the ones ready to become a lint or verify step) |
+| `roko learn probes` | List the ladder's rung probe verdicts; `clear <model>` (or `--all`) has the next run probe those rungs again |
 | `roko learn self-model fit/replay` | Fit the M3 self-model over the run logs, or replay routing policies over a run-record matrix |
 | `roko learn econ prices` | Show the price snapshot's rows with their source URLs |
 | `roko learn gates` | Show adaptive gate threshold state |

@@ -6743,7 +6743,7 @@ rungs = [{ name = "cheap", model = "cheap-model" }, { name = "mid", model = "mid
         assert!(
             detail.starts_with("rung cheap (cheap-1 on cheap_api) is skipped until ")
                 && detail.contains("its tool-use probe failed: request_refused")
-                && detail.ends_with("remove `cheap-1` from .roko/learn/rung-probes.json"),
+                && detail.ends_with("run `roko learn probes clear cheap-1`"),
             "{detail}"
         );
         let events =

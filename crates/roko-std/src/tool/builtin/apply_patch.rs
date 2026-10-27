@@ -105,17 +105,9 @@ impl ToolHandler for Handler {
     }
 
     async fn execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
-        let patch = match require_string(&call.arguments, "patch") {
-            Ok(s) => s,
-            Err(e) => return ToolResult::Err(e),
-        };
-        let path = call
-            .arguments
-            .get("path")
-            .and_then(serde_json::Value::as_str);
-        let parsed = match parse_patch(&patch, path) {
+        let parsed = match parse_arguments(&call.arguments) {
             Ok(p) => p,
-            Err(e) => return ToolResult::Err(ToolError::Other(format!("apply_patch: {e}"))),
+            Err(e) => return ToolResult::Err(e),
         };
         let absolute = match require_within_worktree(ctx.worktree(), &parsed.path) {
             Ok(p) => p,
@@ -150,6 +142,25 @@ impl ToolHandler for Handler {
             ))),
         }
     }
+}
+
+/// The file a call of this tool with `arguments` patches.
+///
+/// That is the file the patch names, else the call's `path`, as the handler
+/// reads them; `None` when the call has no patch the tool can read, so it
+/// changes no file. roko-agent's `RequireToolBeforeEdit` checks the read of
+/// this file, not of `path`, which a patch that names its file overrides
+/// (gap-78cf31).
+#[must_use]
+pub fn patched_file(arguments: &serde_json::Value) -> Option<String> {
+    parse_arguments(arguments).ok().map(|parsed| parsed.path)
+}
+
+/// The call's patch, read from its `patch` and `path` arguments.
+fn parse_arguments(arguments: &serde_json::Value) -> Result<ParsedPatch, ToolError> {
+    let patch = require_string(arguments, "patch")?;
+    let path = arguments.get("path").and_then(serde_json::Value::as_str);
+    parse_patch(&patch, path).map_err(|e| ToolError::Other(format!("apply_patch: {e}")))
 }
 
 #[derive(Debug)]
@@ -552,6 +563,32 @@ mod tests {
         let patch = "@@ -1,2 +1,2 @@\n a\n-b\n+B\n";
         let p = parse_patch(patch, Some("x.txt")).expect("parse");
         assert_eq!(p.path, "x.txt");
+    }
+
+    /// gap-78cf31: the file a call patches is the one its patch names,
+    /// whatever its `path` says; a diff without headers patches `path`; a
+    /// patch the tool cannot read patches nothing.
+    #[test]
+    fn patched_file_is_the_file_the_patch_names() {
+        let call = |path: &str, patch: &str| serde_json::json!({ "path": path, "patch": patch });
+        let diff = "--- a/py/textutil.py\n+++ b/py/textutil.py\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(
+            patched_file(&call("py/test_textutil.py", diff)).as_deref(),
+            Some("py/textutil.py")
+        );
+        let envelope = "*** Begin Patch\n*** Update File: py/textutil.py\n@@\n-a\n+b\n\
+                        *** End Patch\n";
+        assert_eq!(
+            patched_file(&call("ignored.py", envelope)).as_deref(),
+            Some("py/textutil.py")
+        );
+        let headless = "@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(
+            patched_file(&call("x.txt", headless)).as_deref(),
+            Some("x.txt")
+        );
+        assert_eq!(patched_file(&call("x.txt", "replace a with b")), None);
+        assert_eq!(patched_file(&serde_json::json!({ "path": "x.txt" })), None);
     }
 
     #[test]

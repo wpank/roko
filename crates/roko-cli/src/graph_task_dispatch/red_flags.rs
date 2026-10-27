@@ -1034,8 +1034,8 @@ struct RefusedCall {
     /// The file the call named, if any.
     path: Option<String>,
     /// Why the policy refused it, e.g. "contract violation for role
-    /// `implementer` (RequireToolBeforeEdit): tool `read_file` must run
-    /// before `write_file`".
+    /// `implementer` (RequireToolBeforeEdit): tool `read_file` must run on
+    /// `src/lib.rs` before `write_file` changes it".
     reason: String,
 }
 
@@ -1147,15 +1147,21 @@ fn refusal_note(refused: &[RefusedCall]) -> Option<String> {
 /// file first; under `MaxToolCallsPerTurn`, fewer calls in a turn.
 fn refusal_remedy(refusal: &RefusedCall) -> Option<String> {
     let reason = refusal.reason.as_str();
-    // "... (RequireToolBeforeEdit): tool `read_file` must run before `write_file`"
+    // "... (RequireToolBeforeEdit): tool `read_file` must run on `src/lib.rs`
+    // before `write_file` changes it"
     if let Some((_, detail)) = reason.split_once("(RequireToolBeforeEdit): ") {
-        let required = detail
+        let (required, rest) = detail
             .strip_prefix("tool `")
             .and_then(|rest| rest.split_once('`'))
-            .map_or("read_file", |(tool, _)| tool);
-        let file = refusal
-            .path
-            .as_deref()
+            .unwrap_or(("read_file", ""));
+        // The refusal names the file left unread, which for `apply_patch`
+        // is the one its patch names, not its `path` (gap-78cf31).
+        let unread = rest
+            .strip_prefix(" must run on `")
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(file, _)| file);
+        let file = unread
+            .or(refusal.path.as_deref())
             .map_or_else(|| "the file".to_string(), |path| format!("`{path}`"));
         let remedy = format!("Call `{required}` on {file} first, then edit it.");
         return Some(remedy);
@@ -2051,8 +2057,9 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         let (gate, message) = rejected(&dispatcher, &task, &marker).await;
         assert_eq!(gate, "pre_verify:no_changes");
         let refused = "- `write_file` on `src/lib.rs`: contract violation for role `implementer` \
-                       (RequireToolBeforeEdit): tool `read_file` must run before `write_file`. \
-                       Call `read_file` on `src/lib.rs` first, then edit it.";
+                       (RequireToolBeforeEdit): tool `read_file` must run on `src/lib.rs` before \
+                       `write_file` changes it. Call `read_file` on `src/lib.rs` first, then edit \
+                       it.";
         assert!(message.contains(refused), "{message}");
         let lib = std::fs::read_to_string(temp.path().join("src/lib.rs")).expect("src/lib.rs");
         assert_eq!(lib, one, "the refused write changed nothing");
@@ -2324,5 +2331,23 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             "{note}"
         );
         assert!(lines[4].ends_with("for this contract."), "{note}");
+    }
+
+    /// gap-78cf31: a `RequireToolBeforeEdit` refusal names the file left
+    /// unread, and the remedy points at it: for an `apply_patch` whose patch
+    /// names another file than its `path`, the patched one.
+    #[test]
+    fn a_refusal_that_names_its_unread_file_points_the_remedy_at_it() {
+        let refusal = RefusedCall {
+            tool: "apply_patch".to_string(),
+            path: Some("py/test_textutil.py".to_string()),
+            reason: "contract violation for role `implementer` (RequireToolBeforeEdit): tool \
+                     `read_file` must run on `py/textutil.py` before `apply_patch` changes it"
+                .to_string(),
+        };
+        assert_eq!(
+            refusal_remedy(&refusal).as_deref(),
+            Some("Call `read_file` on `py/textutil.py` first, then edit it.")
+        );
     }
 }

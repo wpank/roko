@@ -4,13 +4,19 @@
  * All mutations flow through `applyEvent` (single-event fold) and
  * `replaceFromSnapshot` (full snapshot replacement on gap recovery or
  * initial load).  The fold functions live in `@/lib/runState`; this
- * module is pure wiring — plus `unsavedPlan`, the one piece of UI state
- * that regions other than its own must see.
+ * module is pure wiring — plus the UI state that regions other than its
+ * own must see: `unsavedPlan`, and what a Run asks or set aside
+ * (`runChoice`, `startedOver`), which the header button and the `r` key
+ * both start and the plan view shows.
  */
 
 import { create } from 'zustand';
 import type { ConnectionStatus, SessionResult } from '@/lib/bootstrap';
-import type { WireDashboardFrame, WireDashboardSnapshot } from '@/api/contracts';
+import type {
+  WireCheckpointRun,
+  WireDashboardFrame,
+  WireDashboardSnapshot,
+} from '@/api/contracts';
 import {
   initialRunState,
   fromSnapshot,
@@ -34,6 +40,13 @@ interface DashboardStore {
    * no way of leaving the editor proceeds without asking (design §4.1, §4a).
    */
   unsavedPlan: string | null;
+  /**
+   * A Run or Run again that waits for the operator: the plan's last run can be
+   * resumed, so it asks Resume or Start over first (gap-0eb763).
+   */
+  runChoice: { planId: string; run: WireCheckpointRun } | null;
+  /** The run the plan's last run set aside when it started over, shown until closed (gap-0eb763). */
+  startedOver: { planId: string; setAside: WireCheckpointRun } | null;
 
   setSession(r: SessionResult): void;
   /** Replace all state from a materialized snapshot (gap recovery / startup). */
@@ -46,6 +59,8 @@ interface DashboardStore {
   setConnection(s: ConnectionStatus): void;
   /** Record whether `planId`'s editor holds unsaved text. */
   setUnsaved(planId: string, dirty: boolean): void;
+  setRunChoice(choice: DashboardStore['runChoice']): void;
+  setStartedOver(startedOver: DashboardStore['startedOver']): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +72,8 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   session: 'pending',
   run: initialRunState(),
   unsavedPlan: null,
+  runChoice: null,
+  startedOver: null,
 
   setSession: (r) => set({ session: r }),
 
@@ -68,6 +85,10 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
 
   setUnsaved: (planId, dirty) =>
     set((s) => ({ unsavedPlan: dirty ? planId : s.unsavedPlan === planId ? null : s.unsavedPlan })),
+
+  setRunChoice: (choice) => set({ runChoice: choice }),
+
+  setStartedOver: (startedOver) => set({ startedOver }),
 }));
 
 /** Ask before unsaved editor text is thrown away; true when there is none or the operator agrees. */

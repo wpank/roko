@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-28T09:59:58Z", "event": "claim", "item": "find-fc5cdd", "executor": "claude-session", "via": "work-next", "session": "work-next-2026-10-28-1059", "branch": "work/find-fc5cdd", "concurrency": 2, "source": "live", "by": "work-next 2026-10-28 1059", "size": "S", "claimed_at": "2026-10-28T09:59:58Z"}

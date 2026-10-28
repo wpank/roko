@@ -2,7 +2,7 @@
 id = "find-fc5cdd"
 kind = "finding"
 title = "A golden-path Rust task is gated only by its accept test at verify depth V0, though its spec asks for a cargo fmt clean, clippy-free crate with a working doc example: T4 left an unformatted crate or a doc example that cannot compile in 3 of the last 6 live runs, and only T6's later edit kept the plan green"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -10,11 +10,27 @@ size = "S"
 subsystem = ["self-hosting"]
 created = 2026-10-19
 updated = 2026-10-28
-last_verified = 2026-10-19
+last_verified = 2026-10-28
+last_verified_rev = "b03ef0808"
 source = "gap-f30b8e golden-path rerun reviews, live runs 1-2 (2026-10-19)"
 discovered_from = "gap-f30b8e"
 anchors = ["crates/roko-cli/tests/fixtures/golden_path/plan/tasks.toml", "crates/roko-cli/src/graph_task_dispatch/verify_depth.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-f30b8e", "find-5bcba7", "bug-1f8db7"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn rust_task_checks_refuse_an_unformatted_change' crates/roko-cli/src && cargo test -p roko-cli --lib rust_task_checks_refuse_an_unformatted_change"
+
+[closed]
+at = 2026-10-28
+at_ts = "2026-10-28T10:38:37Z"
+commit = "e51053465"
+by = "work-next 2026-10-28 1059"
+executor = "claude-session"
+via = "work-next"
+size = "S"
+claimed_at = "2026-10-28T09:59:58Z"
+forced = false
+evidence = "Option 1 of Will's 2026-10-28 decision. e51053465 adds the task's Rust checks (crates/roko-cli/src/graph_task_dispatch/rust_checks.rs): for the crates an attempt changed, cargo fmt --check (counting only the files the attempt changed), clippy with warnings denied, and the doc tests of the changed crates that have a library, at every verify depth once the attempt's own checks passed, on the compile lock, failing fast; rows rust:fmt, rust:clippy, rust:doc in the verdict. Not in a FAST run, and not with [gates] clippy_enabled = false (which Graph runs read again, so it is no longer reported inert); V1 does not rerun clippy once they passed it. rust_task_checks_refuse_an_unformatted_change runs the real dispatcher in a temp Cargo workspace: an unformatted change is refused by rust:fmt (rows rust:fmt false, rust:clippy null, rust:doc null), the same change formatted passes (true, true, true), and clippy_enabled = false runs none. Also passing on the branch: roko-cli lib graph_task_dispatch (518), clippy -p roko-cli -D warnings, every CI canary target (honest_verdicts, secrets_and_git_guard, plan_branch_integration, attempt_diff, scheduler, supervision, tier_ladder) and golden_path_acceptance."
 +++
 
 ## Finding

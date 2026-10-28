@@ -14,9 +14,12 @@
 //!
 //! Only a person releases a control, after reviewing it (find-d05b5e). The
 //! default bash policy refuses `roko safety release` in an agent's shell
-//! before it runs (`roko_agent::safety::bash`). The command itself refuses
-//! to run in a process roko started for an agent or a check, which it tells
-//! by the variables roko sets on them ([`roko_started_markers`]). And its
+//! before it runs (`roko_agent::safety::bash`), and so does the Claude CLI
+//! guard. The command itself refuses to run in a process roko started for an
+//! agent or a check, which it tells by the variables roko sets on them
+//! ([`roko_started_markers`]), `ROKO_AGENT_ID` on every agent process and
+//! every command roko's own tools run for one among them (gap-31e8a7): a
+//! script an agent writes, which no bash rule reads, inherits that. And its
 //! audit line says how the release came in: through this command, where
 //! the name in `by` came from (`--by`, `$USER`), and whether its standard
 //! input was a terminal ([`roko_agent::ReleaseOrigin`]).
@@ -32,6 +35,7 @@ use anyhow::{Context as _, Result};
 use clap::Subcommand;
 use roko_agent::claude_cli_agent::ISOLATION_ENV;
 use roko_agent::{PrincipalSource, ReleaseChannel, ReleaseOrigin, ToolControl, ToolControlState};
+use roko_core::child_env::AGENT_ID_ENV;
 use roko_graph::cells::shell_exec::CELL_INPUT_ENV;
 
 use crate::effects_apply::EFFECT_FILE_ENV;
@@ -344,7 +348,11 @@ pub struct RokoMarker {
 }
 
 /// Variables roko sets on one kind of process it starts, beside that kind.
-const ROKO_PROCESS_VARIABLES: [(&[&str], &str); 4] = [
+const ROKO_PROCESS_VARIABLES: [(&[&str], &str); 5] = [
+    (
+        &[AGENT_ID_ENV],
+        "every agent roko runs and every command its own tools run for one",
+    ),
     (
         &[TOOL_ARGS_ENV],
         "the command of an extension tool an agent calls",
@@ -370,6 +378,11 @@ const ROKO_PROCESS_VARIABLES: [(&[&str], &str); 4] = [
 /// - a variable naming a file in a `roko-cli-provider-*` directory, the
 ///   provider config roko writes for one CLI agent's run (Gemini's
 ///   `GEMINI_CLI_SYSTEM_SETTINGS_PATH`);
+/// - [`AGENT_ID_ENV`] (`ROKO_AGENT_ID`), whatever its value, on every agent
+///   roko runs (the Claude, Codex, Gemini, Cursor, Hermes and OpenClaw CLI
+///   agents) and on every command its own tools run for one (`bash`,
+///   `run_tests`, ACP's `bash`), which the API-model agents' shells are, and
+///   so on a script such an agent writes and runs (gap-31e8a7);
 /// - `ROKO_TOOL_ARGS`, on the command of an extension tool an agent calls;
 /// - `ROKO_GATE_PLAN_ID`, `ROKO_GATE_TASK_ID`, `ROKO_GATE_RUNG` and
 ///   `ROKO_GATE_ATTEMPT_SENTINEL`, on a gate rung's commands and the tests
@@ -379,12 +392,11 @@ const ROKO_PROCESS_VARIABLES: [(&[&str], &str); 4] = [
 /// - [`CELL_INPUT_ENV`] (`ROKO_CELL_INPUT`), on a Graph shell cell's
 ///   command.
 ///
-/// Roko's own `bash` and `run_tests` tools, and the Codex, Cursor, Hermes
-/// and OpenClaw agents, set none of them: in their shells the bash policy
-/// is what stops the release. An agent can unset a variable, so a sign is
-/// no boundary against an agent that hides: it keeps roko from offering
-/// the release to its agents and checks, and from recording one of theirs
-/// under a person's name.
+/// An agent can unset a variable, so a sign is no boundary against an
+/// agent that hides: it keeps roko from offering the release to its agents
+/// and checks, and from recording one of theirs under a person's name. The
+/// bash policy (`roko_agent::safety::bash`) and the Claude CLI guard refuse
+/// a command whose words run the release before it runs.
 #[must_use]
 pub fn roko_started_markers(env: &[(String, OsString)]) -> Vec<RokoMarker> {
     let value = |name: &str| {
@@ -831,6 +843,111 @@ mod tests {
         );
     }
 
+    /// gap-31e8a7: an API-model agent's shell is roko's own `bash` tool, and
+    /// a script the agent writes there and runs is out of the bash policy's
+    /// sight. The tool marks its command with `ROKO_AGENT_ID`, the script
+    /// inherits the mark, and the release the script attempts refuses under
+    /// it: it reads and writes nothing, and the control stays in force.
+    ///
+    /// The library's tests have no `roko` binary, so the `roko` the script
+    /// finds is a stand-in that records the arguments and environment it
+    /// was started with, and the release command runs here with exactly
+    /// those (`tests/safety_cli.rs` runs the binary under the mark).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_release_from_a_tool_command_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use roko_core::tool::CorrelationEnvelope;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workdir = workspace.path().to_str().expect("utf-8 path");
+        roko_agent::isolate_agent(workspace.path(), "live-a/cli", "operator_isolation")
+            .expect("seed an isolation control");
+        let bin = workspace.path().join("bin");
+        std::fs::create_dir(&bin).expect("bin directory");
+        let stand_in = bin.join("roko");
+        std::fs::write(
+            &stand_in,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n\
+             env > \"$(dirname \"$0\")/env\"\n",
+        )
+        .expect("write the stand-in");
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in executable");
+
+        // roko's own `bash` tool behind the dispatcher's default safety
+        // layer, called with the agent id a plan run's dispatch gives an
+        // API-model agent's tool calls.
+        let handler: Arc<dyn ToolHandler> = Arc::new(roko_std::tool::builtin::bash::Handler);
+        let resolver: Arc<dyn HandlerResolver> =
+            Arc::new(move |name: &str| (name == "bash").then(|| Arc::clone(&handler)));
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![
+            roko_std::tool::builtin::bash::tool_def(),
+        ]));
+        let safety_layer = SafetyLayer::with_defaults()
+            .with_tool_permission_policy(ToolPermissionPolicy::DenyExplicit, Vec::new());
+        let dispatcher = ToolDispatcher::new(registry, resolver).with_safety(safety_layer);
+        let context =
+            ToolContext::testing(workspace.path()).with_correlation(CorrelationEnvelope {
+                agent_id: "live-b/glm".to_string(),
+                ..CorrelationEnvelope::empty()
+            });
+        let bash = |id: &str, command: &str| {
+            ToolCall::new(id, "bash", serde_json::json!({ "command": command }))
+        };
+
+        // The agent writes a script that runs the release by a name no shell
+        // word spells, with its own `roko` first on the PATH, and runs it.
+        let write = format!(
+            "printf '%s\\n' 'r=ro' 'PATH=\"$PWD/bin:$PATH\"' '\"${{r}}ko\" safety release \
+             live-a/cli --reason fine --workdir {workdir}' > release.sh"
+        );
+        for (id, command) in [("write", write.as_str()), ("run", "sh release.sh")] {
+            let ran = dispatcher.dispatch(bash(id, command), &context).await;
+            assert!(matches!(ran, ToolResult::Ok { .. }), "{command}: {ran:?}");
+        }
+
+        let recorded = |name: &str| std::fs::read_to_string(bin.join(name)).expect("it ran");
+        let args = recorded("args");
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(args.get(..2), Some(&["safety", "release"][..]), "{args:?}");
+        let env: Vec<(String, OsString)> = recorded("env")
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_string(), OsString::from(value)))
+            .collect();
+        assert!(
+            env.iter()
+                .any(|(name, value)| name == AGENT_ID_ENV && value == "live-b/glm"),
+            "{env:?}"
+        );
+        let script = Caller {
+            env,
+            terminal: false,
+        };
+
+        let (code, out, err) = safety_as(&script, &args[1..], false);
+
+        assert_eq!(code, EXIT_FAILURE, "{out}{err}");
+        assert!(out.is_empty(), "{out}");
+        assert!(
+            err.contains(
+                "this one has ROKO_AGENT_ID (set on every agent roko runs and every command its \
+                 own tools run for one)"
+            ) && err.contains("Only a person releases an immune control"),
+            "{err}"
+        );
+        assert_eq!(
+            roko_agent::list_agent_controls(workspace.path())
+                .expect("controls")
+                .len(),
+            1,
+            "the control stays in force"
+        );
+        assert!(!roko_agent::agent_control_releases_path(workspace.path()).exists());
+    }
+
     /// find-d05b5e: `roko safety release` does not run in a process roko
     /// started for an agent or a check. Under each variable roko sets on one
     /// it refuses, names the variable and what a person does instead, and
@@ -847,7 +964,7 @@ mod tests {
             .join(format!("{PROVIDER_CONFIG_DIR_PREFIX}a1b2c3"))
             .join("settings.json");
         let provider_config = provider_config.to_str().expect("utf-8 path");
-        let cases: [(&[(&str, &str)], &str); 6] = [
+        let cases: [(&[(&str, &str)], &str); 7] = [
             (
                 ISOLATION_ENV,
                 "CLAUDE_CODE_DISABLE_AUTO_MEMORY and CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD \
@@ -857,6 +974,11 @@ mod tests {
                 &[("GEMINI_CLI_SYSTEM_SETTINGS_PATH", provider_config)],
                 "GEMINI_CLI_SYSTEM_SETTINGS_PATH (set on a CLI agent whose provider config roko \
                  writes for its run)",
+            ),
+            (
+                &[("ROKO_AGENT_ID", "live-b/codex")],
+                "ROKO_AGENT_ID (set on every agent roko runs and every command its own tools run \
+                 for one)",
             ),
             (
                 &[("ROKO_TOOL_ARGS", "{}")],

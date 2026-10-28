@@ -24,7 +24,9 @@
 //! The commands agents run through roko's own tools (`bash`, `run_tests`, ACP's
 //! `bash`) follow the gate policy, as verify steps do. [`apply_gate_env`],
 //! [`CredentialScrub::apply`] and [`apply_credential_scrub_from`] put either
-//! policy on a [`Command`].
+//! policy on a [`Command`]. Those commands and every agent process roko
+//! spawns also carry [`AGENT_ID_ENV`] (`ROKO_AGENT_ID`), which marks them as
+//! an agent's ([`mark_agent_process`]).
 //!
 //! **Check commands** (every command roko runs as a check: task verify steps
 //! and rungs, whole-plan and post-merge regression checks, red-on-base and
@@ -636,6 +638,45 @@ fn restore_env(cmd: &mut Command, explicit: Vec<(OsString, Option<OsString>)>) {
             None => cmd.env_remove(name),
         };
     }
+}
+
+// ---- Agent processes -------------------------------------------------------
+
+/// The variable that marks a process roko started for an agent: every CLI
+/// agent it spawns (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw) and
+/// every command its own tools run for one (`bash`, `run_tests`, ACP's
+/// `bash`) gets it, set to the agent's id ([`mark_agent_process`],
+/// gap-31e8a7). What they start inherits it, a script an agent writes and
+/// runs included, and `roko safety release` refuses to run under it: only a
+/// person releases an immune control. It also tells tests and tools that a
+/// process is an agent's.
+pub const AGENT_ID_ENV: &str = "ROKO_AGENT_ID";
+
+/// What [`AGENT_ID_ENV`] says on an agent process whose spawn has no agent
+/// id at hand: the mark matters more than the name, so it is never left
+/// off.
+pub const UNNAMED_AGENT_ID: &str = "agent";
+
+/// The value [`mark_agent_process`] gives [`AGENT_ID_ENV`] for `agent_id`:
+/// the id, trimmed, or [`UNNAMED_AGENT_ID`] when it is blank or holds a NUL,
+/// which no environment can carry.
+#[must_use]
+pub fn agent_process_id(agent_id: &str) -> &str {
+    let agent_id = agent_id.trim();
+    if agent_id.is_empty() || agent_id.contains('\0') {
+        UNNAMED_AGENT_ID
+    } else {
+        agent_id
+    }
+}
+
+/// Mark `cmd` as a process roko starts for agent `agent_id`: set
+/// [`AGENT_ID_ENV`] to [`agent_process_id`] of it. Call it on every agent
+/// spawn, and beside [`apply_gate_env`] on every command an agent runs
+/// through roko's own tools; never on a check, whose commands carry their
+/// own marks.
+pub fn mark_agent_process(cmd: &mut Command, agent_id: &str) {
+    cmd.env(AGENT_ID_ENV, agent_process_id(agent_id));
 }
 
 // ---- Check commands --------------------------------------------------------
@@ -1558,6 +1599,45 @@ mod tests {
                 set("PERPLEXITY_API_KEY", "named-in-the-config"),
             ]
         );
+    }
+
+    /// gap-31e8a7: an agent's process carries `ROKO_AGENT_ID`, set to its
+    /// id, over one it inherited; a spawn with no id at hand still marks it.
+    /// The gate policy keeps the mark on what the process starts, and the
+    /// credential scrub never takes it.
+    #[test]
+    fn an_agent_process_is_marked_with_its_id() {
+        let marked = |agent_id: &str| {
+            let mut cmd = Command::new("true");
+            apply_gate_env(
+                &mut cmd,
+                os_parent(&[("PATH", "/usr/bin:/bin"), (AGENT_ID_ENV, "outer")]),
+                &[],
+            );
+            mark_agent_process(&mut cmd, agent_id);
+            command_env(&cmd)
+        };
+
+        // `command_env` sorts by name.
+        assert_eq!(
+            marked("live-a/glm"),
+            vec![
+                set("PATH", "/usr/bin:/bin"),
+                set(AGENT_ID_ENV, "live-a/glm")
+            ]
+        );
+        for unnamed in ["", "  ", "bad\0id"] {
+            assert_eq!(
+                marked(unnamed),
+                vec![
+                    set("PATH", "/usr/bin:/bin"),
+                    set(AGENT_ID_ENV, UNNAMED_AGENT_ID)
+                ],
+                "{unnamed:?}"
+            );
+        }
+        assert!(gate_env_keeps(AGENT_ID_ENV, &[], &DotenvNames::new()));
+        assert!(!CredentialScrub::default().strips(AGENT_ID_ENV, &DotenvNames::new()));
     }
 
     #[test]

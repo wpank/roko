@@ -2,7 +2,7 @@
 id = "gap-31e8a7"
 kind = "gap"
 title = "roko's own bash and run_tests tools, and the Codex, Cursor, Hermes and OpenClaw agents, set no variable that tells roko safety release it runs for an agent, so a script an agent writes can still release a control"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 size = "M"
@@ -10,6 +10,7 @@ subsystem = ["roko-cli/commands", "roko-std/tool", "roko-agent/safety"]
 created = 2026-10-26
 updated = 2026-10-26
 last_verified = 2026-10-26
+last_verified_rev = "983024e81"
 source = "find-d05b5e fix (2026-10-26)"
 discovered_from = "find-d05b5e"
 anchors = ["crates/roko-cli/src/commands/safety.rs::roko_started_markers", "crates/roko-std/src/tool/builtin/bash.rs::run", "crates/roko-core/src/child_env.rs::apply_gate_env"]
@@ -17,6 +18,17 @@ links = { depends_on = [], blocks = [], related = ["find-d05b5e"], supersedes = 
 
 [[verify]]
 command = "grep -rqw 'fn a_release_from_a_tool_command_is_refused' crates/ && cargo test -p roko-cli --lib a_release_from_a_tool_command_is_refused"
+
+[closed]
+at = 2026-10-26
+at_ts = "2026-10-26T20:31:41Z"
+commit = "983024e81"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-26T16:06:45Z"
+forced = false
+evidence = "ROKO_AGENT_ID (roko_core::child_env::AGENT_ID_ENV via mark_agent_process; \"agent\" when no id is at hand) is set on the commands roko-std bash and run_tests run (beside apply_gate_env, from the ToolContext correlation agent id), on ACP bash (the call agent, else the session) and on every CLI agent spawn: runner::agent_stream (plan-path Claude and Gemini), ClaudeCliAgent, the roko chat streaming turn, ExecAgent (Codex, roko-agent Gemini CLI), CursorCliAgent, the harness ChildProcessRunner (Hermes one-shot, OpenClaw infer) and AcpStdioClient (Cursor, Hermes and OpenClaw ACP). roko_started_markers counts it, so roko safety release refuses under it (crates/roko-cli/src/commands/safety.rs). Option 3: claude_cli_guard.py denies a Bash call whose words run roko safety release. Option 2 left out. Checks: cargo test -p roko-cli --lib a_release_from_a_tool_command_is_refused passes (the real bash tool writes and runs a script whose roko stand-in records its environment, and the release refuses under it); safety_cli 5/5 with safety_release_refuses_under_an_agent_id; the mark test at each spawn site and settings_hook_denies_roko_safety_release pass; clippy --all-targets on roko-core, roko-std, roko-agent, roko-acp and roko-cli reports nothing on changed lines (its other errors predate the change); the built roko refuses under ROKO_AGENT_ID and runs the release without it. Merge waits on Will (coordinator, 2026-10-26)."
 +++
 
 ## Problem
@@ -82,3 +94,4 @@ Options, not exclusive; the first needs a decision, since it adds a marker:
 - `crates/roko-cli/tests/common/mod.rs::Isolated` drops every inherited `ROKO_*` variable from a test's `roko`. A
   `ROKO_*` marker would leave the CLI tests unaffected; a non-`ROKO_` one would need adding to
   `crates/roko-cli/tests/safety_cli.rs::roko`.
+- Coordinator 2026-10-26: option 1 (ROKO_AGENT_ID) built on work/gap-31e8a7 for Will's review; merge waits on his decision.

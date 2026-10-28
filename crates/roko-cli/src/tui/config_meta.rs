@@ -228,7 +228,7 @@ pub fn all_fields() -> Vec<ConfigFieldMeta> {
         ConfigFieldMeta {
             key: "gates.clippy_enabled",
             label: "Clippy Enabled",
-            description: "Run clippy/lint gate after task implementation",
+            description: "Run a Rust task's fmt, clippy and doc-test checks over the crates it changed",
             kind: ConfigFieldKind::Bool,
             group: "Gates",
         },

@@ -86,6 +86,7 @@ mod retry_budget;
 mod retry_feedback;
 mod routing_context;
 mod rung_speed;
+mod rust_checks;
 pub mod self_model;
 mod served_model;
 mod sibling_settle;

@@ -9,9 +9,8 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-agent/model-call-service"]
 created = 2026-10-02
-updated = 2026-10-27
-last_verified = 2026-10-27
-last_verified_rev = "15335e2f9"
+updated = 2026-10-02
+last_verified = 2026-10-02
 source = "backlog wave reports 2026-10-02 (PK01 gap-625195)"
 discovered_from = "gap-625195 (backlog task 1113, implemented at d562b56b2, did not cover this call site)"
 anchors = ["crates/roko-agent/src/model_call_service.rs::provider_error_kind", "crates/roko-agent/src/provider/error_classify.rs::classify_failure_text"]
@@ -82,5 +81,3 @@ categories (`context_overflow`, `content_policy`) that `classify_failure_text` h
 Check call sites expect exactly the same label strings after the change (`"context_overflow"`, `"content_policy"`,
 etc.) — this is used for circuit-breaker bookkeeping, not just logging, so a label rename would change behavior
 downstream.
-
-Checked 2026-10-27: 2026-10-26: partial convergence only (one more shared helper used for a different case, also added to gap-618a75's rung_probe.rs by the same commit); the two categories this item names are still duplicated locally, so the core problem stands.

@@ -1205,7 +1205,7 @@ mod tests {
         for (key, slug, prices) in [
             ("cheap", "gpt-oss-120b", Some((9.0, 9.0))),
             ("own", "my-own-model", Some((1.0, 2.0))),
-            ("top", "claude-sonnet-4-6", None),
+            ("registry", "o3", None),
             ("mystery", "no-such-model", None),
         ] {
             config.models.insert(key.into(), profile(slug, prices));
@@ -1260,11 +1260,13 @@ mod tests {
         assert_eq!(own["cost_cache_read_per_m"], 0.1, "{own}");
         assert!(own.get("price_snapshot").is_none(), "{own}");
 
-        let top = model("top");
-        assert_eq!(top["priced_by"], "builtin", "{top}");
-        assert_eq!(top["cost_input_per_m"], 3.0, "{top}");
-        assert_eq!(top["cost_output_per_m"], 15.0, "{top}");
-        assert_eq!(top["cost_cache_read_per_m"], 0.3, "{top}");
+        // o3 has built-in rates and no snapshot row.
+        assert!(snapshot.row("o3").is_none());
+        let registry = model("registry");
+        assert_eq!(registry["priced_by"], "builtin", "{registry}");
+        assert_eq!(registry["cost_input_per_m"], 2.0, "{registry}");
+        assert_eq!(registry["cost_output_per_m"], 8.0, "{registry}");
+        assert_eq!(registry["cost_cache_read_per_m"], 0.5, "{registry}");
 
         let mystery = model("mystery");
         for field in [

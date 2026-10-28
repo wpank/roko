@@ -9,8 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-19
-updated = 2026-10-19
-last_verified = 2026-10-19
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-f30b8e golden-path rerun review, live run 2 (2026-10-19)"
 discovered_from = "gap-f30b8e"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::GateFeedback"]
@@ -51,3 +52,5 @@ place, and it costs a helper call per failed check (8 a run on 2026-10-18).
 ## Done when
 
 - [ ] The `[[verify]]` test passes.
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. Four commits touched verification.rs since filing (best-tree judging, hand-off continuation, retry ranking) but none added grounding to enrich_error_digest/normalize_diagnosis.

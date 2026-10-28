@@ -11,8 +11,9 @@ size = "M"
 hold = "waits on Will's deferred decision(s) 9303 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["roko-serve/routes"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK89"
 anchors = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/sse.rs"]
 lane = "rust-cold"
@@ -66,3 +67,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   (`audit/replay.py:267-275`'s `"uniform_scaled"` demonstration; `test_estimate.py::test_betting_cs_contains_the_exact_sequence_and_narrows`),
   it just has nothing calling it from a live/served path yet. Confirmed at HEAD: no caller of `betting_cs` or
   `sequence_holds` exists outside `estimate.py`, its tests, and `replay.py`'s offline CLI.
+
+Checked 2026-10-27: 2026-10-26 sweep: dependencies gap-940e44 and gap-4119fb have both closed done since last_verified (2026-10-02); only decision 9303 now blocks this item.

@@ -10,8 +10,9 @@ size = "S"
 hold = "waits on real run data: at least 20 verified first tries per tier and size bucket (decision 3203)"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire 3227 (blocked in wave 5, PK19)"
 anchors = ["crates/roko-cli/src/plan_policy.rs"]
 lane = "rust-cold"
@@ -57,3 +58,5 @@ attempts are recorded.
 ## Notes
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3227-*.md`.
+
+Checked 2026-10-27: 2026-10-26: still waiting on real run volume; no sizing report has been produced or applied since 2026-10-03.

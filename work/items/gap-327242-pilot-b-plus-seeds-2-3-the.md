@@ -3,13 +3,15 @@ id = "gap-327242"
 kind = "gap"
 title = "Pilot B plus seeds 2–3: the Roko and Claude Code arms on the same tasks (S09.E1b)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
-updated = 2026-10-21
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§6 E1b; checklist S09.E1b); workstreams/assessment/W10-benchmarks-proof.md (rec 7)"
 anchors = ["benchmarks/viabilitybench/experiments/pilot_b.toml", "benchmarks/viabilitybench/reports/pilot_b/"]
@@ -18,7 +20,7 @@ parent = "spec-567e52"
 links = { depends_on = ["gap-c4f364", "gap-b7ab99", "gap-c33709", "gap-dd670b", "gap-f3944c"], blocks = [], related = ["gap-e003ec", "dec-b78874", "gap-129862", "bug-291992", "bug-c6318e", "gap-7ce3ca", "gap-c7c462", "bug-bb6b73", "find-697944", "find-496f7c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "test -f benchmarks/viabilitybench/reports/pilot_b/metrics.json && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot_b"
+command = "report.py --check only validates bundle well-formedness, and it already passes ('1 bundle, 0 problems' per the item's own note) against the current partial/NO-GO bundle, so it is not a completeness check and can pass long before all 120 runs exist. Add a check that metrics.json shows >=60 non-infra_error roko_fixed records (and >=60 for fd_claude) before accepting, alongside the existing test -f + report.py --check."
 +++
 
 ## Problem
@@ -188,3 +190,5 @@ answered every call with HTTP 402 payment_required (gap-f3944c). The item stays 
   2. Optionally `--include provider-fault`.
   3. Rebuild `reports/pilot_b/` and its G0 page.
   4. gap-129862's last two VS = 1 outputs for SC2 can come from fd_claude's runs now.
+
+Checked 2026-10-27: 2026-10-26: unchanged from the item's own 2026-10-20/21 progress note. roko_fixed (60 of 120 runs) remains blocked on gap-f3944c (Cerebras 402s); rerun the campaign from roko-fixed-s1 once credit is restored.

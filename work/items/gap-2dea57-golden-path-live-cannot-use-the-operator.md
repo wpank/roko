@@ -9,8 +9,9 @@ goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-c013c5 golden-path live runs (2026-10-16)"
 discovered_from = "gap-c013c5"
 anchors = ["crates/roko-cli/tests/golden_path_acceptance.rs::golden_path_live", "crates/roko-cli/tests/golden_path_acceptance.rs::plan_command"]
@@ -62,3 +63,5 @@ and `live_report` (the report's `run_id`).
 ## Notes
 
 - Keep the temp HOME: it is what keeps `[task.accept]` out of the real `~/.roko/accept/`.
+
+Checked 2026-10-27: 2026-10-26: the two touches since last check (953af63d7, 22ac6f06b) changed this file for unrelated reasons (build-output acceptance scope; default audit cadence), not this fix.

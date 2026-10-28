@@ -9,8 +9,9 @@ goal = "truth"
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
-updated = 2026-10-15
-last_verified = 2026-10-13
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/judge_step.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }

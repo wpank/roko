@@ -9,8 +9,9 @@ goal = "features"
 size = "M"
 subsystem = ["roko-cli/pack_rungs", "roko-core/config"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-39"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/pack_rungs.rs::domain_profile", "crates/roko-core/src/config/loader.rs", "crates/roko-cli/src/commands/tune.rs::cmd_config_preset"]
 lane = "rust-cold"
@@ -66,3 +67,5 @@ The `[[verify]]` command passes, and `roko config preset gates research --dry-ru
 
 Don't change the PK74 rule (a non-code task with no pack runs no code rungs). Receipt rungs are not built
 (`pack_rungs::is_built` leaves out `RungKind::Receipt`), so the shipped pack must not require one.
+
+Checked 2026-10-27: 2026-10-26: the touched loader.rs commits are unrelated features (ladder/failover alternates, worktree warm copies, privy allow-list, no-credential checks), not domain packs.

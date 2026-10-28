@@ -9,9 +9,9 @@ size = "L"
 goal = "hermes"
 subsystem = ["roko-acp"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/archive/433-acp-elicitation-notices-interactive-ux.md#433 — ACP Elicitation, Notices, and Interactive UX Primitives"
 discovered_from = "audit:tmp/backlog/archive/433-acp-elicitation-notices-interactive-ux.md#433 — ACP Elicitation, Notices, and Interactive UX Primitives"
 anchors = ["crates/roko-acp/src/transport.rs::StdioTransport::send_request", "crates/roko-acp/src/bridge_events/permissions.rs::request_permission", "crates/roko-acp/src/types.rs::ClientCapabilities", "crates/roko-acp/src/types.rs::SessionUpdate", "crates/roko-acp/src/runner.rs::emit_plan_update", "crates/roko-acp/src/handler.rs"]
@@ -143,3 +143,5 @@ Some cited files are gone: `elicitation/create`, `session/request_permission`.
 How to verify: Check: Outbound JSON-RPC request transport implemented with response correlation; `elicitation/create` sends structured forms to the editor; Plan approval uses elicitation when client supports it [evidence: 00-INDEX (2026-09-21) listed active: ACP v2, Editor UX, and MCP Modernization (#18, #39]
 
 Verified 2026-09-28: still true. This is editor UX polish, so p1 -> p2. Nothing in crates/roko-acp/src mentions `elicitation/create`. Outbound request/response correlation does exist (the transport.rs pending-request registry, :32/:69/:229, used for `session/request_permission`), so the transport prerequisite is partly in place. No elicitation forms, notices or elicitation-based plan approval exist.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: still fully open, unchanged since last_verified 2026-09-29. No elicitation text anywhere in crates/roko-acp/src.

@@ -3,22 +3,24 @@ id = "spec-567e52"
 kind = "spec"
 title = "Epic: pilot benchmark"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "L"
 subsystem = ["benchmarks/viabilitybench", "config/prices"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-proof.md (roadmap stage 1; §4, the quick proof)"
-anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/reports/pilot/REPORT.md"]
+anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/reports/pilot_a/go-no-go.md", "benchmarks/viabilitybench/reports/pilot_b/go-no-go.md"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "bench"
 links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec", "bug-b70d40", "gap-60654d", "bug-a49003", "gap-4667a4", "gap-0bd49a", "bug-32eb77", "gap-bc0640", "bug-09fac4", "bug-c30764", "gap-dad97b", "bug-d34a29", "gap-806e37", "gap-15bb83", "gap-44632a", "gap-a6abd5", "gap-29ac83", "gap-4e8795", "gap-8bdf5e", "gap-98516b", "bug-cd5000", "bug-a05c53"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "test -f benchmarks/viabilitybench/reports/pilot/REPORT.md && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot"
+command = "test -f benchmarks/viabilitybench/reports/pilot_a/go-no-go.md && test -f benchmarks/viabilitybench/reports/pilot_b/go-no-go.md && ! grep -q 'NO-GO' benchmarks/viabilitybench/reports/pilot_b/go-no-go.md"
 +++
 
 ## Problem
@@ -176,3 +178,5 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - **Hot files:** none, and no cargo. The `bench` lane takes 1–2 agents at a time.
 - **Decided 2026-09-29 (Will):** D4 is ViabilityBench at `benchmarks/viabilitybench/`, with pilot summaries committed under `reports/`. D42: the Claude Code arm runs on the subscription. The benchmark uses a pinned project venv, created by gap-0580f7. The evaluation covers single tasks plus a plan-level slice (gap-89f393, gap-1cd676).
 - **Still open (not accepted on 2026-09-29):** raising budget line BL0 from $10 to $14 for seeds 2-3 (the pilot stays capped at $15).
+
+Checked 2026-10-27: 2026-10-26 sweep: infra and Pilot A are done; Pilot B's roko_fixed arm is blocked by Cerebras 402 (payment-required) errors, and the latest go/no-go computed 2026-10-21 reads NO-GO on the ladder check. Still open: gap-327242 (Pilot B), gap-d9e9fe (one-page report), gap-1cd676 (plan-slice run), gap-db9a26 (cross-family review), gap-29ac83 (Linux sandbox), q-ab27d3, dec-39c781.

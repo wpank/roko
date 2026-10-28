@@ -9,13 +9,17 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/self-model"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-14 follow-up reports 2026-10-04 (bug-9099b7)"
 discovered_from = "bug-9099b7 (closed; the fix deliberately moved to S01's rule, S04 never updated)"
 anchors = ["tmp/cybernetic-harness/specs/S04-self-model-routing.md"]
 lane = "paper"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "! grep -q 'forced_accept. counts as 0' tmp/cybernetic-harness/specs/S04-self-model-routing.md && grep -qi 'forced_accept[^.]*\\(missing\\|null\\)' tmp/cybernetic-harness/specs/S04-self-model-routing.md"
 +++
 
 ## Problem

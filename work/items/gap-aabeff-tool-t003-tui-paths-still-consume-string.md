@@ -9,16 +9,16 @@ size = "L"
 goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-14
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
-anchors = ["crates/roko-cli/src/tui/app/channels.rs:663", "crates/roko-cli/src/tui/state/signals.rs::push_agent_output_record", "crates/roko-cli/src/tui/views/agents_view.rs::render_output_body", "crates/roko-cli/src/tui/views/dashboard_view.rs::render_output_panel", "crates/roko-cli/src/tui/widgets/stream_output.rs::parse_stream_line", "crates/roko-cli/src/transcript/convert.rs::blocks_from_records", "crates/roko-core/src/transcript_store.rs::TranscriptStore", "crates/roko-cli/tests/tui_terminal_size.rs"]
+anchors = ["crates/roko-cli/src/tui/state/signals.rs::ingest_stream_chunk", "crates/roko-cli/src/tui/state/signals.rs::push_agent_output_record", "crates/roko-cli/src/tui/views/agents_view.rs::render_output_body", "crates/roko-cli/src/tui/views/dashboard_view.rs::render_output_panel", "crates/roko-cli/src/tui/widgets/stream_output.rs::parse_stream_line", "crates/roko-cli/src/transcript/convert.rs::blocks_from_records", "crates/roko-core/src/transcript_store.rs::TranscriptStore", "crates/roko-cli/tests/tui_terminal_size.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rq 'blocks_from_records' crates/roko-cli/src/tui && ! grep -q '\\[tool_call\\] {text}' crates/roko-cli/src/tui/app/channels.rs && grep -rqw 'fn tui_agent_output_renders_transcript_blocks_at_three_sizes' crates/roko-cli/ && cargo test -p roko-cli tui_agent_output_renders_transcript_blocks_at_three_sizes"
+command = "grep -rqE 'blocks_from_records\\(' crates/roko-cli/src/tui --include=*.rs && ! grep -rq '\\[tool_call\\] {' crates/roko-cli/src/tui/app/channels.rs crates/roko-cli/src/tui/state/signals.rs && grep -rqw 'fn tui_agent_output_renders_transcript_blocks_at_three_sizes' crates/roko-cli/ && cargo test -p roko-cli tui_agent_output_renders_transcript_blocks_at_three_sizes"
 +++
 
 ## Problem
@@ -161,3 +161,5 @@ How to verify: Check whether TUI Dashboard/Agents output panes render from Trans
 Verified 2026-09-28: No file under crates/roko-cli/src/tui references TranscriptStore, TranscriptBlock or blocks_from_records, while output_lines/last_output_line string tails appear 91 times under tui/.
 
 Re-verified 2026-09-29: still open. Since the last check the TUI renders live tool steps as single lines from typed roko.stream.v1 records (c41e78c7a; tests renders_live_tool_steps in widgets/stream_output.rs and settle_screened_transcript_keeps_tool_steps in tui/state/tests.rs). Those records are still carried as output_lines strings and re-parsed. The shared TranscriptBlock renderer (transcript/convert.rs::blocks_from_records) is still unused by the TUI, and tui/app/channels.rs:663 still pushes '[tool_call] {json}' chunks. Live-vs-replay equivalence is still unverified. tests/tui_terminal_size.rs checks only overflow of a default App at 80x24/120x40/200x60.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: unchanged since the 2026-10-01 note. Dashboard and Agents panes still render from output_lines/AgentOutputRecord string tails, not from TranscriptStore/TranscriptBlock; the shared transcript module (crates/roko-cli/src/transcript/) remains unused by any TUI file.

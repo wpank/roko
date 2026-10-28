@@ -9,8 +9,9 @@ goal = "core"
 size = "L"
 subsystem = ["roko-execution/replan", "roko-cli/graph_task_dispatch", "roko-conductor/circuit_breaker"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-21"
 anchors = ["crates/roko-execution/src/replan_controller.rs::ReplanController", "crates/roko-cli/src/graph_task_dispatch/ladder.rs", "crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-conductor/src/circuit_breaker.rs::record_failure"]
 lane = "rust-hot"
@@ -71,3 +72,5 @@ The `[[verify]]` command passes.
   and README instead (the papers stay as written for now, decision 2).
 - A replan that rewrites a task changes what was authored; keep it behind a config switch (`[execution] replan`) that is
   off until Will says otherwise.
+
+Checked 2026-10-27: 2026-10-26 sweep: the ReplanController half is confirmed still open. The CircuitBreaker::record_failure half of the Problem statement appears to have been wrong when filed: a production caller (Conductor::evaluate_full -> CircuitBreaker::record_failure, reached via GraphTaskDispatcher::with_conductor at graph_execution/plan_runner.rs:1778) was already wired by 4e4572802 on 2026-09-30, 16 days before this item's creation. Whether a tripped breaker then does anything ('calls a person') is a separate, unchecked question this item's verify does not test. Recommend narrowing the item's Problem/title to the ReplanController half only, since its [[verify]] already covers only that half.

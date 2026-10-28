@@ -8,9 +8,9 @@ severity = "p2"
 size = "M"
 subsystem = ["roko-cli/fast"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/286-fast-hard-deadline-interposition.md"
 anchors = ["crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline", "crates/roko-cli/src/graph_execution/plan_runner.rs::terminate_in_flight_agents", "crates/roko-cli/src/graph_execution/plan_runner.rs::kill_in_flight_agents", "crates/roko-graph/src/engine.rs::FlowHandle::cancel", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher", "crates/roko-cli/src/runner/agent_stream.rs::AgentStartupControl", "crates/roko-cli/src/dispatch/mod.rs::spawn_streaming_cli_agent_controlled"]
 goal = "core"
@@ -332,3 +332,5 @@ the checklist below keeps the final kill-point evidence separate.
 | `crates/roko-cli/src/runner/attempt_ownership.rs` | Add checkpoint-safe typed transition if required |
 | `crates/roko-cli/src/runner/agent_stream.rs` | Bound CLI startup and prove process cleanup |
 | `crates/roko-cli/src/dispatch/factory.rs` / `dispatch_v2.rs` | Bound shared-agent bridge startup |
+
+Checked 2026-10-27: 2026-10-26 sweep: confirmed still open. Some cancellation plumbing now exists in GraphTaskDispatcher (stopping: CancellationToken, graph_task_dispatch.rs:293/808) and attempt_workspace.rs:765 (ctx.is_cancelled()), but the specific guarantee this item describes (no new paid provider launch once a stop/deadline fires, during worktree/routing/prompt/retrieval prep) is unproven; its named verify test still does not exist.

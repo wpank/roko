@@ -9,8 +9,9 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-core/pricing"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "backlog wave reports 2026-10-02 (PK12 gap-08120e)"
 discovered_from = "gap-08120e"
 anchors = ["crates/roko-core/src/pricing_snapshot.rs::pricing_snapshot_builtin_copy_is_the_newest_file", "config/prices/2026-09-28.toml", "roko.toml"]
@@ -74,3 +75,5 @@ Don't touch `gap-9e3134`'s or `gap-a0043b`'s own files — this is a separate, p
 actually covers every routed model), not a fix to either package's existing tasks.
 
 2026-10-15 (status-quo assessment at 7b6a5af44, finding 22; tmp/status-quo/2026-10-15/backlog/A02-21-22-honest-measurement.md section 4): still open, and it now blocks the paper's headline metric. `config/prices/` still holds only `2026-09-28.toml`, so `api_equiv_usd` is null on all 72 real-model verdicts on record (70 glm-5.1 via Z.ai, 2 claude-sonnet-4-6) and no real run can compute cost per verified task (epic 2100's live outcome). Decision 2113 Q2 (answered 2026-10-02) asked for exactly this newer snapshot. Widen the scope: `glm-5.1` (provider `zai`; routed by `~/.roko/config.toml` `[models.glm-5-1]` and used by every live Hermes and e2e run) needs a row as well as `claude-sonnet-4-6` (provider `anthropic`, roko.toml:141). The other roko.toml slugs with no row are gemma-4-31b, glm-5v-turbo, gpt-4o, gpt-4o-mini, gpt-5.6-sol, llama-3.3-70b-versatile, qwen-3.8-27b and sonar: price one only where its provider publishes a per-token rate. Sources: copy every rate from the provider's own pricing page fetched on the snapshot date and record that page in `source_url` and the fetch date in `verified`: Anthropic https://platform.claude.com/docs/en/about-claude/pricing (claude-sonnet-4-6, including its cache-read and 5m/1h cache-write rates), Z.ai https://docs.z.ai/guides/overview/pricing (glm-5.1, glm-5v-turbo), OpenAI https://developers.openai.com/api/docs/pricing, and for any other provider its own published pricing page. Never invent, extrapolate or copy a sibling model's rate: a model whose page gives no rate stays out of the file (unknown cost), as the file's header requires. Suggest adding a second verify line: `grep -rq 'slug = "glm-5.1"' config/prices/*.toml` (fails now). Once claude-sonnet-4-6 has a row, the Claude CLI attempts' `cost_source = unknown` with `priced = true` contradiction (finding 23, filed separately) stops showing on the default model, but the labelling bug stays for any unpriced model.
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. The touched commits (08c873c71, 5de243ec8, c318edad7, 398212ed3, 185e0763f, 348cb6c3f) all edit roko.toml for routing/billing reasons unrelated to pricing; none added a price row.

@@ -11,8 +11,9 @@ size = "M"
 hold = "waits on Will's deferred decision(s) 3333 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["benchmarks/viabilitybench/external"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK26"
 anchors = ["benchmarks/viabilitybench"]
 lane = "bench"
@@ -59,3 +60,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK25 (gap-daeaa9).
 - On hold until Will takes the deferred decision(s) 3333 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: sonnet.
+
+Checked 2026-10-27: 2026-10-26 sweep: still blocked on deferred decision 3333 (x86-64 host rental); no run_official.py or harness-check.json exists yet. The dependency gap-daeaa9 (PK25) is now done (work/done/).

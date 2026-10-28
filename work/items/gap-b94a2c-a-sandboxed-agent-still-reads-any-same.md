@@ -9,8 +9,9 @@ goal = "proof"
 size = "L"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-0bd49a worker (claude-agent), 2026-10-16"
 discovered_from = "gap-0bd49a's notes of 2026-09-29 and 2026-10-02 (the environment half of its isolation question)"
 anchors = ["benchmarks/viabilitybench/families/common/sandbox.py::profile", "benchmarks/viabilitybench/driver/agent_env.py", "benchmarks/viabilitybench/driver/test_secret.py"]
@@ -87,3 +88,5 @@ sudo rules, or a container runtime with an image per family toolchain and the CL
 - Never print a real process's environment while testing this: start your own target with a harmless marker, and
   print only whether the marker was seen.
 - Related: gap-29ac83 (Linux sandbox), which needs the same backend seam.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: still open as described; the touched commits harden naming/dir isolation, not the KERN_PROCARGS2 cross-process read.

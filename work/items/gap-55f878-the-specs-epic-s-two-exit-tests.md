@@ -9,8 +9,9 @@ goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_validate", "roko-gate/spec_quality"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-27"
 anchors = ["crates/roko-cli/tests/plan_validate.rs", "crates/roko-cli/src/commands/plan.rs::validate_before_run", "crates/roko-gate/src/spec_quality.rs::score_task"]
 lane = "rust-cold"
@@ -72,3 +73,5 @@ Both `[[verify]]` commands pass.
 ## Notes
 
 Parent: spec-e57870. Tests only; if a test exposes a gate bug, file it rather than widening this item.
+
+Checked 2026-10-27: 2026-10-26: the two touches to plan_validate.rs since filing (86c8d981f's PLAN_059/060 dynamic-step warnings, e53cf795c's HOME isolation) added different tests, not either of the two this item names.

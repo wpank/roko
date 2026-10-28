@@ -8,8 +8,9 @@ severity = "p3"
 size = "S"
 subsystem = ["external/nunchi-dashboard"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/workflow-audit (roko-7d migration, 2026-10-02)"
 discovered_from = "audit:tmp/workflow-audit/"
 anchors = ["crates/roko-serve/src/routes/plans/authoring.rs::GenerateRequest"]
@@ -58,3 +59,5 @@ that repository; ask before opening a PR there.
 ## Notes
 
 - Found by the workflow-audit migration (session roko-7d, 2026-10-02).
+
+Checked 2026-10-27: 2026-10-26 sweep: unchanged; the fix belongs in the separate nunchi-dashboard repo, which the item already notes.

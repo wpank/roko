@@ -9,11 +9,12 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "backlog wave reports 2026-10-02 (PK07 gap-f548c1)"
 discovered_from = "gap-f548c1"
-anchors = ["crates/roko-cli/src/commands/status.rs", "crates/roko-cli/src/commands/diagnose.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger"]
+anchors = ["crates/roko-cli/src/commands/util.rs::cmd_status", "crates/roko-cli/src/status.rs::SessionStatus::display_json", "crates/roko-cli/src/commands/diagnose.rs::RunStateSummary", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger"]
 lane = "rust-cold"
 parent = "spec-99d417"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -73,3 +74,5 @@ The counter is tracked and used internally for budget-ceiling logic (see the sep
 
 This is an observability gap, not a budget-enforcement one — the enforcement side (making the plan ceiling actually
 account for unpriced calls) is backlog task 2111, already tracked inside gap-f548c1; don't duplicate that work here.
+
+Checked 2026-10-27: 2026-10-26: diagnose.rs's JSON half of this item is done; the status.rs/util.rs half (roko status --json) still omits unpriced_calls. The item's anchor crates/roko-cli/src/commands/status.rs is a 3-line re-export; the real code is commands/util.rs::cmd_status and status.rs::SessionStatus::display_json.

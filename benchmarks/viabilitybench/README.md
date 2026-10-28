@@ -305,7 +305,8 @@ holds one document, a `.jsonl` file one per line. The exit status is 1 when any 
 
 ## The price snapshot
 
-`config/prices/2026-09-28.toml` is the one snapshot, id `prices-2026-09-28`. The id resolves to the file
+`config/prices/2026-09-28.toml`, id `prices-2026-09-28`, is the snapshot the driver prices from
+(`DEFAULT_SNAPSHOT` in `driver/ledger.py`); newer dated files sit beside it. The id resolves to the file
 (`prices-<date>` → `config/prices/<date>.toml`). Records name it in `price_snapshot_id`, and `roko.toml`'s
 `[pricing] snapshot` key will too once S08.T18 adds it. The driver and the planned Rust cost loader (S04.T01)
 read these same bytes; there is no JSON copy.

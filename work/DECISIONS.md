@@ -4,7 +4,7 @@
 
 4 open.
 
-- **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
-- **P2** [q-55c52f](items/q-55c52f-x4-needs-log1-blocks-under-no-gate.md) X4 needs LOG1 blocks under no_gate/always_refine/always_escalate: add them, skip X4, or simulate? [question] · size S · verified 2026-10-04
+- **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-27
+- **P2** [q-55c52f](items/q-55c52f-x4-needs-log1-blocks-under-no-gate.md) X4 needs LOG1 blocks under no_gate/always_refine/always_escalate: add them, skip X4, or simulate? [question] · size S · verified 2026-10-27
 - **P3** [q-f28c6d](items/q-f28c6d-should-requiretoolbeforeedit-count-a-run-s-own.md) Should RequireToolBeforeEdit count a run's own write_file of a file as a read of it? [question] · size S · verified 2026-10-27
-- **P3** [q-ab27d3](items/q-ab27d3-should-the-fd-claude-lite-arm-run.md) Should the fd_claude_lite arm run Claude Sonnet 5.5, which is priced the same as Sonnet 5? [question] · size S
+- **P3** [q-ab27d3](items/q-ab27d3-should-the-fd-claude-lite-arm-run.md) Should the fd_claude_lite arm run Claude Sonnet 5.5, which is priced the same as Sonnet 5? [question] · size S · verified 2026-10-27

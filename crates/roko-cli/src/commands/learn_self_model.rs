@@ -1050,12 +1050,13 @@ mod tests {
     fn learn_econ_prices_lists_every_snapshot_row() {
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
         let text = render_prices(&snapshot);
-        assert_eq!(text.lines().count(), 1 + 10, "{text}");
+        let rows = snapshot.rows().len();
+        assert_eq!(text.lines().count(), 1 + rows, "{text}");
         for row in snapshot.rows() {
             assert!(text.contains(&row.source_url));
         }
         let json = prices_json(&snapshot);
-        assert_eq!(json["rows"].as_array().map(Vec::len), Some(10));
+        assert_eq!(json["rows"].as_array().map(Vec::len), Some(rows));
     }
 
     /// 6124: the three commands parse.

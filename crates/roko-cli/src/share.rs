@@ -152,6 +152,29 @@ pub fn share_run(
     role: &str,
     elapsed_s: f64,
 ) -> Result<ShareResult> {
+    share_run_via(
+        Path::new("gh"),
+        workdir,
+        report,
+        prompt,
+        agent,
+        role,
+        elapsed_s,
+    )
+}
+
+/// [`share_run`] with `gh`, the GitHub CLI it uploads the gist with. A test
+/// passes the absolute path of a stub, so it never reaches the operator's
+/// `gh` and its login (bug-17e9ac).
+fn share_run_via(
+    gh: &Path,
+    workdir: &Path,
+    report: &RunReport,
+    prompt: &str,
+    agent: &str,
+    role: &str,
+    elapsed_s: f64,
+) -> Result<ShareResult> {
     let run_id = &report.episode_id[..8.min(report.episode_id.len())];
     // Scrub the prompt and output before embedding in the transcript so that
     // secrets are never written to disk or uploaded to GitHub Gist.
@@ -177,7 +200,7 @@ pub fn share_run(
         .with_context(|| format!("write transcript to {}", md_path.display()))?;
 
     // Try GitHub Gist upload
-    match upload_gist(run_id, &markdown) {
+    match upload_gist(gh, run_id, &markdown) {
         Ok(url) => Ok(ShareResult {
             url,
             backend: "gist".into(),
@@ -195,10 +218,10 @@ pub fn share_run(
     }
 }
 
-/// Upload markdown content as a public GitHub Gist via `gh` CLI.
-fn upload_gist(run_id: &str, content: &str) -> Result<String> {
+/// Upload markdown content as a public GitHub Gist via `gh`, the GitHub CLI.
+fn upload_gist(gh: &Path, run_id: &str, content: &str) -> Result<String> {
     // Check gh is available
-    let gh_check = Command::new("gh").arg("--version").output();
+    let gh_check = Command::new(gh).arg("--version").output();
     if gh_check.is_err() || !gh_check.unwrap().status.success() {
         bail!("gh CLI not found — install from https://cli.github.com/");
     }
@@ -211,7 +234,7 @@ fn upload_gist(run_id: &str, content: &str) -> Result<String> {
     std::fs::write(&tmp_path, content).with_context(|| "write temp gist file")?;
 
     // Create public gist
-    let output = Command::new("gh")
+    let output = Command::new(gh)
         .args([
             "gist",
             "create",
@@ -392,8 +415,31 @@ mod tests {
         assert_eq!(scrub_share_text(clean), clean);
     }
 
+    /// A stand-in `gh` (bug-17e9ac): it appends each call's arguments, one
+    /// per line, to `gh-args` beside itself, copies the file `gist create`
+    /// would upload, its last argument, to `gh-uploaded.md`, and prints a fake
+    /// gist URL. Nothing leaves the machine.
+    const STUB_GH: &str = r#"#!/bin/sh
+dir=$(dirname -- "$0")
+printf '%s\n' "$@" >> "$dir/gh-args"
+if [ "$1" = "gist" ]; then
+  for last; do :; done
+  cp "$last" "$dir/gh-uploaded.md"
+  echo "https://gist.github.com/stub/0123456789"
+fi
+exit 0
+"#;
+
+    /// bug-17e9ac: this test used to upload through the operator's `gh`, a
+    /// public gist with their login on every run, so it was skipped since
+    /// 2026-10-08. It runs a stub `gh` at an absolute path instead, which
+    /// can't fall back to the real one: a missing stub fails the spawn, and
+    /// the share comes back local, which fails the test. The scrubbing is
+    /// checked on what the gist would hold.
     #[test]
     fn share_run_scrubs_output_text_and_prompt() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let report = RunReport {
             episode_id: "abc12345def67890".into(),
             prompt_id: "p1".into(),
@@ -407,7 +453,14 @@ mod tests {
             usage: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        let result = share_run(
+        let stub_dir = tempfile::tempdir().unwrap();
+        let gh = stub_dir.path().join("gh");
+        std::fs::write(&gh, STUB_GH).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(gh.is_absolute(), "{}", gh.display());
+
+        let result = share_run_via(
+            &gh,
             dir.path(),
             &report,
             "Use ANTHROPIC_API_KEY=sk-ant-secret123 for this",
@@ -417,17 +470,55 @@ mod tests {
         )
         .unwrap();
 
+        // The stub, not the real gh, took the upload.
+        assert_eq!(result.backend, "gist", "{result:?}");
+        assert_eq!(result.url, "https://gist.github.com/stub/0123456789");
+        let args = std::fs::read_to_string(stub_dir.path().join("gh-args")).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(args[0], "--version", "{args:?}");
+        assert_eq!(&args[1..4], ["gist", "create", "--public"], "{args:?}");
+        // What the gist would hold is the saved transcript, scrubbed.
+        let uploaded = std::fs::read_to_string(stub_dir.path().join("gh-uploaded.md")).unwrap();
         let md = std::fs::read_to_string(&result.local_path).unwrap();
-        assert!(!md.contains("sk-ant-secret123"), "prompt API key leaked");
+        assert_eq!(uploaded, md);
         assert!(
-            !md.contains("abcdefghijklmnopqrstuvwxyz1234"),
+            !uploaded.contains("sk-ant-secret123"),
+            "prompt API key leaked"
+        );
+        assert!(
+            !uploaded.contains("abcdefghijklmnopqrstuvwxyz1234"),
             "output bearer token leaked"
         );
         assert!(
-            !md.contains("0123456789abcdef0123456789ABCDEF"),
+            !uploaded.contains("0123456789abcdef0123456789ABCDEF"),
             "output long hex leaked"
         );
-        assert!(md.contains("[REDACTED]"), "no redaction marker found");
+        assert!(uploaded.contains("[REDACTED]"), "no redaction marker found");
+    }
+
+    /// bug-17e9ac: a `gh` that isn't there is never looked up on `PATH`: the
+    /// upload fails, the transcript stays local, and the share says so. A
+    /// test whose stub went missing gets this local result, which its
+    /// assertions refuse, not a real gist.
+    #[test]
+    fn a_missing_gh_never_reaches_another_gh() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-dir").join("gh");
+
+        let result = share_run_via(
+            &missing,
+            dir.path(),
+            &sample_report(),
+            "Summarize Q3",
+            "researcher",
+            "analyst",
+            1.0,
+        )
+        .unwrap();
+
+        assert_eq!(result.backend, "local", "{result:?}");
+        assert_eq!(result.url, format!("file://{}", result.local_path));
+        assert!(std::path::Path::new(&result.local_path).is_file());
     }
 
     #[test]

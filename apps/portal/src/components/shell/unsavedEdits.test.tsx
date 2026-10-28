@@ -65,6 +65,8 @@ beforeEach(() => {
       path: `/api/plans/${plan}/source`,
       body: { id: plan, path: `plans/${plan}/tasks.toml`, toml: toml(plan) },
     })),
+    // Run reads the plan first: with no run to resume, it runs at once (gap-0eb763).
+    { path: '/api/plans/hello', body: { ...PLANS[0], resumable_run: null } },
     { method: 'POST', path: '/api/plans/hello/execute', status: 202, body: { id: 'op-run', plan_id: 'hello' } },
   ]);
   confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);

@@ -9,12 +9,12 @@
  *                      WaveStrip + TaskList (or SourceEditor / PromptPanel overlay).
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { WirePlanDiff, WirePlanSummary } from '@/api/contracts';
 import {
+  fetchPlanDetail,
   usePlanTasks,
-  useRunPlan,
   useCancelPlan,
   useValidation,
   queryKeys,
@@ -36,6 +36,7 @@ import { ValidationBadge } from '@/components/stage/ValidationBadge';
 import { SourceEditor } from '@/components/stage/SourceEditor';
 import { PromptPanel } from '@/components/stage/PromptPanel';
 import { RevisionDiff } from '@/components/stage/RevisionDiff';
+import { RunChoice, useStartRun } from '@/components/stage/RunChoice';
 
 // ── usePrimaryAction ───────────────────────────────────────────────────────────
 
@@ -55,6 +56,11 @@ export interface PrimaryAction {
  * - failed/cancelled → retry (resume: true — skips completed tasks)
  * - completed      → run-again (fresh run)
  * - otherwise      → run
+ *
+ * A fresh run sets aside the plan's last run (contract P-7), so run and
+ * run-again read the plan's `resumable_run` first. When a resume would
+ * continue that run, they ask Resume or Start over (RunChoice) instead of
+ * running (gap-0eb763).
  *
  * Disabled while:
  *   • the plan's editor holds unsaved text ("Save or discard your edits first")
@@ -78,8 +84,11 @@ export function usePrimaryAction(
   const { data: validation } = useValidation(planId ?? undefined);
 
   // Mutations
-  const runPlan = useRunPlan();
+  const startRun = useStartRun(onError);
   const cancelPlan = useCancelPlan();
+  const setRunChoice = useDashboardStore((s) => s.setRunChoice);
+  // A Run whose plan read is still out: a second press starts nothing.
+  const reading = useRef(false);
 
   // ── Phase ─────────────────────────────────────────────────────────────────
 
@@ -168,21 +177,29 @@ export function usePrimaryAction(
       }
       case 'retry': {
         // resume: true — completed tasks are skipped; plan re-runs fresh if edited
-        runPlan.mutate(
-          { id: planId, resume: true },
-          { onError: handleError },
-        );
+        startRun(planId, true);
         break;
       }
       case 'run':
       case 'run-again': {
-        runPlan.mutate({ id: planId }, { onError: handleError });
+        // Ask before a fresh run sets aside a run a resume would continue.
+        if (reading.current) return;
+        reading.current = true;
+        fetchPlanDetail(planId)
+          .then((detail) => {
+            const last = detail.resumable_run;
+            if (last?.resumable) setRunChoice({ planId, run: last });
+            else startRun(planId, false);
+          }, handleError)
+          .finally(() => {
+            reading.current = false;
+          });
         break;
       }
       default:
         break;
     }
-  }, [planId, disabled, kind, runningPlanCount, cancelPlan, runPlan, onError]);
+  }, [planId, disabled, kind, runningPlanCount, cancelPlan, startRun, setRunChoice, onError]);
 
   // ── Label ─────────────────────────────────────────────────────────────────
 
@@ -419,7 +436,10 @@ export function PlanView({
         </div>
       </div>
 
-      {/* ── 1b. What the last revision changed (3229) ─────────────────────── */}
+      {/* ── 1b. Resume or start over, and what a start over set aside ─────── */}
+      <RunChoice planId={plan.id} onError={onRequestError} />
+
+      {/* ── 1c. What the last revision changed (3229) ─────────────────────── */}
       <RevisionDiff diff={revisionDiff} onDismiss={() => setRevisionDiff(null)} />
 
       {/* ── 2. Status line ────────────────────────────────────────────────── */}

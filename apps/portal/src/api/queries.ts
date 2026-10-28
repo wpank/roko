@@ -18,6 +18,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/api/client';
 import type {
+  WirePlanDetail,
   WirePlanSummary,
   WirePlanTasks,
   WirePlanSource,
@@ -264,6 +265,14 @@ export async function planExists(id: string): Promise<boolean> {
     if (err instanceof ApiError && err.status === 404) return false;
     throw err;
   }
+}
+
+/**
+ * Fetches one plan's summary with the run a resume would continue (`resumable_run`), read fresh each time:
+ * Run and Run again read it before a run that would set that run aside (gap-0eb763).
+ */
+export async function fetchPlanDetail(id: string): Promise<WirePlanDetail> {
+  return api.get<WirePlanDetail>(`/api/plans/${encodeURIComponent(id)}`);
 }
 
 /**

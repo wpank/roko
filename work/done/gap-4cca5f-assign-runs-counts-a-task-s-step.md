@@ -2,7 +2,7 @@
 id = "gap-4cca5f"
 kind = "gap"
 title = "assign_runs counts a task's step room against the planner's tier before raise_tiers lifts it for its files, so missing checks still join an && step and the task may start a rung lower (phase 5.2's drops draft: P5.2.07-08 joined, render-demos twice, T1 focused not integrative)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -10,7 +10,8 @@ size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-26
 updated = 2026-10-28
-last_verified = 2026-10-26
+last_verified = 2026-10-28
+last_verified_rev = "38bedecea"
 source = "round-v7-roko-planner#phase-5-2-replay"
 discovered_from = "agent:roko-planner (round v7, phase 5.2 $0 replay on roko-main-00ecbd158), the lead's ask"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/plan_generate/sizes.rs::raise_tiers"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-4dd77d", "gap-77220d", "
 
 [[verify]]
 command = "grep -rqw 'fn missing_checks_get_the_step_room_of_the_raised_tier' crates/roko-cli/src && cargo test -p roko-cli --lib missing_checks_get_the_step_room_of_the_raised_tier"
+
+[closed]
+at = 2026-10-28
+at_ts = "2026-10-28T10:34:27Z"
+commit = "38bedecea"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-28T09:49:58Z"
+forced = false
+evidence = "Merged 38bedecea (branch 466d975d7, with a one-line nightly-fmt fix for the spec gate's contradiction test, a83d5d67d; main 8da34f886 merged in at 4b0ad9d18, no file in common). Will's call of 2026-10-27, keeping gap-4dd77d's raise over decision 3203's never-raise rule, is recorded in gap-de0b87 (c0bd40d64). Post-merge verify in my worktree, detached at 38bedecea: the grep finds the test, and missing_checks_get_the_step_room_of_the_raised_tier passes (1 of 1). The test runs phase 5.2's drops draft (fixture tests/fixtures/p5_2_criteria/drops.toml): T1 is raised before assign_runs, counting a step for each check it is given, from mechanical to integrative; P5.2.05-08 each get a step of their own, no step runs tools/render-demos.sh twice, 9 of 9 checks kept, one planner call. Branch suites: plan_generate and plan_policy 211/211 (with a_task_is_raised_for_the_steps_its_checks_will_take); roko-cli lib 4094 passed, 0 failed; nightly fmt; clippy -p roko-cli -D warnings clean. $0 replays of 5.2 (drops, as written, ideal), 5 (8 tasks), 4.3 and 4.2: only the drops draft changes, from focused with 3 steps (one running render-demos twice) to integrative with 5, as the spec's own draft; the others keep their tiers and steps; every check kept, plan validate --strict 0 diagnostics each."
 +++
 
 ## Problem

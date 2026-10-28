@@ -253,27 +253,57 @@ pub(super) fn repair_tiers(
 /// whole new draft each for the same rule. A task no tier fits stays for the
 /// check, which asks for a split. Returns one line per task raised.
 pub(super) fn raise_tiers(plan: &mut TasksFile, policy: PlanExecutionPolicy) -> Vec<String> {
+    let steps: Vec<usize> = plan.tasks.iter().map(|task| task.verify.len()).collect();
+    raise_tiers_for(plan, policy, &steps)
+}
+
+/// [`raise_tiers`] with each task counted at `steps[index]` verify steps,
+/// the steps it will have once each check of its source has one of its own
+/// ([`super::source_checks::steps_wanted`]). Run before the checks are placed
+/// (gap-4cca5f), it gives `assign_runs` the room of the tier the task will
+/// have: against the planner's tier, phase 5.2's drops draft joined two
+/// checks into one step that ran `tools/render-demos.sh` twice. A task no
+/// tier fits with that many steps takes the smallest tier that fits it as it
+/// is, and the checks over that tier's room join a step. Returns one line per
+/// task raised.
+pub(super) fn raise_tiers_for(
+    plan: &mut TasksFile,
+    policy: PlanExecutionPolicy,
+    steps: &[usize],
+) -> Vec<String> {
     let mut raised = Vec::new();
-    for task in &mut plan.tasks {
+    for (index, task) in plan.tasks.iter_mut().enumerate() {
         let tier = task.tier_class();
-        let over = policy.tier_size_limits(tier).exceeded_by(task);
-        if over.is_empty() {
-            continue;
-        }
-        let Some(fits) = TaskTier::ALL
-            .into_iter()
-            .filter(|candidate| *candidate > tier)
-            .find(|candidate| {
-                policy
-                    .tier_size_limits(*candidate)
-                    .exceeded_by(task)
-                    .is_empty()
-            })
+        let now = task.verify.len();
+        let wanted = steps.get(index).copied().unwrap_or(now).max(now);
+        let fit = |count: usize| {
+            TaskTier::ALL
+                .into_iter()
+                .filter(|candidate| *candidate >= tier)
+                .find(|candidate| {
+                    policy
+                        .tier_size_limits(*candidate)
+                        .exceeded_with(task, count)
+                        .is_empty()
+                })
+        };
+        let Some((count, fits)) = fit(wanted)
+            .map(|fits| (wanted, fits))
+            .or_else(|| fit(now).map(|fits| (now, fits)))
         else {
             continue;
         };
+        if fits == tier {
+            continue;
+        }
+        let over = policy.tier_size_limits(tier).exceeded_with(task, count);
+        let once = if count > now {
+            ", once each check of its source has a step of its own"
+        } else {
+            ""
+        };
         raised.push(format!(
-            "{}: tier {} became {}, to fit its {}",
+            "{}: tier {} became {}, to fit its {}{once}",
             task.id,
             tier.label(),
             fits.label(),
@@ -404,6 +434,47 @@ mod tests {
               about 10 lines its source states"
             ]
         );
+    }
+
+    /// gap-4cca5f: before its source's checks are placed, a task is counted
+    /// with a step for each, so it takes the tier whose room holds them; one
+    /// that no tier holds with them takes the tier that fits it as it is, and
+    /// one whose tier holds them stays.
+    #[test]
+    fn a_task_is_raised_for_the_steps_its_checks_will_take() {
+        let plan_with = |tier: &str, files: usize| {
+            let files: Vec<String> = (0..files).map(|n| format!("\"src/f{n}.cpp\"")).collect();
+            TasksFile::parse_str(&format!(
+                "[meta]\nplan = \"p\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"The presets\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"{tier}\"\nfiles = [{}]\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 5_2 presets\"\n",
+                files.join(", ")
+            ))
+            .expect("a plan")
+        };
+        let policy = PlanExecutionPolicy::generated(8);
+        let mut plan = plan_with("mechanical", 5);
+        assert_eq!(
+            raise_tiers_for(&mut plan, policy, &[5]),
+            [
+                "T1: tier mechanical became integrative, to fit its 5 files (limit 3), 5 verify \
+                 steps (limit 3), once each check of its source has a step of its own"
+            ]
+        );
+        assert_eq!(plan.tasks[0].tier, "integrative");
+
+        // Twelve steps fit no tier: it is raised for its files alone.
+        let mut many = plan_with("mechanical", 5);
+        assert_eq!(
+            raise_tiers_for(&mut many, policy, &[12]),
+            ["T1: tier mechanical became focused, to fit its 5 files (limit 3)"]
+        );
+
+        // Focused holds 4 steps and the task's 2 files.
+        let mut fits = plan_with("focused", 2);
+        assert!(raise_tiers_for(&mut fits, policy, &[4]).is_empty());
+        assert_eq!(fits.tasks[0].tier, "focused");
     }
 
     /// gap-5c7f9a: the task count a spec's notes for the planner state, read

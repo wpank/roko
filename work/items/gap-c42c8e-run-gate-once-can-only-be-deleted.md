@@ -9,8 +9,9 @@ goal = "tooling"
 size = "M"
 subsystem = ["roko-cli/runner", "roko-gate/production-service"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-7 follow-up reports 2026-10-03 (PK59 gap-147c4d)"
 discovered_from = "gap-147c4d; run_gate_once's own doc comment at gate_dispatch.rs:911-920"
 anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::run_gate_once", "crates/roko-gate/src/production_service.rs::ProductionGateService"]
@@ -97,3 +98,5 @@ exercising the seven capabilities.
 - Do this in small, separately-verifiable steps (see Plan) — the `[[verify]]` command below checks only the first
   capability (verdict publishing) as a representative start; add one per step as this item progresses, or split
   into follow-up items per capability if a worker picks this up and finds seven-in-one too large for one pass.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: zero of the seven pinned capabilities have been ported to ProductionGateService; run_gate_once is still live and still the only thing exercising them.

@@ -9,8 +9,9 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/families"]
 created = 2026-10-19
-updated = 2026-10-19
-last_verified = 2026-10-19
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-c33709 worker (claude-agent), 2026-10-19: Pilot A's G0 page, benchmarks/viabilitybench/reports/pilot_a/go-no-go.md"
 discovered_from = "gap-c33709"
 anchors = ["benchmarks/viabilitybench/families/f1_pyconv/ladder.toml", "benchmarks/viabilitybench/families/f4_kvtool/ladder.toml", "benchmarks/viabilitybench/reports/pilot_a/go-no-go.md"]
@@ -185,3 +186,5 @@ still a fail at 0.50.** The item stays open. Its next step is gap-0ff34c.
   the same before and after. The tripwire's chmods moved both ctimes. Nobody read or printed a key.
 - **The done-when list.** The re-knobbed ℓ1–ℓ2 pass verifier CI: done. A re-run's G0 page with `ladder_cheap_l1`
   passing: not yet.
+
+Checked 2026-10-27: 2026-10-26 sweep: no change since the 2026-10-19 Progress note. Still blocked on gap-0ff34c (open).

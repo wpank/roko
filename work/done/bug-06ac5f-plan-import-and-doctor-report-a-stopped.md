@@ -2,18 +2,29 @@
 id = "bug-06ac5f"
 kind = "bug"
 title = "plan import and doctor report a stopped roko serve as running: serve_holding_workspace trusts the PID in roko.lock and serve.json with no liveness or lock check"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/doctor"]
 created = 2026-10-18
-updated = 2026-10-18
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-dogfood-desktop#L5-mori"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L5, 2026-10-18)"
-anchors = ["crates/roko-cli/src/doctor.rs::serve_holding_workspace", "crates/roko-cli/src/workspace_lock.rs::workspace_lock_owner_pid"]
+anchors = ["crates/roko-cli/src/doctor.rs::serve_holding_workspace", "crates/roko-cli/src/serve_lifecycle.rs::running_workspace_serve", "crates/roko-cli/src/serve_lifecycle.rs::holds_workspace"]
 links = { depends_on = [], blocks = [], related = ["bug-dfe4c5"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q 'running_workspace_serve(workdir)' crates/roko-cli/src/doctor.rs && grep -q 'fn holds_workspace' crates/roko-cli/src/serve_lifecycle.rs && grep -q 'process_is_alive(pid)' crates/roko-cli/src/serve_lifecycle.rs"
+
+[closed]
+at = 2026-10-27
+commit = "bb8ac3c9d"
+by = "work sweep 2026-10-27 (static check)"
+evidence = "crates/roko-cli/src/doctor.rs:91-96 serve_holding_workspace now delegates to crates/roko-cli/src/serve_lifecycle.rs:150-157 running_workspace_serve, which returns an endpoint only when holds_workspace (serve_lifecycle.rs:161-166) confirms process_is_alive(pid) AND the workspace lock is still held by that pid -- the liveness/lock check the item asked for, replacing the old file-only PID trust."
 +++
 
 ## Problem

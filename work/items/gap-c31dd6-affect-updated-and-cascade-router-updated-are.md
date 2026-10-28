@@ -9,8 +9,9 @@ goal = "visibility"
 size = "S"
 subsystem = ["roko-core/dashboard_snapshot"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-learning-research#4b.10"
 discovered_from = "agent:learning-research (round v6, 2026-10-16)"
 anchors = ["crates/roko-cli/src/runner/tui_bridge.rs::affect_updated", "crates/roko-cli/src/runner/tui_bridge.rs::cascade_router_updated", "crates/roko-core/src/dashboard_snapshot.rs::AffectUpdated", "crates/roko-cli/src/graph_execution/learning_commit.rs::commit_run_learning"]
@@ -68,3 +69,5 @@ The `[[verify]]` command passes, or the closure records the deletion and why.
 
 `cascade_router_updated` carries a whole snapshot as JSON. Keep the event small: publish the digest and counts, and let
 consumers read the file for the rest.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: still unpublished. gap-51d2ca's router-learning commit (08c873c71) touched the same function (commit_run_learning) but did not add the cascade_router_updated publish, nor affect_updated anywhere.

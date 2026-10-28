@@ -9,8 +9,9 @@ goal = "release"
 size = "M"
 subsystem = ["roko-agent/codex-cli", "roko-agent/gemini-cli", "roko-agent/safety"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-5"
 anchors = ["crates/roko-agent/src/exec.rs::guarded_command_violation", "crates/roko-agent/src/provider/gemini_cli.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs::UNGUARDED_CLI_KINDS"]
 lane = "rust-cold"
@@ -80,3 +81,5 @@ commands), or the item records that the CLI offers no pre-execution hook and the
 Probing a CLI's hook support needs a local login and no paid call; record the CLI versions. Decision 1214's spec
 file: `tmp/backlog/2026-10-02-complete-and-wire/1214-decide-command-guard-for-codex-cursor-and-gemini.md`. The Cursor
 half is the item filed first from finding 5.
+
+Checked 2026-10-27: 2026-10-26: unchanged since 2026-10-15 filing; the two touched commits in drift (822e06461, 4f647ebd5) are about failover queueing and the gemini turn cap, not the pre-execution guard this item asks for.

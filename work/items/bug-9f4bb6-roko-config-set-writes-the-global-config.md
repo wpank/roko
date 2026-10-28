@@ -9,8 +9,9 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/config"]
 created = 2026-10-13
-updated = 2026-10-13
-last_verified = 2026-10-13
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "hermes-plugin-roko docs walkthrough 2026-10-13 (roko 5de43f9ab)"
 anchors = ["crates/roko-cli/src/config_cmd.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -52,3 +53,5 @@ workspace can use, or do nothing for served runs.
 ## Done when
 
 `config_set_project_accepts_a_globally_defined_model` passes (the `[[verify]]` command).
+
+Checked 2026-10-27: Re-verified 2026-10-26: zero commits have touched crates/roko-cli/src/config_cmd.rs since the item's creation (2026-10-13), consistent with all three symptoms being unchanged.

@@ -3,13 +3,15 @@ id = "spec-ba7bea"
 kind = "spec"
 title = "Epic: secrets and git guard"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p0"
 goal = "release"
 size = "L"
 subsystem = ["roko-agent/claude_cli_agent", "roko-agent/safety", "roko-gate/shell", "roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3); workstreams/assessment/W8-roko-as-executor.md (gate G2)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
@@ -126,3 +128,5 @@ This is the implementation plan.
 - **E16:** bug-7d7200 is also a release blocker there.
 - **Decided 2026-09-29 (Will):** no OS sandbox in v1. The git guard is best effort, and the whitepaper and README document this as a limitation; revisit it before any hosted demo. bug-7d7200 closed in 70820a74c.
 - **Still open (not accepted on 2026-09-29):** whether the Codex, Cursor and Gemini CLI agents get a command guard (they have none).
+
+Checked 2026-10-27: bug-ae5d22 (created 2026-10-17) is a live open child of this epic (parent = spec-ba7bea) but is entirely missing from this item's 'Done when' checklist (which still only lists 33 entries dated to 2026-09-29's set). Add it. gap-8f8544 and bug-3f3990 remain open as already tracked in the checklist.

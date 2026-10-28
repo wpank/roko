@@ -2,23 +2,31 @@
 id = "spec-6ac537"
 kind = "spec"
 title = "Epic: cybernetic core"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "L"
 subsystem = ["roko-learn/cascade-router", "roko-cli/runtime-feedback", "roko-cli/graph-dispatch", "roko-serve/state"]
 created = 2026-09-29
-updated = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e17"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P2 #17–22); workstreams/assessment/W3a-crosswalk-core.md"
-anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs::RoutingSink", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
+anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
 links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040", "bug-dfb28f", "bug-3ea1f5", "bug-84de98", "bug-7a2630", "bug-8b0d0a", "bug-07bc75", "gap-eb82c9", "bug-efd2b0", "gap-88c547", "bug-f81e9b", "bug-9ab6b8", "bug-b8af02", "gap-2ce86f", "bug-8a78e1", "dec-af63cc", "gap-d65a17", "gap-1a7f9c", "bug-386c9b", "bug-4aa696"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/ && grep -rqw 'fn gate_pass_increments_selected_playbook' crates/roko-cli/src/ && grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src/ && cargo test -p roko-learn failed_override_lowers_success_rate && cargo test -p roko-cli --lib gate_pass_increments_selected_playbook && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
+command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/ && grep -rqw 'fn verified_pass_creates_a_playbook_then_credits_its_repeat' crates/roko-cli/src/ && grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src/ && cargo test -p roko-learn failed_override_lowers_success_rate && cargo test -p roko-cli --lib verified_pass_creates_a_playbook_then_credits_its_repeat && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
+
+[closed]
+at = 2026-10-27
+commit = "2347ad858"
+by = "work sweep 2026-10-27 (static check)"
+evidence = "All 28 'Done when' children are now closed (done), including the two that were still open at the item's own 2026-10-15 note: gap-644040 (frozen learning, done 2026-10-03, commit 2347ad858) and dec-af63cc (reflex-verification decision, done 2026-10-15). The epic's authored verify fails on one clause only: fn gate_pass_increments_selected_playbook does not exist anywhere under crates/ (confirmed by grep -rw), exactly as the item's own 2026-10-15 note already flagged. A real equivalent test exists: verified_pass_creates_a_playbook_then_credits_its_repeat (crates/roko-cli/src/runtime_feedback/verified_playbooks.rs:350). The anchor crates/roko-cli/src/graph_execution/feedback.rs::RoutingSink no longer exists anywhere in the workspace (graph_execution/feedback.rs was deleted entirely, per reg-3f5969's retired-verify note citing 6b2118da1); routing-sink duties now live in crates/roko-cli/src/runtime_feedback/routing.rs."
 +++
 
 ## Problem
@@ -156,3 +164,5 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - **Still open (not accepted on 2026-09-29):** parking LinUCB behind a flag (tldr/05 P2 #18).
 
 2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): the epic's verify names `gate_pass_increments_selected_playbook`, a test that has never existed in code (`git log -S` finds the name only in work/ commits), so the epic can't close on it. Point it at a test that exists for the playbook-selection path, or write that test; the other blocker is dec-af63cc (Will's 2026-10-15 default: reflexes stay narrow).
+
+Checked 2026-10-27: 2026-10-26 sweep: substantively done (all 28 children closed), but can't be formally closed by `work.py close` until the epic's own verify is repointed, since gate_pass_increments_selected_playbook has never existed as a test. Use verified_pass_creates_a_playbook_then_credits_its_repeat instead (see verify_suggestion).

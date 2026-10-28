@@ -8,11 +8,11 @@ severity = "p3"
 goal = "release"
 subsystem = ["roko-core/config"]
 created = 2026-09-01
-updated = 2026-10-15
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gaps-md#from-cli-audit-tmpcli-auditsummarymd/budget-disabled"
-anchors = ["crates/roko-core/src/config/budget.rs:122", "crates/roko-core/src/config/schema.rs::write_example_budget", "crates/roko-cli/src/graph_execution/plan_runner.rs::resolve_budget_ceiling"]
+anchors = ["crates/roko-core/src/config/budget.rs:141 (max_plan_usd default, was :122)", "crates/roko-core/src/config/budget.rs:143 (max_turn_usd default)", "crates/roko-core/src/config/schema.rs::write_example_budget", "crates/roko-cli/src/graph_execution/plan_runner.rs::resolve_budget_ceiling"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -26,3 +26,5 @@ Fix: pick safe non-zero defaults, or require an explicit value at `roko init`. W
 Re-checked 2026-09-29 at d9e79e9d8: unchanged. The defaults are still 0.0, the init example config writes them, and no warning fires when a plan runs with no ceiling.
 
 2026-10-15 decision q-67bb42 (Will's decision 9, the coordinator's recommendation; he can veto it): keep 0.0 (unlimited) as the code default, with no $50 or $200 default and no roko init question. Re-scoped: warn once at plan start when max_plan_usd is 0. The verify now checks that warning instead of non-zero defaults.
+
+Checked 2026-10-27: 2026-10-26: the touched commits to budget.rs/config.rs since filing are unrelated budget features (max_daily_usd enforcement, override ceilings, TaskTier plumbing), not this warning.

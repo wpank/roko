@@ -11,8 +11,9 @@ size = "S"
 hold = "waits on Will's deferred decision(s) 3333, 3346, 3363 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK46"
 anchors = ["benchmarks/viabilitybench"]
 lane = "bench"
@@ -59,3 +60,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK35 (gap-943046), PK38 (gap-894977), PK41 (gap-c2b1a3), PK43 (gap-c1d920), PK44 (gap-85d176), PK45 (gap-a42df2).
 - On hold until Will takes the deferred decision(s) 3333, 3346, 3363 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: sonnet.
+
+Checked 2026-10-27: 2026-10-26: the long touched list is unrelated bulk benchmarks/viabilitybench activity, not task 3366.

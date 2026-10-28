@@ -2,17 +2,23 @@
 id = "spec-6afe5c"
 kind = "spec"
 title = "Backlog Track W — the papers (alongside, after their inputs)"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-10-27
+by = "work sweep 2026-10-27 (static check)"
+evidence = "6 of 7 packages are in work/closed/ (wontfix or superseded), all closed 2026-10-15: PK95=gap-d4a1c1 (superseded), PK97=gap-d2507f (wontfix), PK98=gap-b90650 (wontfix), PK99=gap-9b5582 (superseded), PK100=gap-6aaee9 (superseded), PK101=gap-ac1aed (superseded). PK95's own evidence: \"closed on Will's 'mark everything done' (2026-10-15) ... The rewrite hold has run its course: session roko-55 finished both papers on 10-02 and 10-08\". Only PK96 (gap-a6dab7, figure/table scripts) is in work/done/ as true done work."
 +++
 
 ## Problem
@@ -48,3 +54,5 @@ Every package of this phase is done.
 ## Notes
 
 - Held tasks and deferred decisions are not filed; see the backlog folder.
+
+Checked 2026-10-27: 2026-10-26 sweep: the original premise (write the papers package-by-package against the empirical-draft outline) no longer applies: the 2026-10-02 design-paper rewrite (session roko-55, landed 10-02 and 10-08) replaced the target documents outright, and Will's 2026-10-15 'mark everything done' pass closed 6 of the 7 packages as wontfix/superseded for that reason. Only PK96 (figure/table scripts) is genuinely done work; the rest of this tracker's premise is gone, not satisfied.

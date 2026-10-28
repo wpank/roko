@@ -2,22 +2,29 @@
 id = "spec-7a71d6"
 kind = "spec"
 title = "Epic: turn the cybernetic layer on in safe stages"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "L"
 subsystem = ["roko-cli/graph_execution", "roko-cli/runtime_feedback", "roko-learn/loop_audit", "roko-learn/homeostasis", "roko-learn/self_model", "roko-gate/audit", "roko-core/config"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#decision-2"
-anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::build_graph_feedback_context", "crates/roko-cli/src/runtime_feedback/homeostasis.rs::for_workdir", "crates/roko-core/src/config/self_model.rs::SelfModelMode", "crates/roko-learn/src/loop_audit/mod.rs::beta_fields", "crates/roko-gate/src/audit/feedback.rs", "crates/roko-core/src/config/audit.rs::AuditConfig"]
+anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::build_graph_feedback_context", "crates/roko-cli/src/runtime_feedback/homeostasis.rs::for_workdir", "crates/roko-core/src/config/self_model.rs::SelfModelMode", "crates/roko-learn/src/loop_audit/census.rs::beta_fields", "crates/roko-gate/src/audit/feedback.rs", "crates/roko-core/src/config/audit.rs::AuditConfig"]
 lane = "rust-hot"
 links = { depends_on = ["gap-d76b1b"], blocks = [], related = ["q-6b7cca", "gap-d76b1b", "q-394b7f", "spec-c6e21b", "gap-e464e6", "gap-0132c2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn graph_plan_run_emits_plan_completed_once_per_plan' crates/roko-cli/ && grep -rqw 'fn default_plan_run_registers_m1_in_shadow' crates/roko-cli/ && grep -rqw 'fn self_model_config_defaults_shadow' crates/roko-core/ && grep -rqw 'fn census_estimates_beta_once_n_beta_opportunities' crates/roko-learn/ && grep -rqw 'fn ladder_holds_below_the_minimum_effective_sample' crates/roko-gate/ && grep -rqw 'fn default_audit_config_is_enabled_at_the_decided_rate' crates/roko-core/"
+
+[closed]
+at = 2026-10-27
+commit = "22ac6f06b"
+by = "work sweep 2026-10-27 (static check)"
+evidence = "All 15 plan items (gap-a960a1, bug-56e072, gap-89f985, gap-6bb6d8, bug-dd4524, gap-6f31c3, gap-cad57a, gap-9aca5d, gap-03fcd0, gap-b38ed2, gap-96547f, gap-618548, gap-51d2ca, bug-1e97dc, gap-d76b1b) are in work/done/. The epic's [[verify]] is fully static (six grep -rqw clauses, no cargo) and all six now pass: graph_plan_run_emits_plan_completed_once_per_plan (plan_runner.rs:6735), default_plan_run_registers_m1_in_shadow (plan_runner.rs:7697), self_model_config_defaults_shadow (config/self_model.rs:165), census_estimates_beta_once_n_beta_opportunities (loop_audit/census.rs:4012), ladder_holds_below_the_minimum_effective_sample (audit/feedback.rs:750), default_audit_config_is_enabled_at_the_decided_rate (config/audit.rs:307). Stage 4's loop-audit enforce=true and M1 'on' are explicitly out of scope per the item's own Notes ('do not flip them inside this epic'). The anchor crates/roko-learn/src/loop_audit/mod.rs::beta_fields moved: beta_fields is now a private fn in crates/roko-learn/src/loop_audit/census.rs:1762. Criterion 3 checked 2026-10-27 by a zero-cost run: binary 56077878e (sha256 71c1b6fa…), fresh roko init outside git, fake OpenAI-compatible provider behind env -i fences, [daimon] enabled = true and every other setting at init's defaults, one-task plan via roko plan run: the PlanCompleted daimon save (.roko/daimon/affect.json, 'daimon affect state persisted' from DaimonPersistenceSink), .roko/learn/homeostat-state.json (shadow), .roko/learn/self-model/state-v1.json, .roko/learn/self-model/calibration.json, a predictions.jsonl row and loop-audit.jsonl health rows for L-sec and L-placebo all present; a second run and an affect-off control agree (no affect.json without [daimon] enabled). Repeat steps in scratchpad v7a71d6/run.sh and check.py."
 +++
 
 ## Problem

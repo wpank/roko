@@ -9,8 +9,9 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-5ddf9b task 3339 (wave 5)"
 anchors = ["benchmarks/viabilitybench/analysis/bootstrap.py"]
 lane = "bench"
@@ -53,3 +54,5 @@ The choice is recorded in S09 §4.1, and under (a) the simulator reports VS-rate
 ## Notes
 
 - Raised at gate 5b, 2026-10-03.
+
+Checked 2026-10-27: 2026-10-26 sweep: bootstrap.py's _resample is unchanged (still two-stage, full n_h draws per stratum) and S09 section 4.1's text is unchanged; Will has not yet chosen (a) task-only n_h-1 resampling or (b) accept.

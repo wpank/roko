@@ -2,17 +2,27 @@
 id = "spec-65c828"
 kind = "spec"
 title = "Backlog Phase 1 — safe runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "for id in gap-625195 gap-e00238 gap-d254a3 gap-198c9c gap-843aef gap-4b890c; do grep -rqw \"id = \\\"$id\\\"\" work/done/ || exit 1; done"
+
+[closed]
+at = 2026-10-27
+commit = "730b43d91"
+by = "work sweep 2026-10-27 (static check)"
+evidence = "All 6 packages of this phase are closed in work/done/: PK01=gap-625195 (509e3e807), PK02=gap-e00238 (2724386ea), PK03=gap-d254a3 (059450273), PK04=gap-198c9c (e53136640), PK05=gap-843aef (d426c86d7), PK06=gap-4b890c (730b43d91), all closed 2026-10-02/03."
 +++
 
 ## Problem

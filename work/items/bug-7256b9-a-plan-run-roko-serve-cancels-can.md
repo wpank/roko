@@ -9,8 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-serve/plans"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "roko-checks, bug-1d09e8 serve verification (tmp/hermes-roko-v5/findings/roko-checks.md), 2026-10-15"
 discovered_from = "bug-1d09e8"
 anchors = ["crates/roko-serve/src/routes/plans/run_control.rs"]
@@ -63,3 +64,5 @@ published regardless of the cancel.
 ## Done when
 
 `[[verify]]` passes: a cancelled run that settles at once publishes no "completed with task-level failures" error.
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. Four touching commits (resumable_run, refusal-before-start, planner questions) did not add a cancel check to the failure-message branch.

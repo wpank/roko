@@ -3,13 +3,15 @@ id = "gap-f30b8e"
 kind = "gap"
 title = "End-to-end acceptance test: a fixture plan runs through the ladder on real cheap models and merges green"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-10-19
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e11"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (GP)"
 anchors = ["crates/roko-cli/tests/golden_path_acceptance.rs", "crates/roko-cli/tests/fixtures/golden_path/"]
@@ -138,3 +140,5 @@ Filed from the rerun:
 - find-fc5cdd (p2): a Rust task's gate is V0, though its spec asks for fmt and a working doc example;
 - bug-2504b3 (p2): the audit charged T4's defect to T5 (`false_green` in runs 1 and 2);
 - bug-3f40d2 (p3): a retry diagnosis named a file that does not exist.
+
+Checked 2026-10-27: 2026-10-26 sweep: bug-ba0c40 (undeclared build output committed/delivered) fixed at 953af63d7, and golden_path_acceptance.rs already drops CARGO_TARGET_DIR (line 317). Both items the 2026-10-19 note said pass^3 needed are now satisfied in code. Still needs an actual new pass^3 live rerun (none recorded yet) before this can close.

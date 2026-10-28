@@ -9,8 +9,9 @@ goal = "tooling"
 size = "S"
 subsystem = ["tests"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-3 follow-up reports 2026-10-02 (w3-pk73 gap-5e9292)"
 discovered_from = "gap-5e9292 (PK73, domains-and-assistant runner work)"
 anchors = ["tests/endpoint_smoke.py", "crates/roko-serve/src/routes/run.rs::start_run"]
@@ -83,3 +84,5 @@ later gated-one-task-plan change (`f0c15452d`) or the summary route (`f4ade3ffc`
 - This is a Python smoke script, not a Rust crate; no `cargo test` guard applies. The verify below is a static
   check for CI wiring and summary-route coverage, not a live run — running it live is part of the Plan, for
   whoever picks this item up.
+
+Checked 2026-10-27: 2026-10-26: crates/roko-serve/src/routes/run.rs gained further behavior since filing (run naming, prompt queueing behind the live run, --domain pack selection, /mcp annotation) that the still-unrun script does not account for; the gap between the script and the route has widened, not narrowed.

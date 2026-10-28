@@ -9,11 +9,12 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "backlog wave reports 2026-10-02 (PK28 gap-c06ff3)"
 discovered_from = "gap-c06ff3 (backlog task 7107); independently reproduced, see body"
-anchors = ["benchmarks/viabilitybench/audit/estimate.py::estimate", "benchmarks/viabilitybench/audit/lottery.py::tilt", "benchmarks/viabilitybench/audit/tests/test_estimate.py::test_hajek_ci_covers_theta_in_1000_replays"]
+anchors = ["benchmarks/viabilitybench/audit/estimate.py::estimate", "benchmarks/viabilitybench/audit/lottery.py::tilt", "benchmarks/viabilitybench/audit/tests/test_estimate.py::test_wilson_interval_meets_coverage_in_every_cell"]
 lane = "bench"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
@@ -109,3 +110,5 @@ Pick one (or combine):
   independent reproduction, not a re-quote of PK28's numbers, since my scaled-window construction differs slightly
   from whatever PK28 used — the qualitative finding (tilted > uniform bias, risk of crossing 0.01 at a ~60-unit
   rho=0.10 first slice) is what's load-bearing here, not the exact decimal.
+
+Checked 2026-10-27: 2026-10-26 sweep: unrelated commit 9f469522c (gap-a499aa, same day) renamed the anchored test while fixing CI coverage via Wilson-everywhere; the bias-at-small-tilted-window problem this item describes is untouched by that change.

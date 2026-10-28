@@ -9,8 +9,9 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-19
-updated = 2026-10-19
-last_verified = 2026-10-19
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v7-hermes-pilot#C-p0-run1"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, run 6988f0b8, T3 try 4)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-core/src/config/gates.rs::DiffScope"]
@@ -77,3 +78,5 @@ fails it. Checked by the test in `[[verify]]`.
   - spec-9230a9: the attempt-diff epic, and Will's decision;
   - gap-abbd22: the attempt-diff check;
   - bug-c22bd9: without a finished build inside a try, the agent couldn't see what its edit broke.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: the three touched commits in red_flags.rs are unrelated features (bug-cbbaa8 hand-off continuation, bug-ba0c40 build-output scoping, a reasoning-cutoff re-ask); none re-runs an earlier task's checks when a later try breaks its file. Still open as described.

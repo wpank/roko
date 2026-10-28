@@ -9,8 +9,9 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
-updated = 2026-10-15
-last_verified = 2026-10-13
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::run_verify_steps", "crates/roko-cli/src/graph_task_dispatch/ladder.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-369c21"], supersedes = [], duplicate_of = "" }
@@ -74,3 +75,5 @@ Evidence: run `e7fef800` in the dogfood's scratch workspace, saved by the plugin
 which `bug-103bce` made available.
 
 2026-10-15 (status-quo assessment, finding 9): still open at b42578bab. No commit since 2026-10-13 touches `graph_task_dispatch/verification.rs` or `plan_generate/`, and no other item links here. The assessment's 49-run sweep of the 10-13/10-14 dogfood workspaces found `ladder_exhausted` twice, both from this cause, and the spec gate scored the uncheckable task `allow` (`tmp/status-quo/2026-10-15/programme/E2a-matrix-retag-AU-EX-IS-QA-RC.md`, rows AU3, EX6, EX7, QA1). Decision 5 (2026-10-15) funds the golden-path live reruns (gap-c013c5, then gap-f30b8e). A missing command retried up the ladder would burn that money, so this should land first.
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. 17 commits touched ladder.rs since filing (alternates draw, failover substitutes, per-rung time bounds, rung diagnostics) but none classify a missing-command exit code as an environment/check defect rather than an agent failure.

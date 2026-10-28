@@ -11,8 +11,9 @@ size = "S"
 hold = "waits on Will's deferred decision(s) 9303 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["roko-serve/routes"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK91"
 anchors = ["crates/roko-serve/src/routes/learning/mod.rs"]
 lane = "rust-cold"
@@ -68,3 +69,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   (`budget.rs:2095`). No caller sets a non-default overlay anywhere. When this task (8132) is
   picked back up, its admin route should take the handle from these two methods rather than
   inventing a new ceiling mechanism.
+
+Checked 2026-10-27: 2026-10-26: unchanged since the 2026-10-04 follow-up note; still on hold for decision 9303.

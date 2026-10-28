@@ -3,13 +3,15 @@ id = "spec-e57870"
 kind = "spec"
 title = "Epic: specs a cheap model can execute"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-cli/plan_generate", "roko-cli/plan_validate", "roko-cli/plan_policy", "benchmarks/viabilitybench"]
 created = 2026-09-29
-updated = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #9-10; tldr/04 steps 1-3)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_validate.rs::validate_tasks_file", "crates/roko-cli/src/task_parser.rs::TaskDef"]
@@ -131,3 +133,5 @@ This is the implementation plan.
 - Task granularity is decision 2 in tldr/05 §6 (default: size by the executor tier's measured pass rate).
   gap-1d1fa6 encodes it.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. Generation lives in `crates/roko-cli/src/plan_generate/pipeline.rs` (moved from `prd.rs`; `generate_plan_from_prd*` are gone and `PlanSource` has `Text` and `Regenerate`), `roko do`'s bands are `roko run` (one task) and `roko run --plan`, and serve generates through `CliRuntime::generate_plan_from_prompt`. References to `prd.rs` and `roko do` above are historical.
+
+Checked 2026-10-27: Update dec-50192e's checkbox from [ ] to [x]: it closed 2026-10-15 (commit b883db4e6) with decision 'not yet' (plan-validate CI still does not run --strict). find-70edcb correctly stays open/held. The epic's own closing fixture test has not been written.

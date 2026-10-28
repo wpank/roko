@@ -9,9 +9,9 @@ size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-10-02
-last_verified = 2026-10-01
-last_verified_rev = "6531d787e"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 discovered_from = "audit:tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 anchors = ["crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker", "crates/roko-agent/src/safety/witness.rs::WitnessLogger", "crates/roko-agent/src/safety/provenance.rs::CustodyLogger", "crates/roko-cli/src/custody.rs::log_chained", "crates/roko-agent/src/dispatcher/mod.rs::ToolDispatcher::dispatch", "crates/roko-agent/src/provider/mod.rs::build_tool_dispatcher_with_audit", "crates/roko-graph/src/snapshot.rs::EXT_SAFETY_PROVENANCE", "crates/roko-cli/src/graph_checkpoint.rs::refresh_gate_verdicts"]
@@ -207,3 +207,5 @@ Imported without verification from:
 How to verify: Check: Every live tool/dispatch effect has an acknowledged pre-effect custody/witness record and a terminal result/denial record.; Signal-level taint ancestry and policy fingerprints survive process restart.; Restore occurs before new scheduling… [evidence: own status: Blocked on #208 and #251; #282's registry contract is already frozen and aggregate #282 completion follows…]
 
 Verified 2026-09-28: still true. The cited files exist under crates/roko-agent/src/safety/. `TaintTracker` has atomic save/load (taint_propagation.rs:277-338), but no production code instantiates or restores it. `WitnessDag` and `WitnessLogger` have no users outside witness.rs (only re-exported at safety/mod.rs:110). `CustodyLogger` is used only by the read-side `roko knowledge custody list/show/verify` commands (crates/roko-cli/src/custody.rs:75, :150; commands/knowledge.rs:282-290). Live dispatch neither writes pre-effect witness/custody records nor persists taint ancestry.
+
+Checked 2026-10-27: 2026-10-26 sweep: steps 1-6 (sink, dispatcher hook, checkpoint extension, restore/fail-closed, replay idempotency via record identity, wiring into every Graph plan run) are merged to main, not just the work/gap-7147bb branch; the three verify checks (two greps plus EXT_SAFETY_PROVENANCE) all pass statically. Remaining: the policy and contract fingerprints in GraphProvenanceSink::summary (no policy_fingerprint/contract_fingerprint symbol anywhere), and no recorded live run showing `roko knowledge custody list` populated from a real Graph run (the Done-when bullet). Status field should likely become in_progress/near-done rather than plain open; consider closing once the two remaining pieces land.

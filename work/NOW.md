@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 81 changed since checked · 3 mentioned in commits · 1 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 82 changed since checked · 3 mentioned in commits · 1 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -36,7 +36,7 @@ _20 more open · `goal = "truth"`_
 - **P1** [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) Epic: golden-path acceptance tests [spec] · size L · verified 2026-10-27
 - **P1** [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) Epic: specs a cheap model can execute [spec] · size L · verified 2026-10-27
 
-_14 more open · on hold: gap-634954 · `goal = "golden-path"`_
+_12 more open · 1 blocked · on hold: gap-634954 · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 

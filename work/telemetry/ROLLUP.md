@@ -2,24 +2,24 @@
 
 Not for workers: no view, skill prompt or `work.py next` reads this, and no metric here is a target.
 
-DEFINITIONS.md sha256 `ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720` · report date 2026-10-28 · HEAD `027ff7be6` · prices `prices-2026-09-28`. Every figure is observational; costs are API-equivalent (subscription). Percentiles are by nearest rank; times are UTC.
+DEFINITIONS.md sha256 `ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720` · report date 2026-10-28 · HEAD `89ad4f685` · prices `prices-2026-09-28`. Every figure is observational; costs are API-equivalent (subscription). Percentiles are by nearest rank; times are UTC.
 
-Inputs: 1827 live events, 705 backfill events (tabled apart), 0 invalid event rows skipped, 0 harvested call rows.
+Inputs: 1832 live events, 705 backfill events (tabled apart), 0 invalid event rows skipped, 0 harvested call rows.
 
 ## All merged items
 
 | Metric | Value | Coverage |
 |---|---|---|
-| Merged items | 211 | |
-| Attempts (1 / 2 / 3+; mean) | 164 / 3 / 0; 1.02 | 167 of 211 merged items (79%) |
-| First-try merges | 141/150 (94%) | 150 of 211 merged items (71%) |
-| Claim-to-merge hours (median / p90) | 4.97 / 12.55 | 167 of 211 merged items (79%) |
-| Conflict rate (abandoned over a conflict: 2) | 1/171 (1%) | 171 of 211 merged items (81%) |
-| Post-merge verify failures | 2/159 (1%) | 159 of 211 merged items (75%) |
-| Escapes (161 pending) | 0/50 (0%) | 50 of 211 merged items (24%) |
-| Interventions per item (items with one) | 0.04 (5/132 (4%)) | 132 of 211 merged items (63%) |
-| Unassisted merge share | 127/132 (96%) | 132 of 211 merged items (63%) |
-| Cost per merged item, USD (median / p90; total) | – / –; 0 | 0 of 211 merged items (0%) |
+| Merged items | 212 | |
+| Attempts (1 / 2 / 3+; mean) | 164 / 4 / 0; 1.02 | 168 of 212 merged items (79%) |
+| First-try merges | 141/152 (93%) | 152 of 212 merged items (72%) |
+| Claim-to-merge hours (median / p90) | 4.97 / 15.91 | 168 of 212 merged items (79%) |
+| Conflict rate (abandoned over a conflict: 2) | 1/172 (1%) | 172 of 212 merged items (81%) |
+| Post-merge verify failures | 2/161 (1%) | 161 of 212 merged items (76%) |
+| Escapes (162 pending) | 0/50 (0%) | 50 of 212 merged items (24%) |
+| Interventions per item (items with one) | 0.06 (6/133 (5%)) | 133 of 212 merged items (63%) |
+| Unassisted merge share | 127/133 (95%) | 133 of 212 merged items (63%) |
+| Cost per merged item, USD (median / p90; total) | – / –; 0 | 0 of 212 merged items (0%) |
 | Orchestration overhead, USD (per merged item) | 0 (0.00) | 0 unjoined call rows |
 
 ## By day of first merge
@@ -39,14 +39,14 @@ Inputs: 1827 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | 2026-10-21 | 8 | 7/8 (88%) | 3.96 | – | 8 of 8 merged items (100%) |
 | 2026-10-26 | 24 | 14/14 (100%) | 5.66 | – | 14 of 24 merged items (58%) |
 | 2026-10-27 | 25 | 19/19 (100%) | 3.02 | – | 19 of 25 merged items (76%) |
-| 2026-10-28 | 3 | 1/2 (50%) | 33.47 | – | 2 of 3 merged items (67%) |
+| 2026-10-28 | 4 | 1/4 (25%) | 29.80 | – | 4 of 4 merged items (100%) |
 
 
 ## By executor
 
 | Group | Merged | First-try | Claim→merge h (median) | Cost USD (median) | Coverage (first-try) |
 |---|---|---|---|---|---|
-| claude-agent | 170 | 141/150 (94%) | 4.97 | – | 150 of 170 merged items (88%) |
+| claude-agent | 171 | 141/152 (93%) | 4.97 | – | 152 of 171 merged items (89%) |
 | claude-session | 8 | 0/0 | – | – | 0 of 8 merged items (0%) |
 | unknown | 33 | 0/0 | 3.69 | – | 0 of 33 merged items (0%) |
 
@@ -63,11 +63,11 @@ Inputs: 1827 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | finding × ? | 2 | 0/0 | 3.69 | – | 0 of 2 merged items (0%) |
 | finding × L | 1 | 1/1 (100%) | 3.02 | – | 1 of 1 merged items (100%) |
 | finding × M | 3 | 2/2 (100%) | 15.91 | – | 2 of 3 merged items (67%) |
-| finding × S | 2 | 2/2 (100%) | 16.60 | – | 2 of 2 merged items (100%) |
+| finding × S | 3 | 2/3 (67%) | 26.13 | – | 3 of 3 merged items (100%) |
 | gap × ? | 3 | 0/0 | – | – | 0 of 3 merged items (0%) |
 | gap × L | 8 | 4/7 (57%) | 3.73 | – | 7 of 8 merged items (88%) |
 | gap × M | 32 | 20/21 (95%) | 4.97 | – | 21 of 32 merged items (66%) |
-| gap × S | 54 | 43/46 (93%) | 4.97 | – | 46 of 54 merged items (85%) |
+| gap × S | 54 | 43/47 (91%) | 4.97 | – | 47 of 54 merged items (87%) |
 | question × ? | 1 | 0/0 | – | – | 0 of 1 merged items (0%) |
 | question × L | 1 | 0/0 | – | – | 0 of 1 merged items (0%) |
 | question × S | 2 | 2/2 (100%) | 15.91 | – | 2 of 2 merged items (100%) |
@@ -83,7 +83,7 @@ Inputs: 1827 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | bench | 41 | 34/38 (89%) | 4.97 | – | 38 of 41 merged items (93%) |
 | docs | 10 | 9/9 (100%) | 7.82 | – | 9 of 10 merged items (90%) |
 | frontend | 4 | 4/4 (100%) | 3.60 | – | 4 of 4 merged items (100%) |
-| none | 69 | 36/38 (95%) | 4.14 | – | 38 of 69 merged items (55%) |
+| none | 70 | 36/40 (90%) | 4.33 | – | 40 of 70 merged items (57%) |
 | paper | 10 | 5/6 (83%) | 6.40 | – | 6 of 10 merged items (60%) |
 | rust-cold | 39 | 29/29 (100%) | 4.97 | – | 29 of 39 merged items (74%) |
 | rust-hot | 35 | 21/23 (91%) | 4.97 | – | 23 of 35 merged items (66%) |
@@ -92,7 +92,7 @@ Inputs: 1827 live events, 705 backfill events (tabled apart), 0 invalid event ro
 
 ## Coverage
 
-Items closed done without a merge (not counted): 1178 (bug-009c0e, bug-012303, bug-017c2d, bug-019f02, bug-02d5ad, bug-02e264, bug-0320da, bug-045773, bug-0522e8, bug-053644, bug-056b40, bug-05a434, bug-05d1ac, bug-06ac5f, bug-06bd18, bug-06e2d1, bug-07bc75, bug-082810, bug-08d912, bug-09690f, bug-09e21e, bug-09fac4, bug-0a1729, bug-0a7ec1, bug-0a934f, bug-0b668a, bug-0b7695, bug-0b7c81, bug-0b997a, bug-0bc2b4, bug-0bc728, bug-0c0747, bug-0c7e11, bug-0c7f25, bug-0d9ac4, bug-0e0dd9, bug-0eb8e2, bug-0f30c7, bug-0f8948, bug-0fe64a, …).
+Items closed done without a merge (not counted): 1179 (bug-009c0e, bug-012303, bug-017c2d, bug-019f02, bug-02d5ad, bug-02e264, bug-0320da, bug-045773, bug-0522e8, bug-053644, bug-056b40, bug-05a434, bug-05d1ac, bug-06ac5f, bug-06bd18, bug-06e2d1, bug-07bc75, bug-082810, bug-08d912, bug-09690f, bug-09e21e, bug-09fac4, bug-0a1729, bug-0a7ec1, bug-0a934f, bug-0b668a, bug-0b7695, bug-0b7c81, bug-0b997a, bug-0bc2b4, bug-0bc728, bug-0c0747, bug-0c7e11, bug-0c7f25, bug-0d9ac4, bug-0e0dd9, bug-0eb8e2, bug-0f30c7, bug-0f8948, bug-0fe64a, …).
 
 Items merged outside the skills (no claim event): gap-8d2c79, gap-d1d92c, gap-96f7ed, gap-60654d, bug-31438d, bug-35379d, gap-8cb382, bug-62e3f4, bug-0ba3d9, bug-633b68, gap-0f3980, bug-779ae7, bug-ba8d42, gap-751ac9, bug-dfb28f, bug-8a78e1, bug-8417d9, bug-9bffe2, bug-2a2f63, bug-ea7723, bug-bb3262, bug-fa1537, gap-3aa9cb, gap-9eebcb, bug-35c901, q-1faa0c, dec-1089ec, gap-231407, q-46a488, bug-a804b1, bug-f090fc, find-2b34c8, gap-959a7c, gap-ac398f, gap-56f761, gap-20301d, bug-374384, bug-e33b7e, bug-bce0ed, gap-b856d3, gap-d91691, bug-693bb3, bug-f6cd5a, gap-326182.
 

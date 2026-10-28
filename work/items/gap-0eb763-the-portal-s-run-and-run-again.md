@@ -1,7 +1,7 @@
 +++
 id = "gap-0eb763"
 kind = "gap"
-title = "The portal's Run and Run again start a plan over without asking when its last run can be resumed: execute with no body runs fresh (contract P-7), so passed tasks, or a run whose delivery a crash cut, are set aside and redone; read resumable_run first and offer Resume or Start over (design B; option A waits on Will)"
+title = "The portal's Run and Run again start a plan over without asking when its last run can be resumed: execute with no body runs fresh (contract P-7), so passed tasks, or a run whose delivery a crash cut, are set aside and redone; read resumable_run first and offer Resume or Start over (design B, Will's call of 2026-10-27: P-7 kept, option A declined)"
 status = "open"
 triage = "verified"
 severity = "p3"
@@ -9,12 +9,15 @@ goal = "core"
 size = "S"
 subsystem = ["apps/portal"]
 created = 2026-10-27
-updated = 2026-10-27
+updated = 2026-10-28
 last_verified = 2026-10-27
 source = "round-v7 roko-ladder, moved from bug-4fadf8's Run button half, the lead's call (2026-10-27)"
 discovered_from = "agent:roko-recovery (round v7 kill matrix) and agent:roko-ladder"
 anchors = ["apps/portal/src/components/stage/PlanView.tsx", "apps/portal/src/api/queries.ts::useRunPlan", "crates/roko-serve/src/routes/plans/reads.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-4fadf8", "bug-cbdb6b", "gap-b78706"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqF --include='*.test.tsx' 'asks before a fresh run sets a resumable run aside' apps/portal/src && (cd apps/portal && npx vitest run src/components/stage/runChoice.accept.test.tsx)"
 +++
 
 ## Problem
@@ -69,13 +72,9 @@ route keeps P-7, so the portal is the one that has to ask.
 3. Test: a plan whose `resumable_run` is set asks before running. Resume posts `{resume: true}`, and Start over
    posts no body. A plan without one runs at once.
 
-**Option A waits on Will** (a decision, not part of this item). Under A, roko serve would answer a body-less
-`execute` over a resumable run with 409 `resumable_run`, the refusal chat hosts get, unless the body says `resume`
-or `fresh`.
-- Gain: every HTTP client gets the same no-silent-discard rule, scripts included.
-- Cost: it reverses contract P-7, and the portal must handle the 409.
-
-If Will takes A, step 1 becomes "on 409 `resumable_run`, ask", and Start over sends `{fresh: true}`.
+**Will's call (2026-10-27): contract P-7 is kept, and option B is chosen.** A body-less `execute` still runs fresh,
+and the portal asks first, as above. Option A is declined: roko serve answering a body-less `execute` over a
+resumable run with 409 `resumable_run`.
 
 ## Done when
 
@@ -84,6 +83,6 @@ If Will takes A, step 1 becomes "on 409 `resumable_run`, ask", and Start over se
 
 ## Notes
 
-- Moved here from bug-4fadf8, which closed on the chat half. Nobody owns apps/portal in round v7, so it isn't coded
-  this round.
+- Moved here from bug-4fadf8, which closed on the chat half. Will's call of 2026-10-27 put it in round v7 after all,
+  so it is coded this round.
 - The Hermes plugin never calls `execute`. It asks from `resumable_run` already (P-57).

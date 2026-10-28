@@ -795,9 +795,7 @@ mod tests {
         // A moment named in the sentence, after both comparisons, sets them apart too.
         assert_eq!(
             code("`next_id(\"u\")` returns `1`; `next_id(\"u\")` returns `2` on the second call."),
-            format!(
-                "{change}assert next_id(\"u\") == 1\n{change}assert next_id(\"u\") == 2\n"
-            )
+            format!("{change}assert next_id(\"u\") == 1\n{change}assert next_id(\"u\") == 2\n")
         );
         // A moment in another sentence does not.
         assert_eq!(

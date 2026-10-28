@@ -1425,6 +1425,60 @@ fn step_checks(acceptance: &[String], step: &VerifyStep) -> Vec<String> {
         .collect()
 }
 
+/// The source checks with commands of their own that no step of `plan`
+/// runs, by the index of the task that owns each ([`owner_of`]).
+fn unrun_checks<'a>(
+    plan: &TasksFile,
+    checks: &'a [SourceCheck],
+) -> BTreeMap<usize, Vec<&'a SourceCheck>> {
+    let mut owned: BTreeMap<usize, Vec<&SourceCheck>> = BTreeMap::new();
+    for check in checks.iter().filter(|check| !check.plan_level) {
+        let Some(run) = check.run.as_deref() else {
+            continue;
+        };
+        let ran = plan
+            .tasks
+            .iter()
+            .flat_map(|task| &task.verify)
+            .any(|step| runs_command(&step.command, run));
+        if let (false, Some(owner)) = (ran, owner_of(plan, check, run)) {
+            owned.entry(owner).or_default().push(check);
+        }
+    }
+    owned
+}
+
+/// The verify steps each task of `plan` will have, by index, once
+/// [`assign_runs`] gives each command of the source checks it owns a step of
+/// its own (gap-4cca5f): its steps, and one more for each such command,
+/// unless one of its steps cannot pass as written (`unrunnable`) and runs
+/// them all instead. [`super::sizes::raise_tiers_for`] raises the task for
+/// them before they are placed.
+pub(super) fn steps_wanted(
+    plan: &TasksFile,
+    checks: &[SourceCheck],
+    unrunnable: &[Unrunnable],
+) -> Vec<usize> {
+    let mut wanted: Vec<usize> = plan.tasks.iter().map(|task| task.verify.len()).collect();
+    for (index, owned) in unrun_checks(plan, checks) {
+        let task = &plan.tasks[index];
+        let stuck = unrunnable
+            .iter()
+            .any(|step| step.task == task.id && (1..=task.verify.len()).contains(&step.step));
+        if stuck {
+            continue;
+        }
+        let mut runs: Vec<&str> = Vec::new();
+        for run in owned.iter().filter_map(|check| check.run.as_deref()) {
+            if !runs.contains(&run) {
+                runs.push(run);
+            }
+        }
+        wanted[index] += runs.len();
+    }
+    wanted
+}
+
 /// Run each source check whose own command roko knows, and that no step
 /// runs, in the task that owns it (bug-72dc0d). The planner groups the work
 /// and words it; roko runs the source's commands, so how many of them a plan
@@ -1443,22 +1497,8 @@ pub(super) fn assign_runs(
     max_steps: impl Fn(&TaskDef) -> usize,
 ) -> Vec<String> {
     let task_runs = source_runs(checks, false);
-    let mut owned: BTreeMap<usize, Vec<&SourceCheck>> = BTreeMap::new();
-    for check in checks.iter().filter(|check| !check.plan_level) {
-        let Some(run) = check.run.as_deref() else {
-            continue;
-        };
-        let ran = plan
-            .tasks
-            .iter()
-            .flat_map(|task| &task.verify)
-            .any(|step| runs_command(&step.command, run));
-        if let (false, Some(owner)) = (ran, owner_of(plan, check, run)) {
-            owned.entry(owner).or_default().push(check);
-        }
-    }
     let mut assigned = Vec::new();
-    for (index, owned) in owned {
+    for (index, owned) in unrun_checks(plan, checks) {
         let limit = max_steps(&plan.tasks[index]);
         let task = &mut plan.tasks[index];
         let mut runs: Vec<&str> = Vec::new();

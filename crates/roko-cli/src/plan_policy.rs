@@ -237,6 +237,13 @@ impl TierSizeLimits {
 
     /// Each limit `task` exceeds, as `"6 files (limit 3)"`.
     pub(crate) fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
+        self.exceeded_with(task, task.verify.len())
+    }
+
+    /// [`Self::exceeded_by`] with `task` counted at `steps` verify steps: the
+    /// steps it will have once each check of its source has one of its own
+    /// (gap-4cca5f).
+    pub(crate) fn exceeded_with(self, task: &TaskDef, steps: usize) -> Vec<String> {
         let mut over = Vec::new();
         if task.files.len() > self.max_files {
             over.push(format!(
@@ -258,10 +265,9 @@ impl TierSizeLimits {
                 self.max_description_words
             ));
         }
-        if task.verify.len() > self.max_verify_steps {
+        if steps > self.max_verify_steps {
             over.push(format!(
-                "{} verify steps (limit {})",
-                task.verify.len(),
+                "{steps} verify steps (limit {})",
                 self.max_verify_steps
             ));
         }

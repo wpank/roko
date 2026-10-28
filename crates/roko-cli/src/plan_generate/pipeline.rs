@@ -2048,6 +2048,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // bug-72dc0d: each source check whose command roko knows runs in
                 // the task that owns it, whatever command the planner wrote.
                 let stuck = runnable::problems(&parsed, workdir_ref, &probe);
+                // gap-4cca5f: a task takes the tier it will have first, for its
+                // size and a step for each check it is given, so the checks get
+                // steps of their own up to that tier's room.
+                let wanted = source_checks::steps_wanted(&parsed, &checks, &stuck);
+                repairs.extend(sizes::raise_tiers_for(&mut parsed, policy, &wanted));
                 repairs.extend(source_checks::assign_runs(
                     &mut parsed,
                     &checks,
@@ -2083,7 +2088,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 ));
                 // gap-4dd77d: a task over its tier's size limits takes the
                 // smallest tier it fits, as the size check suggests, instead
-                // of a new draft; a task no tier fits still goes back.
+                // of a new draft; a task no tier fits still goes back. The
+                // raise before assign_runs left out the steps added since.
                 repairs.extend(sizes::raise_tiers(&mut parsed, policy));
                 let validated = if repairs.is_empty() {
                     validated
@@ -2117,8 +2123,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // 3225 (decision 3203): a task over the size limits of every
                 // tier is a spec defect the planner fixes, by a split, before
                 // a cheap model meets it. One a higher tier fits was raised
-                // above (gap-4dd77d, the round v7 lead's call): a new draft
-                // cost a planner call and, in phase 4.3, the checks the
+                // above (gap-4dd77d, which Will kept on 2026-10-27 over 3203's
+                // rule that tiers are never raised automatically): a new
+                // draft cost a planner call and, in phase 4.3, the checks the
                 // regeneration had put back.
                 let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
                 if !size_issues.is_empty() {
@@ -5383,6 +5390,97 @@ mod tests {
         assert_eq!(
             (checks.kept, checks.dropped, checks.missing, checks.total),
             (17, 0, 0, 17),
+            "{checks:?}"
+        );
+    }
+
+    /// gap-4cca5f: round v7's phase-5.2 draft that dropped its four regression
+    /// checks (Undertow ac16976, fixture `p5_2_criteria/drops.toml`). roko
+    /// refuses the drops (gap-8b1f4f) and gives each check a step of its own
+    /// while the task has room (gap-77220d), but it measured that room against
+    /// the planner's mechanical tier, 3 steps: P5.2.07 and P5.2.08 joined one
+    /// step that ran `tools/render-demos.sh` twice, and the task was raised
+    /// only to focused, for its 5 files, after. The tier is now raised first,
+    /// for its files and a step for each check it runs: T1 is integrative, as
+    /// the spec's own draft is, and each check has a step of its own.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_checks_get_the_step_room_of_the_raised_tier() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p5_2_criteria");
+        let spec = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let draft = std::fs::read_to_string(fixture.join("drops.toml")).expect("the drops draft");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        cmake_workspace(workdir);
+        let code = "// code\n".repeat(40);
+        for file in [
+            "core/src/presets.cpp",
+            "core/include/undertow/params.h",
+            "artifacts/audio/init.wav",
+            "artifacts/audio/sub-pure-foundation.wav",
+            "artifacts/audio/bass-hypnotic-roller.wav",
+            "artifacts/audio/rumble-dark-room.wav",
+        ] {
+            let path = workdir.join(file);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, &code).expect("a file");
+        }
+        std::fs::create_dir_all(workdir.join("docs/specs")).expect("docs");
+        std::fs::write(workdir.join("docs/specs/phase-5.2-presets.md"), &spec).expect("the spec");
+        for script in ["tools/spec.sh", "tools/check.sh", "tools/render-demos.sh"] {
+            let path = workdir.join(script);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("directory");
+            std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("a script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("permissions");
+        }
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), &draft);
+        let source = PlanSource::Text {
+            text: &spec,
+            kind: "prompt",
+        };
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "phase-5-2-presets", workdir)
+        };
+        let (_, outcome) = generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+        let line = "T1: tier mechanical became integrative, to fit its 5 files (limit 3), 5 verify \
+                    steps (limit 3), once each check of its source has a step of its own";
+        assert!(
+            outcome.repairs.iter().any(|repair| repair == line),
+            "{:#?}",
+            outcome.repairs
+        );
+        let written = TasksFile::parse(&workdir.join("plans/phase-5-2-presets/tasks.toml"))
+            .expect("the plan");
+        let task = &written.tasks[0];
+        assert_eq!(task.tier, "integrative");
+        let commands: Vec<&str> = task
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "tools/spec.sh 5_2 presets",
+                "tools/spec.sh 5 presets",
+                "tools/spec.sh 5_1 render",
+                "tools/render-demos.sh && tools/spec.sh 5_1 demos",
+                "tools/render-demos.sh && tools/spec.sh 5 demos",
+            ]
+        );
+        let checks = outcome
+            .source_checks
+            .expect("the spec's checks are reported");
+        assert_eq!(
+            (checks.kept, checks.dropped, checks.missing, checks.total),
+            (9, 0, 0, 9),
             "{checks:?}"
         );
     }

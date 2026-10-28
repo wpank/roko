@@ -1,20 +1,23 @@
 +++
 id = "gap-4cca5f"
 kind = "gap"
-title = "assign_runs counts a task's step room against the planner's tier before raise_tiers lifts it for its files, so missing checks still join an && step and the task may start a rung lower (phase 5.2's drops draft: P5.2.07-08 joined, render-demos twice, T1 focused not integrative); waits on Will's call on decision 3203"
-status = "blocked"
+title = "assign_runs counts a task's step room against the planner's tier before raise_tiers lifts it for its files, so missing checks still join an && step and the task may start a rung lower (phase 5.2's drops draft: P5.2.07-08 joined, render-demos twice, T1 focused not integrative)"
+status = "open"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-26
-updated = 2026-10-26
+updated = 2026-10-28
 last_verified = 2026-10-26
 source = "round-v7-roko-planner#phase-5-2-replay"
 discovered_from = "agent:roko-planner (round v7, phase 5.2 $0 replay on roko-main-00ecbd158), the lead's ask"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/plan_generate/sizes.rs::raise_tiers"]
-links = { depends_on = [], blocks = [], related = ["gap-4dd77d", "gap-77220d", "gap-8b1f4f"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-4dd77d", "gap-77220d", "gap-8b1f4f", "gap-de0b87"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn missing_checks_get_the_step_room_of_the_raised_tier' crates/roko-cli/src && cargo test -p roko-cli --lib missing_checks_get_the_step_room_of_the_raised_tier"
 +++
 
 ## Problem
@@ -47,14 +50,13 @@ For the same spec, the joined step decides both how failures read and which rung
 
 ## Plan
 
-**Blocked: waits on Will's call on decision 3203** ("tiers are never raised automatically", 1d4116847,
-2026-10-03), which gap-4dd77d reversed. The lead has put it to Will.
+Unblocked 2026-10-27: Will keeps gap-4dd77d's raise, which supersedes decision 3203's rule that tiers are never
+raised automatically (1d4116847; the dated note is in gap-de0b87).
 
-- If Will keeps gap-4dd77d: raise a task's tier for its files, LOC and description before assign_runs, so missing
-  checks get steps up to the tier the task will have. The step raise stays last.
-- If he reverts gap-4dd77d, this item is moot.
+- Raise a task's tier before assign_runs, as raise_tiers does last, so missing checks get steps up to the tier the
+  task will have. The step raise stays last.
 
 ## Done when
 
 Phase 5.2's drops draft, replayed, gives P5.2.05-08 steps of their own up to the raised tier's limit, and no step
-runs render-demos twice.
+runs render-demos twice. The `[[verify]]` passes.

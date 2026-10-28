@@ -3,13 +3,15 @@ id = "bug-3f3990"
 kind = "bug"
 title = "The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["roko-cli/runner", "roko-plugin"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-ci2's report on find-8cc7ac)"
 anchors = ["crates/roko-cli/src/runner/extension_loader.rs::macos_seatbelt_profile", "crates/roko-cli/src/runner/extension_loader.rs", "crates/roko-plugin/src/manifest.rs"]
@@ -56,3 +58,5 @@ At ad391f99a the two platforms differ as described. No test covers the firejail 
 ## Notes
 
 - Check the flag semantics against the firejail version CI installs. `--private=` sets the home directory; it doesn't restrict writes elsewhere.
+
+Checked 2026-10-27: 2026-10-26 sweep: still open; the two touching commits only changed manifest.rs doc comments and the PRD-pipeline removal, not the firejail launcher.

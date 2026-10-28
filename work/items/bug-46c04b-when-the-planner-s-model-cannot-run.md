@@ -8,8 +8,9 @@ severity = "p3"
 size = "S"
 subsystem = ["roko-cli/model_selection"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "bug-59ed90 investigation, tmp/hermes-roko-v5/findings/roko-planner.md (2026-10-15, roko main a8e27e4b7)"
 anchors = ["crates/roko-cli/src/model_selection.rs::select_candidate", "crates/roko-cli/src/model_selection.rs::resolve_planner_selection"]
 links = { depends_on = [], blocks = [], related = ["bug-59ed90", "bug-4e336b", "gap-1f08f4"], supersedes = [], duplicate_of = "" }

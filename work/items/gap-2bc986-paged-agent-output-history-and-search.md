@@ -8,12 +8,12 @@ severity = "p2"
 goal = "features"
 subsystem = ["workspace"]
 created = 2026-09-01
-updated = 2026-10-15
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/archive/367-tui-agent-output-history-search.md#367 — Paged Agent Output History and Search"
 discovered_from = "audit:tmp/backlog/archive/367-tui-agent-output-history-search.md#367 — Paged Agent Output History and Search"
-anchors = ["crates/roko-cli/src/tui/state/mod.rs::AgentOutputHistory", "crates/roko-cli/src/tui/state/mod.rs::bounded_output_lines", "crates/roko-cli/src/tui/state/snapshot.rs:806", "crates/roko-cli/src/tui/input.rs:35"]
+anchors = ["crates/roko-cli/src/tui/state/mod.rs::AgentOutputHistory", "crates/roko-cli/src/tui/state/mod.rs::bounded_output_lines", "crates/roko-cli/src/tui/state/snapshot.rs:822", "crates/roko-cli/src/tui/state/snapshot.rs:1151"]
 links = { depends_on = ["gap-aabeff"], blocks = [], related = ["spec-5c8b9c", "gap-aabeff"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

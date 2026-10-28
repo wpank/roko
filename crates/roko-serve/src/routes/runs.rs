@@ -320,10 +320,11 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
     let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
     // gap-3217a0: how each rung did, from the run's own records, and whether
     // a higher rung beat a lower one; bug-b7d9ad: the tries whose checks
-    // changed the person's own checkout instead of their worktree.
+    // changed the person's own checkout instead of their worktree;
+    // gap-0af587: the tasks the gaming screen left unverified, and why.
     let workdir = state.workdir.clone();
     let io_run_id = run_id.to_string();
-    let (rungs, checkout_written) = blocking_io(move || {
+    let (rungs, checkout_written, gaming_flagged) = blocking_io(move || {
         let layout = roko_fs::RokoLayout::for_project(&workdir);
         let dir = layout.runs_dir().join(&io_run_id);
         let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
@@ -334,12 +335,14 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
                 &layout.learn_dir().join("costs.jsonl"),
             ),
             records.checkout_writes(),
+            records.gaming_flags(),
         ))
     })
     .await?;
     summary["rungs"] = json!(rungs.rows);
     summary["misordered"] = json!(rungs.misordered.map(|misorder| misorder.line));
     summary["checkout_written"] = json!(checkout_written);
+    summary["gaming_flagged"] = json!(gaming_flagged);
     // gap-8409d0: an ended run's summary says where its verified work is, so a
     // chat host can tell its person what changed and how to take it.
     if summary["active"] == Value::Bool(false) {
@@ -2765,8 +2768,9 @@ fn run_summary(
         "side_call_usd": summary["metrics"]["side_call_usd"],
         // What earlier processes of the run spent before a restart, which the
         // budgets of the plans it resumed count beside `cost_usd`
-        // (bug-b7f6a8).
-        "carried_usd": carried.values().sum::<f64>(),
+        // (bug-b7f6a8). Summed from 0.0: an empty f64 sum is -0.0
+        // (bug-f6cd5a).
+        "carried_usd": carried.values().fold(0.0, |total, usd| total + usd),
         "tasks": {
             "total": tasks.len(),
             "passed": passed,
@@ -4287,12 +4291,14 @@ mod tests {
                 json!({"type":"run.completed","run_id":"r2","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.05}),
             ],
         );
-        for (run_id, carried_usd) in [("r1", 0.375), ("r2", 0.0)] {
+        for (run_id, carried_usd) in [("r1", "0.375"), ("r2", "0.0")] {
             let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
                 .await
                 .unwrap();
             assert_eq!(summary["cost_usd"], 0.05, "{summary}");
-            assert_eq!(summary["carried_usd"], carried_usd, "{summary}");
+            // As a host reads it: a run that carried nothing says 0.0, with
+            // no sign (bug-f6cd5a).
+            assert_eq!(summary["carried_usd"].to_string(), carried_usd, "{summary}");
         }
     }
 
@@ -4724,6 +4730,95 @@ mod tests {
                 "attempt": 1,
                 "paths": ["artifacts/ui/editor-idle.png", "artifacts/ui/editor-playing.png"],
             }]),
+            "{summary}"
+        );
+    }
+
+    /// gap-0af587: a run's summary names the tasks the gaming screen left
+    /// unverified, each with the reason of its last try's `pre_verify:gaming`
+    /// step (find-2ba86d). A task unverified without the step is not named,
+    /// nor is one whose flagged try a passing try followed.
+    #[tokio::test]
+    async fn a_runs_summary_says_why_the_gaming_screen_left_a_task_unverified() {
+        use roko_learn::telemetry::records::{
+            AttemptKey, AttemptOutcome, GAMING_SCREEN_RUNG, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord, VerifyStepVerdict};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1")
+            .expect("index path");
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"g1","timestamp_ms":1,"plan_id":"p4"}),
+                json!({"type":"run.completed","run_id":"g1","timestamp_ms":3,"outcome":"unverified"}),
+            ],
+        );
+        let reason = "the checks passed, but the change may pass them without doing the task: \
+                      hidden_state `money.py`: `round_to_dollars` keeps `_150_call_count` \
+                      across calls";
+        let verdict = |task: &str, attempt: u32, outcome, flagged: Option<&str>| {
+            let identity = AttemptIdentity::new(&AttemptKey::new("g1", "p4", task, attempt));
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            if let Some(flagged) = flagged {
+                verdict.steps.push(VerifyStepVerdict {
+                    rung: GAMING_SCREEN_RUNG.to_string(),
+                    skipped: true,
+                    skip_reason: Some(flagged.to_string()),
+                    ..VerifyStepVerdict::default()
+                });
+            }
+            verdict
+        };
+        let rows: Vec<Value> = [
+            verdict("T1", 1, AttemptOutcome::Passed, None),
+            verdict("T2", 1, AttemptOutcome::Unverified, Some(reason)),
+            verdict("T3", 1, AttemptOutcome::Unverified, None),
+            verdict("T4", 1, AttemptOutcome::Unverified, Some("earlier")),
+            verdict("T4", 2, AttemptOutcome::Passed, None),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(seq, verdict)| {
+            let mut line = json!({
+                "schema_version": VERDICT_SCHEMA,
+                "record_id": format!("r-{seq}"),
+                "seq": seq,
+                "ts": "2026-10-27T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (
+                line.as_object_mut(),
+                serde_json::to_value(verdict).expect("verdict JSON"),
+            ) {
+                line.extend(fields);
+            }
+            line
+        })
+        .collect();
+        write_rows(
+            &state.layout.runs_dir().join("g1").join("attempts.jsonl"),
+            &rows,
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("g1".into()))
+            .await
+            .expect("the run's summary");
+        assert_eq!(
+            summary["gaming_flagged"],
+            json!([{ "plan_id": "p4", "task_id": "T2", "attempt": 1, "reason": reason }]),
             "{summary}"
         );
     }

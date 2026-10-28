@@ -329,6 +329,44 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
     }
 }
 
+/// Classify the lowercase text of a failed provider call as the provider-call
+/// boundary records it for the circuit breaker (`model_call_service`'s
+/// `provider_error_kind`, which the API backends' outcome recorders share):
+/// [`classify_failure_text`]'s class, except that text it calls `unknown` is a
+/// `context_overflow` when it says the request outgrew the model's context
+/// window, and a `content_policy` when it says a content or safety policy
+/// blocked it, as [`ProviderError::ContextOverflow`] and
+/// [`ProviderError::ContentPolicy`] render ("context overflow", "content
+/// policy violation").
+///
+/// The boundary kept its own copy of the classifier until gap-466060; these two
+/// classes, which the copy named and [`classify_failure_text`] does not, are
+/// all it adds. Every other caller of [`classify_failure_text`] still reads
+/// both as `unknown`.
+#[must_use]
+pub fn classify_call_failure_text(lower: &str) -> &'static str {
+    match classify_failure_text(lower) {
+        "unknown" if names_context_overflow(lower) => "context_overflow",
+        "unknown" if names_content_policy(lower) => "content_policy",
+        class => class,
+    }
+}
+
+/// Whether lowercase failure text says the request outgrew the model's
+/// context window. Narrower than [`is_context_overflow_text`], which reads
+/// only the words of a 400.
+fn names_context_overflow(lower: &str) -> bool {
+    lower.contains("context window")
+        || lower.contains("context length")
+        || lower.contains("context overflow")
+}
+
+/// Whether lowercase failure text says a content or safety policy blocked the
+/// request.
+fn names_content_policy(lower: &str) -> bool {
+    lower.contains("content policy") || lower.contains("safety policy")
+}
+
 /// What roko's tool loop says when the model broke a reply in a way no
 /// prompt asks for, twice in a row: its tool call's arguments stopped being
 /// JSON (bug-af5c20). The provider served the call; the model glitched.
@@ -354,13 +392,20 @@ pub const AUTH_FAILURE_MARKER: &str = "authentication failed";
 
 /// Whether lowercase failure text says the provider refused the caller's
 /// credentials: a CLI that is not logged in, a 401, an invalid API key, a 403
-/// forbidden, or a typed auth failure's own rendering ([`AUTH_FAILURE_MARKER`]).
+/// forbidden, Anthropic's `authentication_error`, or a typed auth failure's
+/// own rendering ([`AUTH_FAILURE_MARKER`]).
+///
+/// Anthropic sends `authentication_error` with its 401 for a bad or expired
+/// credential, and the Claude CLI passes it on as `API Error: 401 {…}`, the
+/// text of an expired OAuth token, where no status word is near the 401
+/// (bug-217107). Its 403, `permission_error`, is not a credential failure.
 fn is_auth_failure_text(lower: &str) -> bool {
     lower.contains("not logged in")
         || lower.contains("please run /login")
         || lower.contains("invalid api key")
         || lower.contains("invalid_api_key")
         || lower.contains("unauthorized")
+        || lower.contains("authentication_error")
         || lower.contains(AUTH_FAILURE_MARKER)
         || mentions_http_401(lower)
         || (lower.contains("403") && lower.contains("forbidden"))
@@ -1045,6 +1090,80 @@ mod tests {
             "auth_failure",
             "{text}"
         );
+    }
+
+    /// bug-217107: Anthropic's `authentication_error` is a credential failure,
+    /// so the provider is quarantined at once rather than retried as unknown.
+    /// The Claude CLI passes it on with its 401 as `API Error: 401 {…}`, which
+    /// is what an expired OAuth token looks like, and no status word stands
+    /// near that 401. Anthropic's 403, `permission_error`, is not one: the key
+    /// is good and may not do this one thing (bug-80f0d0).
+    #[test]
+    fn anthropic_authentication_error_is_an_auth_failure() {
+        for text in [
+            "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\
+             \"message\":\"OAuth token has expired. Please obtain a new token or refresh your \
+             existing token.\"},\"request_id\":\"req_011CUWxKpLmNvQrTzY\"}",
+            "authentication_error: invalid x-api-key",
+        ] {
+            let lower = text.to_ascii_lowercase();
+            assert_eq!(classify_failure_text(&lower), "auth_failure", "{text}");
+            assert_eq!(classify_call_failure_text(&lower), "auth_failure", "{text}");
+        }
+        let permission = "API Error: 403 {\"type\":\"error\",\"error\":{\"type\":\
+                          \"permission_error\",\"message\":\"Your API key does not have \
+                          permission to use the specified resource.\"}}";
+        assert_eq!(
+            classify_failure_text(&permission.to_ascii_lowercase()),
+            "unknown",
+            "{permission}"
+        );
+    }
+
+    /// gap-466060: the provider-call boundary's classifier is the shared
+    /// one, plus the context overflow and the content-policy block that the
+    /// shared classes leave unknown, in `ProviderError`'s words or a
+    /// provider's. Every other caller still reads both as unknown, and a
+    /// class the shared classifier names keeps its name.
+    #[test]
+    fn call_failure_text_names_context_overflow_and_content_policy() {
+        use crate::tool_loop::LlmError;
+
+        for (error, class) in [
+            (ProviderError::ContextOverflow, "context_overflow"),
+            (ProviderError::ContentPolicy, "content_policy"),
+        ] {
+            // As an attempt's failure text carries it.
+            let text = format!("agent error (openai): {}", LlmError::Provider(error));
+            let lower = text.to_ascii_lowercase();
+            assert_eq!(classify_call_failure_text(&lower), class, "{text}");
+            assert_eq!(classify_failure_text(&lower), "unknown", "{text}");
+        }
+        for (text, class) in [
+            (
+                "This model's maximum context length is 128000 tokens. However, your messages \
+                 resulted in 130000 tokens.",
+                "context_overflow",
+            ),
+            (
+                "input exceeds the context window of this model",
+                "context_overflow",
+            ),
+            ("Output blocked by content policy", "content_policy"),
+            (
+                "The response was blocked by the safety policy",
+                "content_policy",
+            ),
+            ("request timed out: context window exceeded", "timeout"),
+            ("server error: context window exceeded", "server_error"),
+            ("something else went wrong", "unknown"),
+        ] {
+            assert_eq!(
+                classify_call_failure_text(&text.to_ascii_lowercase()),
+                class,
+                "{text}"
+            );
+        }
     }
 
     // ── CLI classification ──────────────────────────────────────────

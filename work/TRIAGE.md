@@ -32,9 +32,6 @@
 ### benchmarks/viabilitybench/families/plan_slice (1)
 - **P1** [gap-db9a26](items/gap-db9a26-the-plan-slice-hidden-suites-were-written.md) The plan-slice hidden suites were written by the arms' own model family and need a cross-family review · size M
 
-### benchmarks/viabilitybench/analysis (1)
-- **P1** [gap-d9e9fe](items/gap-d9e9fe-vb-report-pilot-a-one-page-pilot.md) vb report --pilot: a one-page pilot result with confidence intervals and run ids · size S
-
 ### roko-core/child_env (1)
 - **P2** [gap-3a5ce8](items/gap-3a5ce8-check-commands-keep-home-so-git-s.md) Check commands keep HOME, so git's credential helper (osxkeychain) and ~/.ssh keys still let a check push to GitHub as the person · size S
 
@@ -61,6 +58,9 @@
 
 ### roko-std (1)
 - **P2** [gap-ebd5e0](items/gap-ebd5e0-roko-s-own-agent-tools-bash-run.md) roko's own agent tools (bash, run_tests, ACP bash, approved staged calls, ShellExec cells) still let an agent's command use the person's gh login · size S
+
+### roko-agent/claude_cli (1)
+- **P3** [bug-5f9fa4](items/bug-5f9fa4-a-claude-cli-agent-prices-its-usage.md) A Claude CLI agent prices its usage at the snapshot of its working directory, so a call in a scratch directory warns 'no price snapshot' and grows a process-wide cache [bug] · size S
 
 ### roko-cli/runtime_feedback (1)
 - **P3** [gap-137930](items/gap-137930-hindsight-relabeling-leaves-the-playbook-a-relabeled.md) Hindsight relabeling leaves the playbook a relabeled pass created or credited: retract the producer's write too · size S

@@ -94,6 +94,16 @@
 # that reaches its files are denied. The workspace's own .roko/audit log is
 # not the vault. roko-std's bash tool applies the same rules.
 #
+# `roko safety release` is denied in any command the guard checks (nested
+# and wrapped ones too): only a person releases an immune control
+# (find-d05b5e, gap-31e8a7). A command runs it when one of its words names
+# roko (any path to it, roko-cli as in cargo run -p roko-cli --, $ROKO_BIN,
+# $(which roko)) and safety and release follow, with anything between them,
+# as roko-agent's bash policy reads it (safety/bash.rs). A quoted mention
+# (grep 'roko safety release' docs) is one word and passes. Where a script
+# hides the release, roko itself refuses it under the ROKO_AGENT_ID mark
+# every agent process carries.
+#
 # This is best effort, not a sandbox: a script file or a variable can still
 # hide a command or a path from it.
 
@@ -296,6 +306,16 @@ PARALLEL_BULK = "a delete run by parallel is forbidden: it deletes every file in
 # Wrappers that run their command on each item of a list.
 BULK_RUNNERS = {"xargs": XARGS_BULK, "parallel": PARALLEL_BULK}
 
+# Names of the roko binary in a command: roko-cli is the package cargo runs
+# (cargo run -p roko-cli --), roko_bin the variable ($ROKO_BIN).
+ROKO_PROGRAMS = {"roko", "roko.exe", "roko-cli", "roko_bin"}
+# The subcommand only a person runs, after reviewing the control it lifts.
+ROKO_RELEASE = ("safety", "release")
+SAFETY_RELEASE_REASON = (
+    "roko safety release is forbidden: only a person releases an immune control, after "
+    "reviewing it; leave the control in force and say in your hand-off which one stopped you"
+)
+
 
 def tokens(text):
     """The words and operators of `text`. A quoted or escaped parenthesis
@@ -379,6 +399,7 @@ def simple_commands(text):
 def check_command(text, depth=0):
     if depth > MAX_DEPTH:
         block("the command nests shells too deeply to check")
+    check_roko_release(text)
     # A nested command (sh -c '...', $(...)) runs in the directory it starts
     # in, and its cd does not move the commands after it.
     start = BASH_CALL["dir"]
@@ -397,6 +418,36 @@ def check_command(text, depth=0):
         change_directory(words)
     if depth:
         BASH_CALL["dir"] = start
+
+
+def names_roko(word):
+    """Whether `word` names the roko binary: its last path segment, past a
+    leading $, ${ or $( ($ROKO_BIN, $(which roko)), is roko, roko.exe,
+    roko-cli or ROKO_BIN, in any case."""
+    last = re.split(r"[/({`\s]", word.rstrip(")}`"))[-1].lstrip("$")
+    return last.lower() in ROKO_PROGRAMS
+
+
+def substitution_word(match):
+    """A $(...) or backquoted substitution as the last word of its command,
+    the program it names in $(which roko)."""
+    inner = match.group(1) if match.group(1) is not None else match.group(2)
+    words = inner.split()
+    return words[-1] if words else ""
+
+
+def check_roko_release(text):
+    """Deny `text` when one of its commands runs roko safety release: a word
+    names roko (names_roko) and safety and release follow it, in order, with
+    anything between them. The commands of its substitutions are checked
+    where check_command reaches them."""
+    for words, _ in simple_commands(SUBSTITUTION.sub(substitution_word, text)):
+        start = next((index for index, word in enumerate(words) if names_roko(word)), None)
+        if start is None:
+            continue
+        rest = (word.lower() for word in words[start + 1:])
+        if all(step in rest for step in ROKO_RELEASE):
+            block(SAFETY_RELEASE_REASON)
 
 
 def cd_target(words):

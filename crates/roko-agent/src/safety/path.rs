@@ -206,6 +206,25 @@ pub fn is_within_worktree(worktree: &Path, candidate: &Path) -> bool {
     canonical_candidate.starts_with(&canonical_worktree)
 }
 
+/// The file `arg_path` names, as a file tool opens it: joined to
+/// `worktree` when relative, `.` and `..` folded lexically (as roko's file
+/// tools fold them), then symlinks resolved as far as the path exists.
+///
+/// Two path arguments name the same file when their resolved forms are
+/// equal, however each was spelled (`./a.rs`, `src/../a.rs`, an absolute
+/// path, a symlink). `RequireToolBeforeEdit` compares a read with an edit
+/// this way (gap-78cf31). Nothing is refused here: whether a path may be
+/// used is [`canonicalize_with_policy`]'s question.
+pub(crate) fn resolve_file(worktree: &Path, arg_path: &str) -> PathBuf {
+    let candidate = Path::new(arg_path);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        worktree.join(candidate)
+    };
+    canonicalize_existing_or_parent(&normalize(&joined))
+}
+
 // ─── Internals ────────────────────────────────────────────────────────────
 
 /// Canonicalize a path even if its leaf doesn't exist.

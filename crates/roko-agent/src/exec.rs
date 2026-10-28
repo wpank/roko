@@ -804,6 +804,10 @@ impl Agent for ExecAgent {
         };
         cmd.args(&self.args);
         apply_credential_scrub(&mut cmd, &self.credential_scrub);
+        // Marked as the agent's (gap-31e8a7), before the caller's variables
+        // so an explicit id wins. The name is the id a dispatch gives the
+        // agent, else the adapter's (`codex-cli:<model>`, `exec:<program>`).
+        roko_core::child_env::mark_agent_process(cmd.as_std_mut(), &self.name);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -1447,6 +1451,21 @@ mod tests {
         assert!(result.success);
         let out = result.output.body.as_text().unwrap();
         assert_eq!(out.trim(), "hello_from_env");
+    }
+
+    /// gap-31e8a7: the subprocess is marked as the agent's: `ROKO_AGENT_ID`
+    /// is the agent's name, the id a dispatch gives it.
+    #[tokio::test]
+    async fn the_subprocess_is_marked_as_the_agents() {
+        let echo = || exec_agent("sh", vec!["-c".into(), "echo $ROKO_AGENT_ID".into()]);
+        for (agent, id) in [
+            (echo().with_name("live-a/codex"), "live-a/codex"),
+            (echo(), "exec:sh"),
+        ] {
+            let result = agent.run(&prompt(""), &Context::now()).await;
+            assert!(result.success);
+            assert_eq!(result.output.body.as_text().unwrap().trim(), id);
+        }
     }
 
     #[tokio::test]

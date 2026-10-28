@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/audit"]
 created = 2026-10-18
-updated = 2026-10-18
-last_verified = 2026-10-18
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-d76b1b worker 2026-10-18"
 discovered_from = "gap-d76b1b"
 anchors = ["crates/roko-cli/src/audit/b3.rs::brief", "crates/roko-cli/src/audit/b1.rs::FactoryAuthor", "crates/roko-cli/src/audit/worker.rs::AuditAllowance"]
@@ -70,3 +71,5 @@ Nothing estimates a call's cost before it starts. A Codex, Gemini or Cursor CLI 
 
 - Found while doing gap-d76b1b (2026-10-18), which made audits run by default.
 - Do not change `per_audit_usd`, `budget_frac` or ρ (decision 7103).
+
+Checked 2026-10-27: 2026-10-26: unchanged since filing. Commit aaf0a6ab7 (2026-10-21) touched b1.rs for an unrelated feature (hand_off_continues retries), not this gap.

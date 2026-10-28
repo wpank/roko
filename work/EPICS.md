@@ -36,7 +36,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **63/80 closed** · goal `proof` · severity p1
+- **65/82 closed** · goal `proof` · severity p1
 - open by lane: bench 17
 - next: [gap-f3944c](items/gap-f3944c-cerebras-answers-http-402-payment-required-to.md) Cerebras answers HTTP 402 payment_required to every call since 2026-10-20 15:17Z, so every gpt-oss-120b run (Pilot B's roko_fixed arm, Pilot C, LOG1) is blocked until the account has credit
 
@@ -102,12 +102,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 121 | 166 | 45 (37) |
-| docs | 27 | 31 | 4 (3) |
+| bench | 125 | 168 | 43 (36) |
+| docs | 31 | 34 | 3 (2) |
 | frontend | 7 | 9 | 2 (2) |
-| none | 552 | 675 | 123 (115) |
+| none | 628 | 770 | 142 (133) |
 | paper | 79 | 87 | 8 (7) |
-| rust-cold | 261 | 315 | 54 (45) |
-| rust-hot | 277 | 307 | 30 (28) |
+| rust-cold | 267 | 321 | 54 (45) |
+| rust-hot | 280 | 310 | 30 (28) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 26 | 29 | 3 (2) |
+| tracker | 26 | 30 | 4 (3) |

@@ -8,9 +8,9 @@ severity = "p3"
 goal = "core"
 subsystem = ["roko-cli/graph_execution/plan_set"]
 created = 2026-09-29
-updated = 2026-10-15
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:d1-parallel-plans"
 anchors = ["crates/roko-cli/src/graph_execution/plan_set.rs::built_by"]
@@ -34,3 +34,7 @@ Next step: Will picks an option. This item's `[[verify]]` is prose, not a comman
 2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): the verify can never pass as written: `grep -n 'changed_files' crates/roko-cli/src/graph_execution/plan_set.rs (only if …)` ends in an English parenthetical, which is a bash syntax error (rc 2). Will's 2026-10-15 decision 3 chose (b) conservative footprints now and (d) per-plan worktrees later; rewrite the verify for (b) (a guarded named test that a verify command naming an undeclared file widens the footprint) in the change that implements it.
 
 2026-10-15 decision (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 3: (b) conservative footprints now (about 20 lines in built_by plus a test), (d) per-plan worktrees later as the real fix. Rewrite this item's verify to (b) when you pick it up.
+
+Checked 2026-10-27: 2026-10-26 sweep: Will's 2026-10-15 decision 3 (conservative footprints (b) now, per-plan worktrees (d) later) is recorded but not implemented in built_by.
+
+The [[verify]] command is unsound. Proposed replacement, not yet validated: `Once (b) is implemented: grep -rqw 'fn <test_name>' crates/roko-cli/src/graph_execution/plan_set.rs && cargo test -p roko-cli --lib <test_name>, for a test that a verify command built_by cannot parse (a script path or alias) widens the footprint to every package rather than none. The current verify is prose ending in an English parenthetical and is a bash syntax error (rc 2), as the item's own 2026-10-15 note already says.`.

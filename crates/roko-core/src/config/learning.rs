@@ -210,6 +210,18 @@ pub struct LearningConfig {
     /// or roll the store back (`enforce`), or save them unchecked (`off`).
     #[serde(default)]
     pub guarded_commit: GuardedCommitMode,
+    /// Distil an episode that ran no gate into knowledge, as roko did before
+    /// bug-f8655e.
+    ///
+    /// Off by default: the episode distiller writes knowledge only from an
+    /// episode that succeeded and passed at least one gate, failing none.
+    /// Plan writes, research, direct agent calls and ACP turns verify
+    /// nothing, and their distillations described the episode rather than
+    /// the repository. On, every episode is distilled, through the knowledge
+    /// guard as before; an `observe` or `enforce` guard still keeps only what
+    /// an episode that succeeded and failed no gate taught.
+    #[serde(default)]
+    pub distill_ungated: bool,
 }
 
 /// `[learning] guarded_commit` (P21, decision 8103): what a failed guard
@@ -553,6 +565,7 @@ impl Default for LearningConfig {
             frozen: false,
             audit: LearningAuditConfig::default(),
             guarded_commit: GuardedCommitMode::default(),
+            distill_ungated: false,
         }
     }
 }

@@ -19,22 +19,23 @@
 8. [Research](#research)
 9. [Knowledge](#knowledge)
 10. [Learning and feedback](#learning-and-feedback)
-11. [Jobs](#jobs)
-12. [Configuration](#configuration)
-13. [Server and deployment](#server-and-deployment)
-14. [Graph, feeds, recipes, and triggers](#graph-feeds-recipes-and-triggers)
-15. [Utilities](#utilities)
-16. [Interactive dashboard](#interactive-dashboard)
-17. [Authentication](#authentication)
-18. [Vision loop](#vision-loop)
-19. [Benchmarks](#benchmarks)
-20. [Environment variables](#environment-variables)
-21. [Config file locations and precedence](#config-file-locations-and-precedence)
-22. [Data directory layout](#data-directory-layout)
-23. [In-progress changes](#in-progress-changes)
-24. [Removed commands](#removed-commands)
-25. [Deprecated commands](#deprecated-commands)
-26. [Troubleshooting](#troubleshooting)
+11. [Safety and audits](#safety-and-audits)
+12. [Jobs](#jobs)
+13. [Configuration](#configuration)
+14. [Server and deployment](#server-and-deployment)
+15. [Graph, feeds, recipes, and triggers](#graph-feeds-recipes-and-triggers)
+16. [Utilities](#utilities)
+17. [Interactive dashboard](#interactive-dashboard)
+18. [Authentication](#authentication)
+19. [Vision loop](#vision-loop)
+20. [Benchmarks](#benchmarks)
+21. [Environment variables](#environment-variables)
+22. [Config file locations and precedence](#config-file-locations-and-precedence)
+23. [Data directory layout](#data-directory-layout)
+24. [In-progress changes](#in-progress-changes)
+25. [Removed commands](#removed-commands)
+26. [Deprecated commands](#deprecated-commands)
+27. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -267,19 +268,20 @@ The one entry point for work. `roko run` takes a prompt or an existing plan dire
 
 ```
 roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
-                              [--complexity trivial|simple|standard|complex]
+                              [--complexity trivial|simple|medium|complex]
                               [--context <path>...] [--no-cascade] [--provider <name>]
                               [--workdir <path>] [--max-retries <n>] [--domain <label>]
                               [--serve] [--share] [--fresh] [--resume-plan [<path>]]
+                              [--no-holdout] [--no-audit]
 ```
 
 | Arg/Flag | Default | Description |
 |---|---|---|
 | `<prompt...>` or `<plan-dir>` | required | A natural-language request (quote it), or a plan directory such as `plans/<slug>` or `plans/`. |
 | `--plan` | false | Always write a plan first, whatever the size of the prompt. |
-| `--dry-run` | false | With `--plan`: write the plan and stop. Without it: show the size, route and gates the prompt would get, and run nothing. |
-| `--yes` | false | Run a written plan without asking first. |
-| `--complexity <level>` | auto | Force the size: `trivial` and `simple` run one task; `standard` and `complex` write a plan. |
+| `--dry-run` | false | With `--plan`: write the plan and stop. Without it: show the size, route and gates the prompt would get, and run nothing. With a plan directory: preview the plan, as `roko plan run --dry-run` does. |
+| `--yes`, `-y` | false | Run a written plan without asking first. |
+| `--complexity <level>` | auto | Force the size: `trivial` and `simple` run one task; `medium` and `complex` write a plan. `standard` is accepted for `medium`. |
 | `--context <path>` | -- | Extra context for the planner: files, directories or globs (repeatable). |
 | `--no-cascade` | false | Disable cascade routing for this run. |
 | `--provider <name>` | config | Override the provider for this run. |
@@ -290,6 +292,12 @@ roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
 | `--share` | false | Generate a shareable URL (starts serve if needed). One-task runs only. |
 | `--fresh` | false | Plan directory only: archive existing state and start from scratch. |
 | `--resume-plan [<path>]` | -- | Plan directory only: resume from the last checkpoint (default `.roko/state/graph/`). |
+| `--no-holdout` | false | Maximize mode for this run alone (decision 4115), as `[experiments] maximize = true` is for every run: every holdout rate and the routing exploration rate are 0, so no learning loop is withheld, no route explores, and the spec gate holds out none of its decisions (`[spec_quality] holdout_frac` counts as 0). Every decision is still logged. |
+| `--no-audit` | false | Run no audits for this run alone (decision 7103), as `[audit] enabled = false` does for every run: no green attempt is drawn for a deep audit (see [`roko audit`](#roko-audit)), so audits spend nothing. |
+
+`--no-holdout` and `--no-audit` apply however the prompt runs: as one task, or as a plan written
+first. With a plan directory they apply as on `roko plan run`, which refuses them while a server
+owns the workspace.
 
 The global flags (`--model`, `--role`, `--json`, `--effort`, `--quiet`) apply as usual. For
 the full set of plan-run options (budgets, worktrees, topology, the inline TUI), use
@@ -627,9 +635,10 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--max-retries <n>] [--max-tasks <n>] [--dry-run]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget] [--frozen-learning]
-              [--dangerously-skip-permissions]
+              [--no-holdout] [--no-audit] [--dangerously-skip-permissions]
               [--log-file <path>] [--worktree-per-task | --no-worktree-per-task]
               [--rich-topology] [--promote <branch>]
+              [--max-parallel-plans <n>] [--fail-fast]
 ```
 
 | Arg/Flag | Default | Description |
@@ -638,7 +647,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--engine <engine>` | `graph` | `graph` is the sole engine. `legacy`/`runner-v2` are accepted but exit with a deprecation error. |
 | `--workdir <path>` | cwd | Working directory (repo root). |
 | `--resume-plan [<path>]` | -- | Resume from checkpoint. Default resume path: `.roko/state/graph/`. Alias: `--resume-state`. |
-| `--approval` | false | Launch the connected inline TUI while the plan runs. Alias: `--tui`. |
+| `--approval` | false | Accepted, and changes nothing: the run opens the inline TUI whenever stdout is a terminal, unless `--no-tui`, `--quiet` or `--json` is given. Alias: `--tui`. |
 | `--no-tui` | false | Suppress auto-enabled TUI in interactive terminals. |
 | `--max-retries <n>` | config | Maximum retry attempts per task. |
 | `--max-tasks <n>` | config | Maximum concurrent tasks per plan; `0` keeps configured behavior. |
@@ -646,20 +655,25 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--fresh` | false | Archive existing state and start from scratch. |
 | `--force-resume` | false | Archive mismatched fingerprint and start a new run. |
 | `--force` | false | Skip disk-space pre-check. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling. |
-| `--no-budget` | false | Disable the per-plan cost ceiling. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling (`[budget] max_plan_usd`) for this run. `0` removes the plan ceiling; the per-task and daily ceilings still apply. |
+| `--no-budget` | false | Disable budget enforcement for this run: no plan, per-task or daily ceiling stops a dispatch, and spend is still recorded. Not with `--budget-override`. |
 | `--frozen-learning` | false | Hold learned state fixed for this run, as `[learning] frozen = true` does for every run: the run reads learned state and writes none, while telemetry stays on (decision 2218). Its manifest records `ablation_flags = ["learning_frozen"]`. Refused when a server owns the workspace. |
+| `--no-holdout` | false | Maximize mode for this run alone (decision 4115), as `[experiments] maximize = true` is for every run: every holdout rate and the routing exploration rate are 0, so no learning loop is withheld, no route explores, and the spec gate holds out none of its decisions (`[spec_quality] holdout_frac` counts as 0). Every decision is still logged. Refused when a server owns the workspace. |
+| `--no-audit` | false | Run no audits for this run alone (decision 7103), as `[audit] enabled = false` does for every run: no green attempt is drawn for a deep audit (see [`roko audit`](#roko-audit)), so audits spend nothing. Refused when a server owns the workspace. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
 | `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
 | `--no-worktree-per-task` | false | Run every task in the shared working tree, whatever `[runner] worktree_per_task` says: tasks edit your checkout directly. |
 | `--rich-topology` | false | Use the 5-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
 | `--promote <branch>` | -- | Once every plan is delivered, promote the batch into BRANCH and tag it `roko/run/<run-id>`. A BRANCH checked out anywhere is not moved: the promotion is parked at `refs/roko/delivered/run-<run-id>`. Needs per-task worktrees. |
+| `--max-parallel-plans <n>` | `[conductor] max_parallel_plans` (1) | Run up to N plans of a plan set at the same time, N from 1 to 64. Plans start in execution order once their `depends_on_plan` prerequisites have succeeded, and plans that write or build overlapping parts of the working tree never run at the same time. Each plan keeps its own plan ceiling. With per-task worktrees, each plan that finishes is delivered into the run's batch branch in turn. |
+| `--fail-fast` | false | Start no further plans after the first plan fails. Plans already running finish; the rest are reported as blocked. A plan that ends unverified (no task failed, but some ran no verify step) does not count as failed here. Without the flag, every plan whose prerequisites succeeded runs. Within one plan, `[meta] failure_policy` (else `[conductor] plan_failure_policy`) decides whether a failed task stops the plan's other tasks. |
 
 ```bash
 roko plan run plans/                            # Run all plans
 roko plan run plans/my-plan                     # Run one plan
-roko plan run plans/ --approval                 # With inline TUI
+roko plan run plans/ --no-tui                   # Plain log output instead of the inline TUI
+roko plan run plans/ --max-parallel-plans 3     # Up to 3 independent plans at once
 roko plan run plans/ --dry-run                  # Preview without executing
 roko plan run plans/ --fresh                    # Archive old state, start clean
 roko plan run plans/ --resume-plan              # Resume from last checkpoint
@@ -678,18 +692,20 @@ Write a plan from a prompt, a spec file, your notes, or backlog specs. An agent 
 then run it with `roko run plans/<slug>`.
 
 ```
-roko plan generate <source...> [--from-file <path>] [--context <path>...]
+roko plan generate [<source...>] [--from-file <path>] [--context <path>...]
                    [--from-notes] [--tag <tag>] [--from-backlog <ids>]
+                   [--max-usd <usd>]
 ```
 
 | Arg/Flag | Description |
 |---|---|
-| `<source...>` | Free-text prompt, or path to a file (a written spec, requirements, notes). |
-| `--from-file <path>` | Treat source as a file path. |
+| `<source...>` | The request as free text (quote it). To write the plan from a file (a written spec, requirements, notes), pass the file with `--from-file`. |
+| `--from-file <path>` | Read the request from this file instead of `<source...>`. The plan's slug is the file's stem. |
 | `--context <path>` | Additional context files/dirs/globs (repeatable). |
 | `--from-notes` | Read notes from `.roko/notes/` and generate one plan per cluster. |
 | `--tag <tag>` | Filter notes by tag when using `--from-notes`. |
 | `--from-backlog <ids>` | Generate one plan per backlog spec, read from `tmp/backlog/<id>-*.md`. Comma-separated IDs: `--from-backlog 206,120`. |
+| `--max-usd <usd>` | What one plan's planner calls may cost together, in USD. Once they have cost this much, generation makes no further planner call: a retry it needs stops it with an error that names the cap, and an improvement it would ask for is skipped. Default `[authoring] max_generation_usd` (2.0); `0` sets no cap. With `--from-notes` or `--from-backlog`, each plan has its own cap. |
 
 ```bash
 roko plan generate "Add OAuth2 login"
@@ -1360,6 +1376,196 @@ roko learn inspect budget [--workdir <path>]
 
 ---
 
+## Safety and audits
+
+Where a person reviews what roko held back or found: the immune controls that keep an agent or a
+tool out of a workspace's runs (`roko safety`), the tool calls runs hold for approval
+(`roko effects`), and what the random deep audits of green attempts found (`roko audit`). Each
+command works on one workspace (`--workdir`, else the global `--repo`, else the current
+directory), and the global `--json` prints its report as JSON.
+
+### `roko safety`
+
+List the immune controls in force in a workspace, and release one, with an audit record.
+
+```
+roko safety controls [--workdir <path>]
+roko safety release <agent-id> --reason <why> [--by <name>] [--workdir <path>]
+roko safety release --tool <tool> --scope <scope> --reason <why> [--by <name>] [--workdir <path>]
+```
+
+Two immune boundaries write controls, and the workspace keeps each one until it lapses or a
+person releases it:
+
+| Control | Written when | What it does | Ledger |
+|---|---|---|---|
+| Agent isolation | The provider boundary withholds a provider result with a high or critical finding | Denies that agent id before every dispatch, for 7 days from when it was written, or until it is released. A control written before controls expired (`expires=never`) stays until it is released | `.roko/immune/agent-controls.json` |
+| Tool control | The tool-result boundary withholds a suspect tool result and decides to limit or isolate its source | Refuses that tool from that source in the workspace: `isolated` until it is released, or `rate_limited` for a minute | `.roko/immune/tool-controls.json` |
+
+A tool call that an isolation refuses gets an error naming the
+`roko safety release --tool <tool> --scope <scope>` command that releases it.
+
+`controls` prints one line per control in force: an agent with its `state`, its `reason`
+(`provider_output_immune_containment` for one the provider boundary wrote), when it `expires`
+and its `control` id; a tool with its `scope`, its `state` (and `until`, for a rate limit), when
+it was `issued`, and the hash of the withheld `output` that triggered it. Expired controls are
+left out. With `--json` it prints `{"agent_controls": [...], "tool_controls": [...]}`. A ledger
+that cannot be read fails the command (exit 2) instead of reporting no controls.
+
+`release` removes one control, appends one line to the audit file beside its ledger
+(`.roko/immune/agent-control-releases.jsonl` or `.roko/immune/tool-control-releases.jsonl`),
+and prints what it released and the audit file's path; with `--json`,
+`{"released": <line>, "audit_path": <path>}`. When there is no such control it says so and
+exits 1, and writes no line.
+
+| Arg/Flag | Default | Description |
+|---|---|---|
+| `<agent-id>` | -- | The agent whose isolation control to release, as `controls` lists it. Not with `--tool`. |
+| `--tool <tool>` | -- | The tool whose control to release, as listed. Needs `--scope`. |
+| `--scope <scope>` | -- | That control's source scope, as listed: `builtin:local`, `builtin:network`, `mcp:<server>`, `web_search:<provider>`, `retrieval:<id>` or `plugin:<name>`. |
+| `--reason <why>` | required | Why the control is released, for the audit line. |
+| `--by <name>` | `$USER`, else `operator` | Who releases it. |
+| `--workdir <path>` | cwd | Workspace root. |
+
+The audit line records when (`released_at_ms`); the control (`agent_id` and `control_id`, or,
+for a tool, `tool_name`, `source_scope`, its `state`, `issued_at_ms` and `triggering_output`);
+`by`; `reason`; and `via`, how the release came in: `channel` `cli`, `by_source` `flag` (from
+`--by`), `user_env` (from `$USER`) or `fallback` (`operator`), and `terminal`, whether standard
+input was a terminal.
+
+Only a person releases a control, after reviewing it (find-d05b5e):
+
+- The default bash policy refuses `roko safety release` in an agent's `bash` and `run_tests`
+  tool calls before they run, however the command is spelled: by any path to the binary, as
+  `cargo run -p roko-cli --`, through `$ROKO_BIN`, or inside `sh -c '…'`, `$(…)` or a
+  here-document fed to a shell. A quoted mention runs nothing and is allowed, as in
+  `grep 'roko safety release' docs/`. A script file or an encoded command is out of its reach.
+- The command refuses to run, with exit 1, before it reads or writes anything, in a process
+  roko started for an agent or a check. It tells one by the variables roko sets on those
+  processes, which their children inherit: both `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` (the Claude Code agents roko runs; one of the
+  two alone does not count); a variable that names a file in a `roko-cli-provider-*` directory
+  (the provider config roko writes for a CLI agent's run, such as Gemini's
+  `GEMINI_CLI_SYSTEM_SETTINGS_PATH`); `ROKO_TOOL_ARGS` (an extension tool's command);
+  `ROKO_GATE_PLAN_ID`, `ROKO_GATE_TASK_ID`, `ROKO_GATE_RUNG` or `ROKO_GATE_ATTEMPT_SENTINEL` (a
+  gate rung's commands and the tests they run); `ROKO_EFFECT_FILE` (an applied effect's receipt
+  rungs); and `ROKO_CELL_INPUT` (a Graph shell cell's command). The refusal names the variable
+  and says what a person does instead; with `--json` it prints
+  `{"refused": <message>, "variables": [...]}`. An agent can unset a variable, so this does not
+  stop an agent that hides them: it keeps roko from offering the release to its own agents and
+  checks, and from recording one of their releases under a person's name.
+
+`roko serve` releases an agent's control too, with
+`POST /api/safety/controls/{agent_id}/release`, which needs permission `config:edit` (see
+[26-HTTP-API.md §8.27](26-HTTP-API.md#827-safety-observability-and-controls)). Tool controls
+have no route.
+
+```bash
+roko safety controls
+roko safety controls --json
+roko safety release live-a/cli --reason "blank answer, not tamper"
+roko safety release --tool run_tests --scope builtin:local --reason "a false positive"
+```
+
+### `roko effects`
+
+List the tool calls runs hold for approval, and approve or reject one.
+
+```
+roko effects list [--workdir <path>]
+roko effects show <effect-id> [--workdir <path>]
+roko effects approve <effect-id> [--note <text>] [--by <name>] [--workdir <path>]
+roko effects reject <effect-id> [--note <text>] [--by <name>] [--workdir <path>]
+```
+
+A tool call has an outbound effect when it acts on the outside world: a call of an MCP tool that
+is destructive, or open-world and not read-only (an MCP tool that does not describe itself
+counts as both), or of a plugin tool that declares both network and write access. Built-in
+tools have none. A run's outbound policy decides what happens to such a call: `allow` runs it,
+`deny` refuses it, and `stage` holds it, as `.roko/state/effect-holds/<run>/<effect-id>.json`,
+instead of running it. The policy is the plan's `[meta] outbound`, else the `outbound` of the
+task domain's `[profiles.<domain>]`, else `stage` in the `ops` domain and `allow` elsewhere; a
+`roko run` that a chat host starts over MCP sets `stage`. Only roko's own tool loop holds calls:
+CLI agents such as Claude Code and Codex run their tools themselves.
+
+| Subcommand | Description |
+|---|---|
+| `list` | The effects that wait for a decision, oldest first (id, tool, run, plan and task, when proposed), then the 20 most recent decisions. A call's arguments may carry secrets, so `list` never shows them. With `--json` it prints `{"waiting": [...], "decided": [...]}`, every decision newest first, and gives each waiting call's arguments as their JSON types, a string with its length. |
+| `show <effect-id>` | One effect: while it waits, its hold, the call's arguments included; once decided, its decision, with the tail of the call's result and each receipt rung's verdict. Exits 1 for an unknown id. |
+| `approve <effect-id>` | Replay the held call once, on the authority of this approval, through a fresh tool dispatcher over the MCP servers of the workspace's `.mcp.json`, which grants that tool alone; when the call succeeds, run the `kind = "receipt"` rungs of the verifier pack its task's domain follows. A call that cannot be replayed there (no `.mcp.json`, or no server offers the tool) is recorded as `failed`. |
+| `reject <effect-id>` | Record the decision. The call never runs. |
+
+| Flag | Default | Description |
+|---|---|---|
+| `--note <text>` | -- | `approve` and `reject`: why, recorded with the decision. |
+| `--by <name>` | `$USER`, else `operator` | `approve` and `reject`: who decides. |
+| `--workdir <path>` | cwd | Workspace root. |
+
+A decision removes the hold, appends a record to `.roko/state/effects.jsonl` and prints it (as
+JSON with `--json`). The record names the effect, its run, plan, task, tool and MCP server, the
+`outcome`, `decided_by` and the note, the tail of the call's result with secrets scrubbed, and
+the receipt verdicts, but never the call's arguments. The run has usually ended by then, so the
+result goes to the record, not back to the agent. The `outcome` is `applied` (the call ran and
+succeeded), `failed` (it ran and failed), `rejected`, or `ambiguous`: an earlier approval
+started the call and recorded no result, so the call may have run, and it is not run again. A
+receipt rung runs as `sh -c <command>` in the workspace, with `ROKO_EFFECT_FILE` naming a file
+that holds `{"effect": <hold>, "result": <text>}`, and passes when it exits 0. `approve` and
+`reject` exit 0 for an effect that ends `applied` with every receipt passing, or `rejected`; any
+other outcome exits 1, as does an effect that is unknown or decided already.
+
+`roko serve` lists and decides the same effects, with `GET /api/effects` and
+`POST /api/effects/{id}/decision`
+([26-HTTP-API.md §8.27](26-HTTP-API.md#827-safety-observability-and-controls)).
+
+```bash
+roko effects list
+roko effects show effect-20261003T101500-1a2b3c4d
+roko effects approve effect-20261003T101500-1a2b3c4d --note "checked the draft"
+roko effects reject effect-20261003T101500-1a2b3c4d --note "wrong channel"
+```
+
+### `roko audit`
+
+What the random deep audits of green attempts found, read-only.
+
+```
+roko audit status [--strata] [--workdir <path>]
+roko audit replay [--runs <n>] [--workdir <path>]
+roko audit reveal <run-id> [--workdir <path>]
+roko audit incidents [--workdir <path>]
+```
+
+A plan run, a one-task `roko run` included, draws a random share of its green attempts, the
+ones its checks accepted, for a deeper audit than its gates ran, as `[audit]` in `roko.toml`
+sets it. An attempt's chance of being drawn is the base rate `rho` (0.10 unless set), which the
+self-model's risk score can tilt, and never below the locked floor `eps_floor` (0.05 or more).
+`--no-audit` on `roko run` or `roko plan run` turns audits off for that run, and
+`[audit] enabled = false` for every run. A run commits to a secret draw key when it opens and
+reveals the key when it closes; the commitment, the draws, the audit results, the window
+estimates and the incidents go to a hash-chained ledger in the workspace's audit vault. The
+vault lies outside every directory agents work in: `$ROKO_AUDIT_HOME`, else `[audit] home`,
+else `~/.roko/audit`, with one directory per workspace, created when missing (mode 0700). A
+vault that would lie inside the workspace fails the command. These commands read the ledger and
+the files beside it (the strictness ladder, the routing trust, the incidents) and write no
+audit record. They print no key, revealed or not, and no hidden test.
+
+| Subcommand | Description |
+|---|---|
+| `status [--strata]` | The latest closed estimation window (one closes after `[audit] window_units` green units or `window_hours` hours, whichever comes first) and, for each stratum in it (task type / model / arm / verdict), its green units, the units the lottery selected, θ̂ (the estimated false-green rate) with its 95% Wilson interval, and Kish's effective sample size n_eff. Then the strictness ladder's verify depth per task type, from `V0` (the authored checks) to `V4` (hidden tests, mutation testing and a cross-family review added); each model and harness's routing trust, its posterior mean false-green rate and P(θ > 2·θ_max), marked `(left out)` when that probability is above 0.9, which keeps the pair out of standard-band routing; the models a gate-gaming alert was logged for; what the audits spent, against `[audit] budget_frac` of run spend, and how often the budget stopped them; the selected units still to audit; and how many of the judge's verdicts (`.roko/learn/judge-calibration.jsonl`) agree with the audit labels. `--strata` adds every verdict stratum's green units over all runs, `forced_accept` included. |
+| `replay [--runs <n>]` | A sensitivity check of the latest window's interval: `n` lotteries (default 200), each keeping each of the window's audited units with probability 0.5 by a keyed draw that counts for nothing, re-estimate θ. Prints the window's θ̂ and interval, the lotteries' median θ̂ with its 2.5% and 97.5% quantiles, and the share of their intervals that hold the window's θ̂. |
+| `reveal <run-id>` | Recompute every draw of the run from its revealed key, check the key against the run's commitment, and walk the ledger's hash chain. Exits 1 on any mismatch, on a broken chain, and for a run with no commitment or whose key is not revealed yet. |
+| `incidents` | The incidents, with their kind (`false_green`, `spec_gaming`, `weak_oracle`, `leak_canary` or `battery_fault`), status (`open`, `triaged`, `fix_task_created`, `dismissed_battery_fp`, `accepted_risk` or `closed`), model, task and fix proposal; then the isolation proposals, for a model and harness that gamed repeatedly, which wait for an operator. |
+
+```bash
+roko audit status
+roko audit status --strata
+roko audit replay --runs 1000
+roko audit reveal graph-run-20261003T101500
+roko audit incidents
+```
+
+---
+
 ## Jobs
 
 Manage marketplace jobs. The job system is the interface between Roko's orchestrator and
@@ -1764,6 +1970,36 @@ roko deploy docker [--workdir <path>] [--registry <namespace>] [--push]
                    [--target <stage>] [--image <name>]
 ```
 
+### `roko showcase`
+
+Make or hash the login passphrase of the public showcase.
+
+```
+roko showcase passphrase new
+roko showcase passphrase hash
+```
+
+With `[showcase] enabled = true`, `roko serve` runs the passphrase-gated public showcase.
+Visitors share one passphrase, and serve keeps only its Argon2id PHC string, which it reads from
+the `ROKO_SHOWCASE_PASSPHRASE_HASH` environment variable: a deploy secret, never a `roko.toml`
+key. In showcase mode serve refuses to start unless that variable holds an Argon2id PHC string.
+These commands make that value.
+
+| Subcommand | Description |
+|---|---|
+| `passphrase new` | Print a new passphrase once, then its PHC string on the next line. The passphrase comes from the operating system's random generator: 20 lower-case Crockford base32 characters (no `i`, `l`, `o` or `u`) in four groups of five, `xxxxx-xxxxx-xxxxx-xxxxx`, 100 bits. |
+| `passphrase hash` | Read a passphrase from standard input, less one trailing newline, and print its PHC string with a fresh salt: for rotating to a passphrase you chose. Exits 1 when standard input is empty. A passphrase outside the 12 to 256 bytes the showcase login accepts is still hashed, with a warning on stderr. |
+
+The PHC string reads `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`: Argon2id with 19 MiB of
+memory, two passes and one lane. Both commands write to standard output only, and put neither
+the passphrase nor its hash on disk or in the log. To deploy the showcase, see
+[`roko deploy fly`](#roko-deploy-fly) and its `--fly-config fly.showcase.toml`.
+
+```bash
+roko showcase passphrase new
+printf '%s' "$PASSPHRASE" | roko showcase passphrase hash
+```
+
 ### `roko worker`
 
 Run as a deployed worker (reads template from env, serves tasks).
@@ -1931,6 +2167,24 @@ Inspect or rebuild derived per-run event indexes offline.
 ```
 roko run-index repair [--max-bytes <n>] [--deadline-secs <n>] [--apply]
 ```
+
+### `roko demo`
+
+Prepare a workspace for a demo.
+
+```
+roko demo setup [--workdir <path>]
+roko demo warm [--workdir <path>]
+```
+
+| Subcommand | Description |
+|---|---|
+| `setup` | Build the release binary with `cargo build -p roko-cli --release`, in the current directory; run `roko init` in the workspace when it has no `.roko/`; look for the demo pages in `demo/demo-web/`, with a warning when `builder.html` is missing; and print how to run the demo: `roko serve`, then `http://localhost:6677` and the pages `/demo/builder.html`, `/demo/terminal.html` and `/demo/index.html`. A failed build stops it after saying so, and it still exits 0 (bug-a1cff1). |
+| `warm` | Send five fixed demo prompts to a model, one live call each, through the single-prompt path that `roko bench demo --real` uses, with roko's built-in default models and providers rather than the workspace's (of its `roko.toml`, only `[routing]` is read); each call records provider health and routing feedback under `.roko/learn/`. Then print how many files `.roko/demo-cache/` holds. Nothing writes that directory: the file cache that `ROKO_DEMO_CACHE=1` is meant to turn on has no caller, so the calls are not cached and the count is what the directory already held (gap-362b00). |
+
+| Flag | Default | Description |
+|---|---|---|
+| `--workdir <path>` | cwd | Workspace to prepare. |
 
 ---
 
@@ -2104,6 +2358,8 @@ roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
 | `GEMINI_API_KEY` | Required for Gemini-grounded research. |
 | `PORT` | Override the worker server port (used by `roko worker`). |
 | `GITHUB_TOKEN` | Required for `roko github status` remote sections. |
+| `ROKO_AUDIT_HOME` | Root of the audit vault that runs write and `roko audit` reads (default `~/.roko/audit`; wins over `[audit] home`). |
+| `ROKO_SHOWCASE_PASSPHRASE_HASH` | The showcase passphrase's Argon2id PHC string, which `roko serve` needs in showcase mode; `roko showcase passphrase` makes it. |
 | `ROKO_EXTENSION_REGISTRY_PUBLISH_TOKEN` | Bearer token for `roko config plugins publish`. |
 | `ROKO_EXTENSION_REGISTRY_SIGNING_KEY` | Ed25519 key for `roko config plugins publish`. |
 | `ROKO_EXTENSION_REGISTRY_URL` | Registry base URL for plugin publish (fallback). |

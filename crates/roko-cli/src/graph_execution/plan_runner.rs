@@ -1031,7 +1031,8 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
 /// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
 /// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
 /// bug-ccc7c4). A resumed checkpoint keeps its recorded run, a set of several
-/// plans mints one run per plan, and a `--log-file` run mints its own.
+/// plans mints one run per plan, and a `--log-file` run mints its own. A run
+/// no caller names takes the id its events go under ([`run_graph_plan_observed`]).
 pub async fn run_graph_plan_in_run(
     params: GraphPlanRunParams,
     run_id: Option<String>,
@@ -1046,12 +1047,22 @@ pub async fn run_graph_plan_in_run(
 }
 
 /// [`run_graph_plan_in_run`] without a `log_file`, whose `status.json` and
-/// workspace event log name the run `observed_run_id`.
+/// workspace event log name the run `observed_run_id`. A run no caller named
+/// (`run_id` is `None`: the terminal's `roko plan run`, and a `--log-file`
+/// run) takes that id for its records, its batch and its knowledge batch too,
+/// and says it at its start: a single plan's fresh checkpoint used to mint a
+/// `graph-<plan>-<uuid>` of its own, so the run's attempt records and its
+/// events, which serve's summary reads, had two unrelated ids, and the run
+/// printed neither (bug-c872f6).
 pub(crate) async fn run_graph_plan_observed(
     params: GraphPlanRunParams,
     run_id: Option<String>,
     observed_run_id: String,
 ) -> anyhow::Result<i32> {
+    if run_id.is_none() && !params.quiet && !params.json {
+        eprintln!("Run {observed_run_id}");
+    }
+    let run_id = run_id.or_else(|| Some(observed_run_id.clone()));
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
@@ -2060,6 +2071,7 @@ async fn run_graph_plan_body(
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
         gate_env_passthrough: &roko_config.gates.env_passthrough,
+        warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
         worktrees: worktrees.as_ref(),
         delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
@@ -2650,12 +2662,25 @@ async fn run_graph_plan_body(
         )
     };
 
+    // Each plan's run, by which its records are kept: the run's own id for a
+    // single plan's fresh checkpoint, a resumed checkpoint's recorded run, or
+    // one run per plan of a set (bug-c872f6).
+    let plan_runs: std::collections::BTreeMap<String, String> = plans
+        .iter()
+        .filter_map(|plan| {
+            graph_task_dispatcher
+                .plan_run_id(&plan.id)
+                .map(|plan_run| (plan.id.clone(), plan_run))
+        })
+        .collect();
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "engine": "graph",
                 "dry_run": false,
+                "run_id": run_id,
+                "plan_runs": plan_runs,
                 "succeeded": all_succeeded,
                 "plan_count": plan_count,
                 "total_tasks": total_tasks,
@@ -2675,6 +2700,13 @@ async fn run_graph_plan_body(
                     .iter()
                     .map(|plan| (plan.id.clone(), graph_task_dispatcher.checkout_writes(&plan.id)))
                     .filter(|(_, writes)| !writes.is_empty())
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                // Why the gaming screen left each task it flagged
+                // unverified, by plan and task (gap-0af587).
+                "gaming_flagged": plans
+                    .iter()
+                    .map(|plan| (plan.id.clone(), graph_task_dispatcher.gaming_flags(&plan.id)))
+                    .filter(|(_, flags)| !flags.is_empty())
                     .collect::<std::collections::BTreeMap<_, _>>(),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
@@ -2724,6 +2756,16 @@ async fn run_graph_plan_body(
                 plan_count, total_tasks, total_cost_usd,
             );
         }
+        // The run's id, which `roko diagnose`, serve's summary and the
+        // records take, and each plan's run kept apart from it (bug-c872f6).
+        if let Some(run_id) = &run_id {
+            println!("Run {run_id}");
+        }
+        for (plan_id, plan_run) in &plan_runs {
+            if run_id.as_ref() != Some(plan_run) {
+                println!("Plan {plan_id}: run {plan_run}");
+            }
+        }
         // Name the plans that did not succeed, such as one whose delivery
         // into the batch branch failed its regression check (spec-f830c4),
         // with how each ended (bug-db89d4).
@@ -2760,6 +2802,13 @@ async fn run_graph_plan_body(
                 short_oid(&work.commit),
                 work.review_command()
             );
+        }
+        // Tasks the gaming screen left unverified, with why (gap-0af587).
+        for plan in &plans {
+            let note = gaming_flagged_note(&graph_task_dispatcher.gaming_flags(&plan.id));
+            if !note.is_empty() {
+                println!("Plan {}{note}", plan.id);
+            }
         }
         // Checks that changed the person's checkout, not their own worktree
         // (bug-b7d9ad).
@@ -3183,6 +3232,9 @@ struct PlanRunContext<'a> {
     /// `[gates] env_passthrough`: what the whole-plan check's steps (and the
     /// delivery regression that runs them) inherit beyond the gate allowlist.
     gate_env_passthrough: &'a [String],
+    /// `[gates] warm_build_dirs`: the build trees the delivery regression's
+    /// checkout gets a warm copy of (gap-dc24dd).
+    warm_build_dirs: Option<&'a [String]>,
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     /// `[runner] delete_attempt_branches`: a delivered plan's attempt
@@ -4087,6 +4139,34 @@ fn checkout_written_note(
     )
 }
 
+/// What a plan's end says of the tasks the gaming screen left `unverified`
+/// (find-2ba86d, gap-0af587): each task with why, the reason its last try's
+/// verdict gives, from those reasons by task; empty without any.
+fn gaming_flagged_note(flags: &std::collections::BTreeMap<String, String>) -> String {
+    flags
+        .iter()
+        .map(|(task, reason)| format!(". Task {task} is unverified: {reason}"))
+        .collect()
+}
+
+/// Why a plan's end says its unverified tasks are: they ran no verify step,
+/// or, when the end names such tasks, changed the person's checkout while
+/// they ran (bug-b7d9ad) or passed their checks on a change the gaming screen
+/// flagged (find-2ba86d).
+fn unverified_why(checkout_written: bool, gaming_flagged: bool) -> String {
+    let mut causes = vec!["ran no verify step"];
+    if checkout_written {
+        causes.push("changed your checkout while they ran");
+    }
+    if gaming_flagged {
+        causes.push("passed their checks on a change the gaming screen flagged");
+    }
+    match causes.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{}, or {last}", rest.join(", ")),
+        _ => causes.concat(),
+    }
+}
+
 /// Run one admitted plan to a terminal checkpoint.
 ///
 /// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
@@ -4594,6 +4674,7 @@ async fn run_one_plan(
                     plan,
                     plan_checks,
                     ctx.gate_env_passthrough,
+                    ctx.warm_build_dirs,
                     ctx.worktrees,
                     ctx.delete_attempt_branches,
                     &ctx.interrupt,
@@ -4782,16 +4863,15 @@ async fn run_one_plan(
         ctx.workdir,
         &ctx.graph_task_dispatcher.checkout_writes(&plan.id),
     );
+    // Tasks the gaming screen left unverified, with why (gap-0af587).
+    let gaming_flagged = gaming_flagged_note(&ctx.graph_task_dispatcher.gaming_flags(&plan.id));
+    let why = unverified_why(!checkout_written.is_empty(), !gaming_flagged.is_empty());
+    let notes = format!("{gaming_flagged}{unverified_at}{checkout_written}");
     if outcome == PlanOutcome::Unverified {
-        let why = if checkout_written.is_empty() {
-            "ran no verify step"
-        } else {
-            "ran no verify step, or changed your checkout while they ran"
-        };
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}' is unverified: {} task(s) {why}{unverified_at}{checkout_written}",
+                "plan '{}' is unverified: {} task(s) {why}{notes}",
                 plan.id, task_verdicts.unverified
             ),
         );
@@ -4799,15 +4879,15 @@ async fn run_one_plan(
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': task(s) {} ran no verify step{unverified_at}{checkout_written}",
+                "plan '{}': task(s) {} {why}{notes}",
                 plan.id,
                 work.tasks.join(", ")
             ),
         );
-    } else if !checkout_written.is_empty() {
+    } else if !checkout_written.is_empty() || !gaming_flagged.is_empty() {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
-            &format!("plan '{}'{checkout_written}", plan.id),
+            &format!("plan '{}'{gaming_flagged}{checkout_written}", plan.id),
         );
     }
     // Why each failed task failed, in the run's events, so a host can tell
@@ -5046,6 +5126,7 @@ async fn deliver_plan_to_batch(
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
     env_passthrough: &[String],
+    warm_build_dirs: Option<&[String]>,
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
     stop: &PlanRunInterruptHandle,
@@ -5067,6 +5148,9 @@ async fn deliver_plan_to_batch(
         .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
         .with_regression_source(plan_check_source(plan))
         .with_env_passthrough(env_passthrough.to_vec())
+        // Warm by default, cold for a plan that asks (gap-dc24dd).
+        .with_warm_build_dirs(warm_build_dirs.map(<[String]>::to_vec))
+        .with_cold_check(plan.tasks.meta.cold_verify)
         .with_check_events(plan_check_events(
             graph_tui_bridge,
             plan,
@@ -5480,6 +5564,16 @@ async fn check_plan_in_place(
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanCheckResult> {
+    // A cold check needs a checkout of its own to clear (gap-dc24dd); the
+    // shared working tree is the person's, so here it runs on their build
+    // trees.
+    if plan.tasks.meta.cold_verify {
+        tracing::warn!(
+            plan_id = %plan.id,
+            "[meta] cold_verify asks for a cold check, which needs --worktree-per-task; the \
+             plan's check runs warm in the shared working tree"
+        );
+    }
     let events = plan_check_events(
         graph_tui_bridge,
         plan,
@@ -6800,7 +6894,7 @@ rungs = [{ name = "cheap", model = "cheap-model" }, { name = "mid", model = "mid
         assert!(
             detail.starts_with("rung cheap (cheap-1 on cheap_api) is skipped until ")
                 && detail.contains("its tool-use probe failed: request_refused")
-                && detail.ends_with("remove `cheap-1` from .roko/learn/rung-probes.json"),
+                && detail.ends_with("run `roko learn probes clear cheap-1`"),
             "{detail}"
         );
         let events =
@@ -9464,6 +9558,38 @@ exec sleep 60
         );
     }
 
+    /// gap-0af587: a plan's end names each task the gaming screen left
+    /// unverified with its reason, and says why its unverified tasks are
+    /// without claiming that none of them ran a check.
+    #[test]
+    fn a_plans_end_names_the_gaming_screens_reasons() {
+        let flags = BTreeMap::from([
+            ("T1".to_string(), "hidden_state `money.py`".to_string()),
+            ("T3".to_string(), "special_case `dates.py`".to_string()),
+        ]);
+        assert_eq!(
+            gaming_flagged_note(&flags),
+            ". Task T1 is unverified: hidden_state `money.py`. Task T3 is unverified: \
+             special_case `dates.py`"
+        );
+        assert_eq!(gaming_flagged_note(&BTreeMap::new()), "");
+
+        assert_eq!(unverified_why(false, false), "ran no verify step");
+        assert_eq!(
+            unverified_why(true, false),
+            "ran no verify step, or changed your checkout while they ran"
+        );
+        assert_eq!(
+            unverified_why(false, true),
+            "ran no verify step, or passed their checks on a change the gaming screen flagged"
+        );
+        assert_eq!(
+            unverified_why(true, true),
+            "ran no verify step, changed your checkout while they ran, or passed their checks \
+             on a change the gaming screen flagged"
+        );
+    }
+
     /// gap-29a84b: a plan whose graph ran to completion succeeds only when
     /// every task passed its verify steps.
     #[test]
@@ -10797,6 +10923,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         }
     }
 
+    /// bug-c872f6: a terminal `roko plan run` names no run id, and its
+    /// records (`.roko/runs/graph-<plan>-<uuid>/`) and its events (the index
+    /// serve's summary reads, `status.json`) took two unrelated ids. A run no
+    /// caller names now takes one id for its records, its events, its status
+    /// and its batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cli_plan_run_uses_one_run_id_for_records_and_events() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+
+        let exit_code = run_graph_plan(worktree_run_params(repo))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let runs: Vec<String> = std::fs::read_dir(repo.join(".roko/runs"))
+            .expect("the run records")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join("manifest.json").is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let [run_id] = runs.as_slice() else {
+            panic!("one run's records: {runs:?}");
+        };
+        assert!(run_id.starts_with("graph-"), "{run_id}");
+        let status: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/status.json")).expect("status.json"),
+        )
+        .expect("status json");
+        assert_eq!(status["run_id"], run_id.as_str(), "{status}");
+        let index = roko_fs::run_index::run_index_path(&repo.join(".roko/events.jsonl"), run_id)
+            .expect("the run's index path");
+        let indexed = std::fs::read_to_string(&index).expect("the run's event index");
+        assert!(
+            indexed.contains("\"RunCompleted\"") || indexed.contains("run_completed"),
+            "{indexed}"
+        );
+        let checkpoint: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        assert_eq!(checkpoint["run_id"], run_id.as_str());
+        assert_eq!(
+            checkpoint["extensions"]["roko.batch@1"]["value"]["branch"],
+            format!("roko/batch/{run_id}")
+        );
+    }
+
     /// spec-f830c4: a `--worktree-per-task` run of two plans delivers each
     /// into the run's batch branch, the second starting from the first's
     /// work, records the delivery in each plan's checkpoint, promotes the
@@ -10884,6 +11059,50 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         let verdicts: usize = runs.iter().map(|run| run.verdicts.len()).sum();
         assert!(verdicts >= 2, "{verdicts}");
         assert!(runs.iter().all(|run| run.checkout_writes().is_empty()));
+    }
+
+    /// bug-4fadf8: a run whose task passed but whose delivery a crash cut
+    /// (roko-recovery's kill point e: the run never wrote its end, so its
+    /// checkpoint says running and records no delivery, and its batch branch
+    /// never moved) resumes without running the task again, and delivers
+    /// into the resuming run's batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivery_cut_run_resumes_with_no_task_attempt_and_delivers() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let first = run_graph_plan_in_run(worktree_run_params(repo), Some("run-cut".into()))
+            .await
+            .expect("run the plan");
+        assert_eq!(first, EXIT_SUCCESS);
+        let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&checkpoint).expect("checkpoint"))
+                .expect("checkpoint json")
+        };
+        let mut manifest = read();
+        manifest["status"] = serde_json::json!("running");
+        let extensions = manifest["extensions"].as_object_mut().expect("extensions");
+        extensions.remove("roko.batch@1");
+        extensions.remove("roko.delivery@1");
+        std::fs::write(&checkpoint, serde_json::to_vec(&manifest).expect("json")).expect("write");
+        git_in(repo, &["branch", "-D", "roko/batch/run-cut"]);
+
+        let again = run_graph_plan_in_run(worktree_run_params(repo), Some("run-resume".into()))
+            .await
+            .expect("resume the plan");
+
+        assert_eq!(again, EXIT_SUCCESS);
+        let attempts = std::fs::read_to_string(repo.join(".roko/runs/run-resume/attempts.jsonl"))
+            .unwrap_or_default();
+        assert!(
+            !attempts.contains("roko.attempt_open"),
+            "no task ran again: {attempts}"
+        );
+        let record = &read()["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["state"], "delivered", "{record}");
+        assert_eq!(record["branch"], "roko/batch/run-resume", "{record}");
+        let files = git_stdout(repo, &["ls-tree", "--name-only", "roko/batch/run-resume"]);
+        assert!(files.contains("alpha.txt"), "{files}");
     }
 
     /// bug-b7d9ad: what roko writes in the person's checkout during a run,

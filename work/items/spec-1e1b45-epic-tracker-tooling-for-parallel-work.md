@@ -3,22 +3,21 @@ id = "spec-1e1b45"
 kind = "spec"
 title = "Epic: tracker tooling for parallel work"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "L"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R1–R7); W7-orchestration-model.md; W13-active-sessions-coordination.md"
 anchors = ["tools/work.py::validate", "tools/work.py::pick_next", "tools/work.py::cmd_claim", "work/lanes.toml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "tracker"
 links = { depends_on = ["gap-130a3e", "gap-d1f787", "gap-823dce", "gap-c9e61b", "gap-2bc1b9", "gap-25065c", "dec-b75b96", "gap-d6fd3c"], blocks = [], related = ["spec-f2463d"], supersedes = [], duplicate_of = "" }
-
-[[verify]]
-command = "test -f work/lanes.toml && grep -qw 'def test_next_mix_respects_lane_caps' tools/test_work.py && grep -qw 'def test_next_treats_files_changed_in_other_worktrees_as_busy' tools/test_work.py && grep -qw 'def test_claim_refuses_an_overlapping_footprint' tools/test_work.py && grep -qw 'def test_epics_view_counts_children' tools/test_work.py && grep -qw 'def test_new_writes_every_field_from_flags' tools/test_work.py && python3 tools/test_work.py"
 +++
 
 ## Problem
@@ -92,3 +91,7 @@ This is the implementation plan. One agent at a time works on `tools/work.py`.
 - **Decided 2026-09-29 (Will):** the work skills are installed at user level (dec-b75b96), done by gap-d6fd3c.
 
 2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Confirm work/lanes.toml as committed in 648ec3184, with one change: lane.rust-hot max goes from 4 to 2. The other values stay: pool rust = 4, rust-cold 2, paper 3, bench 2, tracker 1, frontend 1, docs 1, tests 1. With this change Rust work tops out at 4 agents (2 cold plus 2 hot), which matches decision 8's limit of at most 4 agents per batch. The epic stays open for gap-25065c and gap-d6fd3c. Why: The file exists and its own header says the caps were proposed by gap-130a3e at the upper end of PLAN.md section 2's ranges and are Will's call (work/lanes.toml:8-9). Section 2 gives rust-hot as '1 per file or module, serial within it' (tmp/cybernetic-harness/workstreams/PLAN.md, section 2 table), but the file lets rust-hot take the whole Rust pool of 4. The hot modules (graph_task_dispatch, graph_execution, dispatch, main.rs, serve routes) are where batch merges conflict, and decision 8 already caps a batch at 4 agents with cargo through the shared limiter. Lowering one number is the cheapest reversible change. The other caps already sit inside section 2's ranges. If vetoed: With the file kept exactly as committed, rust-hot can take all four Rust slots at once. Footprints still keep two items off one file, but adjacent edits in hot modules can still conflict at merge.
+
+Checked 2026-10-27: 2026-10-26 sweep: gap-25065c closed as superseded (counts as resolved, not done). Still open: gap-d6fd3c (work skills at user level). Separately found: the 2026-10-15 decision to lower [lane.rust-hot] max from 4 to 2 in work/lanes.toml was never applied -- the file still reads max = 4 at line 41, so rust-hot alone can still take the whole 4-slot rust pool instead of being capped at 2. Worth a follow-up item or a direct edit confirming or re-deciding this.
+
+Removed [[verify]] `test -f work/lanes.toml && grep -qw 'def test_next_mix_respects_lane_caps' tools/test_work.py && grep -qw 'def test_next_treats_files_changed_in_other_worktrees_as_busy' tools/test_work.py && grep -qw 'def test_claim_refuses_an_overlapping_footprint' tools/test_work.py && grep -qw 'def test_epics_view_counts_children' tools/test_work.py && grep -qw 'def test_new_writes_every_field_from_flags' tools/test_work.py && python3 tools/test_work.py`: it passes while the problem still exists.

@@ -539,6 +539,13 @@ pub struct VerifyStepVerdict {
     pub confirmed_by_user: bool,
 }
 
+/// [`VerifyStepVerdict::rung`] of the step the gaming screen adds to the
+/// verdict of an attempt whose checks passed on a change that may pass them
+/// without doing its task, which it settles `unverified` (find-2ba86d). The
+/// step reached no pass, and its `skip_reason` says what the screen found
+/// ([`AttemptVerdictRecord::gaming_reason`]).
+pub const GAMING_SCREEN_RUNG: &str = "pre_verify:gaming";
+
 /// Most scope findings a verdict lists; it counts the rest
 /// ([`AttemptVerdictRecord::scope_findings_omitted`]).
 pub const SCOPE_FINDINGS_LISTED: usize = 50;
@@ -1170,6 +1177,21 @@ impl AttemptVerdictRecord {
         findings.truncate(SCOPE_FINDINGS_LISTED);
         self.scope_findings = findings;
         self.scope_findings_omitted = u32::try_from(omitted).ok().filter(|&count| count > 0);
+    }
+
+    /// Why the gaming screen left the attempt `unverified` although its
+    /// checks passed: the reason of its [`GAMING_SCREEN_RUNG`] step
+    /// (find-2ba86d). `None` for an attempt the screen did not flag, and for
+    /// one that did not settle `unverified`.
+    #[must_use]
+    pub fn gaming_reason(&self) -> Option<&str> {
+        if self.outcome != AttemptOutcome::Unverified {
+            return None;
+        }
+        self.steps
+            .iter()
+            .find(|step| step.rung == GAMING_SCREEN_RUNG)
+            .and_then(|step| step.skip_reason.as_deref())
     }
 
     /// The learning label as learners apply it (S01 §4.1): `Some(true)` for

@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["specs"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-13 follow-up reports 2026-10-04 (PK71 gap-099513, task 8137)"
 discovered_from = "gap-099513 (closed; rule shipped with 8137, never cross-referenced to a spec)"
 anchors = ["tmp/cybernetic-harness/specs/S06-ultrastable-controller.md"]
@@ -83,3 +84,5 @@ internally documented via a doc comment. It is not mentioned anywhere under
   (in scope; only `docs/whitepaper/*` and `tmp/cybernetic-harness/paper/*` are held for the
   paper-rewrite session), not a code change, so there is nothing to grep/test for. Filed as
   `kind = "spec"` rather than `gap` for that reason.
+
+Checked 2026-10-27: 2026-10-26: re-checked at HEAD, unchanged from 2026-10-04. commit.rs's line numbers for this logic have drifted a few lines down from the body's cited 207-238/206-208 (fn invariants now starts at line 210) but it is the same function; not a formal anchor change since the structured anchors field only lists the spec markdown file.

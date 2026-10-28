@@ -8,9 +8,9 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/lints", "workspace/hygiene"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gaps-md#allowdead_code-sites----hygiene--deferred"
 anchors = ["crates/roko-cli/src/lib.rs:14", "crates/roko-cli/src/main.rs:11"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -24,3 +24,5 @@ The 2026-08-16 inventory of 48 standalone attributes is out of date: there are n
 Fix: decide whether the `dead_code` allow stays off, and remove or justify each crate-wide clippy allow. Give every remaining `#[allow(dead_code)]` an owner and a reason, or delete the code.
 
 Rechecked 2026-09-29 at d9e79e9d8. The crate-wide allow blocks are larger than the body says: lib.rs:14-101 lists 83 clippy lints and main.rs:11-35 lists 19. The dead_code allow is still commented out ('TEMPORARILY DISABLED FOR AUDIT'). The count is now 151 '#[allow(dead_code)]' attributes under crates/, or 167 'allow(dead_code)' matches counting multi-lint and cfg_attr forms, 80 of them in roko-cli.
+
+Checked 2026-10-27: 2026-10-26 sweep: counts are essentially flat (139 vs 151 plain sites, 156 vs 167 counting multi-lint forms) - no meaningful progress since 2026-09-29.

@@ -2169,70 +2169,20 @@ fn is_rate_limit_message(message: &str) -> bool {
         || lower.contains("too many requests")
 }
 
-/// Classify the provider-facing error text emitted by an agent attempt.
+/// Classify the provider-facing error text of a failed attempt for
+/// circuit-breaker outcome recording.
 ///
 /// Provider adapters normalize typed transport errors into `AgentResult`
 /// output, so the call cell classifies at this boundary before fallback or
-/// outer workflow handling can erase the provider identity.
-/// Classify provider-facing error text for circuit-breaker outcome recording.
+/// outer workflow handling can erase the provider identity. It delegates to
+/// the shared classifier ([`classify_call_failure_text`]): the class is the one
+/// Graph dispatch's provider health reads from the same text, except that a
+/// failure it calls unknown can be a context overflow or a content-policy
+/// block here (gap-466060).
+///
+/// [`classify_call_failure_text`]: crate::provider::error_classify::classify_call_failure_text
 pub(crate) fn provider_error_kind(message: &str) -> &'static str {
-    // Usage-window refusals mention "limit"; classify them before billing and
-    // rate limits so the circuit breaker quarantines instead of retrying.
-    if crate::provider::error_classify::detect_provider_exhaustion(message).is_some() {
-        return "provider_exhausted";
-    }
-    let lower = message.to_ascii_lowercase();
-    // Billing/credit errors must be checked before the generic rate-limit
-    // classifier so that messages containing "quota" + billing indicators
-    // are not misclassified as transient rate limits.
-    if crate::provider::error_classify::is_billing_message(&lower) {
-        return "insufficient_credits";
-    }
-    // A request the provider refused, by its status (bug-35b190).
-    if let Some(status) = crate::provider::error_classify::refused_request_status(&lower) {
-        return crate::provider::error_classify::refusal_class(status, &lower);
-    }
-    if is_rate_limit_message(&lower) {
-        "rate_limit"
-    } else if lower.contains("timeout") || lower.contains("timed out") {
-        "timeout"
-    } else if lower.contains("unauthorized")
-        || lower.contains("forbidden")
-        || lower.contains("permission denied")
-        || lower.contains("authentication")
-        || crate::provider::error_classify::mentions_http_401(&lower)
-        || lower.contains("403")
-    {
-        "auth_failure"
-    } else if lower.contains("context window")
-        || lower.contains("context length")
-        || lower.contains("context overflow")
-    {
-        "context_overflow"
-    } else if lower.contains("content policy") || lower.contains("safety policy") {
-        "content_policy"
-    } else if lower.contains("server error")
-        || lower.contains("temporarily unavailable")
-        || lower.contains("502")
-        || lower.contains("503")
-        || lower.contains("504")
-    {
-        "server_error"
-    } else if lower.contains("connection refused")
-        || lower.contains("connection reset")
-        || lower.contains("dns")
-        || lower.contains("network")
-        || lower.contains("tcp connect")
-        || lower.contains("econnrefused")
-        || lower.contains("enotfound")
-        || lower.contains("broken pipe")
-    {
-        // P0-16: Classify network/connection errors separately from unknown
-        // so the health registry can apply appropriate cooldown.
-        "timeout"
-    } else {
-        "unknown"
-    }
+    crate::provider::error_classify::classify_call_failure_text(&message.to_ascii_lowercase())
 }
 
 struct CellOutput {
@@ -3297,6 +3247,221 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             provider_error_kind("stream ended after 1401 tokens and 401 chunks"),
             "unknown"
         );
+    }
+
+    /// gap-466060: `provider_error_kind` delegates to the shared classifier,
+    /// so the provider-call boundary's circuit breaker names a failure as
+    /// Graph dispatch's provider health names the same text, except that a
+    /// context overflow or a content-policy block is not unknown here. Where
+    /// the copy it replaced answered otherwise, the shared answer is pinned,
+    /// with the copy's answer beside it.
+    #[test]
+    fn provider_error_kind_delegates_to_the_shared_classifier() {
+        use crate::provider::error_classify::{classify_call_failure_text, classify_failure_text};
+
+        // The copy's answer, kept.
+        let kept = [
+            (
+                "agent error (openai): provider error: context overflow",
+                "context_overflow",
+            ),
+            (
+                "This model's maximum context length is 128000 tokens. However, your messages \
+                 resulted in 130000 tokens.",
+                "context_overflow",
+            ),
+            (
+                "input exceeds the context window of this model",
+                "context_overflow",
+            ),
+            (
+                "agent error (openai): provider error: content policy violation",
+                "content_policy",
+            ),
+            (
+                "The response was blocked by the safety policy",
+                "content_policy",
+            ),
+            (
+                "agent error (openai): provider error: rate limited",
+                "rate_limit",
+            ),
+            (
+                "agent error (openai): provider error: authentication failed",
+                "auth_failure",
+            ),
+            ("Error: 403 Forbidden", "auth_failure"),
+            // Anthropic's authentication_error: the Claude CLI's text for an
+            // expired OAuth token, and a bad key (bug-217107).
+            (
+                "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\
+                 \"authentication_error\",\"message\":\"OAuth token has expired.\"}}",
+                "auth_failure",
+            ),
+            ("authentication_error: invalid x-api-key", "auth_failure"),
+            (
+                "You've hit your session limit · resets 4pm (Europe/Berlin)",
+                "provider_exhausted",
+            ),
+            (
+                "insufficient_quota: You exceeded your current quota",
+                "insufficient_credits",
+            ),
+            (
+                "agent error (openai): provider error: openai refused the request (HTTP 400): \
+                 bad param (param reasoning_effort)",
+                "request_refused",
+            ),
+            (
+                "agent error (openai): network error: operation timed out",
+                "timeout",
+            ),
+            ("upstream returned 503 service unavailable", "server_error"),
+            (
+                "Cannot reach provider 'local' at http://127.0.0.1:11434/v1. Is the server \
+                 running?",
+                "unknown",
+            ),
+        ];
+        // Where the copy answered otherwise: the text, the shared answer and
+        // the copy's answer.
+        let changed = [
+            // A model the provider does not serve never counts toward the
+            // provider's circuit (bug-80f0d0).
+            (
+                "agent error (openai): provider error: model not found",
+                "model_not_found",
+                "unknown",
+            ),
+            (
+                "model not found (request timed out)",
+                "model_not_found",
+                "timeout",
+            ),
+            // Login and key failures only the shared classifier knew (backlog
+            // 1113), named before a rate limit or a timeout.
+            (
+                "Not logged in · Please run /login",
+                "auth_failure",
+                "unknown",
+            ),
+            (
+                "Invalid API key · Please run /login",
+                "auth_failure",
+                "unknown",
+            ),
+            (
+                "not logged in: timed out waiting for login",
+                "auth_failure",
+                "timeout",
+            ),
+            (
+                "401 Unauthorized (request id req_429170)",
+                "auth_failure",
+                "rate_limit",
+            ),
+            // Auth words only the copy had. A 403 that does not say forbidden
+            // is most often a refusal scoped to the model (bug-80f0d0), and
+            // 1403 is no status.
+            (
+                "HTTP 403: Your organization does not have access to this model",
+                "unknown",
+                "auth_failure",
+            ),
+            ("forbidden: region not supported", "unknown", "auth_failure"),
+            ("Permission denied (os error 13)", "unknown", "auth_failure"),
+            ("stream ended after 1403 tokens", "unknown", "auth_failure"),
+            // A stream broken mid-response is a transient server failure
+            // (bug-9b65dc).
+            (
+                "agent error (openai): network error: read chunk failed: error decoding \
+                 response body",
+                "server_error",
+                "timeout",
+            ),
+            (
+                "read chunk failed: error decoding response body",
+                "server_error",
+                "unknown",
+            ),
+            (
+                "connection reset by peer (os error 54)",
+                "server_error",
+                "timeout",
+            ),
+            ("broken pipe (os error 32)", "server_error", "timeout"),
+            // A connection that never opened has no class of its own
+            // (gap-354ea9).
+            (
+                "agent error (openai): network error: error sending request for url \
+                 (https://api.example.test/v1/chat/completions): client error (Connect): tcp \
+                 connect error: Connection refused (os error 61)",
+                "unknown",
+                "timeout",
+            ),
+            (
+                "dns error: failed to lookup address information",
+                "unknown",
+                "timeout",
+            ),
+            ("network is unreachable (os error 51)", "unknown", "timeout"),
+            ("connect ECONNREFUSED 127.0.0.1:443", "unknown", "timeout"),
+            (
+                "getaddrinfo ENOTFOUND api.example.test",
+                "unknown",
+                "timeout",
+            ),
+            // A 504 has no class of its own, and digits inside a longer
+            // number or an id decide some classes (bug-4cde49).
+            ("upstream returned 504", "unknown", "server_error"),
+            ("wrote 15040 bytes", "unknown", "server_error"),
+            (
+                "context length exceeded (request id req_5031)",
+                "server_error",
+                "context_overflow",
+            ),
+            // A class the shared classifier names wins over a context window.
+            (
+                "server error: context window exceeded",
+                "server_error",
+                "context_overflow",
+            ),
+            // Classes the copy had no name for; provider health counts both
+            // as unknown.
+            (
+                "empty_response: the model returned no text and no tool call",
+                "empty_response",
+                "unknown",
+            ),
+            (
+                "provider_glitch: malformed_tool_arguments: ls: a whitespace run outside strings",
+                "provider_glitch",
+                "unknown",
+            ),
+        ];
+        for (text, class) in kept {
+            assert_eq!(provider_error_kind(text), class, "{text}");
+        }
+        for (text, class, copy) in changed {
+            assert_eq!(
+                provider_error_kind(text),
+                class,
+                "{text} (the copy said {copy})"
+            );
+        }
+        // Every answer is the shared classifier's, and it differs from the
+        // class Graph dispatch reads only where that class is unknown.
+        let texts = kept.iter().map(|(text, _)| *text);
+        for text in texts.chain(changed.iter().map(|(text, _, _)| *text)) {
+            let lower = text.to_ascii_lowercase();
+            let kind = provider_error_kind(text);
+            assert_eq!(kind, classify_call_failure_text(&lower), "{text}");
+            let shared = classify_failure_text(&lower);
+            assert!(
+                kind == shared || shared == "unknown",
+                "{text}: {kind}, against {shared}"
+            );
+        }
     }
 
     #[tokio::test]

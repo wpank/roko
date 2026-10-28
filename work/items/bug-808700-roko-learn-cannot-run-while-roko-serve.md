@@ -9,8 +9,9 @@ goal = "hermes"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-dogfood-will#R3-8"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
 anchors = ["crates/roko-cli/src/commands/learn.rs::dispatch_learn", "crates/roko-cli/src/doctor.rs::serve_holding_workspace"]
@@ -76,3 +77,5 @@ serve, for example `learn experiments create` and `conclude`. Check each subcomm
 - A reader beside serve can catch a JSONL file mid-append. The learn readers should skip a torn last line rather than
   fail, so check that they do.
 - Evidence: finding R3-8 in `tmp/hermes-roko-v6/findings/dogfood-will.md`.
+
+Checked 2026-10-27: 2026-10-26 sweep: still open; doctor's beside-serve pattern (util.rs:1495-1498) has not been ported to learn.rs::dispatch_learn.

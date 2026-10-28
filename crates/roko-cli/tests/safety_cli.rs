@@ -259,6 +259,56 @@ fn safety_release_refuses_in_a_claude_agents_shell() {
         .stdout(predicate::str::contains("agent live-a/cli  state=isolated"));
 }
 
+/// gap-31e8a7: under `ROKO_AGENT_ID`, which roko sets on every agent it
+/// runs and on every command its own `bash` and `run_tests` tools run for
+/// one, `roko safety release` refuses and leaves the control alone, and
+/// `roko safety controls` still lists it.
+#[test]
+fn safety_release_refuses_under_an_agent_id() {
+    let workdir = TempDir::new().expect("tempdir");
+    roko_agent::isolate_agent(workdir.path(), "live-a/cli", "operator_isolation")
+        .expect("seed an isolation control");
+
+    roko(workdir.path())
+        .env(roko_core::child_env::AGENT_ID_ENV, "live-b/glm")
+        .args([
+            "safety",
+            "release",
+            "live-a/cli",
+            "--reason",
+            "looks fine",
+            "--workdir",
+        ])
+        .arg(workdir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains(
+                "this one has ROKO_AGENT_ID (set on every agent roko runs and every command its \
+                 own tools run for one)",
+            )
+            .and(predicate::str::contains(
+                "Only a person releases an immune control",
+            )),
+        );
+
+    let controls = roko_agent::list_agent_controls(workdir.path()).expect("read controls");
+    assert_eq!(
+        controls.len(),
+        1,
+        "the control stays in force: {controls:?}"
+    );
+    assert!(!roko_agent::agent_control_releases_path(workdir.path()).exists());
+    roko(workdir.path())
+        .env(roko_core::child_env::AGENT_ID_ENV, "live-b/glm")
+        .args(["safety", "controls", "--workdir"])
+        .arg(workdir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent live-a/cli  state=isolated"));
+}
+
 #[test]
 fn safety_controls_on_an_empty_workspace_says_so() {
     let workdir = TempDir::new().expect("tempdir");

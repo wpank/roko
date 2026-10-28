@@ -45,16 +45,31 @@
 //! blamed on the agent, so no learner credits it; the verdict's
 //! `failure_class.rung` names the check (`pre_verify:<check>`), and its
 //! message is the next attempt's feedback.
+//!
+//! The screen also reads the product code the attempt changed for gaming
+//! ([`roko_gate::attempt_diff::gaming_findings`], find-2ba86d): a function
+//! that keeps state across calls and branches on it, a special case of an
+//! input the tests contradict themselves on, or a module loaded under a
+//! name built from pieces. That rejects nothing, since honest code can look
+//! alike: the attempt's verify steps run, and a pass settles `unverified`,
+//! not passed ([`GraphTaskDispatcher::settle_suspect`]). The hub, the log
+//! and the verdict say why; the verdict as the step `pre_verify:gaming`,
+//! which reached no pass, with the findings as its reason. `roko diagnose`,
+//! the run's summary and the end of the plan run read that reason
+//! (gap-0af587).
 
+use std::collections::BTreeMap;
 use std::path::Component;
 
 use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity, ViolationType, scrub};
 use roko_core::config::gates::DiffScope;
+use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_gate::attempt_diff::{
-    AttemptDiffPolicy, DiffFinding, PinnedTest, check_attempt_diff, scripts_run_by,
+    AttemptDiffPolicy, DiffFinding, PinnedTest, check_attempt_diff, gaming_findings, scripts_run_by,
 };
 use roko_gate::{DiffPayload, analyze_diff};
-use roko_learn::telemetry::ScopeFinding;
+use roko_learn::telemetry::records::GAMING_SCREEN_RUNG;
+use roko_learn::telemetry::{AttemptVerdictRecord, ScopeFinding, VerifyStepVerdict};
 
 use super::diff_snapshot::AttemptDiff;
 use super::retry_feedback::RetryNotice;
@@ -64,6 +79,11 @@ use super::*;
 /// Prefix of the gate name, and so of the verdict's `failure_class.rung`,
 /// of an attempt the screen rejected: `pre_verify:<check>`.
 pub(super) const PRE_VERIFY_GATE_PREFIX: &str = "pre_verify:";
+
+/// The gaming screen's check (find-2ba86d): the hub's diagnosis
+/// `gaming:<plan>/<task>` of an attempt it made `unverified`, whose verdict
+/// gains the step [`GAMING_SCREEN_RUNG`], `pre_verify:gaming`.
+const GAMING_CHECK: &str = "gaming";
 
 /// Most `files` entries a "no changes" message names.
 const NAMED_FILES: usize = 5;
@@ -100,10 +120,82 @@ struct Rejection {
 pub(super) enum Screened {
     /// Nothing stops the attempt.
     Clear,
+    /// The change may pass the task's checks without doing the task
+    /// (find-2ba86d): its verify steps run, and a pass settles `unverified`
+    /// ([`GraphTaskDispatcher::settle_suspect`]).
+    Suspect(Suspect),
     /// The attempt changed nothing, but the task has authored verify steps:
     /// they run on the tree as it is, and settle it
     /// ([`GraphTaskDispatcher::settle_unchanged_tree`]).
     UnchangedTree(UnchangedTree),
+}
+
+/// What the gaming screen found in an attempt it did not reject
+/// ([`gaming_findings`], find-2ba86d).
+#[derive(Debug)]
+pub(super) struct Suspect {
+    findings: Vec<DiffFinding>,
+}
+
+impl Suspect {
+    /// Why an attempt whose checks passed is `unverified`, on one line, for
+    /// its verdict: the findings, at most [`LISTED_FINDINGS`] of them.
+    fn reason(&self) -> String {
+        let mut listed: Vec<String> = self
+            .findings
+            .iter()
+            .take(LISTED_FINDINGS)
+            .map(ToString::to_string)
+            .collect();
+        if self.findings.len() > LISTED_FINDINGS {
+            listed.push(format!(
+                "and {} more",
+                self.findings.len() - LISTED_FINDINGS
+            ));
+        }
+        format!(
+            "the checks passed, but the change may pass them without doing the task: {}",
+            listed.join("; ")
+        )
+    }
+
+    /// The hub's warning that `task`'s checks passed on a change that may
+    /// game them, which settled it `unverified`.
+    fn diagnosis(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> DiagnosisSummary {
+        DiagnosisSummary {
+            id: format!("{GAMING_CHECK}:{}/{}", spec.plan_id, task.id),
+            severity: DiagnosisSeverity::Warn,
+            subject: format!(
+                "Task {}'s checks passed, but its change may pass them without doing the task",
+                task.id
+            ),
+            detail: format!(
+                "Task `{}` of plan `{}` settled unverified, not passed: its change has code that \
+                 can pass its checks without doing what the task asks.\n{}",
+                task.id,
+                spec.plan_id,
+                finding_list(&self.findings)
+            ),
+            suggested_action: Some(
+                "Read the change before taking it. A function that keeps state across calls, a \
+                 special case of a tested input, or a module loaded under a name built from \
+                 pieces passes tests that the behaviour the task asks for fails. Take the change \
+                 if it is right; otherwise run the task again, saying what it must not do."
+                    .to_string(),
+            ),
+            ..DiagnosisSummary::default()
+        }
+    }
+}
+
+/// What the attempt diff checks found in an attempt's changes.
+struct DiffScreen {
+    /// A tamper rejection, or under `enforce` a scope one.
+    rejection: Option<Rejection>,
+    /// The paths changed outside the task's `files`.
+    outside: Vec<DiffFinding>,
+    /// What the gaming screen found (find-2ba86d).
+    gaming: Vec<DiffFinding>,
 }
 
 /// A "no changes" rejection that waits for the task's verify steps.
@@ -119,9 +211,11 @@ impl GraphTaskDispatcher {
     /// verify steps run. A rejection is an `Err`, a verify failure of gate
     /// `pre_verify:<check>`, and its message is left as the next attempt's
     /// feedback. An attempt that changed nothing, at a task with authored
-    /// verify steps, is left to them ([`Screened::UnchangedTree`]). The
-    /// paths the attempt changed outside its task's `files` go to
-    /// `scope_findings`, for its verdict, whatever the screen decides.
+    /// verify steps, is left to them ([`Screened::UnchangedTree`]); one the
+    /// gaming screen flags runs them, and a pass settles `unverified`
+    /// ([`Screened::Suspect`]). The paths the attempt changed outside its
+    /// task's `files` go to `scope_findings`, for its verdict, whatever the
+    /// screen decides.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn screen_attempt(
         &self,
@@ -169,26 +263,41 @@ impl GraphTaskDispatcher {
             rejection =
                 self.post_dispatch_red_flag(spec, task, role, dispatch, diff.as_ref(), &mut notes);
         }
+        let mut gaming = Vec::new();
         if rejection.is_none()
             && let Some(diff) = &diff
         {
-            let (diff_rejection, outside) = self
+            let screened = self
                 .attempt_diff_red_flag(spec, task, workdir, attempt_number, diff)
                 .await;
-            for finding in outside {
+            for finding in screened.outside {
                 scope_findings.push(ScopeFinding {
                     path: finding.path,
                     kind: finding.kind.label().to_string(),
                 });
             }
-            rejection = match diff_rejection {
+            gaming = screened.gaming;
+            rejection = match screened.rejection {
                 Some(rejection) => Some(rejection),
                 None => no_changes_red_flag(task, role, diff, chain_attempt).await,
             };
         }
         let Some(mut rejection) = rejection else {
-            return Ok(Screened::Clear);
+            if gaming.is_empty() {
+                return Ok(Screened::Clear);
+            }
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                attempt = attempt_number,
+                findings = %finding_list(&gaming),
+                "the gaming screen flagged the attempt's change: a pass of its checks settles \
+                 unverified"
+            );
+            return Ok(Screened::Suspect(Suspect { findings: gaming }));
         };
+        // What the gaming screen found goes with the rejection's feedback.
+        notes.extend(gaming.iter().map(|finding| format!("- {finding}")));
         // An attempt whose edits the tool policy refused changes nothing:
         // unless its feedback names them, and what satisfies their rules, the
         // next attempt makes the same calls (gap-2e455d).
@@ -372,6 +481,100 @@ impl GraphTaskDispatcher {
         Err(error)
     }
 
+    /// Settle an attempt the gaming screen flagged (find-2ba86d), once its
+    /// verify steps have run (`verified`).
+    ///
+    /// A pass, a pass apart from tests that failed before the run, or a run
+    /// with nothing to check settles as [`TaskGateVerdict::Unverified`]:
+    /// neither a learning success nor a failure, since the change may pass
+    /// its checks without doing its task. It costs no retry, and the work
+    /// is held for review rather than delivered. The log, the progress
+    /// channel and the hub, as the warning `gaming:<plan>/<task>`, say why,
+    /// and so does the verdict: `steps` gains `pre_verify:gaming`, a step
+    /// that reached no pass, with the findings as its reason. Any other
+    /// result stands as it is.
+    pub(super) async fn settle_suspect(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_number: u32,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        suspect: &Suspect,
+        verified: Result<TaskGateVerdict>,
+        steps: &mut Vec<VerifyStepVerdict>,
+    ) -> Result<TaskGateVerdict> {
+        let passed = matches!(
+            verified,
+            Ok(TaskGateVerdict::Passed
+                | TaskGateVerdict::PassedWithPreexistingFailures
+                | TaskGateVerdict::Unverified)
+        );
+        if !passed {
+            return verified;
+        }
+        let reason = suspect.reason();
+        tracing::warn!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            attempt = attempt_number,
+            %reason,
+            "the attempt's checks passed, but the gaming screen flagged its change: it settles \
+             unverified"
+        );
+        if let Some(tui) = &self.tui_bridge {
+            tui.diagnosis(suspect.diagnosis(spec, task));
+        }
+        if let Some(progress_tx) = progress_tx {
+            let _ = progress_tx
+                .send(GraphTaskEvent::Progress {
+                    message: format!("unverified: {reason}"),
+                    completed: None,
+                    total: None,
+                })
+                .await;
+        }
+        steps.push(VerifyStepVerdict {
+            rung: GAMING_SCREEN_RUNG.to_string(),
+            passed: None,
+            skipped: true,
+            skip_reason: Some(reason),
+            ..VerifyStepVerdict::default()
+        });
+        Ok(TaskGateVerdict::Unverified)
+    }
+
+    /// Keep why the gaming screen left the task of `verdict`, a settled try,
+    /// `unverified`, from the reason of its step [`GAMING_SCREEN_RUNG`], for
+    /// the end of the plan run (find-2ba86d, gap-0af587). A settled try the
+    /// screen did not flag clears its task: the task's last try decides.
+    pub(super) fn note_gaming_flag(&self, verdict: &AttemptVerdictRecord) {
+        let identity = &verdict.identity;
+        let mut flags = self.gaming_flags.lock();
+        match verdict.gaming_reason() {
+            Some(reason) => {
+                flags
+                    .entry(identity.plan_id.clone())
+                    .or_default()
+                    .insert(identity.task_id.clone(), reason.to_string());
+            }
+            None => {
+                if let Some(tasks) = flags.get_mut(&identity.plan_id) {
+                    tasks.remove(&identity.task_id);
+                }
+            }
+        }
+    }
+
+    /// Why the gaming screen left each task of plan `plan_id` `unverified`
+    /// whose last try in this run it flagged, by task (find-2ba86d).
+    pub(crate) fn gaming_flags(&self, plan_id: &str) -> BTreeMap<String, String> {
+        self.gaming_flags
+            .lock()
+            .get(plan_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The role's post-dispatch safety check, the one ACP runs
     /// ([`SafetyLayer::post_dispatch_check`]), over the attempt's output and
     /// the paths its task changed.
@@ -454,7 +657,8 @@ impl GraphTaskDispatcher {
     /// tamper finding rejects the attempt; scope findings are logged, and
     /// reject it only under `[gates] diff_scope = "enforce"`. Returns the
     /// rejection, if any, with the scope findings, which the attempt's
-    /// verdict records either way (backlog 1125).
+    /// verdict records either way (backlog 1125), and what the gaming
+    /// screen found in the same changes (find-2ba86d).
     async fn attempt_diff_red_flag(
         &self,
         spec: &TaskExecutionSpec,
@@ -462,13 +666,14 @@ impl GraphTaskDispatcher {
         workdir: &Path,
         attempt_number: u32,
         diff: &AttemptDiff,
-    ) -> (Option<Rejection>, Vec<DiffFinding>) {
+    ) -> DiffScreen {
         let policy = self.attempt_diff_policy(spec, task, workdir);
         let changes = diff
             .attempt_changes(|change| {
                 policy.needs_text(&change.path) || policy.needs_text(change.old_path())
             })
             .await;
+        let gaming = gaming_findings(&changes);
         let (tamper, scope): (Vec<DiffFinding>, Vec<DiffFinding>) =
             check_attempt_diff(&changes, &policy)
                 .into_iter()
@@ -503,7 +708,11 @@ impl GraphTaskDispatcher {
                     finding_list(&tamper)
                 ),
             };
-            return (Some(rejection), scope);
+            return DiffScreen {
+                rejection: Some(rejection),
+                outside: scope,
+                gaming,
+            };
         }
         let enforced = self.config.gates.diff_scope == DiffScope::Enforce;
         let rejection = (enforced && !scope.is_empty()).then(|| {
@@ -527,7 +736,11 @@ impl GraphTaskDispatcher {
                 ),
             }
         });
-        (rejection, scope)
+        DiffScreen {
+            rejection,
+            outside: scope,
+            gaming,
+        }
     }
 
     /// What the task may change: its `files`, the scripts its verify steps
@@ -857,8 +1070,8 @@ struct RefusedCall {
     /// The file the call named, if any.
     path: Option<String>,
     /// Why the policy refused it, e.g. "contract violation for role
-    /// `implementer` (RequireToolBeforeEdit): tool `read_file` must run
-    /// before `write_file`".
+    /// `implementer` (RequireToolBeforeEdit): tool `read_file` must run on
+    /// `src/lib.rs` before `write_file` changes it".
     reason: String,
 }
 
@@ -970,15 +1183,21 @@ fn refusal_note(refused: &[RefusedCall]) -> Option<String> {
 /// file first; under `MaxToolCallsPerTurn`, fewer calls in a turn.
 fn refusal_remedy(refusal: &RefusedCall) -> Option<String> {
     let reason = refusal.reason.as_str();
-    // "... (RequireToolBeforeEdit): tool `read_file` must run before `write_file`"
+    // "... (RequireToolBeforeEdit): tool `read_file` must run on `src/lib.rs`
+    // before `write_file` changes it"
     if let Some((_, detail)) = reason.split_once("(RequireToolBeforeEdit): ") {
-        let required = detail
+        let (required, rest) = detail
             .strip_prefix("tool `")
             .and_then(|rest| rest.split_once('`'))
-            .map_or("read_file", |(tool, _)| tool);
-        let file = refusal
-            .path
-            .as_deref()
+            .unwrap_or(("read_file", ""));
+        // The refusal names the file left unread, which for `apply_patch`
+        // is the one its patch names, not its `path` (gap-78cf31).
+        let unread = rest
+            .strip_prefix(" must run on `")
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(file, _)| file);
+        let file = unread
+            .or(refusal.path.as_deref())
             .map_or_else(|| "the file".to_string(), |path| format!("`{path}`"));
         let remedy = format!("Call `{required}` on {file} first, then edit it.");
         return Some(remedy);
@@ -1000,8 +1219,9 @@ mod tests {
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, VERIFY_PROVIDER, cli_provider, final_turn, jsonl_rows_where,
-        make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, model, no_auto_fix,
-        spawn_openai_mock, tool_call_turn, verify_step,
+        make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher,
+        make_test_dispatcher_with, model, no_auto_fix, spawn_openai_mock, tool_call_turn,
+        verify_step,
     };
 
     /// A fake Claude CLI that answers with `text` (JSON-escaped) and reports
@@ -1243,6 +1463,185 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             .await
             .expect("the change is real now");
         assert!(marker.exists());
+    }
+
+    /// find-2ba86d: run ff24ef90 passed `round_to_dollars(150) == 2` and
+    /// `== 3` with a module-level call counter, and settled `succeeded`. An
+    /// attempt whose checks pass on such a change now settles `unverified`,
+    /// neither passed nor failed: its verdict says why as the step
+    /// `pre_verify:gaming`, which reached no pass, the hub warns, and no
+    /// learner credits it. The same task done honestly passes.
+    #[tokio::test]
+    async fn a_pass_the_gaming_screen_flags_settles_unverified() {
+        let plain = "def round_to_dollars(cents):\n    return round(cents / 100)\n";
+        let gamed = "_150_call_count = 0\n\n\ndef round_to_dollars(cents):\n    \
+                     global _150_call_count\n    if cents == 150:\n        \
+                     _150_call_count += 1\n        if _150_call_count == 1:\n            \
+                     return 2\n        return 3\n    return round(cents / 100)\n";
+        let writes =
+            |text: &str| provider(&format!("cat > money.py <<'EOF'\n{text}EOF"), "done", 10);
+        let temp = tempdir().expect("tempdir");
+        commit_repo(temp.path(), &[("money.py", plain)]);
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let sender = hub.sender();
+        let (dispatcher, mut task) =
+            make_test_dispatcher_with(&temp, &writes(gamed), no_auto_fix, feedback, |dispatcher| {
+                dispatcher.with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(sender))
+            })
+            .await;
+        task.files = vec!["money.py".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            "grep -q 'def round_to_dollars' money.py",
+        )];
+        let ctx = CellContext::new().with_run_id("gamed-run".to_string());
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("its checks pass");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Unverified)
+        );
+        let warnings: Vec<roko_core::dashboard_snapshot::DiagnosisSummary> = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::Diagnosis { summary }
+                    if summary.id.starts_with("gaming:") =>
+                {
+                    Some(summary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0].id,
+            format!("gaming:{}/{}", make_spec(&task).plan_id, task.id)
+        );
+        assert!(
+            warnings[0].detail.contains("hidden_state `money.py`"),
+            "{}",
+            warnings[0].detail
+        );
+        // The end of the plan run hears why (gap-0af587).
+        let flags = dispatcher.gaming_flags(&make_spec(&task).plan_id);
+        // Closing the run's writer flushes its lines.
+        drop(dispatcher);
+        let verdicts = jsonl_rows_where(
+            &runs_dir.join("gamed-run").join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["outcome"], "unverified", "{verdict}");
+        assert_eq!(verdict["gate_verdict"], "unverified", "{verdict}");
+        assert!(verdict["learning_label"].is_null(), "{verdict}");
+        let steps = verdict["steps"].as_array().expect("the verdict's steps");
+        assert!(
+            steps
+                .iter()
+                .any(|step| step["rung"] != "pre_verify:gaming" && step["passed"] == true),
+            "its verify step passed: {verdict}"
+        );
+        let screen = steps
+            .iter()
+            .find(|step| step["rung"] == "pre_verify:gaming")
+            .expect("the gaming screen's step");
+        assert!(screen["passed"].is_null(), "{screen}");
+        let reason = screen["skip_reason"].as_str().expect("its reason");
+        assert!(
+            reason.starts_with("the checks passed, but the change may pass them"),
+            "{reason}"
+        );
+        assert!(reason.contains("hidden_state `money.py`"), "{reason}");
+        assert!(reason.contains("`_150_call_count`"), "{reason}");
+        assert!(reason.contains("`cents == 150`"), "{reason}");
+        assert_eq!(
+            flags,
+            BTreeMap::from([(task.id.clone(), reason.to_string())]),
+            "the end of the plan run reads the verdict's reason"
+        );
+
+        // Done honestly, the same task passes.
+        let honest = "def round_to_dollars(cents):\n    if cents < 0:\n        \
+                      raise ValueError(cents)\n    return round(cents / 100)\n";
+        let temp = tempdir().expect("tempdir");
+        commit_repo(temp.path(), &[("money.py", plain)]);
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            &writes(honest),
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.files = vec!["money.py".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            "grep -q 'raise ValueError' money.py",
+        )];
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("an honest change passes");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+    }
+
+    /// gap-0af587: the end of the plan run keeps why the gaming screen left a
+    /// task unverified while the task's last settled try stands so: a later
+    /// try the screen did not flag clears it, and a try unverified otherwise
+    /// adds nothing. Plans are kept apart.
+    #[tokio::test]
+    async fn a_later_try_clears_the_gaming_screens_flag() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let temp = tempdir().expect("tempdir");
+        let config = roko_core::config::schema::RokoConfig::default();
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
+        let settled = |plan: &str, task: &str, attempt: u32, outcome, reason: Option<&str>| {
+            let key = AttemptKey::new("run", plan, task, attempt);
+            let mut verdict =
+                AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true);
+            if let Some(reason) = reason {
+                verdict.steps.push(VerifyStepVerdict {
+                    rung: GAMING_SCREEN_RUNG.to_string(),
+                    skipped: true,
+                    skip_reason: Some(reason.to_string()),
+                    ..VerifyStepVerdict::default()
+                });
+            }
+            verdict
+        };
+        let unverified = AttemptOutcome::Unverified;
+        for verdict in [
+            settled("p", "T1", 1, unverified, Some("hidden_state `a.py`")),
+            settled("p", "T2", 1, unverified, Some("special_case `b.py`")),
+            settled("p", "T2", 2, AttemptOutcome::Passed, None),
+            settled("p", "T3", 1, unverified, None),
+            settled("q", "T1", 1, unverified, Some("dynamic_import `c.py`")),
+        ] {
+            dispatcher.note_gaming_flag(&verdict);
+        }
+        assert_eq!(
+            dispatcher.gaming_flags("p"),
+            BTreeMap::from([("T1".to_string(), "hidden_state `a.py`".to_string())])
+        );
+        assert_eq!(
+            dispatcher.gaming_flags("q"),
+            BTreeMap::from([("T1".to_string(), "dynamic_import `c.py`".to_string())])
+        );
+        assert!(dispatcher.gaming_flags("r").is_empty());
     }
 
     #[tokio::test]
@@ -1747,8 +2146,9 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         let (gate, message) = rejected(&dispatcher, &task, &marker).await;
         assert_eq!(gate, "pre_verify:no_changes");
         let refused = "- `write_file` on `src/lib.rs`: contract violation for role `implementer` \
-                       (RequireToolBeforeEdit): tool `read_file` must run before `write_file`. \
-                       Call `read_file` on `src/lib.rs` first, then edit it.";
+                       (RequireToolBeforeEdit): tool `read_file` must run on `src/lib.rs` before \
+                       `write_file` changes it. Call `read_file` on `src/lib.rs` first, then edit \
+                       it.";
         assert!(message.contains(refused), "{message}");
         let lib = std::fs::read_to_string(temp.path().join("src/lib.rs")).expect("src/lib.rs");
         assert_eq!(lib, one, "the refused write changed nothing");
@@ -2020,5 +2420,23 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             "{note}"
         );
         assert!(lines[4].ends_with("for this contract."), "{note}");
+    }
+
+    /// gap-78cf31: a `RequireToolBeforeEdit` refusal names the file left
+    /// unread, and the remedy points at it: for an `apply_patch` whose patch
+    /// names another file than its `path`, the patched one.
+    #[test]
+    fn a_refusal_that_names_its_unread_file_points_the_remedy_at_it() {
+        let refusal = RefusedCall {
+            tool: "apply_patch".to_string(),
+            path: Some("py/test_textutil.py".to_string()),
+            reason: "contract violation for role `implementer` (RequireToolBeforeEdit): tool \
+                     `read_file` must run on `py/textutil.py` before `apply_patch` changes it"
+                .to_string(),
+        };
+        assert_eq!(
+            refusal_remedy(&refusal).as_deref(),
+            Some("Call `read_file` on `py/textutil.py` first, then edit it.")
+        );
     }
 }

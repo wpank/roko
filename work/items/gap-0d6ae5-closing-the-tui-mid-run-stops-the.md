@@ -8,16 +8,16 @@ severity = "p3"
 goal = "visibility"
 subsystem = ["roko-cli/graph_execution", "roko-cli/tui"]
 created = 2026-09-29
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e2-planset"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::pending_interrupt", "crates/roko-cli/src/graph_execution/plan_runner.rs::PlanRunInterrupt", "crates/roko-cli/src/serve_client.rs::follow_run_tui"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'stopping the plan run' crates/roko-cli/src/graph_execution/plan_runner.rs"
+command = "grep -qw 'closing_the_tui_mid_run_interrupts_the_run' crates/roko-cli/src/graph_execution/plan_runner.rs (pin) replaced once fixed by a positive test like `grep -rqw 'fn tui_close_can_detach_and_keep_the_run_going' crates/roko-cli/src && cargo test -p roko-cli tui_close_can_detach_and_keep_the_run_going` - the current verify also matches the unconditional conductor-stop log line at plan_runner.rs:1809 ('the conductor is stopping the plan run'), which the 2026-10-01 note already flagged as a false-fail risk once this ships, not a false-pass risk today."
 +++
 
 Quitting the TUI while plans are still running is treated as an interrupt (`PlanRunInterrupt::Interrupt`, exit 130). Before the interrupt work, the run continued headless with stderr redirected and no terminal output. Neither suits an operator who closes the dashboard to look at something else.

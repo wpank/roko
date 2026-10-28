@@ -74,7 +74,10 @@ pub fn tool_def() -> ToolDef {
 /// The command gets the environment verify steps get
 /// ([`child_env::apply_gate_env`]): system, locale and toolchain variables,
 /// never a provider key, a secret-looking name or a name roko loaded from a
-/// `.env` file, unless [`ToolContext::env_passthrough`] names it.
+/// `.env` file, unless [`ToolContext::env_passthrough`] names it. It also
+/// gets [`child_env::AGENT_ID_ENV`], set to the calling agent's id
+/// ([`ToolContext::correlation`]), which marks it and every script it runs
+/// as an agent's, so `roko safety release` refuses there (gap-31e8a7).
 ///
 /// Per the sandbox contract, the handler only runs when
 /// [`ToolPermission::exec`] is granted; safety policies layer additional
@@ -121,6 +124,9 @@ async fn run(
         parent_env.unwrap_or_else(child_env::process_env),
         &ctx.env_passthrough,
     );
+    // A call with no agent id (a test's or a tool runner's context) is
+    // marked as an unnamed agent's.
+    child_env::mark_agent_process(cmd.as_std_mut(), &ctx.correlation.agent_id);
 
     let output = match child_group::output_within(cmd, timeout.budget).await {
         Ok(Ok(o)) => o,
@@ -326,5 +332,30 @@ mod tests {
         ] {
             assert!(output.contains(kept), "{kept} missing:\n{output}");
         }
+    }
+
+    /// gap-31e8a7: a command carries `ROKO_AGENT_ID`, set to the calling
+    /// agent's id over any value roko inherited, and so does a script it
+    /// writes and runs; a call with no agent id is marked all the same.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_commands_carry_the_agent_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = "printf '%s\\n' 'printf %s \"$ROKO_AGENT_ID\"' > id.sh && sh id.sh";
+        let call = || ToolCall::new("c", NAME, serde_json::json!({ "command": command }));
+        let parent = parent_env(&[(child_env::AGENT_ID_ENV, "outer")]);
+        let agent = ToolContext::testing(dir.path()).with_correlation(
+            roko_core::tool::CorrelationEnvelope {
+                agent_id: "live-a/glm".to_string(),
+                ..roko_core::tool::CorrelationEnvelope::empty()
+            },
+        );
+
+        let named = env_output(run(call(), &agent, Some(parent.clone())).await);
+        let unnamed =
+            env_output(run(call(), &ToolContext::testing(dir.path()), Some(parent)).await);
+
+        assert_eq!(named, "live-a/glm");
+        assert_eq!(unnamed, child_env::UNNAMED_AGENT_ID);
     }
 }

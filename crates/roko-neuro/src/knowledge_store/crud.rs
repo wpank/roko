@@ -17,6 +17,7 @@ use super::KnowledgeStore;
 use super::anti_pattern::{
     extract_anti_pattern_from_failure, find_similar_anti_pattern_index, reinforce_anti_pattern,
 };
+use super::pending::{PendingBy, PendingConfirmation, confirm_by_repeat};
 use super::scoring::*;
 use super::types::*;
 
@@ -253,50 +254,39 @@ impl KnowledgeStore {
 
         // Detect confirmations by comparing new entries against existing ones.
         let confirmations = detect_confirmations(&existing, &entries);
+        let mut counted = Vec::new();
+        let episodes_of = |id: &str| -> Vec<String> {
+            let confirming = entries.iter().find(|entry| entry.id == id);
+            confirming.map_or_else(Vec::new, |entry| entry.source_episodes.clone())
+        };
 
-        // Apply tier promotions for confirmed entries.
-        if !confirmations.is_empty() {
+        if let Some(batch) = self.commit_batch.as_deref() {
+            // A guarded run's lessons confirm committed entries only when the
+            // run delivers: hold them beside its batch (gap-1220c5).
+            let held: Vec<PendingConfirmation> = confirmations
+                .iter()
+                .map(|confirmation| PendingConfirmation {
+                    batch: batch.to_string(),
+                    entry: confirmation.confirmed_entry_id.clone(),
+                    at: confirmation.created_at,
+                    by: PendingBy::Repeat {
+                        confirming: confirmation.confirming_entry_id.clone(),
+                        episodes: episodes_of(&confirmation.confirming_entry_id),
+                    },
+                })
+                .collect();
+            self.append_pending(&held)?;
+        } else if !confirmations.is_empty() {
+            // Apply tier promotions for confirmed entries; a repeat from a
+            // pass that confirmed the entry already counts nothing.
             let mut updated_existing = existing;
             for confirmation in &confirmations {
                 if let Some(entry) = updated_existing
                     .iter_mut()
                     .find(|e| e.id == confirmation.confirmed_entry_id)
+                    && confirm_by_repeat(entry, &episodes_of(&confirmation.confirming_entry_id))
                 {
-                    entry.confirmation_count = entry.confirmation_count.saturating_add(1);
-
-                    // Add distinct context from the confirming entry's source episodes.
-                    if let Some(confirming) = entries
-                        .iter()
-                        .find(|e| e.id == confirmation.confirming_entry_id)
-                    {
-                        for ep in &confirming.source_episodes {
-                            if !entry.distinct_contexts.contains(ep) {
-                                entry.distinct_contexts.push(ep.clone());
-                            }
-                        }
-                    }
-
-                    // Auto-promote based on thresholds (P2-15: log tier progressions).
-                    let old_tier = entry.tier;
-                    match entry.tier {
-                        KnowledgeTier::Transient if entry.confirmation_count >= 2 => {
-                            entry.tier = KnowledgeTier::Working;
-                        }
-                        KnowledgeTier::Working if entry.distinct_contexts.len() >= 3 => {
-                            entry.tier = KnowledgeTier::Consolidated;
-                        }
-                        _ => {}
-                    }
-                    if entry.tier != old_tier {
-                        tracing::info!(
-                            knowledge_id = %entry.id,
-                            from_tier = ?old_tier,
-                            to_tier = ?entry.tier,
-                            confirmations = entry.confirmation_count,
-                            distinct_contexts = entry.distinct_contexts.len(),
-                            "knowledge tier progression"
-                        );
-                    }
+                    counted.push(confirmation.clone());
                 }
             }
             self.rewrite_all(&updated_existing)?;
@@ -317,10 +307,10 @@ impl KnowledgeStore {
         file.flush().context("flush knowledge entry")?;
         file.sync_all().context("sync knowledge entry")?;
 
-        // Append confirmation records to the sibling JSONL file.
-        if !confirmations.is_empty() {
-            self.append_confirmations(&confirmations)?;
-        }
+        // Append the records of the confirmations that counted to the sibling
+        // JSONL file; a held confirmation's record waits for its run's
+        // delivery too.
+        self.append_confirmations(&counted)?;
 
         self.register_temporal_entries(&entries);
 

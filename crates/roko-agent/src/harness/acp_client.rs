@@ -603,6 +603,14 @@ impl AcpStdioClient {
             cmd.current_dir(cwd);
         }
         process::apply_credential_scrub(&mut cmd, &self.credential_scrub);
+        // The ACP server runs an agent's sessions: mark it as an agent's
+        // process (gap-31e8a7). The client knows no agent id, so the mark
+        // names an unnamed agent unless the config's variables, applied
+        // next, set one.
+        cmd.env(
+            roko_core::child_env::AGENT_ID_ENV,
+            roko_core::child_env::UNNAMED_AGENT_ID,
+        );
         for (k, v) in &self.config.env {
             cmd.env(k, v);
         }
@@ -2952,6 +2960,35 @@ done
             let command = &client.config().command;
             assert_eq!(params["protocolVersion"], serde_json::json!(1), "{command}");
             assert_eq!(params["clientInfo"]["name"], "roko", "{command}");
+        }
+    }
+
+    /// gap-31e8a7: the ACP server runs marked as an agent's process, an
+    /// unnamed agent's unless the config's variables name it.
+    #[tokio::test]
+    async fn the_server_runs_marked_as_an_agents_process() {
+        const ECHO_MARK: &str = r##"
+IFS= read -r line
+id="${line#*\"id\":}"
+id="${id%%,*}"
+id="${id%%\}*}"
+printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"serverInfo":{"name":"%s"}}}\n' "$id" "$ROKO_AGENT_ID"
+cat >/dev/null
+"##;
+        let unnamed = test_servers::client(ECHO_MARK);
+        let mut named = test_servers::client(ECHO_MARK);
+        named.config.env.insert(
+            roko_core::child_env::AGENT_ID_ENV.to_string(),
+            "live-a/hermes".to_string(),
+        );
+
+        for (mut client, id) in [
+            (unnamed, roko_core::child_env::UNNAMED_AGENT_ID),
+            (named, "live-a/hermes"),
+        ] {
+            let init = client.connect().await.expect("handshake");
+            assert_eq!(init.server_info["name"], id);
+            client.kill().await;
         }
     }
 

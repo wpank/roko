@@ -8,11 +8,11 @@ severity = "p2"
 size = "L"
 subsystem = ["roko-cli/impact-analysis"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/231-cross-crate-change-impact-scoping.md"
-anchors = ["crates/roko-cli/src/runner/impact_analysis.rs::analyze", "crates/roko-cli/src/runner/preflight.rs::check_declared_change_impact", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/dispatch/prompt_builder.rs::declared_impact_context", "crates/roko-cli/src/runner/cargo_command.rs::focused_verify_steps", "crates/roko-cli/src/commands/impact.rs::cmd_impact"]
+anchors = ["crates/roko-cli/src/runner/impact_analysis.rs::analyze", "crates/roko-cli/src/runner/preflight.rs::check_declared_change_impact", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/dispatch/prompt_builder.rs::declared_impact_context", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch/verify_focus.rs", "crates/roko-cli/src/commands/impact.rs::cmd_impact"]
 goal = "core"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
@@ -292,3 +292,5 @@ The conservative implementation is sound and covers the original dogfood failure
 The open items are all fixture/proof work. The `roko-index` oracle upgrade should be deferred
 until after the engine-audit convergence work stabilizes the public API surface, since that
 work will both exercise and potentially reshape the impact-analysis boundaries.
+
+Checked 2026-10-27: 2026-10-26 sweep: graph_task_dispatch.rs was split into a module directory; graph_engine_inert_settings now lives in crates/roko-cli/src/graph_task_dispatch/inert_settings.rs (re-exported at graph_task_dispatch.rs:111), and the gates.impact_* LEGACY_GATES lines moved there too (now conditioned on `!focused`, since gap-1426e4 wired them into focused-mode verify scoping only). The item's verify second clause greps crates/roko-cli/src/graph_task_dispatch.rs directly, which no longer contains those lines at all; that clause currently still produces the correct (fail) overall result only because the first clause (the missing test) already fails the whole && chain, but it is fragile and should point at the new file.

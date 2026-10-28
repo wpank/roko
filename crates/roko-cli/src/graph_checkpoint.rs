@@ -51,7 +51,9 @@ use roko_learn::telemetry::{
 use roko_serve::runtime::{names_run, short_run_id};
 use serde::{Deserialize, Serialize};
 
-use crate::graph_execution::delivery::{DELIVERY_CHECKS_EXTENSION, DeliveryCheck};
+use crate::graph_execution::delivery::{
+    DELIVERY_BUILD_TREES_EXTENSION, DELIVERY_CHECKS_EXTENSION, DeliveryBuildTrees, DeliveryCheck,
+};
 use crate::graph_task_dispatch::micro_usd_to_usd;
 use crate::runner::plan_loader::Plan;
 use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
@@ -3123,6 +3125,9 @@ pub struct RecordedBatchDelivery {
     pub checks: Vec<DeliveryCheck>,
     /// The log holding everything those checks wrote, when it was written.
     pub check_log: Option<String>,
+    /// What those checks started from, such as a cold check, when the
+    /// receipt says (bug-2f70cd).
+    pub build_trees: Option<DeliveryBuildTrees>,
     /// Whether it delivered only the verified tasks of a plan that did not
     /// finish (bug-74164c).
     pub partial: bool,
@@ -3152,6 +3157,10 @@ pub fn recorded_batch_delivery(workdir: &Path, plan_id: &str) -> Option<Recorded
         check_log: receipt["regression_evidence_ref"]
             .as_str()
             .map(str::to_string),
+        build_trees: serde_json::from_value(
+            receipt["extensions"][DELIVERY_BUILD_TREES_EXTENSION].clone(),
+        )
+        .ok(),
         partial: batch["partial"].as_bool().unwrap_or(false),
     })
 }
@@ -3213,6 +3222,38 @@ pub fn canonical_checkpoint_status(workdir: &Path, plan_id: &str) -> Option<Grap
     serde_json::from_slice::<StatusOnly>(&bytes)
         .ok()
         .map(|manifest| manifest.status)
+}
+
+/// The status `plan_id`'s canonical checkpoint records, as it stands now: a
+/// `running` checkpoint whose run has stopped, because its process died,
+/// reads [`GraphCheckpointStatus::Interrupted`], as `roko serve` and `roko
+/// plan list` say it (bug-693bb3, bug-df0e79). `None` when it has no
+/// readable checkpoint.
+#[must_use]
+pub fn canonical_checkpoint_status_now(
+    workdir: &Path,
+    plan_id: &str,
+) -> Option<GraphCheckpointStatus> {
+    #[derive(Deserialize)]
+    struct StatusAndRun {
+        status: GraphCheckpointStatus,
+        #[serde(default)]
+        run_id: String,
+    }
+
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let recorded: StatusAndRun = serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    Some(match recorded.status {
+        GraphCheckpointStatus::Running
+            if running_checkpoint_has_stopped(workdir, &recorded.run_id) =>
+        {
+            GraphCheckpointStatus::Interrupted
+        }
+        status => status,
+    })
 }
 
 /// Task outcomes recorded by the last run in `plan_id`'s canonical
@@ -3338,8 +3379,8 @@ pub struct CheckpointInspection {
     /// committed it (the cost ledger's own before generations). `None` when
     /// a checkpoint from before generations has no readable ledger.
     pub spent_micro_usd: Option<u64>,
-    /// Spend reserved for a provider call that never settled. Resume refuses
-    /// a checkpoint that committed an unresolved reservation.
+    /// Spend reserved for attempts that never settled. A resume settles it
+    /// as the attempts a stopped process left (bug-b7f6a8).
     pub reserved_micro_usd: Option<u64>,
     /// Task nodes whose output this run recorded in its Activity log, each
     /// with the gate verdict of its latest record. A record a resume refused
@@ -3351,6 +3392,42 @@ pub struct CheckpointInspection {
     /// milliseconds: records older than this belong to earlier runs of the
     /// plan. `None` when no earlier checkpoint was archived.
     pub replaced_at_ms: Option<u128>,
+}
+
+impl CheckpointInspection {
+    /// How many tasks the checkpoint committed a passing output for: a pass,
+    /// a pass over failures that were already there, or a task whose work
+    /// was already done (bug-693bb3). A crashed run's manifest has no
+    /// verdict summary yet, so this reads the committed records.
+    #[must_use]
+    pub fn passed_tasks(&self) -> usize {
+        self.recorded
+            .values()
+            .filter(|verdict| {
+                matches!(
+                    verdict,
+                    Some(
+                        TaskGateVerdict::Passed
+                            | TaskGateVerdict::PassedWithPreexistingFailures
+                            | TaskGateVerdict::AlreadySatisfied
+                    )
+                )
+            })
+            .count()
+    }
+}
+
+/// Whether run `run_id`, which a plan's checkpoint still records as
+/// `running`, has stopped (bug-693bb3): its run manifest is closed or names
+/// a process that is certainly gone, as `roko serve` tells it when it
+/// settles runs ([`roko_serve::interrupted_runs::run_has_stopped`]); without
+/// a run manifest, no process holds the workspace's runner lock. It only
+/// reads.
+#[must_use]
+pub fn running_checkpoint_has_stopped(workdir: &Path, run_id: &str) -> bool {
+    roko_serve::interrupted_runs::run_has_stopped(workdir, run_id).unwrap_or_else(|| {
+        crate::workspace_lock::runner_lock_holder(&workdir.join(".roko")).is_none()
+    })
 }
 
 /// Read `plan_id`'s canonical checkpoint under `.roko/state/graph/` for
@@ -4633,6 +4710,55 @@ depends_on = ["T1"]
             .map(|(_, recorded)| recorded.run_id)
             .collect();
         assert_eq!(set_aside, [RUN_A]);
+    }
+
+    /// bug-693bb3: a run with no run manifest has stopped only while no
+    /// process holds the workspace's runner lock. A run takes that lock
+    /// before it touches its checkpoint, so one that is starting, its
+    /// checkpoint already `running` and its manifest not yet written, runs.
+    #[test]
+    fn a_run_without_a_manifest_runs_while_the_runner_lock_is_held() {
+        let dir = tempdir().expect("tempdir");
+        assert!(running_checkpoint_has_stopped(dir.path(), "starting"));
+        let lock = crate::workspace_lock::acquire_runner_lock(&dir.path().join(".roko"))
+            .expect("the runner lock");
+        assert!(!running_checkpoint_has_stopped(dir.path(), "starting"));
+        drop(lock);
+        assert!(running_checkpoint_has_stopped(dir.path(), "starting"));
+    }
+
+    /// bug-693bb3: a checkpoint counts each task it committed a pass for
+    /// once, though a resume ran it again and recorded it a second time, and
+    /// a forced accept is not a pass.
+    #[test]
+    fn passed_tasks_count_a_task_once_across_a_resume() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let output = |verdict| verdict_output("done", Some(verdict));
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        first
+            .take_recorder()
+            .record("p", "T1", 0, output(TaskGateVerdict::Passed))
+            .expect("record T1");
+        first.finish(false).expect("finish");
+        drop(first);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume");
+        let mut recorder = resumed.take_recorder();
+        recorder
+            .record("p", "T1", 0, output(TaskGateVerdict::Passed))
+            .expect("record T1 again");
+        recorder
+            .record("p", "T2", 0, output(TaskGateVerdict::ForcedAccept))
+            .expect("record T2");
+        drop(recorder);
+        let inspection = inspect_canonical_checkpoint(dir.path(), "p")
+            .expect("inspect")
+            .expect("a checkpoint");
+        assert_eq!(inspection.passed_tasks(), 1);
     }
 
     #[test]
@@ -6236,18 +6362,25 @@ depends_on = ["T1"]
 
     /// gap-4ec59f: `roko plan status` finds where a delivered plan's work
     /// went in its checkpoint, and nothing for a plan whose delivery failed.
+    /// bug-2f70cd: with what its check started from, such as a cold check.
     #[test]
     fn recorded_batch_delivery_reads_only_a_delivered_plan() {
         let dir = tempdir().expect("tempdir");
+        let cold = "a cold check: the regression checkout starts from no build trees";
         for (plan, state) in [("p-delivered", "delivered"), ("p-conflict", "conflict")] {
             let checkpoint = dir.path().join(".roko/state/graph").join(plan);
             std::fs::create_dir_all(&checkpoint).expect("checkpoint dir");
             let manifest = serde_json::json!({
-                "extensions": {BATCH_EXTENSION: {"value": {
-                    "branch": "roko/batch/run-1",
-                    "state": state,
-                    "merge_commit": "a".repeat(40),
-                }}}
+                "extensions": {
+                    BATCH_EXTENSION: {"value": {
+                        "branch": "roko/batch/run-1",
+                        "state": state,
+                        "merge_commit": "a".repeat(40),
+                    }},
+                    DELIVERY_EXTENSION: {"value": {"receipt": {"extensions": {
+                        DELIVERY_BUILD_TREES_EXTENSION: {"cold": true, "started_from": cold},
+                    }}}},
+                }
             });
             std::fs::write(checkpoint.join("checkpoint.json"), manifest.to_string())
                 .expect("checkpoint");
@@ -6260,6 +6393,10 @@ depends_on = ["T1"]
                 merge_commit: "a".repeat(40),
                 checks: Vec::new(),
                 check_log: None,
+                build_trees: Some(DeliveryBuildTrees {
+                    cold: true,
+                    started_from: cold.to_string(),
+                }),
                 partial: false,
             })
         );

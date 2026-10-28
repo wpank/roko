@@ -14,6 +14,7 @@
 
 mod accept_blocks;
 mod build_system;
+mod check_reads;
 mod dry_run_fs;
 mod file_paths;
 mod overview;
@@ -665,8 +666,9 @@ pub fn render_generated_plan_limits() -> String {
          the first draft.\n\
          - `[task.context] read_files`: at most {read_files} entries per task, or as many as \
          the files the task owns when it owns more, not counting the documents the plan is written \
-         from (PLAN_BUDGET_READ_FILES); keep the files the task needs most, and the files that \
-         hold the symbols it names.\n\
+         from, the tests its checks run or the headers of the sources it changes \
+         (PLAN_BUDGET_READ_FILES); keep the files the task needs most, and the files that hold \
+         the symbols it names.\n\
          - `[[task.verify]]`: {verify_steps}.\n\
          - `lines`: one range `START-END` inside the file, at most {range_lines} lines long \
          (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET). Never a list such as `1-25,320-332`: \
@@ -1458,11 +1460,13 @@ mod tests {
         let limits = render_generated_plan_limits();
         for expected in [
             // bug-417c4a: a task may read the files it owns, and the
-            // documents the plan is written from are no part of the count.
+            // documents the plan is written from are no part of the count;
+            // gap-5db3d9: nor are its checks' tests and its sources' headers.
             format!(
                 "`[task.context] read_files`: at most {} entries per task, or as many as the \
                  files the task owns when it owns more, not counting the documents the plan is \
-                 written from (PLAN_BUDGET_READ_FILES)",
+                 written from, the tests its checks run or the headers of the sources it changes \
+                 (PLAN_BUDGET_READ_FILES)",
                 policy.max_read_files_per_task
             ),
             format!("`[[task.verify]]`: {verify_steps}"),

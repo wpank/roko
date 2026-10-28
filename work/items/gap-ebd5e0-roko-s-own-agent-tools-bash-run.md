@@ -3,17 +3,22 @@ id = "gap-ebd5e0"
 kind = "gap"
 title = "roko's own agent tools (bash, run_tests, ACP bash, approved staged calls, ShellExec cells) still let an agent's command use the person's gh login"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-std"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/hermes-roko-v5/findings/roko-credfix.md (roko-credfix, 2026-10-16)"
 discovered_from = "bug-3c4600: checks got a hardened environment; agent tools were left out of scope"
 anchors = ["crates/roko-std/src/tool/builtin/bash.rs", "crates/roko-std/src/tool/builtin/run_tests.rs", "crates/roko-acp/src/builtin_tools.rs", "crates/roko-cli/src/effects_apply.rs", "crates/roko-graph/src/cells/shell_exec.rs", "crates/roko-gate/src/gate_env.rs::inherit_tool_env_from"]
 links = { depends_on = [], blocks = [], related = ["bug-3c4600"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw \"fn apply_tool_env\" crates/roko-core/src/child_env.rs && cargo test -p roko-core apply_tool_env_strips_github_env"
 +++
 
 ## Problem

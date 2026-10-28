@@ -3,13 +3,15 @@ id = "gap-1db29e"
 kind = "gap"
 title = "The agents' network sandbox does not confine Mach IPC, so sandboxed code can have LaunchServices or another app fetch a URL"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-0bd49a worker (claude-agent), 2026-10-16"
 discovered_from = "gap-0bd49a: families/common/sandbox.py states the Mach IPC limit"
 anchors = ["benchmarks/viabilitybench/families/common/sandbox.py::profile", "benchmarks/viabilitybench/driver/test_sandbox_net.py"]
@@ -74,3 +76,5 @@ The Claude Code arm must keep its keychain read through `security`, which uses M
 
 - Found while closing gap-0bd49a. That item's Done-when covers the agent's own connections, which this route
   doesn't use.
+
+Checked 2026-10-27: 2026-10-26: the only touch since last check (d5fea59c9, 2026-10-17) renamed/de-identified test_sandbox_net.py for an unrelated benchmark-naming fix; it did not add the appleevent-send/lsopen denies or the control test.

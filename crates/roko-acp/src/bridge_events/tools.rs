@@ -560,11 +560,20 @@ impl ToolHandler for AcpBuiltinToolHandler {
             }
         }
 
+        // The agent `bash` marks its command with (gap-31e8a7): the call's
+        // agent when its context names one, else the session, which is the
+        // agent ACP accounts the session's costs to.
+        let agent_id = if ctx.correlation.agent_id.trim().is_empty() {
+            &self.session_id
+        } else {
+            &ctx.correlation.agent_id
+        };
         let output = crate::builtin_tools::execute_acp_builtin_tool(
             &self.tool_name,
             &call.arguments,
             &self.workdir,
             &ctx.env_passthrough,
+            agent_id,
             &self.event_sender,
         )
         .await;

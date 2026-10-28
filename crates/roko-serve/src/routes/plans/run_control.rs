@@ -550,25 +550,37 @@ pub(crate) struct StartedPlanRun {
 /// 409 for a chat host's plan run that says neither `resume` nor `fresh`
 /// while the plan's checkpoint records `run`, which stopped part way and can
 /// be resumed (bug-cbdb6b): starting over would set its passed tasks aside,
-/// so the host is asked which it means. `details` names the run, its status
-/// and its tasks, with `refusal` `resumable_run`.
+/// so the host is asked which it means. A run whose tasks all passed has
+/// only its delivery left, which a resume runs without running a task again
+/// (bug-4fadf8). `details` names the run, its status and its tasks, and
+/// whether only the delivery is left, with `refusal` `resumable_run`.
 fn resumable_run_refusal(plan_id: &str, run: &CheckpointRun) -> ApiError {
     let short = crate::runtime::short_run_id(&run.run_id);
     let left = &run.tasks_left;
-    let (is, runs) = if left.len() == 1 {
-        ("is", "runs")
+    let message = if run.delivery_pending {
+        format!(
+            "Plan '{plan_id}' has a run that can be resumed: {short} ({}) passed {}, and its \
+             delivery didn't finish. Pass resume=true to deliver it, so no task runs again, or \
+             fresh=true to start over and run every task again.",
+            run.status,
+            task_list(&run.passed_tasks),
+        )
     } else {
-        ("are", "run")
+        let (is, runs) = if left.len() == 1 {
+            ("is", "runs")
+        } else {
+            ("are", "run")
+        };
+        format!(
+            "Plan '{plan_id}' has a run that can be resumed: {short} ({}) passed {}, and {} {is} \
+             left. Pass resume=true to continue it, so only {} {runs}, or fresh=true to start \
+             over and set its progress aside.",
+            run.status,
+            task_list(&run.passed_tasks),
+            task_list(left),
+            task_list(left),
+        )
     };
-    let message = format!(
-        "Plan '{plan_id}' has a run that can be resumed: {short} ({}) passed {}, and {} {is} \
-         left. Pass resume=true to continue it, so only {} {runs}, or fresh=true to start over \
-         and set its progress aside.",
-        run.status,
-        task_list(&run.passed_tasks),
-        task_list(left),
-        task_list(left),
-    );
     ApiError {
         details: Some(Box::new(json!({
             "refusal": "resumable_run",
@@ -577,6 +589,7 @@ fn resumable_run_refusal(plan_id: &str, run: &CheckpointRun) -> ApiError {
             "status": run.status,
             "passed_tasks": run.passed_tasks,
             "tasks_left": run.tasks_left,
+            "delivery_pending": run.delivery_pending,
         }))),
         ..ApiError::conflict(message)
     }

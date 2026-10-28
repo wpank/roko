@@ -450,10 +450,15 @@ impl CliRuntime for RokoCliRuntime {
             ..crate::graph_checkpoint::ResumeOptions::default()
         };
         let preview = crate::graph_checkpoint::preview_plan_resume(workdir, plan, 1, &options)?;
-        // A checkpoint still `running` while a run holds the workspace is
-        // that run's, not one that stopped.
-        let live = crate::workspace_lock::runner_lock_holder(&workdir.join(".roko")).is_some();
-        Ok(checkpoint_run_of(&preview, live))
+        // A checkpoint still `running` is its run's while that run's process
+        // lives; one whose process died stopped (bug-693bb3).
+        let running =
+            preview.status == Some(crate::graph_checkpoint::GraphCheckpointStatus::Running);
+        let stopped = running
+            && preview.run_id.as_deref().is_some_and(|run_id| {
+                crate::graph_checkpoint::running_checkpoint_has_stopped(workdir, run_id)
+            });
+        Ok(checkpoint_run_of(&preview, stopped))
     }
 
     async fn restore_checkpoint_run(
@@ -470,7 +475,8 @@ impl CliRuntime for RokoCliRuntime {
         let _runner = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
         let restored =
             crate::graph_checkpoint::restore_set_aside_checkpoint(workdir, plan, run_id)?;
-        let run = checkpoint_run_of(&restored.restored, false)
+        // This holds the runner lock, so no run of either checkpoint lives.
+        let run = checkpoint_run_of(&restored.restored, true)
             .with_context(|| format!("run {run_id}'s checkpoint names no run"))?;
         Ok(RestoredCheckpoint {
             restored: run,
@@ -1110,17 +1116,26 @@ fn config_live_output_to_dispatcher(
 
 #[allow(clippy::too_many_arguments)]
 /// The run checkpoint `preview` records, as `roko serve` reports it
-/// (bug-cbdb6b): resumable when the run stopped part way, with tasks passed
-/// and tasks left, and its checkpoint resumes. A `running` checkpoint counts
-/// as stopped only while no run is `live` in the workspace. A checkpoint a
-/// resume cannot continue says why, and still names the tasks it recorded
-/// as passed, which a run that starts over runs again (bug-b7f6a8).
+/// (bug-cbdb6b): resumable when the run stopped part way with tasks passed,
+/// and its checkpoint resumes. That includes a run whose tasks all passed but
+/// whose delivery a crash cut (bug-4fadf8): a resume replays every task and
+/// runs only the delivery, `delivery_pending`. A `running` checkpoint whose
+/// run has stopped (`run_stopped`), because its process died, reads
+/// `interrupted` (bug-693bb3); while its process lives it is that run's,
+/// running. A
+/// checkpoint a resume cannot continue says why, and still names the tasks
+/// it recorded as passed, which a run that starts over runs again
+/// (bug-b7f6a8).
 fn checkpoint_run_of(
     preview: &crate::graph_checkpoint::ResumePreview,
-    live: bool,
+    run_stopped: bool,
 ) -> Option<CheckpointRun> {
+    use crate::graph_checkpoint::GraphCheckpointStatus;
     let run_id = preview.run_id.clone()?;
-    let status = preview.status?;
+    let status = match preview.status? {
+        GraphCheckpointStatus::Running if run_stopped => GraphCheckpointStatus::Interrupted,
+        status => status,
+    };
     let continues = preview.action == crate::graph_checkpoint::ResumeAction::Resume;
     let tasks_left = if continues {
         preview.tasks_to_run.clone()
@@ -1128,12 +1143,13 @@ fn checkpoint_run_of(
         Vec::new()
     };
     let passed_tasks = preview.recorded_tasks.clone();
-    let stopped = status.stopped_part_way()
-        && !(live && status == crate::graph_checkpoint::GraphCheckpointStatus::Running);
+    let stopped = status.stopped_part_way() && status != GraphCheckpointStatus::Running;
+    let resumable = continues && stopped && !passed_tasks.is_empty();
     Some(CheckpointRun {
         run_id,
         status: status.as_str().to_string(),
-        resumable: continues && stopped && !passed_tasks.is_empty() && !tasks_left.is_empty(),
+        resumable,
+        delivery_pending: resumable && tasks_left.is_empty(),
         passed_tasks,
         tasks_left,
         continues,
@@ -1145,15 +1161,22 @@ fn checkpoint_run_of(
 }
 
 /// The run a checkpoint `set_aside` records, as `roko serve` reports it. A
-/// resume would have continued it when it named the tasks it passed or left.
+/// resume would have continued it when it named the tasks it passed or left,
+/// and a run that passed every task would have delivered them (bug-4fadf8).
+/// A run set aside still `running` had stopped: setting it aside took the
+/// workspace from it (bug-693bb3).
 fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Option<CheckpointRun> {
-    let status = set_aside.status?;
+    use crate::graph_checkpoint::GraphCheckpointStatus;
+    let status = match set_aside.status? {
+        GraphCheckpointStatus::Running => GraphCheckpointStatus::Interrupted,
+        status => status,
+    };
+    let resumable = status.stopped_part_way() && !set_aside.passed_tasks.is_empty();
     Some(CheckpointRun {
         run_id: set_aside.run_id.clone()?,
         status: status.as_str().to_string(),
-        resumable: status.stopped_part_way()
-            && !set_aside.passed_tasks.is_empty()
-            && !set_aside.tasks_left.is_empty(),
+        resumable,
+        delivery_pending: resumable && set_aside.tasks_left.is_empty(),
         passed_tasks: set_aside.passed_tasks.clone(),
         tasks_left: set_aside.tasks_left.clone(),
         continues: !set_aside.passed_tasks.is_empty() || !set_aside.tasks_left.is_empty(),
@@ -2570,6 +2593,164 @@ depends_on = ["T9"]
                     "cargo check: failed: ✗ exit status 101"
                 ),
             ]
+        );
+    }
+
+    /// bug-693bb3: once the process running a plan's run dies, the plan reads
+    /// `interrupted` in the plan list, the plan detail and the run its
+    /// checkpoint records, with the task it passed counted, as the run's
+    /// summary says. While that process lives the plan is running, and a
+    /// failed run keeps its state.
+    #[tokio::test]
+    async fn a_dead_runs_plan_reads_interrupted_everywhere() {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let workdir = tempfile::tempdir().unwrap();
+        let workdir = workdir.path();
+        let plan_dir = workdir.join("plans").join("p");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        let task = |id: &str, after: &str| {
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"{id}\"\nfiles = [\"{id}.txt\"]\n{after}\
+                 verify = [{{ phase = \"structural\", command = \"test -f {id}.txt\" }}]\n\n"
+            )
+        };
+        let tasks = format!(
+            "[meta]\nplan = \"p\"\n\n{}{}",
+            task("T1", ""),
+            task("T2", "depends_on = [\"T1\"]\n")
+        );
+        std::fs::write(plan_dir.join("tasks.toml"), tasks).unwrap();
+        let plans = crate::runner::plan_loader::load_plans(&plan_dir).unwrap();
+        let infos = crate::graph_checkpoint::plan_task_infos(&plans[0], |task| task.max_retries);
+        let graph = crate::graph_checkpoint::convert_plan(&plans[0], &infos).unwrap();
+        // A run of the plan passed T1, and T2 was next.
+        let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+            workdir, None, "p", 1, &graph, false, false,
+        )
+        .unwrap();
+        let mut output = vec![
+            roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+                .body(roko_core::Body::text("T1 done"))
+                .build(),
+        ];
+        TaskGateVerdict::Passed.stamp(&mut output);
+        checkpoint
+            .take_recorder()
+            .record("p", "T1", 0, output)
+            .unwrap();
+        let run_id = checkpoint.run_id().to_string();
+        // The run's manifest names the process that runs it.
+        let run_by = |pid: u32, started_at: String| {
+            let mut manifest = RunProvenanceManifest::new(&run_id, "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at,
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest
+                .store(&RokoLayout::for_project(workdir).run_dir(&run_id))
+                .unwrap();
+        };
+        let runtime = &RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let plan_dir = &plan_dir;
+        // The plan as the list, the detail and the plan's run say it.
+        let read = move || async move {
+            let listed = runtime.list_plans(workdir).await.unwrap();
+            let detail = runtime
+                .load_plan_summary(workdir, "p")
+                .await
+                .unwrap()
+                .unwrap();
+            let run = runtime
+                .checkpoint_run(workdir, &plan_dir)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (&listed[0].status, listed[0].tasks_done),
+                (&detail.status, detail.tasks_done)
+            );
+            (detail.status, detail.tasks_done, run.status, run.resumable)
+        };
+
+        // Its process died.
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = gone.id();
+        gone.wait().unwrap();
+        run_by(
+            dead_pid,
+            (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+        );
+        let (status, done, run_status, resumable) = read().await;
+        assert!(status.starts_with("interrupted"), "{status}");
+        assert_eq!(
+            (done, run_status.as_str(), resumable),
+            (1, "interrupted", true)
+        );
+
+        // Its process lives: the run is going.
+        run_by(std::process::id(), chrono::Utc::now().to_rfc3339());
+        let (status, done, run_status, resumable) = read().await;
+        assert_eq!(
+            (status.as_str(), done, run_status.as_str(), resumable),
+            ("running", 1, "running", false)
+        );
+
+        // It failed: it stays failed, whoever ran it.
+        checkpoint.finish(false).unwrap();
+        let (status, done, run_status, resumable) = read().await;
+        assert!(status.starts_with("failed"), "{status}");
+        assert_eq!((done, run_status.as_str(), resumable), (1, "failed", true));
+    }
+
+    /// bug-4fadf8: a run whose tasks all passed but whose delivery a crash
+    /// cut is resumable, for its delivery alone. One with tasks left is
+    /// resumable as before; one that finished, or passed nothing, is not.
+    #[test]
+    fn a_stopped_run_whose_tasks_all_passed_is_resumable_for_its_delivery() {
+        use crate::graph_checkpoint::{GraphCheckpointStatus, ResumeAction, ResumePreview};
+
+        let tasks = |ids: &[&str]| ids.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let run = |status, passed: &[&str], left: &[&str]| {
+            let preview = ResumePreview {
+                manifest: PathBuf::from("checkpoint.json"),
+                run_id: Some("run-cut".to_string()),
+                status: Some(status),
+                fingerprint_match: None,
+                action: ResumeAction::Resume,
+                reason: None,
+                restored_tasks: tasks(passed),
+                tasks_to_run: tasks(left),
+                cause: None,
+                recorded_tasks: tasks(passed),
+                spent_micro_usd: None,
+            };
+            let run = checkpoint_run_of(&preview, true).expect("a run");
+            (run.status, run.resumable, run.delivery_pending)
+        };
+        assert_eq!(
+            run(GraphCheckpointStatus::Running, &["T1", "T2"], &[]),
+            ("interrupted".to_string(), true, true)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Failed, &["T1", "T2"], &[]),
+            ("failed".to_string(), true, true)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Failed, &["T1"], &["T2"]),
+            ("failed".to_string(), true, false)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Succeeded, &["T1", "T2"], &[]),
+            ("succeeded".to_string(), false, false)
+        );
+        assert_eq!(
+            run(GraphCheckpointStatus::Interrupted, &[], &["T1", "T2"]),
+            ("interrupted".to_string(), false, false)
         );
     }
 }

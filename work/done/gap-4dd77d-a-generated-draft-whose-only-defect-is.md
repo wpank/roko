@@ -15,7 +15,7 @@ last_verified_rev = "4cfc6be60"
 source = "round-v7 run-analyst (tmp/hermes-roko-v7/findings/run-analyst.md, section 7), the lead's ask"
 discovered_from = "agent:run-analyst (round v7)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::validate_and_fix_generated_plan", "crates/roko-cli/src/plan_generate/pipeline.rs::repair_generated_draft", "crates/roko-cli/src/plan_policy.rs::validate_tier_sizes"]
-links = { depends_on = [], blocks = [], related = ["gap-b95913"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-b95913", "gap-de0b87", "gap-4cca5f"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_string_verify_step_is_repaired_not_regenerated' crates/roko-cli/src && grep -rqw 'fn a_task_over_its_tier_is_raised_not_regenerated' crates/roko-cli/src && cargo test -p roko-cli --lib a_string_verify_step_is_repaired_not_regenerated && cargo test -p roko-cli --lib a_task_over_its_tier_is_raised_not_regenerated"
@@ -165,3 +165,5 @@ should still ask for a split is a choice to make here.
   roko-planner-2's item with its root cause: generated plans get the FAST lane's 3-file read budget
   (`plan_policy.rs:116`), and the spec-first note takes one slot. It is not part of this item.
 - Evidence: `tmp/hermes-roko-v7/findings/run-analyst.md`, section 7.
+- 2026-10-27: Will keeps this raise. It supersedes decision 3203's rule that tiers are never raised automatically
+  (1d4116847); the dated note is in gap-de0b87's Notes. gap-4cca5f moves the file raise before `assign_runs`.

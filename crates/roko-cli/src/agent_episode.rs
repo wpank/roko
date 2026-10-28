@@ -1,5 +1,6 @@
 //! Shared helpers for building lightweight CLI agent execution episodes.
 
+use chrono::{DateTime, Utc};
 use roko_core::ContentHash;
 use roko_learn::episode_logger::Episode;
 
@@ -70,6 +71,9 @@ fn capture_plan_id(task_id: &str) -> Option<&str> {
 }
 
 /// Build a lightweight learning episode for a direct CLI agent execution.
+///
+/// The episode starts at `started_at`, the clock read as the captured work
+/// began, and completes `wall_time_ms` later (bug-41e2de).
 #[allow(clippy::too_many_arguments)]
 pub fn build_capture_episode(
     agent_command: &str,
@@ -79,6 +83,7 @@ pub fn build_capture_episode(
     prompt: &str,
     output: &str,
     success: bool,
+    started_at: DateTime<Utc>,
     wall_time_ms: u64,
     resume_session: Option<&str>,
 ) -> (Episode, String) {
@@ -95,7 +100,7 @@ pub fn build_capture_episode(
     episode.model = resolved_model.clone();
     episode.input_signal_hash = ContentHash::of(prompt.as_bytes()).to_hex();
     episode.output_signal_hash = ContentHash::of(output.as_bytes()).to_hex();
-    episode.duration_secs = wall_time_ms as f64 / 1000.0;
+    episode.set_timing(started_at, wall_time_ms);
     episode.usage.wall_ms = wall_time_ms;
     // A capture carries no tokens or cost, so its cost is a 0 placeholder and
     // no $0 cost record is derived from it. The caller records the call's
@@ -162,6 +167,7 @@ pub fn build_capture_episode(
 #[cfg(test)]
 mod tests {
     use super::build_capture_episode;
+    use chrono::{DateTime, Utc};
 
     #[test]
     fn build_capture_episode_maps_scaffolding_metadata() {
@@ -173,6 +179,7 @@ mod tests {
             "prompt body",
             "output body",
             true,
+            Utc::now(),
             42,
             Some("sess-1"),
         );
@@ -212,6 +219,7 @@ mod tests {
             "generate a plan",
             "```toml\n[[task]]\n```",
             true,
+            Utc::now(),
             15_000,
             None,
         );
@@ -263,6 +271,7 @@ mod tests {
             "write a draft",
             "# Widget\n\nOverview.",
             true,
+            Utc::now(),
             8_500,
             None,
         );
@@ -281,5 +290,33 @@ mod tests {
             "a docs draft is a docs task (not scaffolding)"
         );
         assert!(episode.usage.wall_ms > 0, "latency must be non-zero");
+    }
+
+    /// bug-41e2de: a capture episode starts when its work began, as the
+    /// caller read the clock then, and completes the work's wall time later.
+    /// It does not start and complete at the moment it is built.
+    #[test]
+    fn capture_episode_starts_before_it_completes() {
+        let started_at = DateTime::from_timestamp_millis(1_790_000_000_250).expect("a start");
+        let (episode, _provider) = build_capture_episode(
+            "claude",
+            Some("claude-sonnet-4-6"),
+            "plan-generate",
+            "plan:generate:demo",
+            "prompt body",
+            "output body",
+            true,
+            started_at,
+            1_500,
+            None,
+        );
+
+        assert_eq!(episode.started_at, started_at);
+        assert_eq!(
+            (episode.completed_at - episode.started_at).num_milliseconds(),
+            1_500
+        );
+        assert!((episode.duration_secs - 1.5).abs() < f64::EPSILON);
+        assert_eq!(episode.usage.wall_ms, 1_500);
     }
 }

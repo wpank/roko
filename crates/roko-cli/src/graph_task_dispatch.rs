@@ -360,6 +360,12 @@ pub struct GraphTaskDispatcher {
             std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         >,
     >,
+    /// Why the gaming screen left a task `unverified`, by plan and task,
+    /// while its last settled try stands so, for the end of the plan run
+    /// (find-2ba86d, gap-0af587).
+    gaming_flags: parking_lot::Mutex<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    >,
     /// The checkout of each task's latest accepted attempt, by
     /// `"{plan_id}/{task_id}"`, with the order it was accepted in: a task that
     /// depends on it warms its build trees from there (gap-b6b7a1).
@@ -477,6 +483,7 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             checkout_writes: parking_lot::Mutex::default(),
+            gaming_flags: parking_lot::Mutex::default(),
             accepted_checkouts: parking_lot::Mutex::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),

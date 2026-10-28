@@ -8,9 +8,9 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-graph/checkpoint"]
 created = 2026-09-25
-updated = 2026-10-26
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P3-3. In-flight work is orphaned"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P3-3. In-flight work is orphaned"
 anchors = ["crates/roko-graph/src/replay.rs::ActivityRecorder::record", "crates/roko-graph/src/engine.rs::reconcile_running_status", "crates/roko-cli/src/graph_checkpoint.rs::WORKSPACE_ATTEMPT_EXTENSION", "crates/roko-cli/src/graph_execution/workspaces.rs::reconcile", "crates/roko-cli/src/graph_execution/plan_runner.rs::terminate_in_flight_agents"]
@@ -63,3 +63,5 @@ Checked statically on 2026-09-29 at d9e79e9d8: still true. Activity records are 
   - **Starting over.** A run that starts over (`--fresh`, `--force-resume`, serve's resume that can't continue) sets
     the tree aside as `attempt-<id>-<run8>` and keeps it for good (bug-f6d1a3).
   - When a kill in flight makes the run unresumable at all, that's bug-b7f6a8 (p1).
+
+Checked 2026-10-27: 2026-10-26: unchanged since the item's 2026-10-01/10-15 notes - recording exists and is committed, reconciliation (patch + reset to base) does not exist yet.

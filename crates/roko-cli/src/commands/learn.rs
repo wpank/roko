@@ -126,6 +126,16 @@ pub(crate) enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// The ladder's rung probe verdicts: list them, or clear one or all so
+    /// the next run probes those rungs again (gap-d2ad57).
+    Probes {
+        /// Working directory (default: cwd).
+        #[arg(long, global = true)]
+        workdir: Option<PathBuf>,
+        /// `list` (the default) or `clear`.
+        #[command(subcommand)]
+        cmd: Option<ProbesCmd>,
+    },
     /// Show failure patterns, most frequent first (read-only).
     Patterns {
         /// Working directory (default: cwd).
@@ -271,6 +281,24 @@ pub(crate) enum LearnCmd {
 // ExperimentsSubCmd — subcommands for `roko learn experiments`
 // -----------------------------------------------------------------------
 
+/// `roko learn probes` (gap-d2ad57).
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProbesCmd {
+    /// Each rung model's probe verdict: when it was probed, and until when it
+    /// stands.
+    List,
+    /// Remove a model's probe verdict, or every one with `--all`, so the next
+    /// run probes those rungs again.
+    Clear {
+        /// The model, as `roko learn probes` lists it.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        model: Option<String>,
+        /// Clear every verdict.
+        #[arg(long)]
+        all: bool,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum ExperimentsSubCmd {
     /// List all experiments as a table (Name | Status | Variants | Observations | Best Variant | Win Rate).
@@ -388,6 +416,59 @@ fn cmd_learn_rungs(workdir: &Path, runs: Option<usize>, json: bool) -> Result<i3
     Ok(EXIT_SUCCESS)
 }
 
+/// `roko learn probes [list | clear <model> | clear --all]` (gap-d2ad57): the
+/// rung probe verdicts in `.roko/learn/rung-probes.json`, so a person who
+/// fixed a provider brings its rung back without editing the file. Clearing
+/// a model nobody probed exits 1.
+fn cmd_learn_probes(workdir: &Path, cmd: ProbesCmd, json: bool) -> Result<i32> {
+    use roko_cli::dispatch::rung_probe::{clear_probes, probe_rows};
+
+    match cmd {
+        ProbesCmd::List => {
+            let rows = probe_rows(workdir);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else if rows.is_empty() {
+                println!("No rung probe verdicts: the next plan run probes each rung's model.");
+            } else {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                for row in &rows {
+                    println!("{}", row.line(now_ms));
+                }
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        ProbesCmd::Clear { model, all } => {
+            let model = model.filter(|_| !all);
+            let removed = clear_probes(workdir, model.as_deref())
+                .context("save .roko/learn/rung-probes.json")?;
+            if json {
+                println!("{}", serde_json::json!({ "cleared": removed }));
+            } else if removed.is_empty() {
+                match &model {
+                    Some(model) => println!("No probe verdict for `{model}` to clear."),
+                    None => println!("No probe verdicts to clear."),
+                }
+            } else {
+                println!(
+                    "Cleared the probe verdict of {}: the next run probes {} again.",
+                    removed.join(", "),
+                    if removed.len() == 1 {
+                        "its rung"
+                    } else {
+                        "their rungs"
+                    }
+                );
+            }
+            Ok(if removed.is_empty() && model.is_some() {
+                EXIT_FAILURE
+            } else {
+                EXIT_SUCCESS
+            })
+        }
+    }
+}
+
 pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
     let json = cli.json;
 
@@ -405,6 +486,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::Sections { workdir }
         | LearnCmd::Patterns { workdir, .. }
         | LearnCmd::Rungs { workdir, .. }
+        | LearnCmd::Probes { workdir, .. }
         | LearnCmd::Reflections { workdir, .. }
         | LearnCmd::Tools { workdir }
         | LearnCmd::FeedbackProof { workdir }
@@ -547,6 +629,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Rungs { runs, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_rungs(&wd, runs, json)
+        }
+        LearnCmd::Probes { workdir, cmd } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_probes(&wd, cmd.unwrap_or(ProbesCmd::List), json)
         }
         LearnCmd::Reflections { workdir, limit } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));

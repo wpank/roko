@@ -75,3 +75,10 @@ The test passes in the full suite, run three times in a row under heavy.sh.
   - **The log** is `tmp/hermes-roko-v7/roko-learnguard/logs/cdd885-chain.log`.
   - **So two different assertions fail under load.** That points at the test's shared state or its timing more than
     at `judge`.
+- 2026-10-26 (roko-speed, chain49: gap-dc24dd's full lib suites on main f5045c0e6, heavy.sh, `RUST_TEST_THREADS=4`):
+  - **It failed again, as first reported.** Case 2 ended `Unverified` ("4 tests already failed before the change,
+    and no other test ran and passed") instead of "this task's to fix: test_env".
+  - **The run:** 4044 passed, 1 failed. The change under test adds only a `cold_verify: false` field to a
+    `TaskMeta` literal in `run.rs` and leaves `baseline_verify.rs` alone.
+  - **The same build, alone, passed twice** (4.5 s and 4.2 s; `tmp/hermes-roko-v7/roko-speed/logs/chain49b.log`).
+  - **The log** is `tmp/hermes-roko-v7/roko-speed/logs/chain49.log.tests`.

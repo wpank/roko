@@ -239,12 +239,14 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
 | `roko learn reflexes` | Show T0 reflex rules (count, top five by hits, recent demotions) |
 | `roko learn patterns` | Show failure patterns, most frequent first (`--graduate`: the ones ready to become a lint or verify step) |
+| `roko learn probes` | List the ladder's rung probe verdicts; `clear <model>` (or `--all`) has the next run probe those rungs again |
 | `roko learn self-model fit/replay` | Fit the M3 self-model over the run logs, or replay routing policies over a run-record matrix |
 | `roko learn econ prices` | Show the price snapshot's rows with their source URLs |
 | `roko learn gates` | Show adaptive gate threshold state |
 | `roko learn knowledge-stats` | Show durable knowledge entry counts |
 | `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
 | `roko learn tune gates/routing/budget` | (deprecated) Alias for `learn inspect` |
+| `roko audit status/replay/reveal/incidents` | What the random deep audits of green attempts found, read-only: window estimates, the strictness ladder, routing trust, a lottery replay, a run's draws recomputed from its revealed key, incidents |
 
 ### Jobs
 | Command | What it does |
@@ -279,6 +281,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko acp` | Start ACP (Agent Client Protocol) server for editor integration |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |
+| `roko showcase passphrase new/hash` | Make the public showcase's login passphrase, or hash one read from stdin, and print its Argon2id PHC string (the `ROKO_SHOWCASE_PASSPHRASE_HASH` deploy secret) |
 | `roko worker` | Run as deployed worker |
 
 ### Graph, feeds, recipes, and triggers
@@ -298,6 +301,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko index build/rebuild/search/stats` | Code intelligence index |
 | `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
 | `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
+| `roko demo setup/warm` | `setup` builds the release binary, runs `roko init` where `.roko/` is missing and prints how to run the demo; `warm` sends five fixed demo prompts, one live model call each, then counts the files in `.roko/demo-cache/` |
 | `roko new <type> <name>` | Scaffold boilerplate |
 | `roko safety controls` | List the immune controls in force: agents denied before dispatch, tools refused in the workspace |
 | `roko safety release <agent> --reason <why>` | Release an agent's control, or a tool's (`--tool`, `--scope`), with an audit line (`by`, `reason`, `via`). Only a person releases one: the default bash policy refuses the command, and it exits 1 under the variables roko sets on its agents and checks |

@@ -14,6 +14,80 @@ use roko_core::task::TaskTier;
 use crate::plan_policy::PlanExecutionPolicy;
 use crate::task_parser::{TaskDef, TasksFile};
 
+/// The number of tasks the "Notes for the planner" of `sources` state
+/// (gap-5c7f9a): a number word up to twelve, or digits, right before "task"
+/// or "tasks", opening a list item, a line or a sentence ("- One task, about
+/// 5 lines: …", "Eight tasks."), in that section only. A count inside a
+/// sentence ("not any one task's") states nothing. `None` when no source has
+/// the section, it states no count, or the counts differ: a count roko cannot
+/// read is no count.
+pub(super) fn stated_task_count(sources: &[&str]) -> Option<usize> {
+    static COUNT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?im)(?:^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*|[.;:][ \t]+)(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})[ \t]+tasks?\b(['’]s)?",
+        )
+        .expect("valid task count regex")
+    });
+    const WORDS: [&str; 12] = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        "twelve",
+    ];
+    let mut counts: Vec<usize> = sources
+        .iter()
+        .flat_map(|source| planner_notes(source))
+        .flat_map(|notes| {
+            COUNT
+                .captures_iter(&notes)
+                .filter(|captures| captures.get(2).is_none())
+                .filter_map(|captures| {
+                    let word = captures[1].to_lowercase();
+                    word.parse().ok().or_else(|| {
+                        WORDS
+                            .iter()
+                            .position(|named| *named == word)
+                            .map(|at| at + 1)
+                    })
+                })
+                .collect::<Vec<usize>>()
+        })
+        .collect();
+    counts.dedup();
+    match counts[..] {
+        [count] if count > 0 => Some(count),
+        _ => None,
+    }
+}
+
+/// The "Notes for the planner" sections of `source`: from a heading that
+/// names them to the next heading of the same level or higher.
+fn planner_notes(source: &str) -> Vec<String> {
+    let level = |line: &str| {
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        (hashes > 0 && line[hashes..].starts_with(' ')).then_some(hashes)
+    };
+    let mut sections = Vec::new();
+    let mut open: Option<(usize, String)> = None;
+    for line in source.lines() {
+        if let Some(depth) = level(line) {
+            if let Some((section_depth, _)) = &open
+                && depth <= *section_depth
+            {
+                sections.extend(open.take().map(|(_, text)| text));
+            }
+            if open.is_none() && line.to_lowercase().contains("notes for the planner") {
+                open = Some((depth, String::new()));
+                continue;
+            }
+        }
+        if let Some((_, text)) = &mut open {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    sections.extend(open.map(|(_, text)| text));
+    sections
+}
+
 /// One list item of a source that states a size: the files it names, and
 /// the lines it says the work takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +137,7 @@ fn sized_items(source: &str) -> Vec<Sized> {
 /// letters and digits, with a letter, and no space (`rumble.h`,
 /// `core/CMakeLists.txt`), and the short form `PluginProcessor.h/.cpp` for its
 /// two files. A test filter (`P2.04*`) is no file.
-fn code_span_files(text: &str) -> Vec<String> {
+pub(super) fn code_span_files(text: &str) -> Vec<String> {
     static SPAN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"`([^`\s]+)`").expect("valid code span regex"));
     let mut files = Vec::new();
@@ -329,6 +403,57 @@ mod tests {
                 "T1: tier architectural became integrative, the smallest whose 150 lines cover the \
               about 10 lines its source states"
             ]
+        );
+    }
+
+    /// gap-5c7f9a: the task count a spec's notes for the planner state, read
+    /// from that section only and where the count opens an item, a line or a
+    /// sentence: phase 4.1's "One task, about 5 lines", phase 5.2's "One
+    /// task:", phase 5's "Seven tasks." Phase 4.1's "phase 4's seven tasks"
+    /// is outside the notes, and phase 5's "not any one task's" is inside a
+    /// sentence. Two different counts, or none, are no count.
+    #[test]
+    fn the_notes_state_the_task_count() {
+        let spec = |dir: &str| {
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(dir)
+                    .join("request.md"),
+            )
+            .expect("a spec")
+        };
+        assert_eq!(stated_task_count(&[&spec("p4_1_tasks")]), Some(1));
+        assert_eq!(stated_task_count(&[&spec("p5_2_criteria")]), Some(1));
+        assert_eq!(stated_task_count(&[&spec("p5_ship")]), Some(7));
+        for (source, count) in [
+            (
+                "# P\n\n**Size**: 7 tasks.\n\n## Notes for the planner\n\n- Eight tasks. Each \
+                 task's steps run.\n  1. **A** (`a.cpp`). Needs task 2.\n",
+                Some(8),
+            ),
+            (
+                "## Notes for the planner\n\n- Six tasks.\n- Two tasks own `a.cpp`.\n",
+                None,
+            ),
+            ("## Checks\n\n- Three tasks.\n", None),
+            (
+                "## Notes for the planner\n\nThree tasks: a, b and c.\n\n## After\n\nFive tasks.\n",
+                Some(3),
+            ),
+            (
+                "## Notes for the planner\n\n- The check is the plan's, not any one task's.\n",
+                None,
+            ),
+        ] {
+            assert_eq!(stated_task_count(&[source]), count, "{source}");
+        }
+        assert_eq!(
+            stated_task_count(&[
+                "## Notes for the planner\n\nTwo tasks.\n",
+                "## Notes for the planner\n\nThree tasks.\n"
+            ]),
+            None
         );
     }
 }

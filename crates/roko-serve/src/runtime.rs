@@ -339,9 +339,15 @@ pub struct CheckpointRun {
     pub passed_tasks: Vec<String>,
     /// Tasks a resume runs.
     pub tasks_left: Vec<String>,
-    /// Whether a resume would continue the run: it stopped part way, with
-    /// tasks passed and tasks left, and its checkpoint still fits the plan.
+    /// Whether a resume would continue the run: it stopped part way with
+    /// tasks passed, and tasks left or its delivery unfinished, and its
+    /// checkpoint still fits the plan.
     pub resumable: bool,
+    /// Every task passed, but the run stopped before it delivered them
+    /// (bug-4fadf8): a resume replays the tasks and runs only the delivery,
+    /// its merge, plan check and batch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delivery_pending: bool,
     /// Whether a resume continues the checkpoint at all, however far its run
     /// got (bug-b7f6a8). When it does not, because the checkpoint no longer
     /// fits the plan or cannot be read, a resume is refused with `reason`,

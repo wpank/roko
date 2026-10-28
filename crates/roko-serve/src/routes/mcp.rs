@@ -1896,6 +1896,7 @@ mod tests {
             passed_tasks: passed.iter().map(ToString::to_string).collect(),
             tasks_left: left.iter().map(ToString::to_string).collect(),
             resumable: status != "succeeded" && !passed.is_empty() && !left.is_empty(),
+            delivery_pending: false,
             continues: true,
             reason: None,
             spent_usd: None,
@@ -1955,6 +1956,57 @@ mod tests {
         assert_eq!(started["state"], "running", "{body}");
         assert_eq!(started["resumes"], json!(failed), "{body}");
         assert!(started.get("set_aside").is_none(), "{body}");
+        plan_runs_started(&runtime, 1).await;
+        let options = &runtime.plan_options()[0];
+        assert!(options.force_resume && !options.fresh, "{options:?}");
+        runtime.gate.add_permits(1);
+    }
+
+    /// bug-4fadf8: a run that passed every task but whose delivery a crash
+    /// cut is resumable too (roko-recovery's kill points e and e'). A chat
+    /// host's plain `plan_run` over it is refused, naming what is left: the
+    /// delivery, which a resume runs without running a task again. With
+    /// `resume` the run continues it.
+    #[tokio::test]
+    async fn a_plain_plan_run_over_an_undelivered_passed_run_is_refused() {
+        let cut = crate::runtime::CheckpointRun {
+            resumable: true,
+            delivery_pending: true,
+            ..checkpoint_of(FAILED_RUN, "interrupted", &["T1", "T2"], &[])
+        };
+        let runtime = Arc::new(HeldPlans::with_checkpoints(cut.clone(), Vec::new()));
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+
+        let plain = call(1, "plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 }));
+        let (_, body) = post_mcp(&open, &plain, &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "conflict", "{body}");
+        let data = &error["data"];
+        assert_eq!(data["refusal"], "resumable_run", "{body}");
+        assert_eq!(data["run_id"], FAILED_RUN, "{body}");
+        assert_eq!(data["passed_tasks"], json!(["T1", "T2"]), "{body}");
+        assert_eq!(data["tasks_left"], json!([]), "{body}");
+        assert_eq!(data["delivery_pending"], true, "{body}");
+        assert_eq!(
+            error["message"],
+            "Plan 'alpha' has a run that can be resumed: 6988f0b8 (interrupted) passed T1 and T2, \
+             and its delivery didn't finish. Pass resume=true to deliver it, so no task runs \
+             again, or fresh=true to start over and run every task again.",
+            "{body}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(runtime.run_ids().is_empty(), "nothing ran");
+
+        let resume = call(
+            2,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "resume": true }),
+        );
+        let (_, body) = post_mcp(&open, &resume, &[]).await;
+        let started = &body["result"]["structuredContent"];
+        assert_eq!(started["state"], "running", "{body}");
+        assert_eq!(started["resumes"]["delivery_pending"], true, "{body}");
         plan_runs_started(&runtime, 1).await;
         let options = &runtime.plan_options()[0];
         assert!(options.force_resume && !options.fresh, "{options:?}");

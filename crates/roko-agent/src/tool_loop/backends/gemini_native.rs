@@ -564,9 +564,13 @@ impl LlmBackend for GeminiNativeBackend {
         });
 
         // Convert tokio mpsc::Receiver into a futures::Stream without
-        // requiring the tokio-stream crate.
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // requiring the tokio-stream crate. Each event says when the request
+        // went, so the loop can time the call's first token (gap-0eb14e).
+        let sent_at = Some(request_start);
+        let stream = futures::stream::unfold(rx, move |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|item| (item.map(|event| event.with_sent_at(sent_at)), rx))
         });
         Ok(Box::pin(stream))
     }

@@ -78,13 +78,17 @@ document the deviation.\n\
 6. No hardcoded absolute paths in any committed file.\n\
 7. All tests from the plan's Verification section must pass.\n\
 8. Operate autonomously. Do not ask questions. Complete all work and end your turn.\n\
+9. Never change what a check measures to make it pass: don't scale, pad or fabricate an output, \
+don't write one by any means other than the code meant to produce it, and don't special-case a \
+check's inputs.\n\
+10. When what fails is caused in a file outside the task's `files`, do not work around it in your \
+files: say so in your final message, with a line `Blocked: <path> — <why>` naming that file.\n\
 \n\
 ## Before you write any code\n\
 \n\
-1. If this prompt has a \"Declared source context\" section, work from the files it holds: \
-use `read_file` only for the lines a note there says are not shown, and for the files in the \
-task's `files` field that it does not hold. Otherwise read the files listed in the task's \
-`read_files` and `files` fields\n\
+1. If this prompt has a \"Declared source context\" section, don't read again what it shows: \
+read the lines a note there says are not shown, and anything else you need. Otherwise read the \
+files listed in the task's `read_files` and `files` fields\n\
 2. Check existing code for types, traits, and functions you need — search before creating\n\
 3. Check existing imports and re-exports — the module may already expose what you need\n\
 4. If a \"Previous attempt feedback\" section exists below, read it FIRST and fix those exact errors\n\
@@ -560,6 +564,49 @@ mod tests {
         assert!(!id.contains("Read ALL files"), "{id}");
         assert!(id.contains("\"Declared source context\""), "{id}");
         assert!(id.contains("not shown"), "{id}");
+    }
+
+    /// gap-326182: phase 5.2's only try needed its checks' tests and its
+    /// sources' headers, none of which its prompt held. Rule 1 stops the agent
+    /// reading again what the prompt shows, and lets it read what it lacks.
+    #[test]
+    fn implementer_may_read_what_the_prompt_lacks() {
+        let id = ImplementerTemplate.role_identity();
+        assert!(!id.contains("use `read_file` only for"), "{id}");
+        assert!(id.contains("don't read again what it shows"), "{id}");
+        assert!(id.contains("anything else you need"), "{id}");
+    }
+
+    /// bug-3b3bb6: phase 5's T4 could not make its demo renders loud enough
+    /// in its own files, since T3's renderer set the level; its plan forbade
+    /// changing the renderer, and the stronger model's try boosted the renders
+    /// and wrote a fabricated buzz into a silent one to pass the level check.
+    /// The role never changes what a check measures, and names a cause
+    /// outside its files with a `Blocked:` line, which roko hands to that
+    /// file's task. It may still regenerate an output with the code meant to
+    /// produce it, as phases 5.1 to 5.3 re-rendered their showcase WAVs with
+    /// `render-demos.sh` and phase 4 rewrote its review PNGs: the rule bans
+    /// writing one any other way, not overwriting one.
+    #[test]
+    fn implementer_never_changes_what_a_check_measures() {
+        let id = ImplementerTemplate.role_identity();
+        assert!(
+            id.contains("Never change what a check measures to make it pass"),
+            "{id}"
+        );
+        assert!(
+            id.contains("don't scale, pad or fabricate an output"),
+            "{id}"
+        );
+        assert!(
+            id.contains("don't write one by any means other than the code meant to produce it"),
+            "{id}"
+        );
+        assert!(!id.contains("overwrite an output"), "{id}");
+        assert!(
+            id.contains("with a line `Blocked: <path> — <why>` naming that file"),
+            "{id}"
+        );
     }
 
     #[test]

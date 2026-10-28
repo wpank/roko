@@ -4,102 +4,102 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 4 anchor gone · 152 changed since checked · 6 mentioned in commits · 29 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 81 changed since checked · 3 mentioned in commits · 1 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
-- **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
-- **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
-- **P2** [gap-e44df9](items/gap-e44df9-cursor-cli-attempts-answer-each-acp-permission.md) Cursor CLI attempts answer each ACP permission request with roko's command guard instead of running with --force · size M · verified 2026-10-15
+- **P0** [spec-ae5f94](items/spec-ae5f94-epic-release-blockers.md) Epic: release blockers [spec] · size L · verified 2026-10-27
+- **P0** [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) Epic: secrets and git guard [spec] · size L · verified 2026-10-27
+- **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-10-27
 
-_6 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_9 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
-- **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
+- **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-10-27
 - **P1** [gap-d7b6a4](items/gap-d7b6a4-the-research-paper-exists-only-in-untracked.md) The research paper exists only in untracked tmp/cybernetic-harness/paper/, with no history and no backup · size S · verified 2026-10-15
-- **P2** [spec-6afe5c](items/spec-6afe5c-backlog-track-w-the-papers-alongside-after.md) Backlog Track W — the papers (alongside, after their inputs) [spec] · verified 2026-10-02
+- **P3** [gap-963433](items/gap-963433-companion-audit-e4-canary-the-live-planted.md) Companion audit E4 canary: the live planted-marker run (task 9518 option a) is still open · size S · verified 2026-10-27
 
-_1 more open · on hold: gap-85f86a · `goal = "whitepaper"`_
+_0 more open · on hold: gap-85f86a · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P2** [bug-c67afc](items/bug-c67afc-a-claude-cli-attempt-on-a-model.md) A Claude CLI attempt on a model the price snapshot lacks is labelled cost_source unknown while its cost row says priced = true, and a call that reported no usage counts as a known $0 [bug] · size S · verified 2026-10-15
+- **P2** [bug-c67afc](items/bug-c67afc-a-claude-cli-attempt-on-a-model.md) A Claude CLI attempt on a model the price snapshot lacks is labelled cost_source unknown while its cost row says priced = true, and a call that reported no usage counts as a known $0 [bug] · size S · verified 2026-10-27
 - **P2** [gap-3e1428](items/gap-3e1428-a-chat-host-s-run-checks-none.md) A chat host's run checks none of the request's explicit constraints against the change: the LLM judge is off by default, and its helper model failed every call in the 2026-10-13 dogfood · size M · verified 2026-10-27
 - **P2** [bug-a56ba1](items/bug-a56ba1-a-substituted-call-s-cost-row-says.md) A substituted call's cost row says priced when the model that served it has no rate, so later runs count its unknown cost as $0 [bug] · size S · verified 2026-10-16
 
-_21 more open · `goal = "truth"`_
+_20 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- **P2** [find-fc5cdd](items/find-fc5cdd-a-golden-path-rust-task-is-gated.md) A golden-path Rust task is gated only by its accept test at verify depth V0, though its spec asks for a cargo fmt clean, clippy-free crate with a working doc example: T4 left an unformatted crate or a doc example that cannot compile in 3 of the last 6 live runs, and only T6's later edit kept the plan green [finding] · size S · verified 2026-10-19
-- **P2** [gap-af4082](items/gap-af4082-a-later-task-s-try-can-rewrite.md) A later task's try can rewrite a file an earlier task delivered and checked: diff_scope = record only logs it, nothing re-runs the earlier task's checks or tells the agent (T3 try 4 broke T1's CMakePresets.json after try 3 passed 5 of 6 tests) · size M · verified 2026-10-19
-- **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
+- **P1** [gap-f30b8e](items/gap-f30b8e-end-to-end-acceptance-test-a-fixture.md) End-to-end acceptance test: a fixture plan runs through the ladder on real cheap models and merges green · size M · verified 2026-10-27
+- **P1** [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) Epic: golden-path acceptance tests [spec] · size L · verified 2026-10-27
+- **P1** [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) Epic: specs a cheap model can execute [spec] · size L · verified 2026-10-27
 
-_9 more open · 1 blocked · on hold: gap-634954 · 5 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_14 more open · on hold: gap-634954 · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - **P1** [gap-f3944c](items/gap-f3944c-cerebras-answers-http-402-payment-required-to.md) Cerebras answers HTTP 402 payment_required to every call since 2026-10-20 15:17Z, so every gpt-oss-120b run (Pilot B's roko_fixed arm, Pilot C, LOG1) is blocked until the account has credit · size S · verified 2026-10-26
-- **P1** [gap-dd670b](items/gap-dd670b-pilot-a-s-cheap-ladder-misses-s08.md) Pilot A's cheap ladder misses S08's bands: gpt-oss-120b solves 1 of 12 level-1 runs where G0 wants 0.6, so F1 and F4 need re-knobbing before Pilot B · size M · verified 2026-10-19
-- **P1** [gap-1011ff](items/gap-1011ff-pilot-a-s-ledger-is-not-reconciled.md) Pilot A's ledger is not reconciled with the Cerebras and OpenAI usage exports, so G0's ±5% ledger check is not evaluated (needs Will's downloads) · size S · verified 2026-10-19
+- **P1** [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) Epic: pilot benchmark [spec] · size L · verified 2026-10-27
+- **P1** [gap-dd670b](items/gap-dd670b-pilot-a-s-cheap-ladder-misses-s08.md) Pilot A's cheap ladder misses S08's bands: gpt-oss-120b solves 1 of 12 level-1 runs where G0 wants 0.6, so F1 and F4 need re-knobbing before Pilot B · size M · verified 2026-10-27
 
-_19 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 7 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_26 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-3d37e8](items/gap-3d37e8-pk54-m4-deep-audits-python-b1-hidden.md) PK54 M4 deep audits: Python: B1 hidden suites written from the spec by another model family, and validated… · size M · verified 2026-10-02
-- **P2** [gap-fd96c8](items/gap-fd96c8-pk56-m4-deep-audits-first-slice-audit.md) PK56 M4 deep audits: First slice: audit at least 60 recorded cheap-arm passes and publish the replay report… · size S · verified 2026-10-02
-- **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
+- **P2** [gap-3d37e8](items/gap-3d37e8-pk54-m4-deep-audits-python-b1-hidden.md) PK54 M4 deep audits: Python: B1 hidden suites written from the spec by another model family, and validated… · size M · verified 2026-10-27
+- **P2** [gap-fd96c8](items/gap-fd96c8-pk56-m4-deep-audits-first-slice-audit.md) PK56 M4 deep audits: First slice: audit at least 60 recorded cheap-arm passes and publish the replay report… · size S · verified 2026-10-27
+- **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-27
 
-_23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_22 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
-- **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow · size M · verified 2026-09-29
-- **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
+- **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow · size M · verified 2026-10-27
+- **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-27
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_26 more open · on hold: find-70edcb · 5 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_27 more open · on hold: find-70edcb · 3 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
-- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-27
 - **P2** [bug-df0e79](items/bug-df0e79-a-dead-cli-run-reads-as-running.md) A dead CLI run reads as running forever: only serve settles a run whose process died, so plan status, diagnose and show plans keep saying running, and serve's settle misses the run's events id [bug] · size M · verified 2026-10-26
-- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-27
 
 _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
-- **P1** [bug-7e0556](items/bug-7e0556-a-dream-writes-templated-entries-as-consolidated.md) A dream writes templated entries as consolidated knowledge at confidence up to 1.0, and prompts inject them ahead of real lessons, so the next task costs more [bug] · size M · verified 2026-10-16
+- **P1** [bug-7e0556](items/bug-7e0556-a-dream-writes-templated-entries-as-consolidated.md) A dream writes templated entries as consolidated knowledge at confidence up to 1.0, and prompts inject them ahead of real lessons, so the next task costs more [bug] · size M · verified 2026-10-27
+- **P2** [gap-00e982](items/gap-00e982-a-new-price-snapshot-discards-every-workspace.md) A new price snapshot discards every workspace's learned self-model: the predictor version hashes the snapshot id, so load_or_new sets the state aside instead of re-pricing it · size M · verified 2026-10-28
 - **P2** [bug-fce0a7](items/bug-fce0a7-knowledge-tiers-have-two-promotion-rules-a.md) Knowledge tiers have two promotion rules: a pass that surfaces an entry re-tiers it through evaluate_tier_progression_v2 (transient to working at 1 confirmation, working to consolidated at 2), a repeat through the memory spec's 2 confirmations and 3 contexts, so every runtime lesson is Working at admission on its own pass (all 46 admissions in Undertow's store) [bug] · size M · verified 2026-10-27
-- **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
 
-_9 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_11 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
+- **P1** [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) Epic: tracker tooling for parallel work [spec] · size L · verified 2026-10-27
 - **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
 - **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
-- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
 
-_26 more open · on hold: gap-f36019 · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_28 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
-- **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
-- **P2** [gap-4aaa3b](items/gap-4aaa3b-a-plan-cannot-carry-its-own-rubric.md) A plan cannot carry its own rubric: judge rungs are workspace-wide, and workspace_rungs = false drops them · size M · verified 2026-10-16
-- **P2** [gap-cd51b7](items/gap-cd51b7-github-pr-and-failure-issue-automation-is.md) GitHub PR and failure-issue automation is never constructed at runtime · verified 2026-10-01
+- **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-27
+- **P2** [gap-4aaa3b](items/gap-4aaa3b-a-plan-cannot-carry-its-own-rubric.md) A plan cannot carry its own rubric: judge rungs are workspace-wide, and workspace_rungs = false drops them · size M · verified 2026-10-27
+- **P2** [gap-cd51b7](items/gap-cd51b7-github-pr-and-failure-issue-automation-is.md) GitHub PR and failure-issue automation is never constructed at runtime · verified 2026-10-27
 
 _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 
-- **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
+- **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-10-27
 - **P1** [spec-13c7ba](items/spec-13c7ba-hermes-starts-roko-by-itself-one-roko.md) Hermes starts roko by itself: one roko serve per project, started by the plugin, and prebuilt binaries for people without Rust [spec] · size L · verified 2026-10-19
-- **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-16
+- **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-27
 
 _9 more open · on hold: gap-8636f8 · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
-16 open items have no goal (later); they are listed in `STATUS.md`.
+15 open items have no goal (later); they are listed in `STATUS.md`.

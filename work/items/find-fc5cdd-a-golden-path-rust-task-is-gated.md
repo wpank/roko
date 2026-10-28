@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "S"
 subsystem = ["self-hosting"]
 created = 2026-10-19
-updated = 2026-10-19
+updated = 2026-10-28
 last_verified = 2026-10-19
 source = "gap-f30b8e golden-path rerun reviews, live runs 1-2 (2026-10-19)"
 discovered_from = "gap-f30b8e"
@@ -44,7 +44,7 @@ The golden path's claim is that cheap rungs are held to the spec by checks. Here
 (fmt, clippy, a working doc example) are checked only at the plan's end, so the defect travels between tasks,
 costs a later task's turns, and can be blamed on the wrong task. In 3 of the last 6 live runs T4 left it.
 
-## Options (a decision for Will)
+## Options (decided 2026-10-28: option 1)
 
 1. **Rust task checks for the crates an attempt changed:** `cargo fmt --check -p <crate>`, clippy with
    warnings denied, and `cargo test -p <crate> --doc`, as a task-level step whatever the plan authors. (V1's
@@ -54,6 +54,15 @@ costs a later task's turns, and can be blamed on the wrong task. In 3 of the las
 3. **Fixture:** give T3–T7 an authored fmt and doc-test verify step. Changes the frozen plan again.
 4. **Leave it to the whole-plan check and its hand-back.** Cheapest; the defect still travels until the plan
    is checked.
+
+## Decision (2026-10-28, Will)
+
+Option 1: **task-level Rust checks for the crates an attempt changed.** For every Rust crate an attempt's diff
+touches, the task's checks run `cargo fmt --check -p <crate>`, `cargo clippy -p <crate> -- -D warnings` and
+`cargo test -p <crate> --doc`, whatever the plan authors, so a T4 that leaves its crate unformatted, with a clippy
+warning or a doc example that does not compile is refused at its own task instead of being repaired by a later one.
+Options 2 to 4 are not taken. Mind FAST (one authored verify per task, no Cargo in the agent's turn) and the
+build-time cost: scope the checks to the changed crates only, and say in the verdict which step failed.
 
 ## Evidence
 

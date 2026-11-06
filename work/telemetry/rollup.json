@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_rollup/1",
- "date": "2026-10-28",
- "head": "89ad4f685",
+ "date": "2026-11-06",
+ "head": "8904a1c49",
  "definitions_sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
  "price_snapshot": "prices-2026-09-28",
  "labels": [
@@ -72,13 +72,13 @@
   },
   "escape": {
    "num": 0,
-   "den": 50,
+   "den": 159,
    "share": 0.0,
-   "pending": 162,
+   "pending": 53,
    "coverage": {
-    "k": 50,
+    "k": 159,
     "n": 212,
-    "share": 0.2358
+    "share": 0.75
    }
   },
   "interventions": {
@@ -698,13 +698,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 1,
+     "den": 1,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 1,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -802,13 +802,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 29,
+     "den": 29,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 29,
       "n": 29,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -906,13 +906,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 58,
+     "den": 58,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 58,
       "n": 58,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1010,13 +1010,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 11,
+     "den": 11,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 11,
       "n": 11,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1114,13 +1114,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 2,
+     "den": 2,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 2,
       "n": 2,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1218,13 +1218,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 8,
+     "den": 8,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 8,
       "n": 8,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1636,13 +1636,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 15,
+     "den": 124,
      "share": 0.0,
-     "pending": 156,
+     "pending": 47,
      "coverage": {
-      "k": 15,
+      "k": 124,
       "n": 171,
-      "share": 0.0877
+      "share": 0.7251
      }
     },
     "interventions": {
@@ -2158,13 +2158,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 4,
+     "den": 21,
      "share": 0.0,
-     "pending": 22,
+     "pending": 5,
      "coverage": {
-      "k": 4,
+      "k": 21,
       "n": 26,
-      "share": 0.1538
+      "share": 0.8077
      }
     },
     "interventions": {
@@ -2262,13 +2262,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 14,
+     "den": 49,
      "share": 0.0,
-     "pending": 54,
+     "pending": 19,
      "coverage": {
-      "k": 14,
+      "k": 49,
       "n": 68,
-      "share": 0.2059
+      "share": 0.7206
      }
     },
     "interventions": {
@@ -2678,13 +2678,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 3,
+     "den": 2,
+     "share": 0.0,
+     "pending": 1,
      "coverage": {
-      "k": 0,
+      "k": 2,
       "n": 3,
-      "share": 0.0
+      "share": 0.6667
      }
     },
     "interventions": {
@@ -2782,13 +2782,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 3,
+     "den": 1,
+     "share": 0.0,
+     "pending": 2,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 3,
-      "share": 0.0
+      "share": 0.3333
      }
     },
     "interventions": {
@@ -2990,13 +2990,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 6,
+     "den": 8,
      "share": 0.0,
-     "pending": 2,
+     "pending": 0,
      "coverage": {
-      "k": 6,
+      "k": 8,
       "n": 8,
-      "share": 0.75
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3094,13 +3094,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 8,
+     "den": 25,
      "share": 0.0,
-     "pending": 24,
+     "pending": 7,
      "coverage": {
-      "k": 8,
+      "k": 25,
       "n": 32,
-      "share": 0.25
+      "share": 0.7812
      }
     },
     "interventions": {
@@ -3198,13 +3198,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 7,
+     "den": 37,
      "share": 0.0,
-     "pending": 47,
+     "pending": 17,
      "coverage": {
-      "k": 7,
+      "k": 37,
       "n": 54,
-      "share": 0.1296
+      "share": 0.6852
      }
     },
     "interventions": {
@@ -3510,13 +3510,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 2,
+     "den": 2,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 2,
       "n": 2,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3614,13 +3614,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 1,
+     "den": 1,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 1,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3718,13 +3718,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 1,
+     "den": 1,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 1,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3822,13 +3822,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 1,
+     "den": 1,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 1,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3928,13 +3928,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 6,
+     "den": 37,
      "share": 0.0,
-     "pending": 35,
+     "pending": 4,
      "coverage": {
-      "k": 6,
+      "k": 37,
       "n": 41,
-      "share": 0.1463
+      "share": 0.9024
      }
     },
     "interventions": {
@@ -4032,13 +4032,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 1,
+     "den": 6,
      "share": 0.0,
-     "pending": 9,
+     "pending": 4,
      "coverage": {
-      "k": 1,
+      "k": 6,
       "n": 10,
-      "share": 0.1
+      "share": 0.6
      }
     },
     "interventions": {
@@ -4136,13 +4136,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 4,
+     "den": 4,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 4,
       "n": 4,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -4240,13 +4240,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 13,
+     "den": 32,
      "share": 0.0,
-     "pending": 57,
+     "pending": 38,
      "coverage": {
-      "k": 13,
+      "k": 32,
       "n": 70,
-      "share": 0.1857
+      "share": 0.4571
      }
     },
     "interventions": {
@@ -4344,13 +4344,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 3,
+     "den": 10,
      "share": 0.0,
-     "pending": 7,
+     "pending": 0,
      "coverage": {
-      "k": 3,
+      "k": 10,
       "n": 10,
-      "share": 0.3
+      "share": 1.0
      }
     },
     "interventions": {
@@ -4448,13 +4448,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 13,
+     "den": 34,
      "share": 0.0,
-     "pending": 26,
+     "pending": 5,
      "coverage": {
-      "k": 13,
+      "k": 34,
       "n": 39,
-      "share": 0.3333
+      "share": 0.8718
      }
     },
     "interventions": {
@@ -4552,13 +4552,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 14,
+     "den": 33,
      "share": 0.0,
-     "pending": 21,
+     "pending": 2,
      "coverage": {
-      "k": 14,
+      "k": 33,
       "n": 35,
-      "share": 0.4
+      "share": 0.9429
      }
     },
     "interventions": {
@@ -4656,13 +4656,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 3,
+     "den": 3,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 3,
       "n": 3,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {

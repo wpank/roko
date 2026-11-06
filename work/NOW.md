@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 82 changed since checked · 3 mentioned in commits · 1 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 82 changed since checked · 3 mentioned in commits · 12 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -36,7 +36,7 @@ _20 more open · `goal = "truth"`_
 - **P1** [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) Epic: golden-path acceptance tests [spec] · size L · verified 2026-10-27
 - **P1** [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) Epic: specs a cheap model can execute [spec] · size L · verified 2026-10-27
 
-_12 more open · 1 blocked · on hold: gap-634954 · `goal = "golden-path"`_
+_14 more open · 1 blocked · on hold: gap-634954 · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -84,7 +84,7 @@ _11 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
 - **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
 
-_28 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_29 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

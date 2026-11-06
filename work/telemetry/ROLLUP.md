@@ -2,7 +2,7 @@
 
 Not for workers: no view, skill prompt or `work.py next` reads this, and no metric here is a target.
 
-DEFINITIONS.md sha256 `ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720` · report date 2026-10-28 · HEAD `89ad4f685` · prices `prices-2026-09-28`. Every figure is observational; costs are API-equivalent (subscription). Percentiles are by nearest rank; times are UTC.
+DEFINITIONS.md sha256 `ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720` · report date 2026-11-06 · HEAD `8904a1c49` · prices `prices-2026-09-28`. Every figure is observational; costs are API-equivalent (subscription). Percentiles are by nearest rank; times are UTC.
 
 Inputs: 1832 live events, 705 backfill events (tabled apart), 0 invalid event rows skipped, 0 harvested call rows.
 
@@ -16,7 +16,7 @@ Inputs: 1832 live events, 705 backfill events (tabled apart), 0 invalid event ro
 | Claim-to-merge hours (median / p90) | 4.97 / 15.91 | 168 of 212 merged items (79%) |
 | Conflict rate (abandoned over a conflict: 2) | 1/172 (1%) | 172 of 212 merged items (81%) |
 | Post-merge verify failures | 2/161 (1%) | 161 of 212 merged items (76%) |
-| Escapes (162 pending) | 0/50 (0%) | 50 of 212 merged items (24%) |
+| Escapes (53 pending) | 0/159 (0%) | 159 of 212 merged items (75%) |
 | Interventions per item (items with one) | 0.06 (6/133 (5%)) | 133 of 212 merged items (63%) |
 | Unassisted merge share | 127/133 (95%) | 133 of 212 merged items (63%) |
 | Cost per merged item, USD (median / p90; total) | – / –; 0 | 0 of 212 merged items (0%) |

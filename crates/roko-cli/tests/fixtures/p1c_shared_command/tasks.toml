@@ -1,0 +1,297 @@
+[meta]
+plan = "p1-the-foundation"
+title = "P1 · The foundation"
+iteration = 0
+total = 3
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+sources = ["docs/specs/phase-1-foundation.md"]
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Re-key the core foundation"
+description = "Replace the first-version core with the phase-1 foundation: the 49-row parameter table, exact lookup helpers, the engine skeleton, the mono output stage, and the Init-only preset API. Remove the retired oscillator, filter, envelope, LFO, voice, and sequencer files, and keep the kept rumble module untouched."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/params.h",
+    "core/src/params.cpp",
+    "core/include/undertow/engine.h",
+    "core/src/engine.cpp",
+    "core/include/undertow/output_stage.h",
+    "core/src/output_stage.cpp",
+    "core/include/undertow/presets.h",
+    "core/src/presets.cpp",
+    "core/include/undertow/oscillator.h",
+    "core/src/oscillator.cpp",
+    "core/include/undertow/filter.h",
+    "core/src/filter.cpp",
+    "core/include/undertow/envelope.h",
+    "core/src/envelope.cpp",
+    "core/include/undertow/lfo.h",
+    "core/src/lfo.cpp",
+    "core/include/undertow/voice.h",
+    "core/src/voice.cpp",
+    "core/include/undertow/sequencer.h",
+    "core/src/sequencer.cpp",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: Running `tools/spec.sh 1 params` passes, proving the 49-row parameter table and exact `findParam`/enum index mapping.",
+    "AC2: Running `tools/spec.sh 1 engine` passes, proving the new engine skeleton, parameter clamping and rounding, mono block writes, beat clock, allocation-free APIs, and retired core file removal.",
+    "AC3: Running `tools/spec.sh 1 output` passes, proving the mono output stage order, DC blocker, master gain smoothing, clip hold, and soft clip ceiling.",
+    "AC4: Running `tools/spec.sh 1 rumble` passes, proving the kept rumble behavior through the engine.",
+]
+sequence = 0
+goal = "The core library exposes the phase-1 parameter table, mono engine/output/preset APIs, and compiles after the retired core modules are removed."
+non_goals = [
+    "Do not change `core/include/undertow/rumble.h` or `core/src/rumble.cpp`.",
+    "Do not touch the plugin wrapper, renderer, or install scripts in this task.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-1-foundation.md"
+why = "the document this plan is written from: read it first, it states the rules, the interfaces and the checks this task must meet"
+
+[[task.context.read_files]]
+path = "core/src/params.cpp"
+why = "Replace the current table and exact-id lookup with the new 49-row parameter table."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-240"
+why = "Strip the old voice, sequencer, and pattern plumbing out of the engine and keep the skeleton behavior."
+
+[[task.context.read_files]]
+path = "core/src/output_stage.cpp"
+lines = "1-220"
+why = "Reduce the output stage to mono processing with the DC blocker, gain smoothing, clipping, and soft clipper."
+
+[[task.context.read_files]]
+path = "core/src/presets.cpp"
+lines = "1-220"
+why = "Replace pattern-bearing presets with the phase-1 Init-only preset API."
+
+[[task.context.read_files]]
+path = "core/include/undertow/params.h"
+why = "the header of `core/src/params.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+why = "the header of `core/src/engine.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "core/include/undertow/output_stage.h"
+why = "the header of `core/src/output_stage.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "core/include/undertow/presets.h"
+why = "the header of `core/src/presets.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/params_test.cpp"
+why = "the test its check `tools/spec.sh 1 params` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/engine_test.cpp"
+why = "the test its check `tools/spec.sh 1 engine` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/output_test.cpp"
+why = "the test its check `tools/spec.sh 1 output` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/rumble_test.cpp"
+why = "the test its check `tools/spec.sh 1 rumble` runs: what this task's work must pass"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 params"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 output"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 rumble"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Re-key the plugin wrapper and install"
+description = "Re-key the plugin to the Undertow 2 identity and parameter table, remove the pattern grid from the wrapper, keep the editor as a fixed placeholder, trim the theme file to the new tokens, and update the bundle installer for the new bundle names."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/CMakeLists.txt",
+    "plugin/PluginProcessor.h",
+    "plugin/PluginProcessor.cpp",
+    "plugin/PluginEditor.h",
+    "plugin/PluginEditor.cpp",
+    "plugin/ui/Theme.h",
+    "tools/install.sh",
+    "plugin/ui/Displays.h",
+    "plugin/ui/Displays.cpp",
+    "plugin/ui/Look.h",
+    "plugin/ui/Look.cpp",
+    "plugin/ui/Status.h",
+    "plugin/ui/Status.cpp",
+    "plugin/ui/UnitArray.h",
+    "plugin/ui/UnitArray.cpp",
+    "plugin/ui/UiFrame.h",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: Running `tools/spec.sh 1 plugin` passes, proving the Undertow 2 identity, parameter layout, state save and restore, program handling, placeholder editor, and install naming.",
+    "AC2: Running `tools/pluginval.sh 5` passes, proving the built VST3 validates at strictness 5.",
+]
+sequence = 1
+goal = "The plugin wrapper exposes Undertow 2 identity, parameters, state, programs, placeholder UI, and install bundles."
+non_goals = [
+    "Do not add new DSP, sequencer, or UI behavior beyond the placeholder editor.",
+    "Do not change the core library or renderer in this task.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-1-foundation.md"
+why = "the document this plan is written from: read it first, it states the rules, the interfaces and the checks this task must meet"
+
+[[task.context.read_files]]
+path = "plugin/CMakeLists.txt"
+why = "Update the plugin identity, bundle metadata, and source registration while keeping the existing links."
+
+[[task.context.read_files]]
+path = "plugin/PluginProcessor.cpp"
+why = "Rework the wrapper around the new core table, state, programs, and processBlock behavior."
+
+[[task.context.read_files]]
+path = "plugin/PluginEditor.cpp"
+lines = "1-220"
+why = "Replace the old UI with the fixed-size placeholder editor and remove the retired UI dependencies."
+
+[[task.context.read_files]]
+path = "plugin/ui/Theme.h"
+lines = "1-200"
+why = "Trim the theme file down to the new color tokens, fonts, and editor dimensions."
+
+[[task.context.read_files]]
+path = "plugin/PluginProcessor.h"
+why = "the header of `plugin/PluginProcessor.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "plugin/PluginEditor.h"
+why = "the header of `plugin/PluginEditor.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/plugin_test.cpp"
+why = "the test its check `tools/spec.sh 1 plugin` runs: what this task's work must pass"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 plugin"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/pluginval.sh 5"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Update the renderer and demo script"
+description = "Update the command-line renderer to load presets by name, slug, or index into the new engine, render the held note in 512-sample blocks as 24-bit stereo PCM, and make the demo script empty build/demos and render only the Init demo for this phase."
+role = "implementer"
+status = "ready"
+tier = "focused"
+max_loc = 40
+files = [
+    "tools/render/main.cpp",
+    "tools/render-demos.sh",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = ["AC1: Running `tools/spec.sh 1 render` passes, proving `undertow_render` and `tools/render-demos.sh` render the Init preset as specified."]
+sequence = 2
+goal = "The renderer and demo script emit the phase-1 Init render from the new table and presets."
+non_goals = [
+    "Do not change the core library or plugin wrapper in this task.",
+    "Do not add any extra demo outputs beyond the phase-1 Init render.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-1-foundation.md"
+why = "the document this plan is written from: read it first, it states the rules, the interfaces and the checks this task must meet"
+
+[[task.context.read_files]]
+path = "tools/render/main.cpp"
+lines = "1-240"
+why = "Adjust preset loading, block rendering, and output reporting for the phase-1 renderer."
+
+[[task.context.read_files]]
+path = "tools/render-demos.sh"
+why = "Restrict the demo script to the phase-1 Init demo output and the new destination layout."
+
+[[task.context.read_files]]
+path = "tests/spec/p1/render_test.cpp"
+why = "the test its check `tools/spec.sh 1 render` runs: what this task's work must pass"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 render"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"

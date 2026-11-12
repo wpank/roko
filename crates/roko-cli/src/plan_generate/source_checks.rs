@@ -2530,6 +2530,41 @@ mod tests {
         assert!(checks.is_empty(), "{checks:?}");
     }
 
+    /// bug-0a5417: round v8's phase-1 row `| P1.16 | `tools/spec.sh 1 plugin`
+    /// | … and `tools/install.sh --dest` installs those three |` quotes two
+    /// commands, so it had none of its own, and the re-ask's T2, whose step
+    /// runs `tools/spec.sh 1 plugin`, did not keep it (op 541860eb). A row's
+    /// command cell is its command; the re-ask's plan keeps every check.
+    #[test]
+    fn a_rows_command_cell_is_its_command() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p1c_shared_command");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let plan = TasksFile::parse(&fixture.join("tasks.toml")).expect("the re-ask's plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&request);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let p1_16 = checks
+            .iter()
+            .find(|check| check.text.starts_with("P1.16 | "))
+            .expect("P1.16");
+        assert_eq!(p1_16.run.as_deref(), Some("tools/spec.sh 1 plugin"));
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(coverage.unkept(), 0, "{:?}", coverage.detail_lines());
+
+        // A row with two command cells, or none and two commands in its
+        // prose, has no command roko can tell.
+        for row in [
+            "| P9.01 | `tools/a.sh 1` | `tools/b.sh 2` |",
+            "| P9.02 | the window | `tools/a.sh 1` then `tools/b.sh 2` |",
+        ] {
+            let mut checks = source_checks(&format!("# Spec\n\n## Acceptance checks\n\n{row}\n"));
+            attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+            assert_eq!(checks.len(), 1, "{row}");
+            assert_eq!(checks[0].run, None, "{row}");
+        }
+    }
+
     /// bug-6ebc03: round v8's phase-1 spec lists its final check in its table
     /// (`| P1.20 | `tools/check.sh --plugin` | … |`) and names it the plan's
     /// own in its notes ("`tools/check.sh --plugin` (P1.20) is the plan's

@@ -1521,13 +1521,29 @@ impl GraphTaskDispatcher {
     }
 
     /// The verify steps an attempt at `task` runs, labelled
-    /// ([`attempt_verify_steps`]).
+    /// ([`attempt_verify_steps`]): first, when its plan's spec tells it to
+    /// delete files of its own, the step that checks they are gone
+    /// (bug-4e89b8).
     pub(super) fn verify_steps(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
     ) -> Vec<(String, crate::task_parser::VerifyStep)> {
-        attempt_verify_steps(task, self.task_rungs(spec, task))
+        let deleted = self
+            .read_plan(spec)
+            .map(|plan| crate::plan_generate::files_task_deletes(&plan, task, &self.workdir))
+            .unwrap_or_default();
+        let mut steps: Vec<_> = (!deleted.is_empty())
+            .then(|| {
+                (
+                    rung_step_label(DELETED_FILES_RUNG),
+                    deleted_files_step(&task.id, &deleted),
+                )
+            })
+            .into_iter()
+            .collect();
+        steps.extend(attempt_verify_steps(task, self.task_rungs(spec, task)));
+        steps
     }
 
     /// The error patterns `task`'s prompt carries (backlog 4210): those of
@@ -1651,6 +1667,35 @@ fn attempt_verify_steps<'a>(
         }
     }
     steps
+}
+
+/// The rung of the step that checks a task deleted the files its spec
+/// tells it to delete (bug-4e89b8).
+const DELETED_FILES_RUNG: &str = "deleted-files";
+
+/// The step that checks the task `task_id` deleted `files`, the files its
+/// plan's spec tells it to delete (bug-4e89b8): for each still there it says
+/// "task T2 should have deleted plugin/ui/Look.cpp", and fails. It runs no
+/// build, so it goes first.
+fn deleted_files_step(task_id: &str, files: &[String]) -> crate::task_parser::VerifyStep {
+    let quoted: Vec<String> = files
+        .iter()
+        .map(|file| crate::task_accept::shell_quote(file))
+        .collect();
+    let task = crate::task_accept::shell_quote(&format!("task {task_id} should have deleted"));
+    crate::task_parser::VerifyStep {
+        phase: "structural".to_string(),
+        command: format!(
+            "status=0; for file in {}; do if [ -e \"$file\" ] || [ -L \"$file\" ]; then \
+             echo {task} \"$file\"; status=1; fi; done; exit $status",
+            quoted.join(" ")
+        ),
+        fail_msg: None,
+        timeout_ms: 30_000,
+        scope: files.to_vec(),
+        covers: Vec::new(),
+        expect: None,
+    }
 }
 
 /// Stable label for the `index`-th verify step (`verify[i]` or `verify[i:phase]`).
@@ -3622,6 +3667,70 @@ title = "Streaming graph task"
             panic!("expected a verify failure, got {error}");
         };
         assert!(message.contains("rung[lint] (`exit 3`)"), "{message}");
+    }
+
+    /// bug-4e89b8: round v8's phase 1 T2 held in its files the nine window
+    /// files its spec retires, deleted none, and passed, since no check saw
+    /// them. A task whose plan's spec says to delete a file of its own fails
+    /// its gate while the file is there, naming it in plain words, and passes
+    /// once it is gone.
+    #[tokio::test]
+    async fn a_task_that_leaves_a_file_its_spec_deletes_fails_its_gate() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let root = temp.path();
+        for (path, text) in [
+            (
+                "docs/spec.md",
+                "# Spec\n\n## Notes for the planner\n\n- Edits: `src/new.rs`.\n\
+                 - Deletes: `src/old.rs`.\n",
+            ),
+            ("src/new.rs", "// new\n"),
+            ("src/old.rs", "// retired\n"),
+        ] {
+            std::fs::create_dir_all(root.join(path).parent().expect("a parent")).expect("a dir");
+            std::fs::write(root.join(path), text).expect("a file");
+        }
+        let plan_dir = root.join("plans/retire");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"retire\"\nsources = [\"docs/spec.md\"]\n\n\
+             [[task]]\nid = \"T-STREAM\"\ntitle = \"Streaming graph task\"\n",
+        )
+        .expect("tasks.toml");
+        task.files = vec!["src/new.rs".to_string(), "src/old.rs".to_string()];
+        task.verify = vec![verify_step("structural", "test -f src/new.rs")];
+        let spec = TaskExecutionSpec {
+            plan_id: "retire".to_string(),
+            plan_dir: plan_dir.display().to_string(),
+            ..make_spec(&task)
+        };
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the file the spec deletes is still there");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(
+            message.contains("task T-STREAM should have deleted src/old.rs"),
+            "{message}"
+        );
+        assert!(message.contains("rung[deleted-files]"), "{message}");
+
+        std::fs::remove_file(root.join("src/old.rs")).expect("the try deletes it");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect("the file is gone");
     }
 
     /// A reflex serves only a task that no verify step checks, so a task the

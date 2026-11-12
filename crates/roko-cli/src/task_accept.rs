@@ -636,7 +636,7 @@ fn printable(raw: &str) -> String {
 }
 
 /// `raw` as one single-quoted shell word.
-fn shell_quote(raw: &str) -> String {
+pub(crate) fn shell_quote(raw: &str) -> String {
     format!("'{}'", raw.replace('\'', "'\\''"))
 }
 

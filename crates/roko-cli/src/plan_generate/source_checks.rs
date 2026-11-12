@@ -11,7 +11,8 @@
 //! Academic References). Checks are numbered `SC1`, `SC2`, … in the order the
 //! source states them. A line that names a check as the plan's own ("`tools/check.sh` is
 //! the plan's final check") is one too, wherever it stands: `[[meta.verify]]` runs it, not
-//! a task (bug-96115c).
+//! a task (bug-96115c). When it names a check the source states elsewhere, by its command
+//! or its label, that check is the plan's own instead (bug-6ebc03).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -76,8 +77,8 @@ pub(super) fn source_checks(source: &str) -> Vec<SourceCheck> {
     }
     reader.finish();
     let labels = regression_labels(source);
-    reader
-        .checks
+    let (texts, plan_checks) = merge_plan_lines(reader.checks, &reader.plan_checks);
+    texts
         .into_iter()
         .enumerate()
         .map(|(index, text)| SourceCheck {
@@ -85,9 +86,77 @@ pub(super) fn source_checks(source: &str) -> Vec<SourceCheck> {
             regression: is_regression(&text, &labels),
             text,
             run: None,
-            plan_level: reader.plan_checks.contains(&index),
+            plan_level: plan_checks.contains(&index),
         })
         .collect()
+}
+
+/// `checks` without each line of `plan_lines` (their indices), lines that
+/// name a check as the plan's own, that names a check the source states
+/// elsewhere: that check is the plan's own instead, and the line no check of
+/// its own (bug-6ebc03). Round v8's phase-1 spec lists `| P1.20 |
+/// `tools/check.sh --plugin` | … |` in its table and says "`tools/check.sh
+/// --plugin` (P1.20) is the plan's final check" in its notes: one check. A
+/// line names the check whose first code span, its command, it quotes, or
+/// else the one whose label (`P1.20`) it holds; two alike name none. Returns
+/// the checks and the indices of the plan's own among them.
+fn merge_plan_lines(
+    checks: Vec<String>,
+    plan_lines: &BTreeSet<usize>,
+) -> (Vec<String>, BTreeSet<usize>) {
+    static SPAN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`([^`]+)`").expect("valid code span regex"));
+    let spans = |text: &str| -> Vec<String> {
+        SPAN.captures_iter(text)
+            .filter_map(|captures| captures.get(1))
+            .map(|span| span.as_str().trim().to_string())
+            .collect()
+    };
+    let mut plan_level = plan_lines.clone();
+    let mut merged = BTreeSet::new();
+    for &line in plan_lines {
+        let quoted = spans(&checks[line]);
+        let stated = (0..checks.len()).filter(|other| !plan_lines.contains(other));
+        let (mut by_command, mut by_label) = (Vec::new(), Vec::new());
+        for other in stated {
+            if spans(&checks[other])
+                .first()
+                .is_some_and(|command| quoted.contains(command))
+            {
+                by_command.push(other);
+            }
+            if check_label(&checks[other]).is_some_and(|label| contains_token(&checks[line], label))
+            {
+                by_label.push(other);
+            }
+        }
+        let both: Vec<usize> = by_command
+            .iter()
+            .copied()
+            .filter(|other| by_label.contains(other))
+            .collect();
+        let named = match (both.as_slice(), by_command.as_slice(), by_label.as_slice()) {
+            ([other], _, _) | (_, [other], _) | ([], [], [other]) => Some(*other),
+            _ => None,
+        };
+        if let Some(other) = named {
+            merged.insert(line);
+            plan_level.remove(&line);
+            plan_level.insert(other);
+        }
+    }
+    let mut kept = Vec::with_capacity(checks.len() - merged.len());
+    let mut levels = BTreeSet::new();
+    for (index, text) in checks.into_iter().enumerate() {
+        if merged.contains(&index) {
+            continue;
+        }
+        if plan_level.contains(&index) {
+            levels.insert(kept.len());
+        }
+        kept.push(text);
+    }
+    (kept, levels)
 }
 
 /// Whether a check is a regression check, one that passes on the base too
@@ -2459,6 +2528,79 @@ mod tests {
         }
         let checks = source_checks("# Spec\n\n## Notes\n\nAs a final check, run `make lint`.\n");
         assert!(checks.is_empty(), "{checks:?}");
+    }
+
+    /// bug-6ebc03: round v8's phase-1 spec lists its final check in its table
+    /// (`| P1.20 | `tools/check.sh --plugin` | … |`) and names it the plan's
+    /// own in its notes ("`tools/check.sh --plugin` (P1.20) is the plan's
+    /// final check, not a task's"). That is one check, the plan's own: 20
+    /// checks, not 21, and the plan as written, whose `[[meta.verify]]` runs
+    /// it, keeps all 20. A line names the check whose command it quotes before
+    /// one it names only by label, and one that names two checks alike, or
+    /// none the source states, is a check of its own.
+    #[test]
+    fn a_final_check_the_table_states_is_one_check() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p1_named_files");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let plan = TasksFile::parse(&fixture.join("tasks.toml")).expect("the plan as written");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&request);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(checks.len(), 20, "{checks:#?}");
+        let plan_level: Vec<&str> = checks
+            .iter()
+            .filter(|check| check.plan_level)
+            .map(|check| check.id.as_str())
+            .collect();
+        assert_eq!(plan_level, ["SC20"]);
+        assert!(
+            checks[19].text.starts_with("P1.20 | "),
+            "{}",
+            checks[19].text
+        );
+        assert_eq!(checks[19].run.as_deref(), Some("tools/check.sh --plugin"));
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(coverage.unkept(), 0, "{:?}", coverage.detail_lines());
+        assert!(coverage.missing().is_empty());
+
+        let table = "# Spec\n\n## Acceptance checks\n\n| Check | Command | Proves |\n|---|---|---|\n\
+                     | P1.19 | `tools/pluginval.sh 5` | pluginval passes |\n\
+                     | P1.20 | `tools/check.sh --plugin` | the whole check passes |\n\n\
+                     ## Notes for the planner\n\n";
+        let plan_level = |line: &str| {
+            let checks = source_checks(&format!("{table}- {line}\n"));
+            let level: Vec<String> = checks
+                .iter()
+                .filter(|check| check.plan_level)
+                .map(|check| check.text.clone())
+                .collect();
+            (checks.len(), level)
+        };
+        // By its command, over a label it names too.
+        assert_eq!(
+            plan_level("`tools/check.sh --plugin` runs after P1.19: it is the plan's final check."),
+            (
+                2,
+                vec!["P1.20 | `tools/check.sh --plugin` | the whole check passes".to_string()]
+            )
+        );
+        // By its label alone.
+        assert_eq!(
+            plan_level("`tools/check.sh` (P1.20) is the plan's final check."),
+            (
+                2,
+                vec!["P1.20 | `tools/check.sh --plugin` | the whole check passes".to_string()]
+            )
+        );
+        // Two labels alike, or none stated: a check of its own.
+        for line in [
+            "`tools/check.sh` (after P1.19 and P1.20) is the plan's final check.",
+            "`make check` is the plan's final check.",
+        ] {
+            let (count, level) = plan_level(line);
+            assert_eq!((count, level.len()), (3, 1), "{line}: {level:?}");
+            assert!(!level[0].starts_with("P1."), "{line}: {level:?}");
+        }
     }
 
     /// bug-72dc0d: round v7's second phase-2 plan write (op 9fa7849f)

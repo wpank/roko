@@ -9,12 +9,12 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-learn/efficiency"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-11-12
+last_verified = 2026-11-12
 source = "status-quo-2026-10-15#finding-48"
 anchors = ["crates/roko-learn/src/efficiency.rs", "crates/roko-learn/src/feedback_service.rs::model_call_cost_record"]
 lane = "rust-cold"
-links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-6fddf2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn efficiency_rows_count_an_attempts_cost_once' crates/ && cargo test -p roko-learn efficiency_rows_count_an_attempts_cost_once"
@@ -43,7 +43,27 @@ will be off.
 
 ## Current state
 
-Not yet established whether any in-tree reader sums across both kinds. That is the first thing to check.
+Checked on 2026-11-12 (round v8, run-analyst-v8, at 8e92a7dfb): no in-tree reader sums across both kinds.
+
+- **Skipped by schema** (`classify_efficiency_row`, `parse_efficiency_events_jsonl`): the TUI's dashboard and tailer,
+  and `budget_predictor::calibrate_from_efficiency`.
+- **Skipped as rows that don't parse:** reads into `AgentEfficiencyEvent`, whose `agent_id`, `backend`, `plan_id` and
+  `task_id` are required.
+  - `runtime_feedback::read_efficiency_events` drops them line by line. It feeds `roko learn`, `roko show` and
+    serve's projections (`GET /api/learn/efficiency`, `/api/metrics/model_efficiency`).
+  - So does `aggregate::efficiency_trend`.
+  - serve's `status::helpers::read_efficiency_events` errors on the first one instead, but nothing calls it.
+- **Never match:** readers keyed on plan and task, since the rows name neither: `roko diagnose`'s
+  `collect_total_cost_usd`, `GET /api/plans/{id}/costs`, `homeostasis::resolution` and `self_model::legacy`.
+- **Outside roko, the double count is real.** In round v7's Undertow workspace, 152 `dispatch_v2` rows carry $15.64
+  beside the tries' own rows.
+- **Which rows name their try:** `dispatch_v2.rs::record_agent_dispatch_feedback` writes `run_id: None`, and
+  `feedback_event/v1` has no plan or task fields.
+  - A Graph try's row has the try in `attempt_key` (`<run>:<plan>:<task>:<try>`, again in `request_id`). That's 112
+    of the 152, $15.61.
+  - A helper call's row names neither (`dispatch-v2-cheap-factory-agent`): 40 rows, $0.03.
+- **Not this item:** the one number a person saw inflated, a Graph run's summary counting a try's hub cost row twice,
+  is bug-6fddf2.
 
 ## Plan
 

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 82 changed since checked · 3 mentioned in commits · 53 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 85 changed since checked · 3 mentioned in commits · 51 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -25,10 +25,10 @@ _0 more open · on hold: gap-85f86a · `goal = "whitepaper"`_
 ## 3. Roko tells the truth and is safe (P0)
 
 - **P2** [bug-c67afc](items/bug-c67afc-a-claude-cli-attempt-on-a-model.md) A Claude CLI attempt on a model the price snapshot lacks is labelled cost_source unknown while its cost row says priced = true, and a call that reported no usage counts as a known $0 [bug] · size S · verified 2026-10-27
+- **P2** [bug-6fddf2](items/bug-6fddf2-a-graph-run-s-cost-counts-a.md) A Graph run's cost counts a try twice when the hub gets its cost row twice: roko serve's run summary and the dashboard snapshot add up `cost_usd` rows that name no try (rehearsal run b2372e07 read $0.0086, with "$0.0032 helper calls" on the Hermes run card, for $0.0054 of tries) [bug] · size M · verified 2026-11-12
 - **P2** [gap-3e1428](items/gap-3e1428-a-chat-host-s-run-checks-none.md) A chat host's run checks none of the request's explicit constraints against the change: the LLM judge is off by default, and its helper model failed every call in the 2026-10-13 dogfood · size M · verified 2026-10-27
-- **P2** [bug-a56ba1](items/bug-a56ba1-a-substituted-call-s-cost-row-says.md) A substituted call's cost row says priced when the model that served it has no rate, so later runs count its unknown cost as $0 [bug] · size S · verified 2026-10-16
 
-_20 more open · `goal = "truth"`_
+_21 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -68,7 +68,7 @@ _27 more open · on hold: find-70edcb · 3 unchecked (`TRIAGE.md`) · `goal = "c
 - **P2** [bug-df0e79](items/bug-df0e79-a-dead-cli-run-reads-as-running.md) A dead CLI run reads as running forever: only serve settles a run whose process died, so plan status, diagnose and show plans keep saying running, and serve's settle misses the run's events id [bug] · size M · verified 2026-10-26
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-27
 
-_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_11 more open · on hold: gap-ba20b0 · 7 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 - **P2** [gap-00e982](items/gap-00e982-a-new-price-snapshot-discards-every-workspace.md) A new price snapshot discards every workspace's learned self-model: the predictor version hashes the snapshot id, so load_or_new sets the state aside instead of re-pricing it · size M · verified 2026-10-28
 - **P2** [bug-fce0a7](items/bug-fce0a7-knowledge-tiers-have-two-promotion-rules-a.md) Knowledge tiers have two promotion rules: a pass that surfaces an entry re-tiers it through evaluate_tier_progression_v2 (transient to working at 1 confirmation, working to consolidated at 2), a repeat through the memory spec's 2 confirmations and 3 contexts, so every runtime lesson is Working at admission on its own pass (all 46 admissions in Undertow's store) [bug] · size M · verified 2026-10-27
 
-_14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_13 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
 - **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
 
-_29 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_34 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
@@ -100,6 +100,6 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P1** [spec-13c7ba](items/spec-13c7ba-hermes-starts-roko-by-itself-one-roko.md) Hermes starts roko by itself: one roko serve per project, started by the plugin, and prebuilt binaries for people without Rust [spec] · size L · verified 2026-10-19
 - **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-27
 
-_9 more open · on hold: gap-8636f8 · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
+_8 more open · on hold: gap-8636f8 · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
 15 open items have no goal (later); they are listed in `STATUS.md`.

@@ -2,7 +2,7 @@
 id = "gap-cf3940"
 kind = "gap"
 title = "roko's CLI has no one terminal style: --color, NO_COLOR and CLICOLOR reach none of run, plan, status or diagnose; roko run writes ANSI into pipes and under NO_COLOR; CI is read nowhere; three glyph sets and several time and money formats"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/output"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "cb51b2fd6"
 source = "round v8 roko-recovery terminal captures (tmp/hermes-roko-v8/design/terminal/before, a0089c19c), the lead's approved proposal (tmp/hermes-roko-v8/design/terminal/README.md)"
 discovered_from = "agent:roko-recovery (round v8, a0089c19c)"
 anchors = ["crates/roko-cli/src/main.rs::ColorMode", "crates/roko-cli/src/output_format.rs", "crates/roko-cli/src/inline/terminal.rs::should_use_inline"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn colour_follows_the_flag_then_no_color_then_the_terminal' crates/roko-cli/src && cargo test -p roko-cli --lib term_style"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T11:09:29Z"
+commit = "cb51b2fd6"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-11-12T10:43:15Z"
+forced = false
+evidence = "cb51b2fd6 on work/gap-cf3940: roko_cli::term_style decides colour (--color, NO_COLOR, CLICOLOR_FORCE, CLICOLOR, TERM=dumb, then the stream is a terminal) and live redraw (a terminal, TERM not dumb, no CI), and holds the colour roles, black glass, glyphs and the time/money/plural/width formatters; main records --color, ColorMode::should_color and output_format's helpers ask it. Branch checks: nightly fmt; roko-cli lib 4107 passed (term_style's 7 tests, colour_follows_the_flag_then_no_color_then_the_terminal among them), bin 479 passed; workspace clippy -D warnings clean; the binary builds; Docs Lint's link and errata checks pass. $0 captures of roko run on that binary: 0 escape codes in a pipe and under NO_COLOR (51 before), 51 on a terminal (tmp/hermes-roko-v8/roko-recovery/runs/item2/)."
 +++
 
 ## Problem

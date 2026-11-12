@@ -17,6 +17,7 @@ mod build_system;
 mod check_reads;
 mod dry_run_fs;
 mod file_paths;
+mod named_files;
 mod overview;
 mod pipeline;
 mod runnable;
@@ -31,6 +32,10 @@ pub use runnable::{
     settled_steps, unrunnable_steps,
 };
 
+pub use named_files::{
+    NamedFiles, named_files, named_files_of_plan, unlisted_named_files, unlisted_named_files_line,
+    without_deleted,
+};
 pub use source_reads::unread_sources;
 
 pub use pipeline::{
@@ -489,6 +494,7 @@ Before finalizing, verify your tasks against:
 - [ ] Every task writes files (implementer or scribe), and every verify step reads a file its own task writes or runs code built from them; none reads only files no task of the plan writes, another plan's files or `.roko/`
 - [ ] A request without a spec gets a `scribe` task that writes `docs/spec.md`, with numbered acceptance criteria, first
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
+- [ ] Every file the source says to delete or edit is in the `files` of the task that does it (File Path Rules 9)
 - [ ] No task sets `allowed_tools` or `denied_tools` unless it must be kept from a tool; an implementer keeps `bash` and `edit_file`
 - [ ] Every task is within the generated-plan limits: its `read_files` entries, verify steps, `lines` ranges, declared context and symbol anchors
 - [ ] Anti-patterns are specific (not generic "be careful")
@@ -511,6 +517,7 @@ Before finalizing, verify your tasks against:
 6. If a task creates a NEW crate, list the specific files: `"crates/new-crate/src/lib.rs"`, `"crates/new-crate/Cargo.toml"`. Use the plan slug as the crate name (e.g., slug "btc-funding-alert" → `"crates/btc-funding-alert/src/lib.rs"`).
 7. Researcher tasks that only READ files should still list specific file paths they will inspect.
 8. A task whose work must be registered in a shared build or module list (a `CMakeLists.txt` that names every source, a `mod.rs`, an `index.ts`, a `Cargo.toml` workspace) lists that file in its `files`, even when other tasks list it too. Sharing such a file is no reason to make one of those tasks wait for another.
+9. A file the source tells a task to delete or to edit goes in that task's `files`: deleting a file changes it, and an agent changes only its own task's files. The files a task deletes count toward no size limit, so list every one; never leave one out to fit a limit.
 
 ## Complete Example (end-to-end)
 
@@ -646,7 +653,7 @@ pub fn render_tier_size_limits() -> String {
     format!(
         "Size each task for its tier ({limits}). These limits bind: generation rejects a larger \
          task (PLAN_TIER_SIZE) and asks again, so split it on independent outputs or give it a \
-         higher tier."
+         higher tier. The files a task deletes count toward none of them."
     )
 }
 

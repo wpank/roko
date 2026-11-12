@@ -1407,7 +1407,7 @@ fn may_write(writes: &[String], path: &str) -> bool {
 }
 
 /// Whether git ignores `path` in the checkout at `root`; false outside git.
-fn git_ignores(root: &Path, path: &str) -> bool {
+pub(super) fn git_ignores(root: &Path, path: &str) -> bool {
     let mut git = std::process::Command::new("git");
     git.args(["check-ignore", "--quiet", "--", path])
         .current_dir(root)

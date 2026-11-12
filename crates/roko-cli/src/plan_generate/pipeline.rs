@@ -13,8 +13,8 @@
 //! 2026-10-02 (tmp/workflow-audit).
 
 use super::{
-    accept_blocks, check_reads, dry_run_fs, file_paths, overview, runnable, sizes, source_checks,
-    source_reads, symbol_reads,
+    accept_blocks, check_reads, dry_run_fs, file_paths, named_files, overview, runnable, sizes,
+    source_checks, source_reads, symbol_reads,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1927,6 +1927,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let no_new_files = size_sources
             .iter()
             .any(|text| file_paths::says_no_new_files(text));
+        // bug-aa93e9: the files the source tells a task to delete or change,
+        // which go in that task's files; the ones it deletes count toward no
+        // size limit.
+        let named = named_files::named_files(&size_sources, workdir_ref);
         // gap-5c7f9a: the task count the notes for the planner state, and a
         // draft's count when it differs.
         let stated_tasks = sizes::stated_task_count(&size_sources);
@@ -2013,9 +2017,16 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     workdir_ref,
                     policy,
                 ));
+                // bug-aa93e9: a file the source tells a task to delete or
+                // change is in the files of the task that changes it, and the
+                // files a task deletes count toward none of its size limits,
+                // here and below.
+                repairs.extend(named_files::repair_named_files(&mut parsed, &named));
                 // gap-9e212c: a task whose size its source states gets the
                 // smallest tier that covers it.
-                repairs.extend(sizes::repair_tiers(&mut parsed, &size_sources, policy));
+                repairs.extend(named_files::sized(&mut parsed, &named.deleted, |plan| {
+                    sizes::repair_tiers(plan, &size_sources, policy)
+                }));
                 repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
                 // bug-96115c: a check the source names as the plan's final check
                 // runs in `[[meta.verify]]`, its command unchanged.
@@ -2052,7 +2063,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // size and a step for each check it is given, so the checks get
                 // steps of their own up to that tier's room.
                 let wanted = source_checks::steps_wanted(&parsed, &checks, &stuck);
-                repairs.extend(sizes::raise_tiers_for(&mut parsed, policy, &wanted));
+                repairs.extend(named_files::sized(&mut parsed, &named.deleted, |plan| {
+                    sizes::raise_tiers_for(plan, policy, &wanted)
+                }));
                 repairs.extend(source_checks::assign_runs(
                     &mut parsed,
                     &checks,
@@ -2090,7 +2103,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // smallest tier it fits, as the size check suggests, instead
                 // of a new draft; a task no tier fits still goes back. The
                 // raise before assign_runs left out the steps added since.
-                repairs.extend(sizes::raise_tiers(&mut parsed, policy));
+                repairs.extend(named_files::sized(&mut parsed, &named.deleted, |plan| {
+                    sizes::raise_tiers(plan, policy)
+                }));
                 let validated = if repairs.is_empty() {
                     validated
                 } else {
@@ -2112,7 +2127,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
-                let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
+                let sized_plan = named_files::without_deleted(&parsed, &named.deleted);
+                let policy_issues = crate::plan_policy::validate_plan_budgets(&sized_plan, policy);
                 if !policy_issues.is_empty() {
                     refusals.push(format!(
                         "generated plan violates the `{}` structural budget:\n{}",
@@ -2127,12 +2143,28 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // rule that tiers are never raised automatically): a new
                 // draft cost a planner call and, in phase 4.3, the checks the
                 // regeneration had put back.
-                let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
+                let size_issues = crate::plan_policy::validate_tier_sizes(&sized_plan, policy);
                 if !size_issues.is_empty() {
                     refusals.push(format!(
                         "generated plan has tasks over their tier's size limits; split each \
                      on independent outputs with disjoint files, or raise its tier:\n{}",
                         listed(size_issues.iter().map(ToString::to_string).collect())
+                    ));
+                }
+                // bug-aa93e9: a task over its files limit with files the
+                // source tells it to change is split, never cut down: roko
+                // puts back each such file it leaves out.
+                let crowded = named_files::crowded_tasks(
+                    &sized_plan,
+                    &named,
+                    policy_issues.iter().chain(&size_issues),
+                );
+                if !crowded.is_empty() {
+                    refusals.push(format!(
+                        "generated plan has tasks over their files limit with the files the \
+                     source tells them to change; roko puts back any of those a task leaves \
+                     out, so split each such task into tasks that change fewer:\n{}",
+                        listed(crowded)
                     ));
                 }
                 if no_new_files {
@@ -5768,6 +5800,81 @@ mod tests {
             .collect();
         for command in ["tools/spec.sh widget spin", "tools/spec.sh widget stop"] {
             assert!(commands.contains(&command), "{command}: {commands:?}");
+        }
+    }
+
+    /// bug-aa93e9: a spec whose task edits eight files and deletes two. A
+    /// planner that leaves the deletions out, as phase 1's did to keep its
+    /// task within the 8 files a generated task may own, gets a plan whose
+    /// task lists them; one that lists them is not sent back for its 10
+    /// files. One call each.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_gives_each_file_the_spec_deletes_to_its_task() {
+        const EDITS: [&str; 8] = [
+            "src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs", "src/g.rs",
+            "src/h.rs",
+        ];
+        const DELETES: [&str; 2] = ["src/old/one.rs", "src/old/two.rs"];
+        let quoted = |paths: &[&str]| {
+            paths
+                .iter()
+                .map(|path| format!("`{path}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let spec = format!(
+            "# Cleanup\n\nRewrite the eight modules and retire the old ones.\n\n\
+             ## Notes for the planner\n\n\
+             - One task, architectural.\n  - Edits: {}.\n  - Deletes: {}.\n",
+            quoted(&EDITS),
+            quoted(&DELETES)
+        );
+        let plan = |files: &[&str]| {
+            let files: Vec<String> = files.iter().map(|file| format!("{file:?}")).collect();
+            format!(
+                "[meta]\nplan = \"cleanup\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Rewrite the modules\"\n\
+                 description = \"Rewrite the eight modules and delete the old ones.\"\n\
+                 status = \"ready\"\nrole = \"implementer\"\ntier = \"architectural\"\n\
+                 files = [{}]\ndepends_on = []\n\n[task.context]\nread_files = []\n\n\
+                 [[task.verify]]\nphase = \"check\"\ncommand = \"grep -q rewritten src/a.rs\"\n",
+                files.join(", ")
+            )
+        };
+        let all: Vec<&str> = EDITS.iter().chain(&DELETES).copied().collect();
+        for reply in [plan(&EDITS), plan(&all)] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            for path in &all {
+                let path = workdir.join(path);
+                std::fs::create_dir_all(path.parent().expect("a parent")).expect("src");
+                std::fs::write(path, "// old\n").expect("a module");
+            }
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &[reply.as_str()],
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(
+                    PlanSource::Text {
+                        text: &spec,
+                        kind: "file",
+                    },
+                    "cleanup",
+                    workdir,
+                )
+            };
+            generate_plan(request).await.expect("generate the plan");
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+            let written =
+                TasksFile::parse(&workdir.join("plans/cleanup/tasks.toml")).expect("the plan");
+            assert_eq!(written.tasks[0].files, all, "{reply}");
         }
     }
 

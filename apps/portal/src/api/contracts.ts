@@ -164,6 +164,15 @@ export type WireDashboardEvent =
       elapsed_ms?: number;
     }
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
+  | {
+      /** A line of roko serve's event log: `plan_generate.started`, `.completed`, `.failed`, `.cancelled`, … */
+      type: 'event_log_entry';
+      event_type: string;
+      plan_id: string;
+      task_id?: string;
+      message?: string;
+      timestamp_ms?: number;
+    }
   | { type: 'snapshot_rebased'; revision: number; source?: string }
   | { type: 'error'; message: string };
 
@@ -382,6 +391,26 @@ export interface WirePlanSummary {
   group?: string;
   /** Estimated duration in minutes (engine work in progress). */
   estimated_minutes?: number;
+  /**
+   * A plan being written, which `GET /api/plans?writing=true` lists until its plan is on disk (gap-6774b5): its
+   * row has `status: 'writing'` and no tasks.
+   */
+  writing?: WirePlanWriting;
+}
+
+/** What a plan being written is doing, in its plan list row (gap-6774b5). */
+export interface WirePlanWriting {
+  /** The write's operation id: `GET /api/operations/{id}` follows it, `POST /api/plans/{id}/cancel` stops it. */
+  run_id: string;
+  /** `planning`, `retrying`, `fixing`, `regenerating`, `writing` or `recording`, once the write reports one. */
+  stage?: string | null;
+  elapsed_secs?: number;
+  /** The planner calls that have settled. */
+  calls?: number | null;
+  /** What those calls cost, in USD. */
+  cost_usd?: number | null;
+  /** The most the write may spend, in USD; null when nothing caps it. */
+  max_usd?: number | null;
 }
 
 /**
@@ -595,10 +624,38 @@ export interface WirePlanDiff {
 export interface WireOperation {
   id: string;
   kind?: string;
+  /** `running`, `completed`, `failed`, or `cancelled` for a plan write that was stopped (bug-36ce72). */
   status: string;
   /** A revision's result also carries its plan diff (3229). */
-  result?: { slug?: string; task_count?: number; diff?: WirePlanDiff | null } | null;
+  result?: { slug?: string; task_count?: number; diff?: WirePlanDiff | null; cost_usd?: number } | null;
   error?: string | null;
+  elapsed_secs?: number;
+  /** What a plan write is doing, as it last said (gap-11d870); it stays once the write ends. */
+  progress?: WireWriteProgress | null;
+}
+
+/** A plan write's progress (PlanProgress in roko-cli's plan_generate): its stage, and what its settled calls cost. */
+export interface WireWriteProgress {
+  stage?: string;
+  attempt?: number;
+  attempts?: number;
+  model?: string;
+  calls?: number;
+  cost_usd?: number;
+  max_usd?: number | null;
+  elapsed_ms?: number;
+}
+
+/** The answer to `POST /api/plans/{id}/cancel` for a plan write (bug-36ce72). */
+export interface WireWriteCancelled {
+  cancelled: true;
+  run_id: string;
+  plan_id: string;
+  state: 'cancelled';
+  /** What the write's settled calls cost, in USD; a call the cancel stopped returned no usage. */
+  cost_usd: number | null;
+  /** The write had been cancelled before this cancel came. */
+  already_ended?: boolean;
 }
 
 /**
@@ -616,6 +673,8 @@ export interface WireAccepted {
   resume?: boolean;
   max_parallel_plans?: number;
   set_aside?: WireCheckpointRun | null;
+  /** A plan write's cap, in USD (gap-33d458); null when nothing caps it. */
+  max_usd?: number | null;
 }
 
 /** Response body from GET /api/status. */

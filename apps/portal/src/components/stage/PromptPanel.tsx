@@ -6,7 +6,8 @@
  * Generate mode: POST /api/plans/generate → waitForOperation → onDone(slug)
  * Revise mode:   POST /api/plans/{id}/revise → waitForOperation → onDone(slug)
  *
- * While roko writes, the request stays on screen, quoted, with the time on glass (gap-6c4d24).
+ * While roko writes, the request stays on screen, quoted, with TIME and SPENT on glass and a stop key (gap-6c4d24,
+ * gap-f8c57a: Writing). A stopped write brings the box back with the request in it, and says what it spent.
  *
  * Error handling:
  *   404/405 → feature not supported by this roko-serve build
@@ -22,16 +23,15 @@ import React, {
   useEffect,
   KeyboardEvent,
 } from 'react';
-import { useGeneratePlan, useRevisePlan, useWorkspace, planExists, fetchOperation } from '@/api/queries';
+import { useGeneratePlan, useRevisePlan, useWorkspace } from '@/api/queries';
 import { ApiError } from '@/api/client';
-import type { WirePlanDiff } from '@/api/contracts';
-import { waitForOperation } from '@/lib/operation';
-import { DotMatrix } from '@/components/kit/DotMatrix';
+import type { WireAccepted, WirePlanDiff } from '@/api/contracts';
 import { Fold } from '@/components/kit/Fold';
 import { Key } from '@/components/kit/Key';
 import { Notice } from '@/components/primitives/Notice';
+import { Writing } from '@/components/stage/Writing';
 import { isMissingRoute, unsupportedMessage, describeRequestError } from '@/lib/apiErrors';
-import { clock, clockLabel } from '@/lib/words';
+import { stoppedSentence } from '@/lib/writing';
 import { writeFailure } from '@/lib/writeFailure';
 
 // ---------------------------------------------------------------------------
@@ -47,6 +47,12 @@ export interface PromptPanelProps {
   /** `diff` is a revision's plan diff, when the server sent one (3229). */
   onDone(slug: string, diff?: WirePlanDiff): void;
   onCancel?(): void;
+  /** A request to start the box with: a stopped write's, opened from its row (gap-f8c57a). */
+  initialPrompt?: string;
+  /** What to say as the box opens: a stopped write's sentence. */
+  initialNote?: string | null;
+  /** Told when a write starts and when it ends, so the page keeps the box while it runs. */
+  onWaitingChange?(waiting: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,25 +105,36 @@ export function PromptPanel({
   firstRun,
   onDone,
   onCancel,
+  initialPrompt = '',
+  initialNote = null,
+  onWaitingChange,
 }: PromptPanelProps) {
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(initialPrompt);
   const [error, setError] = useState<string | null>(null);
+  // What a stopped write spent (gap-f8c57a), said above the box it came back to.
+  const [note, setNote] = useState<string | null>(initialNote);
   // What roko serve said when a write failed, folded under the error's one sentence.
   const [errorRaw, setErrorRaw] = useState<string | null>(null);
   const { data: workspaceInfo } = useWorkspace();
   const [noticeError, setNoticeError] = useState<string | null>(null);
-  const [waiting, setWaiting] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  // The write roko serve took, which the writing view follows.
+  const [accepted, setAccepted] = useState<WireAccepted | null>(null);
+  // The request is on its way to roko serve: the writing view shows at once.
+  const [submitting, setSubmitting] = useState(false);
+  const waiting = submitting || accepted !== null;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const generateMutation = useGeneratePlan();
   const reviseMutation = useRevisePlan();
 
-  // Focus textarea on mount
+  // The box has the focus when it opens, and again when a stopped or failed write gives it back.
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    if (!waiting) textareaRef.current?.focus();
+    onWaitingChange?.(waiting);
+    // Told on each change of `waiting` alone.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting]);
 
   // Esc closes the prompt, as it closes the editor — but not while a request
   // is in flight, when Cancel is disabled too.
@@ -133,52 +150,8 @@ export function PromptPanel({
     return () => window.removeEventListener('keydown', handler, true);
   }, [onCancel, waiting]);
 
-  const handleSubmit = useCallback(async () => {
-    const text = prompt.trim();
-    if (!text || waiting) return;
-
-    setError(null);
-    setErrorRaw(null);
-    setNoticeError(null);
-    setWaiting(true);
-    setElapsedMs(0);
-
-    try {
-      let accepted;
-
-      if (mode === 'generate') {
-        accepted = await generateMutation.mutateAsync({ prompt: text });
-      } else {
-        if (!planId) throw new Error('planId is required for revise mode');
-        accepted = await reviseMutation.mutateAsync({ id: planId, feedback: text });
-      }
-
-      const { slug, diff } = await waitForOperation(
-        accepted,
-        {
-          planExists,
-          fetchOperation,
-          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-          now: () => Date.now(),
-        },
-        {
-          expect: mode === 'generate' ? 'new-plan' : 'revision',
-          onPoll: (elapsed) => {
-            setElapsedMs(elapsed);
-          },
-        },
-      );
-
-      setWaiting(false);
-      // A revision's plan diff goes to the view that shows it (3229).
-      if (diff) {
-        onDone(slug, diff);
-      } else {
-        onDone(slug);
-      }
-    } catch (err) {
-      setWaiting(false);
-      setElapsedMs(null);
+  const showError = useCallback(
+    (err: unknown) => {
       const action = mode === 'generate' ? 'generating plans' : 'revising plans';
       if (isMissingRoute(err)) {
         setNoticeError(unsupportedMessage(action));
@@ -196,8 +169,59 @@ export function PromptPanel({
         setError(describeRequestError(err, action));
         setNoticeError(null);
       }
+    },
+    [mode, workspaceInfo?.path],
+  );
+
+  const handleSubmit = useCallback(async () => {
+    const text = prompt.trim();
+    if (!text || waiting || submitting) return;
+
+    setError(null);
+    setErrorRaw(null);
+    setNoticeError(null);
+    setNote(null);
+    setSubmitting(true);
+
+    try {
+      if (mode === 'generate') {
+        setAccepted(await generateMutation.mutateAsync({ prompt: text }));
+      } else {
+        if (!planId) throw new Error('planId is required for revise mode');
+        setAccepted(await reviseMutation.mutateAsync({ id: planId, feedback: text }));
+      }
+    } catch (err) {
+      showError(err);
+    } finally {
+      setSubmitting(false);
     }
-  }, [prompt, waiting, mode, planId, generateMutation, reviseMutation, onDone, workspaceInfo?.path]);
+  }, [prompt, waiting, submitting, mode, planId, generateMutation, reviseMutation, showError]);
+
+  const handleWritten = useCallback(
+    (slug: string, diff?: WirePlanDiff) => {
+      setAccepted(null);
+      // A revision's plan diff goes to the view that shows it (3229).
+      if (diff) {
+        onDone(slug, diff);
+      } else {
+        onDone(slug);
+      }
+    },
+    [onDone],
+  );
+
+  const handleStopped = useCallback((costUsd: number | null) => {
+    setAccepted(null);
+    setNote(stoppedSentence(costUsd));
+  }, []);
+
+  const handleFailed = useCallback(
+    (err: unknown) => {
+      setAccepted(null);
+      showError(err);
+    },
+    [showError],
+  );
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -233,28 +257,15 @@ export function PromptPanel({
       </label>
 
       {waiting ? (
-        <>
-          <div className="rk-glass rk-cells pt-writing-glass" role="group" aria-label="Readings">
-            <div className="rk-cell" data-reading="time">
-              <span className="rk-cell-label">time</span>
-              <DotMatrix
-                text={clock(elapsedMs ?? 0)}
-                label={`time: ${clockLabel(elapsedMs ?? 0)}`}
-                size="L"
-                tone="live"
-              />
-              <span className="rk-cell-note">usually under a minute</span>
-            </div>
-          </div>
-          <p className="pt-sentence" data-waiting>
-            {mode === 'generate'
-              ? `roko is reading ${workspace} and splitting your request into tasks, each with a check. You’ll see the plan here before anything runs.`
-              : `roko is rewriting ${workspace}’s tasks. You’ll see what changed before anything runs.`}
-          </p>
-          <blockquote className="pt-request" data-request>
-            “{prompt.trim()}”
-          </blockquote>
-        </>
+        <Writing
+          mode={mode}
+          workspace={workspace}
+          request={prompt.trim()}
+          accepted={accepted}
+          onDone={handleWritten}
+          onStopped={handleStopped}
+          onFailed={handleFailed}
+        />
       ) : (
         <>
           <textarea
@@ -271,6 +282,7 @@ export function PromptPanel({
                 setErrorRaw(null);
               }
               if (noticeError) setNoticeError(null);
+              if (note) setNote(null);
             }}
             onKeyDown={handleKeyDown}
           />
@@ -289,6 +301,12 @@ export function PromptPanel({
 
       {noticeError && (
         <Notice kind="unsupported" onClose={() => setNoticeError(null)}>{noticeError}</Notice>
+      )}
+
+      {note && !waiting && (
+        <Notice kind="info" onClose={() => setNote(null)}>
+          <span data-stopped>{note}</span>
+        </Notice>
       )}
 
       {error && (
@@ -313,7 +331,7 @@ export function PromptPanel({
           <p className="pt-hint">{hint}</p>
           <div className="rk-keys">
             {onCancel && <Key onClick={onCancel}>cancel</Key>}
-            <Key you kbd="⌘↵" data-action="submit-prompt" disabled={!prompt.trim()} onClick={() => void handleSubmit()}>
+            <Key you kbd="⌘↵" data-action="submit-prompt" disabled={!prompt.trim() || submitting} onClick={() => void handleSubmit()}>
               {mode === 'generate' ? 'write plan' : 'revise plan'}
             </Key>
           </div>

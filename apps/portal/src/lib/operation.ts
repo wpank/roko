@@ -47,6 +47,22 @@ export interface WaitForOperationOpts {
   timeoutMs?: number;
   /** Called after each poll tick with the elapsed time since waitForOperation was called. */
   onPoll?(elapsedMs: number): void;
+  /** Called with each operation record the server sends: a plan write's progress says what it has spent. */
+  onOperation?(op: WireOperation): void;
+}
+
+/**
+ * A plan write that was stopped before it wrote its plan (bug-36ce72): the operation ended `cancelled`. `costUsd` is
+ * what its settled planner calls cost, from its last progress, or null when it reported none.
+ */
+export class WriteStopped extends Error {
+  readonly costUsd: number | null;
+
+  constructor(costUsd: number | null) {
+    super('the plan write was stopped');
+    this.name = 'WriteStopped';
+    this.costUsd = costUsd;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +92,8 @@ function leadingWord(status: string): string {
  * Resolution rules, in both `expect` modes:
  *   • A 'failed' operation rejects with its error message (or a generic
  *     fallback when the field is absent).
+ *   • A 'cancelled' operation, a plan write that was stopped, rejects with
+ *     WriteStopped, which says what the write spent.
  *   • A 'completed' operation resolves `{slug}` from result.slug, else plan_id,
  *     with `diff` when the result carries a revision's plan diff.
  *   • A running operation is left to finish; nothing else is requested.
@@ -97,7 +115,7 @@ export async function waitForOperation(
   deps: OperationDeps,
   opts: WaitForOperationOpts,
 ): Promise<{ slug: string; diff?: WirePlanDiff }> {
-  const { expect, intervalMs = 1_000, timeoutMs = 600_000, onPoll } = opts;
+  const { expect, intervalMs = 1_000, timeoutMs = 600_000, onPoll, onOperation } = opts;
 
   const startMs = deps.now();
 
@@ -151,7 +169,12 @@ export async function waitForOperation(
 
     // ── Known operation: wait for it to report the end ──────────────────────
     consecutiveNullOps = 0;
+    onOperation?.(op);
     const word = leadingWord(op.status);
+
+    if (word === 'cancelled') {
+      throw new WriteStopped(op.progress?.cost_usd ?? null);
+    }
 
     if (word === 'failed') {
       throw new Error(op.error ?? `Operation ${accepted.id} failed`);

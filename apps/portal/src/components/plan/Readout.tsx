@@ -7,15 +7,16 @@ import type { Card, Reading } from '@/lib/runCard';
 export function Readout({ readings }: { readings: Card['readings'] }) {
   return (
     <div className="rk-glass rk-cells pt-readout" role="group" aria-label="Readings">
-      <Cell name="tasks" reading={readings.tasks} />
-      <Cell name="time" reading={readings.time} />
-      <Cell name="spent" reading={readings.spent} />
-      <Cell name="checks" reading={readings.checks} />
+      <ReadingCell name="tasks" reading={readings.tasks} />
+      <ReadingCell name="time" reading={readings.time} />
+      <ReadingCell name="spent" reading={readings.spent} />
+      <ReadingCell name="checks" reading={readings.checks} />
     </div>
   );
 }
 
-function Cell({ name, reading }: { name: string; reading: Reading }) {
+/** One reading on the glass: its name, its dot-matrix, and its pips, meter or note. */
+export function ReadingCell({ name, reading }: { name: string; reading: Reading }) {
   return (
     <div className="rk-cell" data-reading={name}>
       <span className="rk-cell-label">{name}</span>

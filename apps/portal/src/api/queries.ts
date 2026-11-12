@@ -89,10 +89,15 @@ export function useWorkspace() {
 // Plans
 // ---------------------------------------------------------------------------
 
+/**
+ * The plan list, with a row for each plan being written (gap-f8c57a; older servers send none). While a write runs,
+ * the list is read again every 2 s: its row's spend moves as its calls settle, and its plan replaces it.
+ */
 export function usePlans() {
   return useQuery<WirePlanSummary[]>({
     queryKey: queryKeys.plans,
-    queryFn: () => api.get<WirePlanSummary[]>('/api/plans'),
+    queryFn: () => api.get<WirePlanSummary[]>('/api/plans?writing=true'),
+    refetchInterval: (query) => (query.state.data?.some((row) => row.writing) ? 2_000 : false),
   });
 }
 

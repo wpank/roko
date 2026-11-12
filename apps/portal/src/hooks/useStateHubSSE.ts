@@ -36,13 +36,16 @@
  */
 
 import { useEffect, useRef, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { startLiveState } from '@/lib/bootstrap';
 import type { ConnectionStatus } from '@/lib/bootstrap';
 import { SseClient } from '@/api/sse-client';
 import { api } from '@/api/client';
+import { queryKeys } from '@/api/queries';
 import type { WireStateHubSnapshotResponse } from '@/api/contracts';
 import { useDashboardStore } from '@/stores/dashboard';
+import { isWriteEvent } from '@/lib/writing';
 
 // ---------------------------------------------------------------------------
 // Return type
@@ -70,6 +73,7 @@ export function useStateHubSSE(): UseStateHubSSEResult {
   // Keep a stable ref to the SseClient so we can expose `forceReconnect`
   // without pulling it into dependency arrays.
   const sseClientRef = useRef<SseClient | null>(null);
+  const queryClient = useQueryClient();
 
   // Start the live-state machine on mount; stop it on unmount.
   useEffect(() => {
@@ -127,7 +131,11 @@ export function useStateHubSSE(): UseStateHubSSEResult {
       },
 
       replace: replaceFromSnapshot,
-      apply: applyEvent,
+      apply: (event) => {
+        applyEvent(event);
+        // A plan write that starts or ends adds or takes away its row in the plan list (gap-f8c57a).
+        if (isWriteEvent(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.plans });
+      },
       setStatus: setConnection,
 
       sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),

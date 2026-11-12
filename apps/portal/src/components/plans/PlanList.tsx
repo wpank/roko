@@ -6,14 +6,19 @@
  * Each row: a light, the plan's title, one status line in roko's words (lib/planWords.ts) and a square per task.
  * `new plan` sits at the top; `run all` at the foot once there are two plans; the filter once there are more than
  * FILTER_FROM. Groups (plan folders) collapse, and the collapsed set is kept in this browser.
+ *
+ * A plan being written has a row at the top until its plan is on disk (gap-f8c57a): a live light, the request as its
+ * title, and what the write has spent. It isn't a plan yet, so the count leaves it out.
  */
 
 import React, { useCallback, useState } from 'react';
+import type { WirePlanSummary, WirePlanWriting } from '@/api/contracts';
 import { Key } from '@/components/kit/Key';
 import { Led } from '@/components/kit/Led';
 import { Strip } from '@/components/kit/Strip';
 import type { PlanGroupModel, PlanRowModel, PlanRowsResult } from '@/lib/planRows';
 import { planWords } from '@/lib/planWords';
+import { writingWords } from '@/lib/writing';
 
 /** Past this many plans the list gets a filter. */
 export const FILTER_FROM = 8;
@@ -40,6 +45,7 @@ function writeCollapsed(set: Set<string>): void {
 
 export function PlanList({
   result,
+  writes = [],
   costs,
   selectedPlanId,
   filter,
@@ -52,6 +58,8 @@ export function PlanList({
   runDisabledReason,
 }: {
   result: PlanRowsResult;
+  /** The plans being written, oldest first. */
+  writes?: readonly (WirePlanSummary & { writing: WirePlanWriting })[];
   /** What each plan's latest run spent, by plan id. */
   costs: Readonly<Record<string, number>>;
   selectedPlanId: string | null;
@@ -100,8 +108,12 @@ export function PlanList({
         />
       )}
 
+      {writes.map((write) => (
+        <WritingRow key={write.id} write={write} selected={write.id === selectedPlanId} onSelect={onSelect} />
+      ))}
+
       {groups.length === 0 ? (
-        <p className="pt-plans-empty">{emptySentence}</p>
+        writes.length === 0 && <p className="pt-plans-empty">{emptySentence}</p>
       ) : (
         groups.map((group) => (
           <PlanGroup
@@ -228,6 +240,40 @@ function PlanRow({
           {words.rest && ` · ${words.rest}`}
         </span>
         {row.total > 0 && <Strip squares={words.squares} label={`${row.done} of ${row.total} tasks done`} />}
+      </span>
+    </button>
+  );
+}
+
+/** A plan being written: its request, and what the write has spent so far. */
+function WritingRow({
+  write,
+  selected,
+  onSelect,
+}: {
+  write: WirePlanSummary & { writing: WirePlanWriting };
+  selected: boolean;
+  onSelect(id: string): void;
+}) {
+  const { word, rest } = writingWords(write.writing);
+  const title = write.title || write.id;
+  return (
+    <button
+      type="button"
+      className="pt-plan"
+      data-plan-row={write.id}
+      data-state="writing"
+      data-signal="live"
+      aria-current={selected ? 'true' : undefined}
+      title={title}
+      onClick={() => onSelect(write.id)}
+    >
+      <Led signal="live" label={word} />
+      <span className="pt-plan-title">{title}</span>
+      <span className="pt-plan-line">
+        <span>
+          <span className="pt-plan-word">{word}</span> · {rest}
+        </span>
       </span>
     </button>
   );

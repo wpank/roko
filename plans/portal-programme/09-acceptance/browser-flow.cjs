@@ -185,7 +185,34 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'prompt visible, no plans';
     });
 
-    // 4. generate (action 1)
+    // 4. stop-write (gap-f8c57a): a write stopped while its planner works writes no plan. Its glass shows TIME and
+    // SPENT, and once stopped the box comes back with the request in it and says what the write spent. The fake
+    // planner holds a request that says SLOW n for n seconds. A detour, so it adds no action to the flow's count.
+    await requireStep(page, 'stop-write', evidenceDir, async () => {
+        const request = 'SLOW 60 a plan to stop before it is written';
+        await page.locator('[data-prompt]').fill(request);
+        await page.locator('[data-prompt]').press('Control+Enter');
+        const stop = page.locator('[data-region="writing"] [data-action="stop-write"]');
+        await stop.waitFor({ state: 'visible', timeout: 15_000 });
+        await page.waitForFunction(
+            () => document.querySelector('[data-action="stop-write"]')?.disabled === false,
+            { timeout: 15_000 }
+        );
+        await page.locator('[data-region="writing"] [data-reading="spent"]').waitFor({ state: 'visible', timeout: 5_000 });
+        await page.screenshot({ path: path.join(evidenceDir, '0-writing.png') });
+        await stop.click();
+        const stopped = page.locator('[data-stopped]');
+        await stopped.waitFor({ state: 'visible', timeout: 15_000 });
+        const said = (await stopped.textContent()) || '';
+        if (!said.startsWith('Stopped.')) throw new Error(`the stopped note says "${said}"`);
+        const kept = await page.locator('[data-prompt]').inputValue();
+        if (kept !== request) throw new Error(`the box holds "${kept}", not the stopped request`);
+        // The write's row goes once it stops, and no plan takes its place.
+        await page.waitForFunction(() => document.querySelectorAll('[data-plan-row]').length === 0, { timeout: 15_000 });
+        return said;
+    });
+
+    // 5. generate (action 1)
     await requireStep(page, 'generate', evidenceDir, async () => {
         await page.locator('[data-prompt]').fill('a rust app that prints hello world');
         await page.locator('[data-prompt]').press('Control+Enter');
@@ -201,7 +228,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return `slug=${slug} tasks=${taskCount}`;
     });
 
-    // 5. run (action 2)
+    // 6. run (action 2)
     await requireStep(page, 'run', evidenceDir, async () => {
         const btn = page.locator('[data-action="run"]');
         await btn.waitFor({ state: 'visible', timeout: T.runBtn });
@@ -214,7 +241,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'clicked run';
     });
 
-    // 6. running: the running task's pad is live, the page says what it does now, the glass counts its checks,
+    // 7. running: the running task's pad is live, the page says what it does now, the glass counts its checks,
     // and its opened detail shows the agent's live transcript.
     await requireStep(page, 'running', evidenceDir, async () => {
         const live = page.locator('[data-task-row][data-state="live"]').first();
@@ -227,7 +254,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'live pad, now line, check pips, transcript';
     });
 
-    // 7. live-step (flow only)
+    // 8. live-step (flow only)
     if (!isReal) {
         await requireStep(page, 'live-step', evidenceDir, async () => {
             await page.waitForFunction(() => {
@@ -242,7 +269,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         });
     }
 
-    // 8. reload
+    // 9. reload
     await requireStep(page, 'reload', evidenceDir, async () => {
         const baseUrl = url.split('#')[0].split('?')[0];
         await page.goto(baseUrl);
@@ -256,7 +283,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'rail visible, plan current, session persisted';
     });
 
-    // 9. done
+    // 10. done
     await requireStep(page, 'done', evidenceDir, async () => {
         await page.locator(`[data-plan-row="${slug}"][data-state="done"]`).waitFor({ state: 'attached', timeout: T.done });
         await page.waitForFunction(() => {

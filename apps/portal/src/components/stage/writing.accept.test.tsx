@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
 import type { WireDashboardEvent, WirePlanSummary } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { PlanList } from '@/components/plans/PlanList';
@@ -218,6 +219,46 @@ describe('a plan being written', () => {
       prompt: REQUEST,
       note: 'Stopped. Writing the plan spent $0.04.',
     });
+  });
+
+  it('keeps the first-run box while its write ends, though the plan list shows the plan first', async () => {
+    let op: Record<string, unknown> = RUNNING;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), 'http://localhost').pathname;
+        const body =
+          init?.method === 'POST' && path === '/api/plans/generate'
+            ? ACCEPTED
+            : path === '/api/operations/op-1'
+              ? op
+              : null;
+        if (body === null) throw new TypeError(`unexpected request: ${path}`);
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+    );
+    const onSelect = vi.fn();
+    const stage = (plans: WirePlanSummary[]) => (
+      <Stage
+        plans={plans}
+        loaded
+        selection={{ plan: null, task: null }}
+        promptOpen={false}
+        workspace="greeting-app"
+        onSelect={onSelect}
+        onClosePrompt={() => {}}
+        onRequestError={() => {}}
+      />
+    );
+    const { rerender, client } = renderWithClient(stage([]), { seed: [WORKSPACE] });
+    ask();
+    await stopKey();
+    // The plan is on disk while roko still records the write: the list shows it, and the box stays.
+    const written = { ...LISTED[1]!, status: 'ready', task_count: 2, writing: undefined };
+    rerender(<QueryClientProvider client={client}>{stage([LISTED[0]!, written])}</QueryClientProvider>);
+    expect(document.querySelector('[data-region="writing"]')).not.toBeNull();
+    op = { id: 'op-1', status: 'completed', result: { slug: SLUG, task_count: 2 } };
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith({ plan: SLUG, task: null }), { timeout: 3_000 });
   });
 
   it('a write that starts or ends is what refreshes the plan list', () => {

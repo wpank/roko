@@ -165,7 +165,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko init` | Create `.roko/` directory and `roko.toml` |
 | `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
 | `roko run "<prompt>"` | Size the prompt: one checked task, or a plan written first and then run (`commands/run_cmd.rs`) |
-| `roko run --plan "<prompt>"` | Always write a plan first (`--dry-run`: write it and stop; on a terminal it asks before running) |
+| `roko run --plan "<prompt>"` | Always write a plan first, shown like a run: a live line while it writes, then the plan's tasks (`--dry-run`: write it and stop; on a terminal it asks before running) |
 | `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`, `--tui`) |
 | `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
 | `roko status` | What is running, how the last runs ended, what they spent, and one Next command; `--details` adds signal counts, efficiency and thresholds |

@@ -25,6 +25,24 @@ use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_core::{Body, Context, Kind, Signal, Usage};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 
+tokio::task_local! {
+    /// Whether the agent calls of this task print their own progress lines,
+    /// the "Agent working" ticker and the "Agent completed" summary: not
+    /// while a view shows the work itself (gap-3436e7).
+    static QUIET_PROGRESS: bool;
+}
+
+/// Run `work` with its agent calls printing no progress lines of their own,
+/// for a caller that shows the work itself (gap-3436e7).
+pub async fn without_progress_lines<F: std::future::Future>(work: F) -> F::Output {
+    QUIET_PROGRESS.scope(true, work).await
+}
+
+/// Whether this task's agent calls print their progress lines.
+fn prints_progress() -> bool {
+    !QUIET_PROGRESS.try_with(|quiet| *quiet).unwrap_or(false)
+}
+
 /// Options for agent execution.
 #[derive(Clone, Copy)]
 pub struct AgentExecOpts<'a> {
@@ -357,25 +375,30 @@ async fn run_agent_capture_impl(
     let tick_model = model.clone();
     let tick_provider = resolved.provider_kind.label().to_string();
     let tick_start = Instant::now();
-    let ticker = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-        interval.tick().await; // skip immediate first tick
-        loop {
-            interval.tick().await;
-            let elapsed = tick_start.elapsed().as_secs();
-            let mins = elapsed / 60;
-            let secs = elapsed % 60;
-            if mins > 0 {
-                eprintln!(
-                    "  ⏳ Agent working... ({mins}m {secs}s) [{tick_model} via {tick_provider}]"
-                );
-            } else {
-                eprintln!("  ⏳ Agent working... ({secs}s) [{tick_model} via {tick_provider}]");
+    let progress_lines = prints_progress();
+    let ticker = progress_lines.then(|| {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let elapsed = tick_start.elapsed().as_secs();
+                let mins = elapsed / 60;
+                let secs = elapsed % 60;
+                if mins > 0 {
+                    eprintln!(
+                        "  ⏳ Agent working... ({mins}m {secs}s) [{tick_model} via {tick_provider}]"
+                    );
+                } else {
+                    eprintln!("  ⏳ Agent working... ({secs}s) [{tick_model} via {tick_provider}]");
+                }
             }
-        }
+        })
     });
     let result = agent.run(&prompt, &Context::now()).await;
-    ticker.abort();
+    if let Some(ticker) = ticker {
+        ticker.abort();
+    }
 
     let rendered = result.output.body.as_text().unwrap_or("").to_string();
     let elapsed_ms = started.elapsed().as_millis();
@@ -388,7 +411,7 @@ async fn run_agent_capture_impl(
         "agent_exec: agent returned"
     );
     // Print completion summary to stderr
-    {
+    if progress_lines {
         let secs = elapsed_ms / 1000;
         let mins = secs / 60;
         let s = secs % 60;

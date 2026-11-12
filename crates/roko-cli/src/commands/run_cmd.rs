@@ -525,25 +525,17 @@ async fn run_prompt_plan(
     forced: bool,
     args: &RunArgs,
 ) -> Result<i32> {
+    use anyhow::Context as _;
+
     let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
-    if args.plan {
-        out.step("Plan", "writing a plan first (--plan)");
-    } else {
-        out.step(
-            "Complexity",
-            &format!(
-                "{} ({})",
-                complexity_label(complexity),
-                if forced {
-                    "forced"
-                } else {
-                    "auto-detected, override with --complexity simple"
-                }
-            ),
-        );
-    }
-    let steps = if args.dry_run { "1/1" } else { "1/2" };
-    out.step(&format!("Step {steps}"), "Generating plan...");
+    // A request sized for a plan says why it gets one only in the log; the
+    // view's header says it is writing a plan first (gap-3436e7).
+    tracing::info!(
+        complexity = complexity_label(complexity),
+        forced,
+        planned_by_flag = args.plan,
+        "roko run writes a plan first"
+    );
 
     prepare_runtime_hooks(workdir, cli.quiet);
 
@@ -589,53 +581,83 @@ async fn run_prompt_plan(
     };
     // Only `--dry-run` leaves the plan for a person to review before it runs.
     let unattended = !args.dry_run;
-    let Some(generated) = generate_prompt_plan(
+    // gap-3436e7: the writing shows in the run view's style, and the
+    // generator prints nothing of its own; `--quiet` and `--json` show none.
+    let style = roko_cli::term_style::Style::stderr();
+    let view = (!cli.quiet && !cli.json).then(|| {
+        roko_cli::plan_write_view::PlanWriteView::start(
+            &write_header(workdir, prompt, &model_key),
+            style,
+        )
+    });
+    let written = generate_prompt_plan(
         cli,
         workdir,
         prompt,
         &model_key,
         &context_block,
         unattended,
-        &out,
+        view.as_ref()
+            .map(roko_cli::plan_write_view::PlanWriteView::sink),
     )
     .await
-    else {
-        return Ok(EXIT_AGENT_FAILURE);
-    };
-
-    let plans = match roko_cli::runner::plan_loader::load_plans(&generated) {
-        Ok(plans) if plans.is_empty() => {
-            out.error("Plan generation produced no executable plans");
+    .and_then(|(generated, spent)| {
+        let plans = roko_cli::runner::plan_loader::load_plans(&generated)
+            .with_context(|| format!("load the plan written in {}", generated.display()))?;
+        if plans.is_empty() {
+            anyhow::bail!(
+                "the plan written in {} has no tasks to run",
+                generated.display()
+            );
+        }
+        Ok((generated, spent, plans))
+    });
+    let (generated, spent, plans) = match written {
+        Ok(written) => written,
+        Err(error) => {
+            match view {
+                Some(view) => {
+                    view.finish(&roko_cli::plan_write_view::failed_lines(
+                        &error, prompt, style,
+                    ));
+                }
+                None => out.error(&format!("Plan generation failed: {error:#}")),
+            }
             return Ok(EXIT_AGENT_FAILURE);
         }
-        Ok(plans) => plans,
-        Err(err) => {
-            out.error(&format!("Failed to load generated plans: {err:#}"));
-            return Ok(EXIT_AGENT_FAILURE);
-        }
     };
-    let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let run_hint = format!("roko run {}", display_path(workdir, &generated));
     // The plans index lists the new plan, as after `roko plan generate`.
     roko_cli::index::rebuild_all(workdir)?;
 
+    if let Some(view) = view {
+        let written = roko_cli::plan_write_view::WrittenPlan::of(
+            &plans[0].tasks,
+            display_path(workdir, &generated),
+        );
+        let mut lines =
+            roko_cli::plan_write_view::written_lines(&written, view.elapsed(), spent, style);
+        if args.dry_run {
+            lines.extend(roko_cli::term_style::next_lines(style, &run_hint));
+        }
+        view.finish(&lines);
+    }
     if args.dry_run {
-        out.step(
-            "Plan written",
-            &format!("{} ({total_tasks} tasks)", generated.display()),
-        );
-        out.step(
-            "Next",
-            &format!("review or edit it, then run it with `{run_hint}`"),
-        );
         return Ok(EXIT_SUCCESS);
     }
 
-    if args.plan && !confirm_plan_run(cli, &generated, &plans, args.yes)? {
-        out.step(
-            "Plan kept",
-            &format!("{}; run it later with `{run_hint}`", generated.display()),
-        );
+    if args.plan && !confirm_plan_run(cli, args.yes, style)? {
+        if !cli.quiet {
+            let mut lines = vec![format!(
+                "  {}",
+                style.paint(
+                    roko_cli::term_style::Role::Dim,
+                    "The plan is kept; nothing ran."
+                )
+            )];
+            lines.extend(roko_cli::term_style::next_lines(style, &run_hint));
+            eprintln!("{}", lines.join("\n"));
+        }
         return Ok(EXIT_SUCCESS);
     }
 
@@ -645,11 +667,11 @@ async fn run_prompt_plan(
              models route to",
         );
     }
+    // The run's own view follows the plan's, a blank line apart.
+    if !cli.quiet && !cli.json {
+        eprintln!();
+    }
 
-    out.step(
-        "Step 2/2",
-        &format!("Executing plan ({total_tasks} tasks)..."),
-    );
     let code = run_plan_execution(
         cli,
         workdir,
@@ -665,39 +687,18 @@ async fn run_prompt_plan(
     Ok(code)
 }
 
-/// On a terminal, show the plan `--plan` wrote and ask whether to run it now.
-/// `--yes`, `--json`, or input that is not a terminal run it without asking;
-/// end of input keeps the plan without running it.
-fn confirm_plan_run(
-    cli: &Cli,
-    plan_dir: &Path,
-    plans: &[roko_cli::runner::plan_loader::Plan],
-    yes: bool,
-) -> Result<bool> {
+/// On a terminal, ask whether to run the plan `--plan` wrote, which the
+/// view has shown (gap-3436e7). `--yes`, `--json`, or input that is not a
+/// terminal run it without asking; end of input keeps the plan without
+/// running it.
+fn confirm_plan_run(cli: &Cli, yes: bool, style: roko_cli::term_style::Style) -> Result<bool> {
     use std::io::{BufRead, Write};
 
     if yes || cli.json || !roko_cli::stdin_is_tty() {
         return Ok(true);
     }
     let mut err = std::io::stderr().lock();
-    writeln!(err, "\nPlan written to {}:", plan_dir.display())?;
-    for plan in plans {
-        writeln!(err, "  {} ({} tasks)", plan.id, plan.tasks.tasks.len())?;
-        for task in &plan.tasks.tasks {
-            if task.depends_on.is_empty() {
-                writeln!(err, "    {}  {}", task.id, task.title)?;
-            } else {
-                writeln!(
-                    err,
-                    "    {}  {}  (after {})",
-                    task.id,
-                    task.title,
-                    task.depends_on.join(", ")
-                )?;
-            }
-        }
-    }
-    write!(err, "Run this plan now? [Y/n] ")?;
+    write!(err, "{}", roko_cli::plan_write_view::question(style))?;
     err.flush()?;
     drop(err);
 
@@ -708,8 +709,8 @@ fn confirm_plan_run(
     Ok(plan_answer_runs(&answer))
 }
 
-/// Whether an answer to "Run this plan now? [Y/n]" means yes: empty (the
-/// default), `y` or `yes`, in any case.
+/// Whether an answer to "Run it now? [Y/n]" means yes: empty (the default),
+/// `y` or `yes`, in any case.
 fn plan_answer_runs(answer: &str) -> bool {
     matches!(
         answer.trim().to_ascii_lowercase().as_str(),
@@ -804,12 +805,44 @@ pub(crate) async fn run_plan_execution(
     .await
 }
 
+/// The header `roko run --plan` writes its plan under: the request, the
+/// planner's plain name and the writing's cap (gap-3436e7).
+fn write_header(
+    workdir: &Path,
+    prompt: &str,
+    model_key: &str,
+) -> roko_cli::plan_write_view::WriteHeader {
+    let config = roko_core::config::loader::load_config_unified(workdir).ok();
+    let model_names: std::collections::BTreeMap<String, String> = config
+        .as_ref()
+        .map(|config| {
+            config
+                .effective_models()
+                .into_iter()
+                .map(|(key, profile)| (key, profile.slug))
+                .collect()
+        })
+        .unwrap_or_default();
+    roko_cli::plan_write_view::WriteHeader {
+        request: prompt.to_string(),
+        model: Some(
+            model_names
+                .get(model_key)
+                .cloned()
+                .unwrap_or_else(|| model_key.to_string()),
+        ),
+        cap_usd: config.map(|config| config.authoring.max_generation_usd),
+        model_names,
+    }
+}
+
 /// Plan `prompt` with the one plan generator (gap-2623b2), which validates
 /// the plan and writes it to the workspace plans directory; `context` follows
 /// the prompt. Returns the new plan's directory, so `roko run` runs that plan
-/// and no other plan beside it, or `None` after reporting a failure on `out`.
-/// An `unattended` plan runs with nobody to answer its open questions
-/// (bug-7a08a8).
+/// and no other plan beside it, and what writing it cost. An `unattended`
+/// plan runs with nobody to answer its open questions (bug-7a08a8). The
+/// generator prints nothing of its own; `progress` hears what it does
+/// (gap-3436e7).
 async fn generate_prompt_plan(
     cli: &Cli,
     workdir: &Path,
@@ -817,8 +850,8 @@ async fn generate_prompt_plan(
     model_key: &str,
     context: &str,
     unattended: bool,
-    out: &roko_cli::cli_output::CliOutput,
-) -> Option<PathBuf> {
+    progress: Option<roko_cli::plan_generate::PlanProgressSink>,
+) -> Result<(PathBuf, f64)> {
     let effort = cli.effort.map(|e| e.to_string());
     let slug = roko_cli::plan_generate::slugify(prompt);
     let request = roko_cli::plan_generate::PlanRequest {
@@ -826,6 +859,8 @@ async fn generate_prompt_plan(
         model: Some(model_key),
         effort: Some(effort.as_deref().unwrap_or("high")),
         unattended,
+        progress,
+        quiet: true,
         ..roko_cli::plan_generate::PlanRequest::new(
             roko_cli::plan_generate::PlanSource::Text {
                 text: prompt,
@@ -835,13 +870,8 @@ async fn generate_prompt_plan(
             workdir,
         )
     };
-    match roko_cli::plan_generate::generate_plan(request).await {
-        Ok((plans_root, _)) => Some(plans_root.join(&slug)),
-        Err(err) => {
-            out.error(&format!("Plan generation failed: {err:#}"));
-            None
-        }
-    }
+    let (plans_root, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
+    Ok((plans_root.join(&slug), outcome.cost_usd))
 }
 
 // ─── Preview / formatting helpers ───────────────────────────────────────

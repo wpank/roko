@@ -2439,7 +2439,10 @@ pub fn run_model(report: &DiagnoseReport, now: Instant) -> RunModel {
             }
             RowState::Skipped => {
                 let by: Vec<String> = task.blocked_by.iter().map(|id| label(id)).collect();
-                row.failure = Some(format!("{} did not pass, so it did not run", words(&by)));
+                row.failure = Some(format!(
+                    "{} did not pass, so it did not run",
+                    term_style::listed(&by)
+                ));
             }
             RowState::Running => row.activity = Some("running".to_string()),
             _ => {}
@@ -2456,15 +2459,6 @@ pub fn run_model(report: &DiagnoseReport, now: Instant) -> RunModel {
         ));
     }
     model
-}
-
-/// `a`, `a and b`, `a, b and c`.
-fn words(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
 }
 
 /// What the table's line of `task` leaves out: for a task that did not pass
@@ -2636,7 +2630,8 @@ fn next_block(report: &DiagnoseReport, style: Style) -> Vec<String> {
                 |index| format!("task {}", index + 1),
             )
     };
-    let labels = |ids: &[String]| words(&ids.iter().map(|id| label(id)).collect::<Vec<_>>());
+    let labels =
+        |ids: &[String]| term_style::listed(&ids.iter().map(|id| label(id)).collect::<Vec<_>>());
     let (command, does) = match status {
         Some(GraphCheckpointStatus::Succeeded) => {
             let line = "Nothing failed in this run.";

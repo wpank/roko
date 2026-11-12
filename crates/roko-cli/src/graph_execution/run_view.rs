@@ -563,10 +563,13 @@ impl RunModel {
                 let task = &mut self.tasks[index];
                 let what = failing_steps
                     .first()
-                    .map(|step| check_name(step))
-                    .or_else(|| task.failed_check.clone())
-                    .unwrap_or_else(|| check_name(check));
-                task.retry_note = Some(format!("try {attempt}: check {what} failed"));
+                    .map(|step| failed_on(step))
+                    .or_else(|| {
+                        let check = task.failed_check.as_ref()?;
+                        Some(format!("check {check} failed"))
+                    })
+                    .unwrap_or_else(|| failed_on(check));
+                task.retry_note = Some(format!("try {attempt}: {what}"));
                 task.pending_retry = true;
                 Vec::new()
             }
@@ -802,6 +805,21 @@ pub fn check_name(raw: &str) -> String {
         .and_then(|(_, rest)| rest.split_once(']'))
         .map_or(raw, |(inner, _)| inner);
     inner.rsplit(':').next().unwrap_or(inner).trim().to_string()
+}
+
+/// What a try failed on, from its first failing step: `check imports failed`
+/// for a check (`verify[0:imports]`, `rung[compile]`), `it changed nothing`
+/// for a try the gate rejected before its checks because it left the tree as
+/// it found it, and `its checks didn't pass` for anything else.
+fn failed_on(step: &str) -> String {
+    let label = step.trim_start();
+    if label.starts_with("verify[") || label.starts_with("rung[") {
+        format!("check {} failed", check_name(label))
+    } else if label.contains("pre_verify:no_changes") || label.contains("unchanged tree") {
+        "it changed nothing".to_string()
+    } else {
+        "its checks didn't pass".to_string()
+    }
 }
 
 /// The line of a check's output that says what went wrong: the last line that
@@ -1949,6 +1967,25 @@ mod tests {
         ] {
             model.apply(&event, at(secs));
         }
+    }
+
+    /// gap-3436e7: a try the gate rejected because it changed nothing says
+    /// so, not `check Rejected after its verify steps ran …`; a check says
+    /// its name.
+    #[test]
+    fn a_retry_says_what_the_try_failed_on() {
+        assert_eq!(
+            failed_on("verify[0:usage] (`grep -q x README.md`): exit code: 1"),
+            "check usage failed"
+        );
+        assert_eq!(
+            failed_on(
+                "Rejected after its verify steps ran on the unchanged tree \
+                 (pre_verify:no_changes). Red flag, no changes: …"
+            ),
+            "it changed nothing"
+        );
+        assert_eq!(failed_on("verify"), "its checks didn't pass");
     }
 
     #[test]

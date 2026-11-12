@@ -2,7 +2,7 @@
 id = "gap-acfe4b"
 kind = "gap"
 title = "The portal's glass can't show a chat-started run's spend cap, and says 'no cap set' when it doesn't know it: roko serve keeps the run's max_usd nowhere a host can read, so Hermes shows 'of $9.00' while the portal shows the spend with 'no cap set'"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "66a214ee2"
 source = "round v8 portal-v8, the three-surface capture of phase 6 (2026-11-12); the lead's decision"
 discovered_from = "agent:portal-v8 (round v8)"
 anchors = ["crates/roko-serve/src/state.rs::PlanHandle", "crates/roko-serve/src/routes/plans/reads.rs::get_plan", "apps/portal/src/lib/runCard.ts", "apps/portal/src/api/queries.ts::usePlanCap"]
@@ -21,6 +22,15 @@ command = "grep -rqw 'fn plan_detail_names_its_runs_cap' crates/roko-serve/src &
 
 [[verify]]
 command = "cd apps/portal && npx vitest run src/components/plan/cap.accept.test.tsx"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T22:19:38Z"
+commit = "66a214ee2"
+by = "portal-v8 (round v8)"
+executor = "unknown"
+forced = false
+evidence = "roko serve: a plan run's handle keeps its request's max_usd (PlanHandle.max_usd), and GET /api/plans/{id} returns it as last_run.max_usd from the plan's live run, else its newest ended one (run_cap). Portal: SPENT's cap is last_run.max_usd (useRunCap: read at the run's start and end, every 5 s while it runs without one), else the plan's budget; an unknown cap shows the spend alone, no meter, never 'no cap set'. Red first at 008781c7f (plan_detail_names_its_runs_cap: no max_usd while the run goes; cap.accept: 'of $3.00' for a $9.00 run and 'no cap set'). At 66a214ee2's tree in roko-work-bug-36ce72: plan_detail_names_its_runs_cap and 81 more matching tests pass, roko-serve lib 1100/1100, nightly fmt and clippy -D warnings clean; portal tsc clean, vitest 736/736 (cap.accept 3/3)."
 +++
 
 ## Problem

@@ -50,7 +50,7 @@ export type SessionResult = 'none' | 'signed-in' | 'rejected' | 'unavailable';
  * printed by `roko serve`.
  */
 export const SIGN_IN_HINT =
-  'Not signed in to this roko serve. Open the portal link it printed (the one ending in #token=…).';
+  'Not signed in to this roko serve. Open its sign-in link, the one ending in #token=…; in the project, roko serve link prints it.';
 
 // ---------------------------------------------------------------------------
 // Fragment / cursor helpers

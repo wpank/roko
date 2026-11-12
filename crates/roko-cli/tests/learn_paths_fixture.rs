@@ -301,7 +301,7 @@ fn learn_all_reads_the_expected_fixtures() {
 
     assert!(
         stdout.contains(&format!(
-            "Knowledge: 1 durable entries at {}",
+            "Knowledge: 1 live, 0 retired, at {}",
             knowledge_path.display()
         )),
         "knowledge summary missing or incorrect: {stdout}"

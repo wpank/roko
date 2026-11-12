@@ -33,6 +33,10 @@ pub struct AutocatalyticMetrics {
     pub gate_pass_rate: f64,
     /// Failed gate signatures previously observed in the window.
     pub error_dedup_rate: f64,
+    /// Failed gate verdicts in the window that recorded a signature: with
+    /// none, `error_dedup_rate` measures nothing (gap-ea1576).
+    #[serde(default)]
+    pub failure_signatures: usize,
     /// Dollar cost of every attempt divided by the passes (learning
     /// label 1).
     pub cost_per_success: f64,
@@ -130,6 +134,7 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
         .count();
     let mut signatures = std::collections::HashSet::new();
     let mut failures = 0usize;
+    let mut signed = 0usize;
     let mut duplicates = 0usize;
     for verdict in episodes
         .iter()
@@ -138,6 +143,7 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
     {
         failures += 1;
         if let Some(signature) = verdict.signature.as_deref() {
+            signed += 1;
             if !signatures.insert(signature) {
                 duplicates += 1;
             }
@@ -169,6 +175,7 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
         } else {
             duplicates as f64 / failures as f64
         },
+        failure_signatures: signed,
         cost_per_success: if successful == 0 {
             0.0
         } else {

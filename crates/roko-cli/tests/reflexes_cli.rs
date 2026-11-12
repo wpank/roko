@@ -84,7 +84,9 @@ fn learn_reflexes_reports_an_empty_store_friendly() {
         .stdout(predicate::str::contains(
             "T0 Reflex Store — 0 rules (max 200)",
         ))
-        .stdout(predicate::str::contains("no rules yet"))
+        .stdout(predicate::str::contains(
+            "t0_reflexes is false, so runs add no rules",
+        ))
         .stdout(predicate::str::contains("Recent demotions:\n  (none)"));
 }
 

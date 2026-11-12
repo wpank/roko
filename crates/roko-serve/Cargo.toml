@@ -36,6 +36,12 @@ fault-injection = ["roko-learn/fault-injection"]
 # Agent groups, membership and pheromone state (GroupRuntime and the
 # /groups and /invitations routes). Parked: plan runs never use them (9219).
 groups = []
+# The knowledge-demurrage timer, parked out of the default build (backlog
+# 9231, Will's decision 12, gap-8752ce). Every ~2.8 h it lowered every
+# knowledge entry's confidence and balance whatever its use, so a long-running
+# serve forgot what plan runs had learned (bug-dd5dca, bug-429315, both held
+# under dec-e70592).
+knowledge-decay = []
 # Relay client side: workspace registration, the subscription and feed
 # relay bridge with its durable consumer journal, and the /relay proxy.
 # Parked: no workspace sets a relay url (9220). Without it the relay health

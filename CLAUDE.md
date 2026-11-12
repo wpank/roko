@@ -62,6 +62,7 @@ back. Line counts are in `benchmarks/park/`.
 | `cross-cut-functors` | roko-compose | The cross-cut functors and `CrossCutArbitrator` |
 | `spc` | roko-gate | CUSUM, EWMA and BOCPD detectors, PELT, Hotelling's T-squared |
 | `active-inference` | roko-learn | The expected-free-energy tier selector |
+| `knowledge-decay` | roko-cli, roko-serve | `roko serve`'s knowledge-demurrage timer, which every ~2.8 h lowered every knowledge entry's confidence and balance whatever its use (bug-dd5dca, bug-429315; backlog 9231, Will's decision 12) |
 | `channels` | roko-core, roko-runtime | The `ChatBridge` contract and `PlatformRegistry`, the six stub platform adapters (Discord, Slack, Matrix, Mattermost, Telegram, WhatsApp), `ChannelBindingRouter`, and the `[[platforms]]` and `[[channels]]` config types (decision 12) |
 
 ## Critical rules

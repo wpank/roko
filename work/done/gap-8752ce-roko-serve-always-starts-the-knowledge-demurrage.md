@@ -2,15 +2,16 @@
 id = "gap-8752ce"
 kind = "gap"
 title = "roko serve always starts the knowledge-demurrage timer, so two held decay bugs run on every server: park it behind a feature (backlog 9231)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "S"
 subsystem = ["roko-serve/neuro", "roko-cli/features"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "f94014685"
 source = "status-quo-2026-10-15#decision-12"
 anchors = ["crates/roko-serve/src/lib.rs::start_demurrage_timer", "crates/roko-serve/Cargo.toml", "crates/roko-cli/Cargo.toml"]
 lane = "rust-hot"
@@ -21,6 +22,18 @@ command = "grep -rqw 'fn serve_starts_no_demurrage_timer_by_default' crates/roko
 
 [[verify]]
 command = "grep -q '^knowledge-decay *=' crates/roko-serve/Cargo.toml && grep -B2 'fn start_demurrage_timer' crates/roko-serve/src/lib.rs | grep -q 'knowledge-decay'"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T10:07:06Z"
+commit = "f94014685"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-11-12T09:05:41Z"
+forced = false
+evidence = "f94014685. crates/roko-serve: the knowledge-demurrage timer is parked behind a knowledge-decay feature, off by default and forwarded from roko-cli (Cargo.toml in both); start_knowledge_decay starts it only with the feature, and start_demurrage_timer compiles only with it; CLAUDE.md's parked table lists the feature. Red first on a0089c19c (the seam starting the timer unconditionally, as the old start-up did): serve_starts_no_demurrage_timer_by_default failed (a timer started); green: it passes; lib suites roko-cli 4099/0, roko-serve 1091/0; clippy -D warnings clean with and without --features knowledge-decay; nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/8752ce-chain3.log). Why it matters, measured on a copy of Undertow's store: all 27 lessons from v7 phases 0-4 are at confidence 0, and no prompt from phase 4.1 on included one (tmp/hermes-roko-v8/data/learning). bug-dd5dca and bug-429315 stay held; a default build no longer runs them. Lessons already at 0 stay at 0 (a migration is a separate decision)."
 +++
 
 ## Problem

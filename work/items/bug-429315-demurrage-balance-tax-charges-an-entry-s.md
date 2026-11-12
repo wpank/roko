@@ -30,3 +30,5 @@ Fix: store a last-taxed timestamp and tax only the elapsed interval; test that t
 2026-10-15 (status-quo decision 12, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): this bug stays held, but Will released backlog 9231 alone so a default `roko serve` stops running it: gap-8752ce puts start_demurrage_timer (crates/roko-serve/src/lib.rs:2632, spawned unconditionally at :469 at b42578bab) behind an off-by-default knowledge-decay feature. Once gap-8752ce is done, this bug only runs in a build with that feature. Will's decision 12 (2026-10-15) turns the timer off by default: gap-8752ce.
 
 Checked 2026-10-27: 2026-10-26 sweep: re-verified unfixed; line numbers drifted (roko-serve/src/lib.rs start_demurrage_timer now at :2821, called unconditionally at :578, was :2632/:469). gap-8752ce remains open so the timer still runs by default on every roko serve.
+
+2026-11-12 (gap-8752ce, f94014685): `roko serve`'s demurrage timer is parked behind the `knowledge-decay` feature, off by default, so a default build no longer runs this bug. It stays held (dec-e70592); a build with `--features knowledge-decay` still runs it.

@@ -983,6 +983,28 @@ impl AuthoringSpend {
                 cache_write_tokens,
             );
             live.efficiency_event(&self.plan_id, &self.task_id, "cost_usd", cost_usd);
+            // gap-6774b5: the call priced as it settles, in the event a run's
+            // calls publish (gap-5c3347), so a host shows a plan write's spend
+            // as it shows a run's: the write's calls are one attempt's, and
+            // `attempt_cost_usd` is what they have cost so far. The snapshot
+            // doesn't count it, so the total above isn't counted twice.
+            live.publish_event(roko_core::DashboardEvent::CallCost {
+                plan_id: self.plan_id.clone(),
+                task_id: self.task_id.clone(),
+                attempt: 1,
+                call: attempt,
+                model: call.model.clone(),
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cost_usd: Some(cost_usd).filter(|cost| priced && cost.is_finite() && *cost >= 0.0),
+                attempt_cost_usd: self.spent_usd(),
+                reasoning_tokens: u64::from(usage.reasoning_tokens),
+                finish_reason: None,
+                wall_ms: Some(call.duration_ms),
+                first_token_ms: None,
+                outcome: Some(if succeeded { "ok" } else { "error" }.to_string()),
+            });
         }
     }
 
@@ -1836,7 +1858,10 @@ command = "echo ok"
         };
 
         spend.record(&call(1, 0.25)).await;
-        assert_eq!(settled(), [(1, Some(0.25), 0.25, Some("error".to_string()))]);
+        assert_eq!(
+            settled(),
+            [(1, Some(0.25), 0.25, Some("error".to_string()))]
+        );
         spend.record(&call(0, 0.5)).await;
         assert_eq!(
             settled(),

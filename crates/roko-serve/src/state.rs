@@ -344,6 +344,12 @@ pub struct OperationHandle {
 pub struct PlanWrite {
     /// The plan it writes.
     pub plan_id: String,
+    /// What its row in the plan list calls it (gap-6774b5): the title it was
+    /// given, else its request's first line.
+    pub title: String,
+    /// The most its planner calls may cost together, in USD; `None` sets no
+    /// cap.
+    pub max_usd: Option<f64>,
     /// Stops the write while its planner works. Once the plan is being
     /// saved, the write ends as it would have, so a plan is never half
     /// written.

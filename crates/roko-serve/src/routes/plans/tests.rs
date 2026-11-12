@@ -2300,9 +2300,12 @@ async fn list_plans_returns_internal_error_for_corrupt_plan_file() {
         .await
         .expect("write corrupt plan");
 
-    let err = list_plans(State(state))
-        .await
-        .expect_err("corrupt plan should fail");
+    let err = list_plans(
+        State(state),
+        axum::extract::Query(ListPlansQuery::default()),
+    )
+    .await
+    .expect_err("corrupt plan should fail");
 
     assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     drop(dir);

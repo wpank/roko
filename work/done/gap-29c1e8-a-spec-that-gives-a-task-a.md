@@ -2,7 +2,7 @@
 id = "gap-29c1e8"
 kind = "gap"
 title = "A spec that gives a task a tier its own stated size is over (\"Focused: about 90 lines\") gets no warning: phase 5's presets task started on a dearer rung than its spec named, and phase 6's spec sizes five tasks over their tiers"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "8c4eed182"
+last_verified_rev = "e5030bae2"
 source = "round v8 hermes-pilot-v8: phase 5 plan write op 97a74018 (roko e722f0e1f, Undertow docs/specs/phase-5-sound.md); the lead chose option (b)"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/plan_generate/sizes.rs::sized_items", "crates/roko-cli/src/plan_validate.rs"]
@@ -20,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-9e212c", "gap-4dd77d", "
 
 [[verify]]
 command = "grep -rqw 'fn a_tier_word_too_small_for_its_size_is_warned_about' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_tier_word_too_small_for_its_size"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T21:16:38Z"
+commit = "e5030bae2"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "S"
+forced = false
+evidence = "plan validate warns once per plan (PLAN_064) when a source's notes for the planner give a task a tier whose line budget its stated size is over, read one list item at a time in both word orders (\"Focused: about 90 lines\", \"About 200 lines, so architectural\"), naming each task as the notes do and the tier its size needs. Red first (15de12d90 on main 8c4eed182): a_tier_word_too_small_for_its_size_is_found and _is_warned_about failed, nothing found. Green at e5030bae2 (main 8c4eed182 + this branch): 38 sizes, named_files and plan_validate tests pass, roko-cli lib 4147 passed 0 failed, plan_validate 27/27, plan_validation 40/40, cargo clippy --workspace --no-deps -D warnings and nightly fmt --check clean. $0 probe scan with the built binary: PLAN_064 fires on phase 5's T3 (focused, 90 lines, needs integrative), phase 6's five sized tasks and phase 1's T1 (architectural, 350 lines, over every tier) in all four of phase 1's versions; quiet on phases 2-4, Undertow v1's 16 specs and all 1713 roko work items."
 +++
 
 ## Problem

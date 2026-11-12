@@ -38,6 +38,8 @@ vi.mock('next/navigation', async () => {
 const PLANS = [
   { id: 'hello', title: 'Hello world', task_count: 1 },
   { id: 'other', title: 'Other plan', task_count: 1 },
+  // A third, so run all stays on offer once 'hello' leaves the list.
+  { id: 'third', title: 'Third plan', task_count: 1 },
 ].map((p) => ({ ...p, tasks_failed: 0, completed: false, status: 'pending', old_format: false }) as WirePlanSummary);
 
 const tasks = (plan: string): WirePlanTasks => ({
@@ -203,7 +205,7 @@ describe('protects unsaved edits', () => {
     ];
     setStore(foldEvents(failed));
     await editUnsaved();
-    fireEvent.click(screen.getByRole('button', { name: 'Show' }));
+    fireEvent.click(screen.getByRole('button', { name: 'show' }));
     expect(confirm).not.toHaveBeenCalled();
     expect(new URLSearchParams(window.location.search).get('task')).toBe('T01');
     expect(editor()!.value).toBe(EDITED);

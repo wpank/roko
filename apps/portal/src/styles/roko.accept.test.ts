@@ -1,24 +1,24 @@
 /**
- * Acceptance: the ROSEDUST styles actually apply.
+ * Acceptance for gap-195374: the portal is drawn in roko's design system.
  *
- * Tailwind v4 puts its utilities in `@layer utilities`; any rule outside a
- * layer beats every layered rule, so un-layered element resets (`button {…}`,
- * `* { border-color }`) silently override utility classes such as `bg-rose`.
- * Element rules therefore live in `@layer base`, the portal's own component
- * classes in `@layer components`, and every colour utility used by a component
- * must name a colour the theme declares.
- *
- * Copied verbatim from plans/portal-programme/08b-portal-polish/accept/.
+ * - Its colours are roko's tokens (roko-tokens.css): every word meets 4.5:1 on every surface it sits on, by day
+ *   (aluminium), by night (graphite) and on the black glass; the orange key's words meet 4.5:1 on orange.
+ * - The older names the plan view uses (tokens.css) only point at roko's tokens; they define no colour.
+ * - Element resets live in `@layer base`, so every class wins over them, and the kit and the portal's frame are in
+ *   `@layer components`; every Tailwind colour a component names is declared.
+ * - The two faces are self-hosted, with their licences beside them.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const STYLES = fileURLToPath(new URL('.', import.meta.url));
 const SRC = join(STYLES, '..');
-const globals = readFileSync(join(STYLES, 'globals.css'), 'utf8');
-const tokens = readFileSync(join(STYLES, 'tokens.css'), 'utf8');
+const PUBLIC = join(SRC, '..', 'public');
+const read = (name: string) => readFileSync(join(STYLES, name), 'utf8');
+const globals = read('globals.css');
+const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
 // ── A small CSS walker ─────────────────────────────────────────────────────────
 
@@ -128,7 +128,76 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────────
+// ── roko's tokens, day and night ────────────────────────────────────────────────
+
+function block(css: string, selector: string): Map<string, string> {
+  const at = css.indexOf(`${selector} {`);
+  if (at < 0) throw new Error(`no ${selector} block`);
+  const body = css.slice(at, css.indexOf('}', at));
+  return new Map([...body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()]));
+}
+
+const tokensCss = strip(read('roko-tokens.css'));
+const DAY = block(tokensCss, ':root');
+const NIGHT = new Map([...DAY, ...block(tokensCss, ':root[data-theme="dark"]')]);
+
+function hex(theme: Map<string, string>, name: string): string {
+  const value = theme.get(name);
+  if (!value) throw new Error(`${name} is not a token`);
+  const ref = /^var\((--[a-z0-9-]+)\)$/.exec(value);
+  return ref ? hex(theme, ref[1]!) : value;
+}
+
+function luminance(colour: string): number {
+  const h = colour.replace('#', '');
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const s = parseInt(h.slice(i, i + 2), 16) / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  }) as [number, number, number];
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrast(theme: Map<string, string>, fg: string, bg: string): number {
+  const [hi, lo] = [luminance(hex(theme, fg)), luminance(hex(theme, bg))].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const WORDS = ['--rk-ink', '--rk-ink-2', '--rk-ink-3', '--rk-live', '--rk-pass', '--rk-fail', '--rk-you-text'];
+const PANEL = ['--rk-body', '--rk-module', '--rk-module-2'];
+const ON_GLASS = ['--rk-px-on', '--rk-px-dim', '--rk-px-faint', '--rk-px-live', '--rk-px-pass', '--rk-px-you', '--rk-px-fail'];
+
+describe('contrast (WCAG 2 AA)', () => {
+  for (const [name, theme] of [['day', DAY], ['night', NIGHT]] as const) {
+    it(`gives every word at least 4.5:1 on every panel surface by ${name}`, () => {
+      for (const fg of WORDS) for (const bg of PANEL) expect(contrast(theme, fg, bg), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it(`gives a key's words and the orange key's words at least 4.5:1 by ${name}`, () => {
+      expect(contrast(theme, '--rk-key-ink', '--rk-key')).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(theme, '--rk-you-ink', '--rk-you')).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  it('gives every reading on the glass at least 4.5:1', () => {
+    for (const fg of ON_GLASS) expect(contrast(DAY, fg, '--rk-glass'), fg).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps the glass black in both themes', () => {
+    expect(hex(NIGHT, '--rk-glass')).toBe(hex(DAY, '--rk-glass'));
+  });
+});
+
+describe('the older names', () => {
+  it('only point at roko’s tokens and define no colour of their own', () => {
+    const aliases = strip(read('tokens.css'));
+    expect(aliases.match(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/gi) ?? []).toEqual([]);
+  });
+
+  it('leave no ROSEDUST colour in the portal', () => {
+    expect(existsSync(join(STYLES, 'rosedust.css'))).toBe(false);
+    for (const name of ['globals.css', 'tokens.css', 'portal.css']) expect(read(name)).not.toMatch(/#c06070|#e87070|#8993f0/i);
+  });
+});
 
 describe('cascade layers', () => {
   it('puts every element-level rule inside @layer base', () => {
@@ -141,14 +210,18 @@ describe('cascade layers', () => {
 
   it('keeps the element resets (buttons, form fields, headings, links)', () => {
     const base = rules.filter((r) => inLayer(r, 'base')).map((r) => r.selector).join(' | ');
-    for (const element of ['button', 'input', 'h1', 'a', 'body', '::selection']) {
-      expect(base).toContain(element);
-    }
+    for (const element of ['button', 'input', 'h1', 'a', 'body', '::selection']) expect(base).toContain(element);
   });
 
-  it('draws the keyboard focus ring with the focus token', () => {
+  it('draws the keyboard focus ring in orange: focus is yours', () => {
     const focus = rules.find((r) => r.selector === ':focus-visible');
-    expect(focus?.body).toMatch(/outline\s*:[^;]*var\(--focus-border\)/);
+    expect(focus?.body).toMatch(/outline\s*:[^;]*var\(--rk-you\)/);
+  });
+
+  it('brings in roko’s tokens and puts the kit and the portal’s frame in the components layer', () => {
+    expect(globals).toMatch(/@import "\.\/roko-tokens\.css";/);
+    expect(globals).toMatch(/@import "\.\/roko-kit\.css" layer\(components\);/);
+    expect(globals).toMatch(/@import "\.\/portal\.css" layer\(components\);/);
   });
 });
 
@@ -160,60 +233,18 @@ describe('theme colours', () => {
       .map((u) => u.slice('!undeclared:'.length));
     expect([...new Set(undeclared)]).toEqual([]);
   });
+});
 
-  it('declares the warning, base and subtle colours', () => {
-    for (const name of ['accent-warn', 'bg-base', 'bg-subtle', 'state-done', 'state-active', 'state-failed']) {
-      expect(themeColours.has(name)).toBe(true);
+describe('fonts', () => {
+  it('self-hosts Archivo and Martian Mono, each with its licence', () => {
+    const faces = read('fonts.css');
+    for (const [file, licence] of [
+      ['archivo-latin.woff2', 'OFL-Archivo.txt'],
+      ['martian-mono-latin.woff2', 'OFL-MartianMono.txt'],
+    ] as const) {
+      expect(faces).toContain(`/fonts/${file}`);
+      expect(existsSync(join(PUBLIC, 'fonts', file))).toBe(true);
+      expect(readFileSync(join(PUBLIC, 'fonts', licence), 'utf8')).toMatch(/SIL Open Font License, Version 1\.1/);
     }
-  });
-});
-
-describe('layout tokens', () => {
-  it('gives the rail room for a name beside its numbers', () => {
-    const width = /--rail-width\s*:\s*(\d+)px/.exec(tokens);
-    expect(Number(width?.[1])).toBeGreaterThanOrEqual(288);
-  });
-
-  it('declares the header height and the short implementer role alias', () => {
-    expect(tokens).toMatch(/--header-height\s*:\s*\d+px/);
-    expect(tokens).toMatch(/--role-impl\s*:\s*var\(--role-implementer\)/);
-  });
-});
-
-describe('component classes', () => {
-  it('lays the header out as one row', () => {
-    const header = componentRule('.rd-header');
-    expect(declares(header, 'display', /^flex$/)).toBe(true);
-    expect(declares(header, 'flex-wrap', /^nowrap$/)).toBe(true);
-    expect(declares(header, 'height', /var\(--header-height\)/)).toBe(true);
-  });
-
-  it('lays the run band out as three cells with titles', () => {
-    expect(declares(componentRule('.rd-band'), 'display', /^grid$/)).toBe(true);
-    expect(declares(componentRule('.rd-band'), 'grid-template-columns', /repeat\(3|minmax/)).toBe(true);
-    expect(componentRule('.rd-band__cell')).toBeDefined();
-    expect(declares(componentRule('.rd-band__title'), 'text-transform', /^uppercase$/)).toBe(true);
-  });
-
-  it('gives a rail row fixed columns and an ellipsised name', () => {
-    expect(declares(componentRule('.rd-plan-row'), 'display', /^grid$/)).toBe(true);
-    expect(declares(componentRule('.rd-plan-row'), 'grid-template-columns', /minmax\(0,\s*1fr\)/)).toBe(true);
-    const name = componentRule('.rd-plan-row__name');
-    expect(declares(name, 'overflow', /^hidden$/)).toBe(true);
-    expect(declares(name, 'text-overflow', /^ellipsis$/)).toBe(true);
-    expect(componentRule('.rd-plan-row__wait')).toBeDefined();
-  });
-
-  it('styles the status line and the alert row', () => {
-    expect(declares(componentRule('.rd-status'), 'display', /^flex$/)).toBe(true);
-    expect(declares(componentRule('.rd-alert'), 'display', /^flex$/)).toBe(true);
-  });
-
-  it('uses tokens, never colour literals', () => {
-    const literals = rules
-      .filter((r) => inLayer(r, 'components'))
-      .filter((r) => /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/.test(r.body))
-      .map((r) => r.selector);
-    expect(literals).toEqual([]);
   });
 });

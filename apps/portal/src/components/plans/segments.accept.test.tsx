@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { PlanRow } from '@/components/rail/PlanRow';
 import { PlanView } from '@/components/stage/PlanView';
+import { planSquares } from '@/lib/planWords';
 import { buildPlanRows, progressSegments } from '@/lib/planRows';
 import { initialRunState } from '@/lib/runState';
 import type { PlanRun } from '@/lib/runState';
@@ -100,11 +100,10 @@ describe('progress segments', () => {
 });
 
 describe('bars', () => {
-  it('draw a half-failed plan green then red in the rail', () => {
+  it('draw a half-failed plan green then red in the plan list', () => {
     const run = foldEvents(HALF_FAILED);
     const row = buildPlanRows([PLAN], run, { filter: '', nowMs: 10_000 }).groups[0]!.rows[0]!;
-    const { container } = render(<PlanRow row={row} selected={false} onSelect={() => {}} />);
-    expect(segs(container.querySelector('.rd-plan-row__bar'))).toEqual(['done 50.0%', 'failed 50.0%']);
+    expect(planSquares(row)).toEqual(['pass', 'fail']);
   });
 
   it('draw the same segments in the plan header', () => {

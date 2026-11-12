@@ -247,9 +247,9 @@
 .pt-readout { min-height: 104px; }
 .pt-readout .pt-dots { min-height: 24px; }
 .pt-seq { padding: 18px 18px 14px; }
-.pt-seq .rk-seq-grid { grid-auto-columns: minmax(220px, 1fr); column-gap: 40px; }
+/* The portal's own floor, under the kit's 240px cap: a pad, never a bar. */
+.pt-seq .rk-seq-grid { grid-auto-columns: minmax(220px, 240px); column-gap: 40px; }
 .pt-seq .rk-pad { min-height: 64px; }
-.rk-pad[data-state="pass"] { border-color: var(--rk-pass); }
 .rk-pad[data-state="still"] .rk-pad-foot { color: var(--rk-ink-3); }
 .rk-pad[data-state="skipped"] { border-style: dotted; box-shadow: none; }
 .rk-pad[data-selected] { outline: 2px solid var(--rk-ink); outline-offset: 2px; }
@@ -517,7 +517,7 @@
   .pt-head { flex-wrap: wrap; gap: 10px; }
   .pt-head h1 { font-size: 21px; white-space: normal; }
   .pt-how { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .pt-seq .rk-seq-grid { grid-auto-flow: row; grid-auto-columns: auto; row-gap: 18px; }
+  .pt-seq .rk-seq-grid { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); justify-content: stretch; row-gap: 18px; }
   .pt-seq .rk-seq-edges { display: none; }
   .pt-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .pt-now li { grid-template-columns: 10px minmax(0, 1fr) auto; }

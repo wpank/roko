@@ -79,7 +79,7 @@ describe('Workspace', () => {
     expect(document.querySelector('header[data-region="header"]')).not.toBeNull();
     expect(rail()!.querySelectorAll('[data-plan-row]')).toHaveLength(3);
     expect(hasMissingValue(textOf(rail()))).toBe(false);
-    expect(textOf(document.querySelector('[data-region="status-line"]'))).toContain('2 tasks');
+    expect(document.querySelector('[data-reading="tasks"] svg')!.getAttribute('aria-label')).toBe('tasks: 0 of 2 tasks done');
   });
 
   it('explains a Run all this server cannot do instead of showing a raw status', async () => {

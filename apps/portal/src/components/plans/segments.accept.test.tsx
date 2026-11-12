@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { planSquares } from '@/lib/planWords';
 import { buildPlanRows, progressSegments } from '@/lib/planRows';
 import { initialRunState } from '@/lib/runState';
@@ -106,16 +106,16 @@ describe('bars', () => {
     expect(planSquares(row)).toEqual(['pass', 'fail']);
   });
 
-  it('draw the same segments in the plan header', () => {
+  it('light the same tasks on the plan page’s glass', () => {
     setStore(foldEvents(HALF_FAILED));
-    renderWithClient(<PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />, {
+    renderWithClient(<PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />, {
       seed: [
         [queryKeys.planTasks('hello'), TASKS],
         [queryKeys.validation('hello'), VALID],
       ],
     });
-    const bar = document.querySelector('[role="progressbar"]');
-    expect(segs(bar)).toEqual(['done 50.0%', 'failed 50.0%']);
-    expect(bar!.getAttribute('aria-label')).toBe('1 of 2 tasks complete');
+    const tasks = document.querySelector('[data-reading="tasks"]')!;
+    expect([...tasks.querySelectorAll('.rk-pips i')].map((i) => i.getAttribute('data-state'))).toEqual(['pass', 'fail']);
+    expect(tasks.querySelector('svg')!.getAttribute('aria-label')).toBe('tasks: 1 of 2 tasks done');
   });
 });

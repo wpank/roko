@@ -12,13 +12,14 @@
  * 1c. newest run.errors entry (execution error); the server's generic
  *     "plan <id> completed with task-level failures" yields to rank 2 when
  *     the plan has a known failed task, and otherwise reads "<title> failed".
- * 2. Failed task, preferring the selected plan
+ * 2. Failed task, preferring the selected plan (in words: the plan's page numbers its tasks; "show" opens it)
  * 3. validationErrors > 0 on the selected plan
  * 4. Connection disconnected or error
  */
 
 import type { RunState, TaskRun } from './runState';
 import { SIGN_IN_HINT, type ConnectionStatus } from './bootstrap';
+import { checkWord } from './runCard';
 
 // ── Exported types ────────────────────────────────────────────────────────────
 
@@ -65,20 +66,17 @@ function resolvePlanTitle(
 }
 
 /**
- * Return the label for the first failed check: its phase if set, else its name.
- * Returns null when the task has no failed check.
+ * Return the word for the first failed check ("build", "compile"), or null when the task has no failed check.
  */
 function failedCheckLabel(task: TaskRun): string | null {
   const check = task.checks.find((c) => c.status === 'failed');
   if (!check) return null;
-  return check.phase || check.name;
+  return checkWord(check.phase || check.name);
 }
 
 /**
- * Build the human-readable text for a failed task alert.
- *
- * Format: "<plan title>: <task id> failed (<check label> check)"
- * The trailing " (<check label> check)" is omitted when no failed check exists.
+ * Build the human-readable text for a failed task alert, without the task's id (an engine name):
+ * "<plan title>: a task failed its <check> check." or, with no failed check, "<plan title>: a task failed."
  */
 function failedTaskText(
   task: TaskRun,
@@ -87,8 +85,7 @@ function failedTaskText(
 ): string {
   const title = resolvePlanTitle(task.planId, planTitles, run);
   const checkLabel = failedCheckLabel(task);
-  const base = `${title}: ${task.taskId} failed`;
-  return checkLabel ? `${base} (${checkLabel} check)` : base;
+  return checkLabel ? `${title}: a task failed its ${checkLabel} check.` : `${title}: a task failed.`;
 }
 
 // ── pickAlert ─────────────────────────────────────────────────────────────────

@@ -77,6 +77,24 @@ export interface TaskRun {
   blockedBy?: string | null;
   /** For a blocked task: why it will not run. */
   blockedReason?: string | null;
+  /** Its tries in this run, oldest first: one per agent_spawned attempt, settled by attempt_settled. */
+  tries?: TryRun[];
+}
+
+/** One try at a task: the model that made it and how it ended. */
+export interface TryRun {
+  /** The attempt, from 1. */
+  attempt: number;
+  model: string | null;
+  state: 'running' | 'passed' | 'failed';
+  /** The check that failed it, as roko names it (`verify:0/usage`), when one did. */
+  failedCheck: string | null;
+  /** The first line of why it failed, when it did. */
+  detail: string | null;
+  costUsd: number | null;
+  durationMs: number | null;
+  /** Whether it moved the task up to a stronger model for the next try. */
+  climbed: boolean;
 }
 
 export interface PlanRun {
@@ -95,6 +113,8 @@ export interface PlanRun {
   costUsd: number;
   /** Incremented each time a finished plan starts a new run. Absent/0 means generation 0. */
   generation?: number;
+  /** The plan's own check on its delivered work, once it ran. */
+  planCheck?: { passed: boolean; name: string | null } | null;
 }
 
 export interface AgentRun {
@@ -103,6 +123,8 @@ export interface AgentRun {
   taskId: string | null;
   role: string;
   model: string;
+  /** The task's attempt this agent works, from 1. */
+  attempt?: number;
   active: boolean;
   spawnedAtMs: number | null;
   costUsd: number;
@@ -292,6 +314,58 @@ function upsertCheck(
   return sortChecks([...checks, update(blank)]);
 }
 
+// ── Tries ──────────────────────────────────────────────────────────────────────
+
+/** Verdicts of a try that counts as a pass. */
+const PASSED_VERDICTS = new Set(['passed', 'already_satisfied', 'passed_with_preexisting_failures']);
+
+/**
+ * `tries` with try `attempt` started on `model`. An earlier try still running counts as failed: a Graph task
+ * starts a new try only once the last one did not pass.
+ */
+function startTry(tries: readonly TryRun[], attempt: number, model: string | null): TryRun[] {
+  if (tries.some((t) => t.attempt === attempt)) {
+    return tries.map((t) => (t.attempt === attempt ? { ...t, model: model ?? t.model } : t));
+  }
+  const fresh: TryRun = {
+    attempt,
+    model,
+    state: 'running',
+    failedCheck: null,
+    detail: null,
+    costUsd: null,
+    durationMs: null,
+    climbed: false,
+  };
+  return [
+    ...tries.map((t) => (t.state === 'running' && t.attempt < attempt ? { ...t, state: 'failed' as const } : t)),
+    fresh,
+  ].sort((x, y) => x.attempt - y.attempt);
+}
+
+/** `tries` with try `attempt` settled as its attempt_settled event says. */
+function settleTry(
+  tries: readonly TryRun[],
+  attempt: number,
+  event: Extract<WireDashboardEvent, { type: 'attempt_settled' }>,
+): TryRun[] {
+  const started = startTry(tries, attempt, event.model || null);
+  return started.map((t) =>
+    t.attempt === attempt
+      ? {
+          ...t,
+          model: event.model || t.model,
+          state: PASSED_VERDICTS.has(event.verdict ?? '') ? ('passed' as const) : ('failed' as const),
+          failedCheck: event.failed_check ?? null,
+          detail: event.detail ?? null,
+          costUsd: event.cost_usd ?? null,
+          durationMs: event.duration_ms ?? null,
+          climbed: event.climbed ?? false,
+        }
+      : t,
+  );
+}
+
 // ── beginNewRun ────────────────────────────────────────────────────────────────
 
 /**
@@ -332,6 +406,7 @@ function beginNewRun(
     etaMinutes: null,
     costUsd: 0,
     generation,
+    planCheck: null,
   };
 
   const planTaskKeys = Object.keys(allTasks).filter((k) => allTasks[k]!.planId === planId);
@@ -520,7 +595,7 @@ export function applyEvent(
       } else {
         const tasksTotal = Math.max(existing?.tasksTotal ?? 0, event.tasks_total ?? 0);
         plan = existing
-          ? { ...existing, phase: 'running', tasksTotal, startedAtMs: nowMs }
+          ? { ...existing, phase: 'running', tasksTotal, startedAtMs: nowMs, planCheck: null }
           : {
               planId: event.plan_id,
               title: null,
@@ -701,6 +776,10 @@ export function applyEvent(
       let resolvedRole: string | null = keepStats ? existing!.role : null;
       let resolvedModel: string | null = keepStats ? existing!.model : null;
 
+      // Tries: kept across a phase change or an old-style restart, cleared for a new run. An agent announced
+      // before this start begins its try here.
+      let tries: TryRun[] = keepStats ? (existing!.tries ?? []) : [];
+
       if (!existingAgentIsActive) {
         const earlyAgent = Object.values(state.agents).find(
           (a) => a.active && a.planId === event.plan_id && a.taskId === event.task_id,
@@ -709,6 +788,7 @@ export function applyEvent(
           resolvedAgentId = earlyAgent.agentId;
           resolvedRole = earlyAgent.role;
           resolvedModel = earlyAgent.model;
+          tries = startTry(tries, earlyAgent.attempt ?? 1, earlyAgent.model || null);
         }
       }
 
@@ -730,7 +810,9 @@ export function applyEvent(
         // Clear checks on retry or new-generation start; preserve for phase changes
         checks: (isRetry || isOlderGeneration) ? [] : (existing?.checks ?? []),
         generation: planGeneration,
+        tries,
       };
+      task.attempts = Math.max(task.attempts, tries.length);
 
       // Append a divider to the transcript on retry;
       // clear the transcript on new-generation start.
@@ -815,11 +897,17 @@ export function applyEvent(
       // (skipped), it started before the page connected, or the start event was
       // dropped. As in the server's snapshot, it counts all the same, with an
       // unknown start time.
+      // The try still running ends with the task (attempt_settled usually said so already).
+      const passedLike = status !== 'failed' && status !== 'interrupted' && status !== 'cancelled';
+      const finishedTries = (existing?.tries ?? []).map((t) =>
+        t.state === 'running' ? { ...t, state: passedLike ? ('passed' as const) : ('failed' as const) } : t,
+      );
       const task: TaskRun = existing
         ? {
             ...existing,
             status,
             finishedAtMs: nowMs,
+            tries: finishedTries,
             ...(wasBlocked ? { phase: 'completed', blockedBy: null, blockedReason: null } : {}),
           }
         : {
@@ -974,15 +1062,18 @@ export function applyEvent(
       const role = event.role || event.model || 'impl';
       const model = event.model ?? '';
       const existing = state.agents[event.agent_id];
-      // Start the clock on first spawn or restart; keep it when the same agent
-      // is re-announced while still active (avoids jitter from duplicate events).
-      const spawnedAtMs = existing?.active ? (existing.spawnedAtMs ?? nowMs) : nowMs;
+      // Start the clock on first spawn, restart or a new try; keep it when the same agent
+      // is re-announced on the same try while still active (avoids jitter from duplicate events).
+      const attempt = event.attempt ?? 1;
+      const sameTry = existing?.active && (existing.attempt ?? 1) === attempt;
+      const spawnedAtMs = sameTry ? (existing.spawnedAtMs ?? nowMs) : nowMs;
       const agent: AgentRun = {
         agentId: event.agent_id,
         planId: event.plan_id ?? null,
         taskId: event.task_id ?? null,
         role,
         model,
+        attempt,
         active: true,
         spawnedAtMs,
         costUsd: existing?.costUsd ?? 0,
@@ -990,16 +1081,37 @@ export function applyEvent(
         outputTokens: existing?.outputTokens ?? 0,
       };
 
-      // Link the task's agentId/role/model on spawn
+      // Link the task's agentId/role/model on spawn, and start its try. A Graph task's second try arrives as a
+      // new agent_spawned with attempt 2, not as a second task_started, so this is where tries are counted.
       let newTasks = state.tasks;
+      let newTranscripts = state.transcripts;
       if (event.plan_id && event.task_id) {
         const key = taskKey(event.plan_id, event.task_id);
         const task = state.tasks[key];
         if (task) {
+          const before = task.tries ?? [];
+          const tries = startTry(before, attempt, model || null);
+          const isNewTry = before.length > 0 && !before.some((t) => t.attempt === attempt);
           newTasks = {
             ...state.tasks,
-            [key]: { ...task, agentId: event.agent_id, role, model },
+            [key]: {
+              ...task,
+              agentId: event.agent_id,
+              role,
+              model,
+              tries,
+              attempts: Math.max(task.attempts, tries.length),
+              // A new try's checks run again: the last try's verdicts live on in its try line.
+              checks: isNewTry ? [] : task.checks,
+            },
           };
+          // A new try after an earlier one gets its divider, unless a restart already drew it.
+          const transcript = state.transcripts[key];
+          const last = transcript?.entries[transcript.entries.length - 1];
+          if (isNewTry && transcript && !(last?.kind === 'divider' && last.attempt === attempt)) {
+            const divider: AttemptDivider = { kind: 'divider', attempt };
+            newTranscripts = { ...state.transcripts, [key]: appendTranscript(transcript, divider) };
+          }
         }
       }
 
@@ -1007,6 +1119,7 @@ export function applyEvent(
         ...state,
         agents: { ...state.agents, [event.agent_id]: agent },
         tasks: newTasks,
+        transcripts: newTranscripts,
       };
     }
 
@@ -1129,6 +1242,28 @@ export function applyEvent(
         output: event.output_text != null ? event.output_text : c.output,
       }));
       return { ...state, tasks: { ...state.tasks, [key]: { ...task, checks } } };
+    }
+
+    // ── attempt_settled ────────────────────────────────────────────────────────
+    case 'attempt_settled': {
+      const key = taskKey(event.plan_id, event.task_id);
+      const task = state.tasks[key];
+      if (!task) return state;
+      const before = task.tries ?? [];
+      const attempt = event.attempt ?? Math.max(1, before.length);
+      const tries = settleTry(before, attempt, event);
+      return {
+        ...state,
+        tasks: { ...state.tasks, [key]: { ...task, tries, attempts: Math.max(task.attempts, tries.length) } },
+      };
+    }
+
+    // ── plan_check_finished ────────────────────────────────────────────────────
+    case 'plan_check_finished': {
+      const plan = state.plans[event.plan_id];
+      if (!plan) return state;
+      const planCheck = { passed: event.passed, name: event.name ?? null };
+      return { ...state, plans: { ...state.plans, [event.plan_id]: { ...plan, planCheck } } };
     }
 
     // ── efficiency_event ───────────────────────────────────────────────────────
@@ -1410,6 +1545,7 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
       taskId: a.current_task || null,
       role: a.role || a.model || 'impl',
       model: a.model,
+      attempt: a.attempt || 1,
       active: a.active,
       spawnedAtMs: a.spawned_at_ms === 0 ? null : a.spawned_at_ms,
       costUsd: a.cost_usd,
@@ -1421,11 +1557,25 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
       const key = taskKey(a.current_plan, a.current_task);
       const task = tasks[key];
       if (task) {
+        // The snapshot keeps each task's latest agent: its attempt says how many tries there were, though
+        // only the last one's model is known.
+        let tries: TryRun[] = task.tries ?? [];
+        for (let attempt = 1; attempt <= (a.attempt || 1); attempt += 1) {
+          tries = startTry(tries, attempt, attempt === (a.attempt || 1) ? a.model || null : null);
+        }
+        if (task.status !== 'active') {
+          const passedLike = task.status !== 'failed' && task.status !== 'interrupted' && task.status !== 'cancelled';
+          tries = tries.map((t) =>
+            t.state === 'running' ? { ...t, state: passedLike ? ('passed' as const) : ('failed' as const) } : t,
+          );
+        }
         tasks[key] = {
           ...task,
           agentId: id,
           role: a.role || a.model || 'impl',
           model: a.model,
+          tries,
+          attempts: Math.max(task.attempts, tries.length),
         };
       }
     }

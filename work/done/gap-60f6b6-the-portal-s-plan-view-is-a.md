@@ -2,14 +2,16 @@
 id = "gap-60f6b6"
 kind = "gap"
 title = "The portal's plan view is a dense table under a run band and a stream pane that repeat it, and it hides tries (a Graph run's second try arrives as agent_spawned attempt 2, which the portal never counts): make the plan page the run card at full width, with the glass readings, the sequencer, one sentence and one orange key per state, details folded, and a task's checks, tries and output on click"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "visibility"
 size = "L"
 subsystem = ["apps/portal"]
 created = 2026-11-12
 updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "2a8942199"
 source = "round v8 portal-v8 audit (tmp/hermes-roko-v8/design/portal/before, main bd93521ee), the lead's approved proposal (tmp/hermes-roko-v8/design/portal/README.md, 2026-11-12)"
 discovered_from = "agent:portal-v8 (round v8, bd93521ee)"
 anchors = ["apps/portal/src/components/stage/PlanView.tsx::PlanView", "apps/portal/src/components/stage/TaskList.tsx::TaskList", "apps/portal/src/components/run/RunBand.tsx::RunBand", "apps/portal/src/components/stream/StreamPane.tsx::StreamPane", "apps/portal/src/lib/runState.ts", "plans/portal-programme/09-acceptance/browser-flow.cjs"]
@@ -17,6 +19,19 @@ links = { depends_on = ["gap-195374"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqF 'counts a second try from agent_spawned' apps/portal/src && (cd apps/portal && npx vitest run src/lib/runState.tries.test.ts src/components/plan/planPage.accept.test.tsx)"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T14:12:00Z"
+commit = "2a8942199"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "L"
+claimed_at = "2026-11-12T12:13:20Z"
+forced = false
+evidence = "The plan page is the run card at full width (components/plan: PlanPage, Readout, Sequencer, TaskDetail; lib/runCard.ts): pill, title and when; TASKS/TIME/SPENT/CHECKS on glass with pips and the cap meter; steps of pads with tries as pips and flowing edges; one sentence or a line per running task; one orange key; details folded; a pad opens its task with checks and commands, each try (model, spend, time, ending) and the folded transcript with a try divider. runState counts tries from agent_spawned and settles them from attempt_settled. RunBand, PlanView, TaskList, WaveStrip, StreamPane and their helpers removed. Checks at 2a8942199's tree in roko-work-gap-60f6b6: tsc clean, vitest 702/702 (runState.tries 'counts a second try from agent_spawned', planPage.accept 9 cases), orphans none, build:export OK; the CI browser check (09-acceptance/portal-check.sh, fenced $0 copy, roko-main-bd93521ee, ROKO_SPA_DIR at this export) PASS 37 of 37. Shots, day and night, desktop and phone: tmp/hermes-roko-v8/design/portal/item2/."
 +++
 
 ## Problem

@@ -117,7 +117,7 @@ describe('after roko serve restarts', () => {
     renderWithClient(<Workspace />, { seed: SEED });
     const stream = await live({ probe });
     await stream('connected');
-    expect(alertText()).toBe('Hello world: T01 failed');
+    expect(alertText()).toBe('Hello world: a task failed.');
 
     await stream('disconnected');
     expect(probe).toHaveBeenCalledTimes(1);
@@ -135,7 +135,7 @@ describe('after roko serve restarts', () => {
     // The new link was opened in another tab: the next stream opens.
     await stream('connected');
     expect(signIn()).toBeNull();
-    expect(alertText()).toBe('Hello world: T01 failed');
+    expect(alertText()).toBe('Hello world: a task failed.');
   });
 
   it('asks for the new sign-in link when a reload finds the session gone', async () => {

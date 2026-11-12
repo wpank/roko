@@ -6,7 +6,7 @@
  * Renders one of four states:
  *   1. A project with no plans: what roko is (Intro), the request box, and how it works.
  *   2. New plan: the request box under its own heading.
- *   3. PlanView when a plan is selected.
+ *   3. The plan's page (PlanPage) when a plan is selected.
  *   4. A describeEmpty sentence otherwise (plans exist, nothing selected).
  */
 
@@ -20,7 +20,7 @@ import { describeEmpty } from '@/lib/emptyState';
 import { Key } from '@/components/kit/Key';
 import { HowItWorks, Intro } from '@/components/shell/Intro';
 import { PromptPanel } from '@/components/stage/PromptPanel';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 
 // ── Types ───────────────────────────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ export function Stage({
 
         {/* Keyed by plan: another plan gets a fresh view, never this one's editor text. */}
         {showPlan && (
-          <PlanView
+          <PlanPage
             key={selectedPlan!.id}
             plan={selectedPlan!}
             selectedTaskId={selection.task}
@@ -128,8 +128,7 @@ export function Stage({
               workspace,
               connection,
               planCount: plans?.length ?? 0,
-              plan: undefined,
-            })}
+                })}
           </p>
         )}
       </div>

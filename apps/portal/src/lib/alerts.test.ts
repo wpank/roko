@@ -102,7 +102,7 @@ describe('pickAlert', () => {
     const alert = pickAlert(baseInput({ run }));
     expect(alert).not.toBeNull();
     expect(alert!.severity).toBe('error');
-    expect(alert!.text).toBe('plan-1: task-compile failed (compile check)');
+    expect(alert!.text).toBe('plan-1: a task failed its compile check.');
     expect(alert!.key).toBe('task-failed:plan-1:task-compile:1');
     expect(alert!.actions).toEqual([
       { kind: 'select-task', planId: 'plan-1', taskId: 'task-compile' },

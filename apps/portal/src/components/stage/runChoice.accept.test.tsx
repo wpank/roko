@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { WireCheckpointRun, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { initialRunState } from '@/lib/runState';
 import { useDashboardStore } from '@/stores/dashboard';
 import { foldEvents, renderWithClient, setStore, stubFetch, textOf } from '@/test/dom';
@@ -97,7 +97,7 @@ function executeBodies(fetchMock: ReturnType<typeof stubFetch>): unknown[] {
 
 function renderView() {
   return renderWithClient(
-    <PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
+    <PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
     {
       seed: [
         [queryKeys.planTasks('hello'), TASKS],

@@ -12,7 +12,6 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanTasks } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { Checks } from '@/components/stream/Checks';
-import { StreamPane } from '@/components/stream/StreamPane';
 import { digestOutput } from '@/lib/checks';
 import { initialRunState } from '@/lib/runState';
 import type { CheckRun } from '@/lib/runState';
@@ -65,51 +64,5 @@ describe('the checks view', () => {
   it('adds nothing to a passed step', () => {
     render(<Checks checks={[{ ...failed('$ true'), status: 'passed' }]} />);
     expect(exitLine()).toBeNull();
-  });
-});
-
-describe('the stream badges', () => {
-  const TASKS: WirePlanTasks = {
-    plan_id: 'hello',
-    task_count: 1,
-    max_parallel: 1,
-    tasks: [{ id: 'T01', title: 'Scaffold', tier: 'focused', status: 'pending', depends_on: [], files: [], completed: false, verify_phases: ['structural'] }],
-  };
-  const text = (t: string): WireDashboardEvent => ({
-    type: 'agent_output',
-    agent_id: 'a1',
-    plan_id: 'hello',
-    task_id: 'T01',
-    content: STREAM_RECORD_PREFIX + JSON.stringify({ kind: 'text', agent_id: 'hello/T01', plan_id: 'hello', task_id: 'T01', attempt: 0, payload: { text: t } }),
-  });
-  const EVENTS: WireDashboardEvent[] = [
-    { type: 'plan_started', plan_id: 'hello', tasks_total: 1 },
-    { type: 'task_started', plan_id: 'hello', task_id: 'T01', phase: 'implement' },
-    { type: 'agent_spawned', agent_id: 'a1', plan_id: 'hello', task_id: 'T01', role: 'implementer' },
-    text('I wrote README.md.'),
-    { type: 'gate_result', plan_id: 'hello', task_id: 'T01', gate: 'verify[0:structural]', passed: false, output_text: '$ test -f MISSING.md\n✗ exit status 1' },
-    { type: 'task_completed', plan_id: 'hello', task_id: 'T01', outcome: 'failed' },
-  ];
-
-  it('draw a count in the badge classes, never white on a state colour', () => {
-    setStore(foldEvents(EVENTS));
-    renderWithClient(<StreamPane planId="hello" selectedTaskId="T01" open onToggle={() => {}} />, {
-      seed: [
-        [queryKeys.planTasks('hello'), TASKS],
-        [queryKeys.workspace, { name: 'hello', path: '/tmp/hello', branch: null }],
-      ],
-    });
-    // The failure switched the pane to checks, so the transcript tab counts its news.
-    const news = document.querySelector<HTMLElement>('.stream-badge')!;
-    expect(news.classList.contains('rd-badge')).toBe(true);
-    expect(news.classList.contains('rd-badge--failed')).toBe(false);
-    expect(news.style.background + news.style.backgroundColor + news.style.color).toBe('');
-
-    fireEvent.click([...document.querySelectorAll('.stream-tab')].find((b) => textOf(b).startsWith('transcript'))!);
-    const failures = document.querySelector<HTMLElement>('.stream-badge')!;
-    expect(textOf(failures)).toBe('1');
-    expect(failures.classList.contains('rd-badge')).toBe(true);
-    expect(failures.classList.contains('rd-badge--failed')).toBe(true);
-    expect(failures.style.background + failures.style.backgroundColor + failures.style.color).toBe('');
   });
 });

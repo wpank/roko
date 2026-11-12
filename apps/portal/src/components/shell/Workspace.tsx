@@ -9,10 +9,8 @@ import { AlertBand } from '@/components/shell/AlertBand';
 import { SignIn } from '@/components/shell/SignIn';
 import { TopBar } from '@/components/shell/TopBar';
 import { Stage } from '@/components/stage/Stage';
-import { usePrimaryAction } from '@/components/stage/PlanView';
+import { usePrimaryAction } from '@/components/plan/usePrimaryAction';
 import { validationCounts } from '@/components/stage/ValidationBadge';
-import { StreamPane } from '@/components/stream/StreamPane';
-import { RunBand } from '@/components/run/RunBand';
 import {
   usePlans,
   usePlanTasks,
@@ -41,16 +39,14 @@ import type { AlertAction } from '@/lib/alerts';
  * Workspace — the screen owner.
  *
  * The top bar spans the page. Under it, the plan list and the main column; signed out, the sign-in page instead.
- * The main column stacks the alert (one sentence, when there is one), the run band while plans run, the stage,
- * and the stream panel (a bar by default; about 40% of the column when open). Below 820px wide the plan list
- * becomes a picker that opens it over the page.
+ * The main column holds the alert (one sentence, when there is one) and the stage, whose plan page shows what runs
+ * and how each task did. Below 820px wide the plan list becomes a picker that opens it over the page.
  *
  * Every scrollable region has `overflow: auto; min-height: 0`. The page itself never scrolls.
  */
 export function Workspace() {
   // ── Local state ──────────────────────────────────────────────────────────────
   const [filter, setFilter] = useState('');
-  const [streamOpen, setStreamOpen] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [dismissedAlertKey, setDismissedAlertKey] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -129,19 +125,6 @@ export function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolved.plan, resolved.task, selectedPlanId, selectedTaskId]);
 
-  // ── Auto-open stream when a run starts ───────────────────────────────────────
-  // Track the previous running count; open the stream pane whenever it rises
-  // (a plan just started executing). 'o' still toggles it manually.
-  const prevRunningCountRef = useRef(rows.runningPlanIds.length);
-  useEffect(() => {
-    const prev = prevRunningCountRef.current;
-    const curr = rows.runningPlanIds.length;
-    if (curr > prev) {
-      setStreamOpen(true);
-    }
-    prevRunningCountRef.current = curr;
-  }, [rows.runningPlanIds.length]);
-
   // ── Plan list error → requestError ──────────────────────────────────────────
   // GET /api/plans returns an error when two plan folders share one id
   // (discovery refuses to guess which one to use).
@@ -195,7 +178,6 @@ export function Workspace() {
           workspace: workspaceName,
           connection,
           planCount: plans?.length ?? 0,
-          plan: undefined,
         });
 
   // ── Action handlers ────────────────────────────────────────────────────────────
@@ -269,7 +251,6 @@ export function Workspace() {
         setFilter('');
       }
     },
-    stream: () => setStreamOpen((v) => !v),
     new: openPrompt,
     // `r` runs / retries / re-runs the selected plan; never cancels.
     run: () => {
@@ -345,10 +326,6 @@ export function Workspace() {
               <AlertBand alert={alert} onAction={handleAlertAction} onDismiss={setDismissedAlertKey} />
             </ErrorBoundary>
 
-            <ErrorBoundary name="run-band">
-              <RunBand runningPlanIds={rows.runningPlanIds} selection={resolved} />
-            </ErrorBoundary>
-
             <ErrorBoundary name="stage">
               <Stage
                 plans={plans}
@@ -362,28 +339,6 @@ export function Workspace() {
               />
             </ErrorBoundary>
 
-            {/* Stream pane — bar always visible; body shown when open */}
-            <ErrorBoundary name="stream">
-              <section
-                data-region="stream"
-                style={{
-                  flex: streamOpen ? '0 0 40%' : '0 0 auto',
-                  overflow: streamOpen ? 'auto' : 'hidden',
-                  minHeight: 0,
-                  borderTop: '1px solid var(--rk-line)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                }}
-              >
-                <StreamPane
-                  planId={resolved.plan}
-                  selectedTaskId={resolved.task}
-                  open={streamOpen}
-                  onToggle={() => setStreamOpen((v) => !v)}
-                  planCount={plans?.length ?? 0}
-                />
-              </section>
-            </ErrorBoundary>
           </div>
         </div>
       )}

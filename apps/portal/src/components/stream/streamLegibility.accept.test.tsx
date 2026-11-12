@@ -10,7 +10,6 @@ import { cleanup, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanTasks } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { Checks } from '@/components/stream/Checks';
-import { StreamPane } from '@/components/stream/StreamPane';
 import { Transcript } from '@/components/stream/Transcript';
 import { taskKey } from '@/lib/runState';
 import type { CheckRun } from '@/lib/runState';
@@ -80,20 +79,4 @@ describe('stream legibility', () => {
     expect(offenders(container)).toEqual([]);
   });
 
-  it('the stream pane bar and badges do the same', () => {
-    const tasks: WirePlanTasks = {
-      plan_id: 'hello',
-      task_count: 1,
-      max_parallel: 1,
-      tasks: [{ id: 'T01', title: 'Scaffold', tier: 'focused', status: 'pending', depends_on: [], files: [], completed: false, verify_phases: ['compile'] }],
-    };
-    setStore(foldEvents(EVENTS));
-    const { container } = renderWithClient(<StreamPane planId="hello" selectedTaskId="T01" open onToggle={() => {}} />, {
-      seed: [
-        [queryKeys.planTasks('hello'), tasks],
-        [queryKeys.workspace, { name: 'hello', path: '/tmp/hello', branch: null }],
-      ],
-    });
-    expect(offenders(container)).toEqual([]);
-  });
 });

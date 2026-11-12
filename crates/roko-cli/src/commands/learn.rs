@@ -1744,17 +1744,59 @@ struct LearnJsonReflexes {
     recent_demotions: Vec<roko_learn::efficiency::AgentEfficiencyEvent>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Default, serde::Serialize)]
 struct LearnJsonKnowledge {
+    /// Every entry in the store, retired ones included.
     total_entries: usize,
-    /// Entries by validation tier.
+    /// Entries retrieval may return: not retired (gap-ea1576).
+    live_entries: usize,
+    /// Entries a person retired (bug-2ad4fa), which retrieval skips.
+    retired_entries: usize,
+    /// Live entries at confidence 0, which clear no retrieval score floor on
+    /// keyword relevance (bug-dd5dca).
+    zero_confidence_entries: usize,
+    /// Live entries by validation tier.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     by_tier: std::collections::BTreeMap<String, usize>,
-    /// Entries by where they came from.
+    /// Live entries by where they came from.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     by_source: std::collections::BTreeMap<String, usize>,
+    /// Mean confidence of the live entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     average_confidence: Option<f64>,
+}
+
+impl LearnJsonKnowledge {
+    /// Count `entries`, the store's, with the retired ones apart.
+    fn of(entries: &[roko_neuro::KnowledgeEntry]) -> Self {
+        let mut counts = Self {
+            total_entries: entries.len(),
+            ..Self::default()
+        };
+        let mut confidence = 0.0;
+        for entry in entries {
+            if entry.deprecated {
+                counts.retired_entries += 1;
+                continue;
+            }
+            counts.live_entries += 1;
+            confidence += entry.confidence;
+            if entry.confidence <= 0.0 {
+                counts.zero_confidence_entries += 1;
+            }
+            let tier = format!("{:?}", entry.tier).to_lowercase();
+            *counts.by_tier.entry(tier).or_insert(0) += 1;
+            if let Some(source) = entry.source.as_deref().map(str::trim)
+                && !source.is_empty()
+            {
+                *counts.by_source.entry(source.to_string()).or_insert(0) += 1;
+            }
+        }
+        if counts.live_entries > 0 {
+            counts.average_confidence = Some(confidence / counts.live_entries as f64);
+        }
+        counts
+    }
 }
 
 /// Maximum number of recent entries to include in JSON output.
@@ -1775,25 +1817,45 @@ fn push_compounding_window(
     window.push_back(episode);
 }
 
-/// Human lines for the compounding rates in `roko learn episodes`.
+/// Human lines for the compounding rates in `roko learn episodes`, each named
+/// for what it measures (gap-ea1576): the provider's prompt cache comes last,
+/// apart from roko's own learning, and a repeat-failure rate with no failure
+/// signature to match reads n/a.
 fn format_compounding_metrics(
     metrics: &roko_learn::aggregate::AutocatalyticMetrics,
 ) -> Vec<String> {
     let window = metrics.episode_window;
-    let rates = [
-        ("playbook hit rate:", metrics.playbook_hit_rate),
-        ("knowledge reuse rate:", metrics.knowledge_reuse_rate),
-        ("cache hit rate:", metrics.cache_hit_rate),
-        ("routing accuracy:", metrics.routing_accuracy),
-        ("gate pass rate:", metrics.gate_pass_rate),
-        ("error dedup rate:", metrics.error_dedup_rate),
+    let percent = |rate: f64| format!("{:.1}%", rate * 100.0);
+    let repeats = if metrics.failure_signatures == 0 {
+        "n/a (no failure signatures recorded)".to_string()
+    } else {
+        percent(metrics.error_dedup_rate)
+    };
+    let rows = [
+        ("playbook matched:", percent(metrics.playbook_hit_rate)),
+        (
+            "lesson or playbook used:",
+            percent(metrics.knowledge_reuse_rate),
+        ),
+        ("passed its checks:", percent(metrics.gate_pass_rate)),
+        ("first model passed:", percent(metrics.routing_accuracy)),
+        ("repeat failures:", repeats),
+        (
+            "cost per success:",
+            format!("${:.4}", metrics.cost_per_success),
+        ),
+        (
+            "provider prompt cache:",
+            format!(
+                "{} hits (the provider's, not roko's)",
+                percent(metrics.cache_hit_rate)
+            ),
+        ),
     ];
     let mut lines = vec![format!("  Compounding (last {window} episodes):")];
-    for (label, rate) in rates {
-        lines.push(format!("    {label:<22}{:.1}%", rate * 100.0));
+    for (label, value) in rows {
+        lines.push(format!("    {label:<26}{value}"));
     }
-    let cost = metrics.cost_per_success;
-    lines.push(format!("    {:<22}${cost:.4}", "cost per success:"));
     lines
 }
 
@@ -2109,20 +2171,10 @@ fn collect_gate_thresholds_json(workdir: &std::path::Path) -> Option<serde_json:
 }
 
 async fn collect_knowledge_json(workdir: &std::path::Path) -> LearnJsonKnowledge {
-    match roko_neuro::KnowledgeStore::for_workdir(workdir).stats() {
-        Ok(stats) => LearnJsonKnowledge {
-            total_entries: stats.total_entries,
-            by_tier: stats.tier_counts,
-            by_source: stats.source_counts,
-            average_confidence: stats.average_confidence,
-        },
-        Err(_) => LearnJsonKnowledge {
-            total_entries: 0,
-            by_tier: std::collections::BTreeMap::new(),
-            by_source: std::collections::BTreeMap::new(),
-            average_confidence: None,
-        },
-    }
+    roko_neuro::KnowledgeStore::for_workdir(workdir)
+        .read_all()
+        .map(|entries| LearnJsonKnowledge::of(&entries))
+        .unwrap_or_default()
 }
 
 pub(crate) fn print_learn_router(workdir: &std::path::Path) {
@@ -2168,25 +2220,15 @@ pub(crate) fn print_learn_router(workdir: &std::path::Path) {
         });
     }
 
-    let latest = snapshot
-        .stage_transitions
-        .last()
-        .map(|transition| {
-            format!(
-                "{} {} -> {} after {} observations",
-                transition.timestamp.to_rfc3339(),
-                transition.from,
-                transition.to,
-                transition.observations
-            )
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "snapshot stage={} total_observations={}",
-                cascade_stage_for_observations(total_observations),
-                total_observations
-            )
-        });
+    let latest = snapshot.stage_transitions.last().map(|transition| {
+        format!(
+            "{} {} -> {} after {} observations",
+            transition.timestamp.to_rfc3339(),
+            transition.from,
+            transition.to,
+            transition.observations
+        )
+    });
 
     if total_observations == 0 && model_rows.is_empty() {
         println!("Cascade router: 0 entries at {}", path.display());
@@ -2199,19 +2241,65 @@ pub(crate) fn print_learn_router(workdir: &std::path::Path) {
         model_rows.len(),
         path.display()
     );
-    println!("  Range: {}", format_range(first_seen, last_seen));
-    println!("  Latest: {}", latest);
+    let ladder = roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.routing.ladder.enabled)
+        .unwrap_or(true);
+    let range = latest
+        .is_some()
+        .then(|| format_range(first_seen, last_seen));
+    for line in router_detail_lines(total_observations, latest.zip(range), ladder, model_rows) {
+        println!("{line}");
+    }
+}
 
-    if !model_rows.is_empty() {
-        println!("  Models:");
-        for row in model_rows {
-            let suffix = if row.available { "" } else { " (unavailable)" };
-            println!(
-                "    {}{}: {} obs, {} successes",
-                row.slug, suffix, row.trials, row.successes
-            );
+/// The lines under the cascade router's header (gap-ea1576): its stage
+/// changes, `latest` with their range, when it recorded any, else its stage in
+/// words; whether the model ladder routes Graph tasks; and its outcomes by
+/// model, with the models it has none for on one line.
+fn router_detail_lines(
+    total_observations: u64,
+    latest: Option<(String, String)>,
+    ladder: bool,
+    model_rows: Vec<LearnCascadeRouterModelRow>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some((latest, range)) = latest {
+        lines.push(format!("  Range: {range}"));
+        lines.push(format!("  Latest: {latest}"));
+    } else {
+        lines.push(format!(
+            "  Stage: {} (it moves to confidence at 50 observations and to UCB at 200)",
+            cascade_stage_for_observations(total_observations)
+        ));
+    }
+    if ladder {
+        lines.push(
+            "  Graph tasks start on the model ladder's rung; the router's pick is recorded beside it"
+                .to_string(),
+        );
+    }
+    let label = |row: &LearnCascadeRouterModelRow| {
+        let suffix = if row.available { "" } else { " (unavailable)" };
+        format!("{}{suffix}", row.slug)
+    };
+    let (tried, untried): (Vec<_>, Vec<_>) = model_rows.into_iter().partition(|row| row.trials > 0);
+    if !tried.is_empty() {
+        let outcomes: u64 = tried.iter().map(|row| row.trials).sum();
+        lines.push(format!("  Outcomes by model ({outcomes} in all):"));
+        for row in &tried {
+            lines.push(format!(
+                "    {}: {} tries, {} passed",
+                label(row),
+                row.trials,
+                row.successes
+            ));
         }
     }
+    if !untried.is_empty() {
+        let names: Vec<String> = untried.iter().map(label).collect();
+        lines.push(format!("  No outcomes yet: {}", names.join(", ")));
+    }
+    lines
 }
 
 pub(crate) fn print_learn_experiments(workdir: &std::path::Path) {
@@ -2750,8 +2838,8 @@ pub(crate) async fn print_learn_knowledge(workdir: &std::path::Path) {
         print_no_data(&path);
         return;
     }
-    let stats = match roko_neuro::KnowledgeStore::for_workdir(workdir).stats() {
-        Ok(stats) if stats.total_entries > 0 => stats,
+    let stats = match roko_neuro::KnowledgeStore::for_workdir(workdir).read_all() {
+        Ok(entries) if !entries.is_empty() => LearnJsonKnowledge::of(&entries),
         Ok(_) => {
             println!("Knowledge: 0 entries at {}", path.display());
             return;
@@ -2768,14 +2856,24 @@ pub(crate) async fn print_learn_knowledge(workdir: &std::path::Path) {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // Retired entries are no knowledge retrieval returns (gap-ea1576).
     println!(
-        "Knowledge: {} durable entries at {}",
-        stats.total_entries,
+        "Knowledge: {} live, {} retired, at {}",
+        stats.live_entries,
+        stats.retired_entries,
         path.display()
     );
-    println!("  by tier: {}", counts(&stats.tier_counts));
-    if !stats.source_counts.is_empty() {
-        println!("  by source: {}", counts(&stats.source_counts));
+    if !stats.by_tier.is_empty() {
+        println!("  by tier: {}", counts(&stats.by_tier));
+    }
+    if !stats.by_source.is_empty() {
+        println!("  by source: {}", counts(&stats.by_source));
+    }
+    if stats.zero_confidence_entries > 0 {
+        println!(
+            "  at confidence 0: {} (retrieval skips them on keyword relevance)",
+            stats.zero_confidence_entries
+        );
     }
     if let Some(confidence) = stats.average_confidence {
         println!("  average confidence: {confidence:.3}");
@@ -2792,7 +2890,9 @@ const REFLEX_DISPLAY_LIMIT: usize = 5;
 fn print_learn_reflexes(workdir: &std::path::Path) {
     let rules = reflex_store_snapshot(workdir);
     let demotions = recent_reflex_demotions(workdir);
-    print!("{}", format_reflexes_human(&rules, &demotions));
+    let enabled = roko_core::config::loader::load_config_unified(workdir)
+        .is_ok_and(|config| config.learning.t0_reflexes);
+    print!("{}", format_reflexes_human(&rules, &demotions, enabled));
 }
 
 fn reflex_store_snapshot(workdir: &std::path::Path) -> Vec<roko_learn::reflex_store::ReflexRule> {
@@ -2819,6 +2919,7 @@ fn recent_reflex_demotions(
 fn format_reflexes_human(
     rules: &[roko_learn::reflex_store::ReflexRule],
     demotions: &[roko_learn::efficiency::AgentEfficiencyEvent],
+    enabled: bool,
 ) -> String {
     use std::fmt::Write as _;
 
@@ -2830,11 +2931,14 @@ fn format_reflexes_human(
         roko_learn::reflex_store::MAX_RULES,
     );
 
-    if rules.is_empty() {
+    if rules.is_empty() && !enabled {
+        // Runs add no rule while the path is off (gap-ea1576).
         let _ = writeln!(
             output,
-            "  (no rules yet; run tasks to build reflex history)"
+            "  (off: [learning] t0_reflexes is false, so runs add no rules)"
         );
+    } else if rules.is_empty() {
+        let _ = writeln!(output, "  (no rules yet; runs add them as tasks pass)");
     } else {
         let _ = writeln!(output, "\nTop rules by hit count:");
         for (index, rule) in rules.iter().take(REFLEX_DISPLAY_LIMIT).enumerate() {
@@ -3757,6 +3861,96 @@ mod tests {
     }
 
     /// S03 T15: `roko learn loops --census --json` parses.
+    /// gap-ea1576: `roko learn all` says what each number counts. Retired
+    /// knowledge is no live knowledge, and lessons at confidence 0 are
+    /// counted apart. The router's two counts are named. A repeat-failure rate
+    /// with no failure signature reads n/a, the provider's prompt cache is
+    /// labelled as the provider's, and reflexes that are off say so.
+    #[test]
+    fn learn_all_says_what_it_measures() {
+        let entry = |id: &str, confidence: f64, deprecated: bool| roko_neuro::KnowledgeEntry {
+            id: id.to_string(),
+            content: format!("lesson {id}"),
+            confidence,
+            deprecated,
+            source: Some("runtime:gate_verdict".to_string()),
+            ..roko_neuro::KnowledgeEntry::default()
+        };
+        let knowledge = LearnJsonKnowledge::of(&[
+            entry("kn-live", 0.9, false),
+            entry("kn-forgotten", 0.0, false),
+            entry("kn-retired", 0.75, true),
+        ]);
+        assert_eq!(knowledge.total_entries, 3);
+        assert_eq!(knowledge.live_entries, 2);
+        assert_eq!(knowledge.retired_entries, 1);
+        assert_eq!(knowledge.zero_confidence_entries, 1);
+        assert_eq!(knowledge.by_source["runtime:gate_verdict"], 2);
+        let average = knowledge.average_confidence.expect("an average");
+        assert!((average - 0.45).abs() < 1e-9, "{average}");
+
+        let row =
+            |slug: &str, trials: u64, successes: u64, available: bool| LearnCascadeRouterModelRow {
+                slug: slug.to_string(),
+                trials,
+                successes,
+                available,
+            };
+        let router = router_detail_lines(
+            25,
+            None,
+            true,
+            vec![
+                row("gpt-5.4-mini", 22, 21, true),
+                row("gpt-5.4", 10, 9, true),
+                row("claude-sonnet-4-6", 0, 0, true),
+                row("glm-4.7", 0, 0, false),
+            ],
+        );
+        assert_eq!(
+            router,
+            [
+                "  Stage: static (it moves to confidence at 50 observations and to UCB at 200)",
+                "  Graph tasks start on the model ladder's rung; the router's pick is recorded beside it",
+                "  Outcomes by model (32 in all):",
+                "    gpt-5.4-mini: 22 tries, 21 passed",
+                "    gpt-5.4: 10 tries, 9 passed",
+                "  No outcomes yet: claude-sonnet-4-6, glm-4.7 (unavailable)",
+            ]
+        );
+
+        let mut failed = roko_learn::episode_logger::Episode::new("agent", "T1");
+        failed
+            .gate_verdicts
+            .push(roko_learn::episode_logger::EpisodeGateVerdict::new(
+                "verify[0:test]",
+                false,
+            ));
+        let metrics = roko_learn::aggregate::compute_compounding_metrics(&[failed]);
+        assert_eq!(metrics.failure_signatures, 0);
+        let lines = format_compounding_metrics(&metrics);
+        assert!(
+            lines.contains(
+                &"    repeat failures:          n/a (no failure signatures recorded)".to_string()
+            ),
+            "{lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("hits (the provider's, not roko's)")),
+            "{lines:#?}"
+        );
+
+        let off = format_reflexes_human(&[], &[], false);
+        assert!(
+            off.contains("t0_reflexes is false, so runs add no rules"),
+            "{off}"
+        );
+        let on = format_reflexes_human(&[], &[], true);
+        assert!(on.contains("no rules yet"), "{on}");
+    }
+
     /// bug-808700: the learn views read beside the roko serve that holds the
     /// workspace; the subcommands that write keep the lock.
     #[test]
@@ -4117,7 +4311,7 @@ mod tests {
         assert_eq!(json["compounding"]["playbook_hit_rate"], 0.25);
         assert!(json["compounding"]["cost_per_success"].is_number());
         let human = format_compounding_metrics(&episodes.compounding);
-        assert_eq!(human[1], "    playbook hit rate:    25.0%");
+        assert_eq!(human[1], "    playbook matched:         25.0%");
     }
 
     /// gap-5be28d: a success that a later verify failure was blamed on

@@ -2,7 +2,7 @@
 id = "bug-aa93e9"
 kind = "bug"
 title = "A plan written from a spec leaves the files the spec says to delete or edit out of its tasks' files: a generated task may own 8 files, deletions counted, so phase 1's planner dropped 21 retired files and 2 headers, and rule 5 of the implementer prompt keeps every agent off them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_generate", "roko-cli/plan_policy", "roko-cli/plan_va
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "6d4403d9b"
+last_verified_rev = "e0956783a"
 source = "round-v8 hermes-pilot-v8, phase 1 plan write op 19bfbbb8 (Undertow 19943c9, roko bd93521ee), tmp/hermes-roko-v8/pilot/evidence/p1-*"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_policy.rs::validate_tier_sizes", "crates/roko-cli/src/plan_validate.rs::validate_plans_dir_impl", "crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT"]
@@ -26,6 +26,17 @@ command = "grep -rqw 'fn generation_gives_each_file_the_spec_deletes_to_its_task
 
 [[verify]]
 command = "grep -rqw 'fn plan_validate_warns_of_a_file_the_sources_change_that_no_task_lists' crates/roko-cli/src/ && cargo test -p roko-cli --lib plan_validate_warns_of_a_file_the_sources_change_that_no_task_lists"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T15:41:26Z"
+commit = "e0956783a"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "M"
+forced = false
+evidence = "plan_generate/named_files.rs lifts the files a source's sentences tell a task to delete or change (a sentence led by a verb of change or a 'Files:' label; full workspace paths that exist and git keeps, before any keeping word); generation puts each unlisted one in the files of the task that changes its neighbours, as a logged repair with no planner call; a deleted file counts toward no size limit (PLAN_BUDGET_FILES, PLAN_TIER_SIZE and the tier repairs at generation, PLAN_TIER_SIZE in plan validate); a task over its files limit with named files is told to split; plan validate warns of an unlisted one (PLAN_062); File Path Rule 9 in the generator prompt. Red first at 6d4403d9b: the written plan lacked src/old/one.rs and two.rs, and 0 PLAN_062 where 1 was due. Verify tests pass at e0956783a (a_specs_named_deletions_and_edits_join_their_tasks_files: on the fixed phase-1 spec and the plan as written, 21 deletions and 2 headers land in T1 and T2; generation_gives_each_file_the_spec_deletes_to_its_task: one planner call with or without the deletions; plan_validate_warns_of_a_file_the_sources_change_that_no_task_lists). roko-cli lib 4125 passed 0 failed, plan_validate 27/27, plan_validation 38/38, cargo clippy --workspace --no-deps -D warnings clean, nightly fmt clean. $0 scans with the built binary: Undertow v1's 16 specs name 1 file (correct, and listed by its plan); 296 roko work items name files in 9."
 +++
 
 ## Problem

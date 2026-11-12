@@ -230,6 +230,7 @@ pub mod spec_gate;
 pub mod spec_red_on_base;
 pub mod spinner;
 pub mod status;
+pub mod status_view;
 pub mod subscriptions;
 pub mod surface_inventory;
 pub mod task_accept;

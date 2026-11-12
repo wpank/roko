@@ -168,7 +168,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko run --plan "<prompt>"` | Always write a plan first (`--dry-run`: write it and stop; on a terminal it asks before running) |
 | `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`, `--tui`) |
 | `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
-| `roko status` | Query signals, report counts and episodes |
+| `roko status` | What is running, how the last runs ended, what they spent, and one Next command; `--details` adds signal counts, efficiency and thresholds |
 | `roko doctor` | Diagnose workspace bootstrap state |
 | `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
 | `roko diagnose <plan-id>` | Diagnose why a plan failed: a readable report (`--json` for JSON, `--verbose` adds the tasks that completed) |

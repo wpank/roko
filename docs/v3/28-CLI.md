@@ -333,21 +333,42 @@ When invoked with no arguments and stdin is a TTY, Roko launches the unified cha
 
 ### `roko status` (alias: `roko s`)
 
-Print signal counts, most recent episode, gate pass/fail ratios, and workspace health.
+Say what is running, how the last runs ended, what they spent, and the one thing to do next:
 
 ```
-roko status [--workdir <path>] [--quick] [--cfactor] [--surfaces]
+◆ roko  status greeting-app
+  3 plans · $0.84 today · $0.84 this month
+
+  ✗ broken     failed 2 min ago   0/1 task    $0.30
+  ✓ greeting   done 3 min ago     3/3 tasks   $0.44  not merged
+
+  Next  roko diagnose broken
+```
+
+It lists the newest five runs, from their plans' checkpoints. Next is the newest run's that wants something:
+- a failed run's `roko diagnose <plan>`;
+- a stopped or interrupted run's `roko run <plan-dir> --resume-plan`;
+- the merge command of delivered work your checkout doesn't have yet.
+
+Calls with no known price, which the spend leaves out, get a line of their own. `--details` adds roko's
+internals below: signal counts, efficiency events by role, prompt experiments, adaptive gate thresholds, and cost
+by model and plan.
+
+```
+roko status [--workdir <path>] [--details] [--quick] [--cfactor] [--surfaces]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--workdir <path>` | cwd | Directory containing `.roko/`. |
+| `--details` | false | Also print roko's internals: signal counts, efficiency events, experiments, gate thresholds, cost by model and plan. |
 | `--quick` | false | Print a compact 3-line health summary (provider, learning state, workspace). |
-| `--cfactor` | false | Compute and persist the latest C-Factor snapshot. |
+| `--cfactor` | false | Compute and persist the latest C-Factor snapshot, and print it with the internals. |
 | `--surfaces` | false | Print the CLI/TUI/backend surface inventory instead of session status. |
 
 ```bash
 roko status
+roko status --details
 roko status --json
 roko status --cfactor
 roko status --quick

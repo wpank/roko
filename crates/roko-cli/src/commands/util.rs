@@ -707,6 +707,7 @@ pub(crate) async fn cmd_status(
     quick: bool,
     cfactor: bool,
     surfaces: bool,
+    details: bool,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
 
@@ -746,6 +747,23 @@ pub(crate) async fn cmd_status(
         let inventory = roko_cli::surface_inventory::full_inventory();
         roko_cli::surface_inventory::print_table(&inventory, cli.json);
         return Ok(EXIT_SUCCESS);
+    }
+
+    // What a person asks status for (gap-7a3f11): what is running, how the
+    // last runs ended, what they spent, and the one thing to do next.
+    // `--details` and `--cfactor` add roko's internals below.
+    if !cli.json {
+        let status = roko_cli::status_view::collect(&workdir).await;
+        let style = roko_cli::term_style::Style::stdout();
+        for line in
+            roko_cli::status_view::lines(&status, style, chrono::Utc::now().timestamp_millis())
+        {
+            println!("{line}");
+        }
+        if !details && !cfactor {
+            return Ok(EXIT_SUCCESS);
+        }
+        println!();
     }
 
     if !cli.quiet {

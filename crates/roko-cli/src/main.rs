@@ -654,7 +654,8 @@ Examples:
         visible_alias = "s",
         after_help = "\
 Examples:
-  roko status                       Show workspace health summary
+  roko status                       What is running, how the last runs ended, what's next
+  roko status --details             Also roko's internals: signals, efficiency, thresholds
   roko status --json                Output status as JSON for scripting
   roko status --cfactor             Compute and show C-Factor metrics"
     )]
@@ -671,6 +672,11 @@ Examples:
         /// Print the CLI/TUI/backend surface inventory instead of session status.
         #[arg(long)]
         surfaces: bool,
+        /// Print roko's internals too: signal counts, efficiency events by
+        /// role, prompt experiments, adaptive gate thresholds, and cost by
+        /// model and plan.
+        #[arg(long)]
+        details: bool,
     },
     /// Inspect the configured GitHub workflow integration.
     Github {
@@ -2022,8 +2028,11 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             quick,
             cfactor,
             surfaces,
+            details,
         } => {
-            let code = commands::status::cmd_status(cli, workdir, quick, cfactor, surfaces).await?;
+            let code =
+                commands::status::cmd_status(cli, workdir, quick, cfactor, surfaces, details)
+                    .await?;
             Ok(code)
         }
         Command::Github { cmd } => commands::github::cmd_github(cli, cmd).await,

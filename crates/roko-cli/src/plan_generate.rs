@@ -33,8 +33,8 @@ pub use runnable::{
 };
 
 pub use named_files::{
-    NamedFiles, files_task_deletes, named_files, named_files_of_plan, unlisted_named_files,
-    unlisted_named_files_line, without_deleted,
+    NamedFiles, files_task_deletes, named_files, named_files_of_plan, shorthand_partners_of_plan,
+    unlisted_named_files, unlisted_named_files_line, vague_deletions_line, without_deleted,
 };
 pub use source_reads::unread_sources;
 

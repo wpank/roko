@@ -1,0 +1,58 @@
++++
+id = "bug-5013e8"
+kind = "bug"
+title = "roko plan status shows a failed task as 'ready': its task rows read tasks.toml's authored status and take the run's view only when the checkpoint succeeded"
+status = "open"
+triage = "verified"
+severity = "p2"
+goal = "tooling"
+size = "S"
+subsystem = ["roko-cli/commands"]
+created = 2026-11-12
+updated = 2026-11-12
+last_verified = 2026-11-12
+source = "round v8 roko-recovery terminal captures (tmp/hermes-roko-v8/design/terminal/before, a0089c19c), the lead's approved proposal (tmp/hermes-roko-v8/design/terminal/README.md)"
+discovered_from = "agent:roko-recovery (round v8, a0089c19c)"
+anchors = ["crates/roko-cli/src/commands/plan.rs::cmd_plan_dir_status"]
+links = { depends_on = [], blocks = [], related = ["gap-082a14"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn plan_status_rows_say_what_the_run_did' crates/roko-cli/src && cargo test -p roko-cli --bin roko -- plan_status_rows_say_what_the_run_did"
++++
+
+## Problem
+
+`roko plan status plans/<p>` takes each task's row from `tasks.toml`'s authored `status`. It promotes that to
+`done` only when the plan's Graph checkpoint succeeded. After a failed or interrupted run, every task reads as
+authored, usually `ready`, whatever the run did. A failed task reads `ready`, and so does a task that passed in a
+run that stopped later. In round v8's capture (`tmp/hermes-roko-v8/design/terminal/before/plan-status-broken.*`):
+
+```
+status:          failed
+
+  T1  ready       Parse the settings file
+```
+
+Expected: `T1  failed`, after 2 tries.
+
+## Why it matters
+
+Goal tooling. The row contradicts the status line above it. gap-082a14 is the other side: the Graph engine never
+writes status back to tasks.toml. The CLI views should read the run, as `plan list` does
+(`plan::overlay_graph_checkpoint_status`).
+
+## Where
+
+`crates/roko-cli/src/commands/plan.rs::cmd_plan_dir_status`, the task rows near its end (`is_pre_execution_status`).
+The run's view of each task is in `graph_checkpoint::inspect_canonical_checkpoint` (its committed records) and in the
+run's `attempts.jsonl` verdicts.
+
+## Plan
+
+Derive each row from the checkpoint inspection: passed, failed, blocked, or not run. Fall back to tasks.toml only
+when the plan has no checkpoint. Fixed with round v8's plan status redesign.
+
+## Done when
+
+`plan_status_rows_say_what_the_run_did` passes: a failed task reads failed, and a task passed in an interrupted run
+reads passed. The `[[verify]]` passes.

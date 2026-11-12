@@ -466,7 +466,8 @@ Diagnose why a plan failed. It prints, in the same style as the run view:
   change first.
 
 A task's tries are its own agent runs. The helper calls a try makes after a failed check count in the spend, not as
-tries. The global `--json` flag prints the full report as structured JSON instead.
+tries. Like `roko plan status`, it lists only the plan's tasks, and it only reads. The global `--json` flag prints the
+full report as structured JSON instead.
 
 ```text
 ◆ roko  diagnose broken
@@ -978,6 +979,10 @@ run view's style:
   command for delivered work, or `roko run <plan-dir>` for a plan that never ran.
 
 `--json` prints the plan's status, its delivery and its tasks as before.
+
+It lists the plan's tasks and nothing else. The records roko keeps of writing the plan (the planner call's spend and
+episode) are not tasks. It only reads: its git calls take no optional locks, so it never writes the checkout's
+`.git/index`, and it is safe to run over and over while a run goes.
 
 ```text
 ◆ roko  plan greeting

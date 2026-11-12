@@ -44,6 +44,7 @@ use crate::graph_checkpoint::{
 use crate::graph_execution::run_view::{
     self, PlanCheckRow, PlanTasks, RunHeader, RunModel, TaskState as RowState,
 };
+use crate::plan_authoring::{GENERATION_SPEND_TASK_ID, REVISION_SPEND_TASK_ID};
 use crate::runner::plan_loader::Plan;
 use crate::task_parser::{TaskDef, TasksFile};
 use crate::term_style::{self, Glyph, Role, Style};
@@ -110,8 +111,8 @@ pub struct DiagnoseReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_dir: Option<String>,
     pub failed_task: Option<FailedTaskInfo>,
-    /// Every plan task as the Graph run left it, in plan order, followed by
-    /// tasks the run recorded that the plan no longer defines.
+    /// Every plan task as the Graph run left it, in plan order; the tasks the
+    /// run recorded when the plan's `tasks.toml` cannot be read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskDiagnosis>,
     pub gate_results: Vec<GateResultInfo>,
@@ -284,7 +285,7 @@ pub enum TaskState {
 #[derive(Debug, Serialize)]
 pub struct TaskDiagnosis {
     pub task_id: String,
-    /// Title from `tasks.toml`; `None` for a task the plan no longer defines.
+    /// Title from `tasks.toml`; `None` when it cannot be read.
     pub title: Option<String>,
     pub state: TaskState,
     /// One line saying why the task is in `state`.
@@ -532,8 +533,17 @@ struct RunRecords {
 impl RunRecords {
     /// `plan_id`'s records written at or after `since_ms` (all of them when
     /// `None`), and its attempts' tool policies in run `run_id`. A record
-    /// whose time cannot be read is kept.
-    fn load(workdir: &Path, plan_id: &str, run_id: &str, since_ms: Option<i64>) -> Self {
+    /// whose time cannot be read is kept. The plan's writing is not its run
+    /// (bug-2e5023): the spend of writing or revising the plan and the
+    /// episodes of direct agent calls, such as the planner's, are left out,
+    /// unless one of the plan's `tasks` has their task id.
+    fn load(
+        workdir: &Path,
+        plan_id: &str,
+        run_id: &str,
+        since_ms: Option<i64>,
+        tasks: &BTreeSet<&str>,
+    ) -> Self {
         let layout = RokoLayout::for_project(workdir);
         // An unreadable run log has no verdicts.
         let run = roko_learn::telemetry::report::RunRecords::load(&layout.run_dir(run_id))
@@ -543,6 +553,9 @@ impl RunRecords {
             attempts: read_jsonl_lossy::<CostRecord>(&layout.learn_dir().join("costs.jsonl"))
                 .into_iter()
                 .filter(|record| record.plan_id == plan_id && in_run(rfc3339_ms(&record.timestamp)))
+                .filter(|record| {
+                    tasks.contains(record.task_id.as_str()) || !is_authoring_spend(record)
+                })
                 .collect(),
             gate_failures: read_jsonl_lossy::<GateFailureRecord>(&layout.gate_failures_path())
                 .into_iter()
@@ -555,6 +568,9 @@ impl RunRecords {
                 .filter(|episode| {
                     episode_plan_id(episode) == Some(plan_id)
                         && in_run(Some(episode.timestamp.timestamp_millis()))
+                })
+                .filter(|episode| {
+                    tasks.contains(episode.task_id.as_str()) || !is_capture_episode(episode)
                 })
                 .collect(),
             tool_policies: recorded_tool_policies(&run, plan_id),
@@ -588,6 +604,21 @@ impl RunRecords {
             )
             .filter(|task_id| !task_id.is_empty())
     }
+}
+
+/// Whether cost record `record` is the spend of writing or revising its
+/// plan, which `plan_authoring::AuthoringSpend` attributes to the plan under
+/// a pseudo task.
+fn is_authoring_spend(record: &CostRecord) -> bool {
+    [GENERATION_SPEND_TASK_ID, REVISION_SPEND_TASK_ID].contains(&record.task_id.as_str())
+}
+
+/// Whether `episode` records a direct agent call, such as the planner call
+/// that wrote the plan, rather than a try of one of the plan's tasks: only
+/// a direct call's episode names the kind of task it ran
+/// (`agent_episode::build_capture_episode`).
+fn is_capture_episode(episode: &Episode) -> bool {
+    episode.extra.contains_key("task_kind")
 }
 
 /// The tool policies `plan_id`'s attempts recorded in their verdicts in the
@@ -699,10 +730,15 @@ fn build_graph_report(
     let since_ms = checkpoint
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
-    let records = RunRecords::load(workdir, plan_id, &checkpoint.manifest.run_id, since_ms);
-    let run_id = &checkpoint.manifest.run_id;
-    let gate_gaming_alerts = run_gaming_alerts(workdir, plan_id, run_id, &records, since_ms);
     let definition = load_plan_definition(workdir, plan_id, &mut notes);
+    let plan_tasks: BTreeSet<&str> = definition
+        .iter()
+        .flat_map(|definition| definition.tasks.tasks.iter())
+        .map(|task| task.id.as_str())
+        .collect();
+    let run_id = &checkpoint.manifest.run_id;
+    let records = RunRecords::load(workdir, plan_id, run_id, since_ms, &plan_tasks);
+    let gate_gaming_alerts = run_gaming_alerts(workdir, plan_id, run_id, &records, since_ms);
     let tasks = diagnose_tasks(workdir, checkpoint, definition.as_ref(), &records, verbose);
     let resume = definition
         .as_ref()
@@ -887,8 +923,10 @@ fn resume_info(
     }
 }
 
-/// Every task of the plan, then the tasks the run recorded that the plan no
-/// longer defines, as the run left them.
+/// Every task of the plan, as the run left it. An id the run recorded that
+/// the plan does not define is not one of its tasks (bug-2e5023): the ids the
+/// run recorded stand in for the tasks only when the plan's `tasks.toml`
+/// cannot be read.
 fn diagnose_tasks(
     workdir: &Path,
     checkpoint: &CheckpointInspection,
@@ -902,15 +940,17 @@ fn diagnose_tasks(
         .iter()
         .map(|task| (task.id.as_str(), task))
         .collect();
-    let mut ids: Vec<&str> = plan_tasks.iter().map(|task| task.id.as_str()).collect();
-    let undefined: BTreeSet<&str> = checkpoint
-        .recorded
-        .keys()
-        .map(String::as_str)
-        .chain(records.task_ids())
-        .filter(|task_id| !defined.contains_key(task_id))
-        .collect();
-    ids.extend(undefined);
+    let ids: Vec<&str> = if definition.is_some() {
+        plan_tasks.iter().map(|task| task.id.as_str()).collect()
+    } else {
+        let recorded: BTreeSet<&str> = checkpoint
+            .recorded
+            .keys()
+            .map(String::as_str)
+            .chain(records.task_ids())
+            .collect();
+        recorded.into_iter().collect()
+    };
 
     let attempted: HashSet<&str> = records.task_ids().collect();
     let states: BTreeMap<&str, TaskState> = ids
@@ -1912,8 +1952,12 @@ fn collect_git_state(workdir: &Path, plan_id: &str) -> Option<GitStateInfo> {
     })
 }
 
+/// The trimmed output of `git <args>` in `workdir`, when it succeeds. A
+/// report only reads (bug-62760a): without `--no-optional-locks`,
+/// `git status` refreshes the index's stat cache and writes `.git/index`.
 fn run_git(workdir: &Path, args: &[&str]) -> Option<String> {
     ProcessCommand::new("git")
+        .arg("--no-optional-locks")
         .args(args)
         .current_dir(workdir)
         .output()

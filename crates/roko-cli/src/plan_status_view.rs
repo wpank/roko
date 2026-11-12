@@ -391,4 +391,140 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         assert_eq!(text.matches("waiting").count(), 3, "{text}");
         assert!(text.ends_with("\n  Next  roko run plans/demo"), "{text}");
     }
+
+    /// The records roko keeps of writing plan `demo` before it ran: the
+    /// planner call's spend, under the pseudo task `generate`, and its
+    /// episode, `plan:generate:demo`.
+    async fn written_by_roko(root: &Path) {
+        let spend = crate::plan_authoring::AuthoringSpend::generation(root, "demo", None);
+        spend
+            .record(&crate::agent_exec::AgentCapture {
+                exit_code: 0,
+                output: String::new(),
+                usage: roko_core::Usage {
+                    input_tokens: 48_000,
+                    output_tokens: 4_000,
+                    cost_usd: 0.22,
+                    ..roko_core::Usage::default()
+                },
+                api_equiv_usd: None,
+                price_snapshot_id: None,
+                model: "gpt-5.4-mini".to_string(),
+                provider: "openai".to_string(),
+                duration_ms: 90_000,
+            })
+            .await;
+        let (episode, _) = crate::agent_episode::build_capture_episode(
+            "claude",
+            Some("gpt-5.4-mini"),
+            "plan-generate",
+            "plan:generate:demo",
+            "the request",
+            "the plan",
+            true,
+            chrono::Utc::now() - chrono::Duration::minutes(6),
+            90_000,
+            None,
+        );
+        let episodes = RokoLayout::for_project(root).episodes_path();
+        let line = serde_json::to_string(&episode).expect("episode JSON");
+        std::fs::write(&episodes, format!("{line}\n")).expect("episodes.jsonl");
+    }
+
+    /// bug-2e5023: the records of a plan's writing are not tasks. The status
+    /// of a plan roko wrote lists its three tasks and nothing else, and the
+    /// planner call is not one of the run's calls.
+    #[tokio::test]
+    async fn plan_status_lists_only_the_plans_tasks() {
+        let workspace = demo_run(GraphCheckpointStatus::Interrupted, 1);
+        written_by_roko(workspace.path()).await;
+        let status = status_of(workspace.path()).await;
+        let text = text_of(&status);
+        assert!(text.contains(" task 3  Document the parser "), "{text}");
+        assert!(!text.contains("task 4"), "{text}");
+        assert!(!text.contains("not in tasks.toml"), "{text}");
+        let run = status.run.as_ref().expect("the run's report");
+        let ids: Vec<&str> = run.tasks.iter().map(|task| task.task_id.as_str()).collect();
+        assert_eq!(ids, ["T1", "T2", "T3"]);
+        let run_state = run.run_state.as_ref().expect("the run's state");
+        assert_eq!(run_state.total_agent_calls, 0, "{run_state:?}");
+        assert_eq!(run_state.total_tokens_in, 0, "{run_state:?}");
+    }
+
+    /// Every file under `root`, `.git` included, with its bytes.
+    fn files_under(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut dirs = vec![root.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).expect("read file");
+                    files.insert(path, bytes);
+                }
+            }
+        }
+        files
+    }
+
+    /// bug-62760a: `roko plan status` only reads (bug-399240's rule: a view
+    /// never writes). The checkout's index holds stale stat data for
+    /// `tasks.toml`, which `git status` would refresh and write back; every
+    /// byte under the workspace, `.git/index` included, stays as it was.
+    #[tokio::test]
+    async fn plan_status_writes_nothing() {
+        let workspace = demo_run(GraphCheckpointStatus::Interrupted, 1);
+        let root = workspace.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_OPTIONAL_LOCKS")
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "the plan"]);
+        // The file's time moves and its bytes stay.
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("plans/demo/tasks.toml"))
+            .expect("open tasks.toml")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .expect("set its time");
+        let before = files_under(root);
+
+        let status = status_of(root).await;
+        assert!(text_of(&status).contains("task 3"));
+
+        let after = files_under(root);
+        let changed: Vec<String> = after
+            .iter()
+            .filter(|(path, bytes)| before.get(*path) != Some(*bytes))
+            .map(|(path, _)| path)
+            .chain(before.keys().filter(|path| !after.contains_key(*path)))
+            .map(|path| {
+                path.strip_prefix(root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+            })
+            .collect();
+        assert!(changed.is_empty(), "plan status wrote {changed:?}");
+    }
 }

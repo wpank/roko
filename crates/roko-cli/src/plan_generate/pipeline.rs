@@ -23,8 +23,9 @@ use std::time::{Duration, Instant};
 
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
-    AgentCrashClass, AgentExecOpts, classify_agent_crash, persist_capture_episode_distilled_by,
-    run_agent_capture_silent_with_usage, timed_out_after_secs,
+    AgentCrashClass, AgentExecOpts, SpendLimit, classify_agent_crash,
+    persist_capture_episode_distilled_by, run_agent_capture_silent_with_usage,
+    timed_out_after_secs,
 };
 use crate::model_selection::{resolve_chat_host_planner_model, resolve_planner_model};
 use crate::plan_authoring::AuthoringSpend;
@@ -1442,14 +1443,39 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             })
             .max(0.0);
         let capped = (cap > 0.0).then_some(cap);
+        // bug-187c5c: a planner call is made only while what the calls so far
+        // cost, and what the costliest of them cost, stay within the cap.
         let cap_reached = || {
-            capped.filter(|cap| spend.spent_usd() >= *cap).map(|cap| {
-                format!(
-                    "plan generation reached its spend cap: its {} planner call(s) cost \
-                     ${:.4} of ${cap:.2}",
-                    spend.calls(),
-                    spend.spent_usd()
-                )
+            capped.and_then(|cap| {
+                let (spent, next) = (spend.spent_usd(), spend.costliest_call_usd());
+                if spent >= cap {
+                    Some(format!(
+                        "plan generation reached its spend cap: its {} planner call(s) cost \
+                         ${spent:.4} of ${cap:.2}",
+                        spend.calls()
+                    ))
+                } else if spent + next > cap {
+                    Some(format!(
+                        "plan generation would pass its spend cap with another planner call: \
+                         its {} call(s) cost ${spent:.4} of ${cap:.2}, and the next would cost \
+                         about ${next:.4}, as much as its costliest",
+                        spend.calls()
+                    ))
+                } else {
+                    None
+                }
+            })
+        };
+        // bug-187c5c: and the model calls of each planner call keep to what
+        // is left of it, with the costliest model call of the generation so
+        // far as the next one's cost.
+        let costliest_model_call = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let call_limit = || {
+            capped.map(|cap| {
+                Arc::new(SpendLimit::new(
+                    (cap - spend.spent_usd()).max(0.0),
+                    Arc::clone(&costliest_model_call),
+                ))
             })
         };
         // An improvement the cap leaves out is said, and skipped.
@@ -1725,11 +1751,16 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             role: Some("strategist"),
             allowed_tools: Some("Read,Grep,Glob"),
             max_turns: Some(PLANNER_MAX_TURNS),
+            spend_limit: None,
         };
         clock.lifted();
         report("planning", (1, 1), None, planner_model.as_str());
+        let limit = call_limit();
         let call = clock
-            .planner(run_agent_capture_silent_with_usage(planner_call))
+            .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
+                spend_limit: limit.as_ref(),
+                ..planner_call
+            }))
             .await?;
         spend.record(&call).await;
         report_spend();
@@ -1789,6 +1820,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 ));
             }
 
+            // bug-187c5c: a planner call stopped at what was left of the cap
+            // is not made again, and no plan was written.
+            if matches!(crash_class, AgentCrashClass::BudgetExhausted) {
+                return Err(anyhow!(
+                    "plan generation reached its spend cap: its {} planner call(s) cost ${:.4}, \
+                     and the planner stopped before it wrote the plan: {}; no plan was written. \
+                     Hint: raise `[authoring] max_generation_usd`, or pass `--max-usd` to `roko \
+                     plan generate`",
+                    spend.calls(),
+                    spend.spent_usd(),
+                    output.trim()
+                ));
+            }
+
             // Non-retriable errors (model not found, context overflow): fail
             // immediately because a retry will hit the same permanent error.
             if !crash_class.is_retriable() {
@@ -1840,10 +1885,15 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     max_crash_retries + 1,
                 );
                 // The backoff is the planner's time, as its retry is.
+                let limit = call_limit();
                 let retry = clock
                     .planner(async {
                         tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                        run_agent_capture_silent_with_usage(planner_call).await
+                        run_agent_capture_silent_with_usage(AgentExecOpts {
+                            spend_limit: limit.as_ref(),
+                            ..planner_call
+                        })
+                        .await
                     })
                     .await?;
                 spend.record(&retry).await;
@@ -2465,10 +2515,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     error,
                     budget.source_chars,
                 );
+                let limit = call_limit();
                 let retry_result = clock
                     .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
                         prompt: &retry_prompt,
                         model: retry_model,
+                        spend_limit: limit.as_ref(),
                         ..planner_call
                     }))
                     .await;
@@ -2494,6 +2546,22 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                             Err(error) => keep_draft(&retry_output, error),
                         }
                         last_output = retry_output;
+                    }
+                    // bug-187c5c: a retry stopped at what was left of the cap
+                    // is not made again.
+                    Ok((_, retry_output))
+                        if matches!(
+                            classify_agent_crash(&retry_output),
+                            AgentCrashClass::BudgetExhausted
+                        ) =>
+                    {
+                        let reached = format!(
+                            "plan generation reached its spend cap: {}",
+                            retry_output.trim()
+                        );
+                        eprintln!("  {reached}; not asking the planner again");
+                        stopped_at_cap = Some(reached);
+                        break;
                     }
                     // Non-zero exit (auth/network errors) — do NOT escalate model,
                     // just log and retry with the same model.
@@ -2541,9 +2609,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     planner_model.as_str(),
                 );
                 let prompt = hidden_output_regeneration_prompt(&task_prompt, candidate, &hidden);
+                let limit = call_limit();
                 let retry = clock
                     .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
                         prompt: &prompt,
+                        spend_limit: limit.as_ref(),
                         ..planner_call
                     }))
                     .await;
@@ -2615,9 +2685,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 &unchecked,
                 tasks,
             );
+            let limit = call_limit();
             let retry = clock
                 .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &prompt,
+                    spend_limit: limit.as_ref(),
                     ..planner_call
                 }))
                 .await;
@@ -2701,9 +2773,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     planner_model.as_str(),
                 );
                 let prompt = spec_regeneration_prompt(&task_prompt, &kept.0, &kept.1);
+                let limit = call_limit();
                 let retry = clock
                     .planner(run_agent_capture_silent_with_usage(AgentExecOpts {
                         prompt: &prompt,
+                        spend_limit: limit.as_ref(),
                         ..planner_call
                     }))
                     .await;
@@ -4073,6 +4147,19 @@ mod tests {
         plans: &[&str],
         spec_quality: &str,
     ) -> PathBuf {
+        write_priced_planner(workdir, bin, plans, spec_quality, 0.0)
+    }
+
+    /// [`write_scripted_planner`] whose every call costs `cost_usd`, as the
+    /// planner reports it.
+    #[cfg(unix)]
+    fn write_priced_planner(
+        workdir: &Path,
+        bin: &Path,
+        plans: &[&str],
+        spec_quality: &str,
+        cost_usd: f64,
+    ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
 
         for (index, plan_toml) in plans.iter().enumerate() {
@@ -4093,7 +4180,7 @@ mod tests {
                         "type": "result",
                         "session_id": "planner",
                         "model": "claude-sonnet-4-6",
-                        "total_cost_usd": 0.0,
+                        "total_cost_usd": cost_usd,
                         "usage": {"input_tokens": 1, "output_tokens": 1},
                         "is_error": false,
                     }),
@@ -4348,6 +4435,100 @@ mod tests {
         assert_eq!(log.lines().count(), 1, "no regeneration over the cap");
         assert!(outcome.cost_usd > CAP, "{outcome:?}");
         assert!(workdir.join("plans/widget/tasks.toml").is_file());
+    }
+
+    /// bug-187c5c: round v8's phase-1 plan write spent $0.258 against its
+    /// $0.25 cap: its second call, a coverage regeneration, started with half
+    /// the cap left and cost as much as the first. A planner call is made
+    /// only when what is spent and what the costliest call so far cost stay
+    /// within the cap. With calls of $0.13 under $0.25, the regeneration is
+    /// not asked for and the plan in hand is written; a retry the plan needs
+    /// stops with the cap's error; under $0.30 both calls fit.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_generation_never_spends_past_its_cap() {
+        const CALL: f64 = 0.13;
+        // The plan runs the first check's command and leaves the second out,
+        // so the coverage regeneration would ask for it.
+        const SPINS: &str = "\
+            [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+            description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh widget spin\"\n";
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module.\n\n## Verification\n\n\
+                   - `tools/spec.sh widget spin` spins the widget\n- the widget stops when asked\n",
+            kind: "file",
+        };
+        let generate = |replies: &'static [&'static str], cap: f64| async move {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path().to_path_buf();
+            std::fs::create_dir_all(workdir.join("tools")).expect("tools");
+            std::fs::write(workdir.join("tools/spec.sh"), "#!/bin/sh\nexit 0\n").expect("spec.sh");
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_priced_planner(
+                &workdir,
+                bin.path(),
+                replies,
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+                CALL,
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                max_usd: Some(cap),
+                ..PlanRequest::new(source, "widget", &workdir)
+            };
+            let result = generate_plan(request).await;
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            let written = workdir.join("plans/widget/tasks.toml").is_file();
+            // Each call's arguments, its prompt after them.
+            let asked: Vec<String> = (0..log.lines().count())
+                .map(|call| {
+                    std::fs::read_to_string(bin.path().join(format!("prompt-{call}.txt")))
+                        .expect("a call's arguments")
+                })
+                .collect();
+            (result.map(|(_, outcome)| outcome), asked, written)
+        };
+
+        // The plan misses the source's check: a regeneration would cost
+        // another $0.13, past the cap.
+        let (outcome, asked, written) = generate(&[SPINS], 0.25).await;
+        let outcome = outcome.expect("the plan in hand is written");
+        assert_eq!(asked.len(), 1, "no regeneration past the cap");
+        assert!(written);
+        assert!(outcome.cost_usd <= 0.25, "{outcome:?}");
+
+        // A reply with no plan needs a retry, which would pass the cap.
+        let (outcome, asked, written) =
+            generate(&["```text\nNo plan yet.\n```\n", SPINS], 0.25).await;
+        let message = format!("{:#}", outcome.expect_err("the retry would pass the cap"));
+        assert!(
+            message.contains("would pass its spend cap with another planner call"),
+            "{message}"
+        );
+        assert!(message.contains("no plan was written"), "{message}");
+        assert_eq!(asked.len(), 1);
+        assert!(!written);
+
+        // Under $0.30 the regeneration fits, and each call is given what is
+        // left of the cap as its own limit.
+        let (outcome, asked, _) = generate(&[SPINS], 0.30).await;
+        let outcome = outcome.expect("generate the widget plan");
+        assert_eq!(asked.len(), 2, "the plan, then its regeneration");
+        assert!(outcome.cost_usd <= 0.30, "{outcome:?}");
+        assert!(
+            asked[0].contains("--max-budget-usd\n0.300000\n"),
+            "{}",
+            asked[0]
+        );
+        assert!(
+            asked[1].contains("--max-budget-usd\n0.170000\n"),
+            "{}",
+            asked[1]
+        );
     }
 
     /// gap-b95913: a draft whose `meta.total` is 0, whose task reads four

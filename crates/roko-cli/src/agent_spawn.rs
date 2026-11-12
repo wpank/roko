@@ -1,6 +1,7 @@
 //! Shared helpers for direct command-backed agent creation.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use roko_agent::provider::{AgentOptions, current_safety_layer};
@@ -42,6 +43,13 @@ pub struct SpawnAgentSpec {
     pub name: String,
     /// Optional logical role used to scope the safety contract.
     pub role: Option<String>,
+    /// What the agent's model calls may spend, which roko's tool loop asks
+    /// before each one ([`AgentOptions::turn_budget`], bug-187c5c).
+    pub turn_budget: Option<Arc<dyn roko_agent::tool_loop::TurnBudget>>,
+    /// The most an agent that runs its own loop may spend, in USD
+    /// ([`AgentOptions::max_budget_usd`]: the Claude CLI's
+    /// `--max-budget-usd`).
+    pub max_budget_usd: Option<f64>,
 }
 
 impl SpawnAgentSpec {
@@ -64,6 +72,8 @@ impl SpawnAgentSpec {
             bare_mode: self.bare_mode,
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             name: self.name,
+            turn_budget: self.turn_budget,
+            max_budget_usd: self.max_budget_usd,
             ..Default::default()
         }
     }

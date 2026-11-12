@@ -2,7 +2,7 @@
 id = "bug-6ebc03"
 kind = "bug"
 title = "A spec that lists its final check in its table and names it the plan's own in its notes gets two source checks for it, and coverage reads the table's as missing though [[meta.verify]] runs it: phase 1's plan showed 1 of 21 checks not in the plan, and paid for a regeneration"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "9d34a2e8b"
+last_verified_rev = "62007460b"
 source = "round-v8 hermes-pilot-v8, phase 1 plan write op 19bfbbb8 (Undertow 19943c9, roko bd93521ee), tmp/hermes-roko-v8/pilot/evidence/p1-plan-writing-status.json"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::source_checks", "crates/roko-cli/src/plan_generate/source_checks.rs::plan_check_line", "crates/roko-cli/src/plan_generate/source_checks.rs::SourceCoverage"]
@@ -20,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-96115c", "bug-3cdc58", "
 
 [[verify]]
 command = "grep -rqw 'fn a_final_check_the_table_states_is_one_check' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_final_check_the_table_states_is_one_check"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T15:23:18Z"
+commit = "62007460b"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "S"
+forced = false
+evidence = "source_checks merges a line that names the plan's own check into the check the source states elsewhere, by the command the check quotes first or else its label (P1.20); two alike or none leave the line a check of its own. Phase 1's spec now lifts 20 checks with P1.20 the plan's own, and its plan as written keeps all 20 (it lifted 21, SC20 missing, and paid a coverage regeneration). Verify a_final_check_the_table_states_is_one_check passes on the trial merge 5419c421e (main ba5866664 + this branch + bug-187c5c), with all 96 pipeline tests and nightly fmt --check; on the same trees roko-cli lib 4131 passed (its one failure was bug-187c5c's own test, fixed in 122355614) and cargo clippy --workspace --no-deps -D warnings is clean."
 +++
 
 ## Problem

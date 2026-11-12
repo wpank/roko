@@ -710,48 +710,66 @@ pub fn shorthand_partners_of_plan(plan: &TasksFile, workdir: &Path) -> Vec<Strin
         .collect()
 }
 
+/// Whether `name` ends in an extension a source, build or document file has
+/// (`Look.cpp`, `notes.md`), not a method's or a field's (`handle.wake`).
+fn source_file_name(name: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        "c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx", "m", "mm", "rs", "py", "ts", "tsx", "js",
+        "jsx", "mjs", "go", "java", "kt", "swift", "rb", "cs", "sh", "md", "txt", "toml", "json",
+        "yaml", "yml", "cmake", "html", "css", "sql", "proto", "xml",
+    ];
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
 /// What the sentences of `sources` that say files are deleted without naming
-/// one by its path say, around their word of deletion (gap-708931): a word of
-/// deletion with "file" or "files", or with a code span that names a file
-/// only by its name (`Displays.h/.cpp`). Round v8's first phase-1 spec said
-/// "and the twelve retired files deleted" and "Delete the rest:
-/// `Displays.h/.cpp`, …", and named its 21 deletions by path nowhere.
+/// one by its path say, around their words of deletion (gap-708931): "the
+/// retired files" within one clause, or a sentence led by "Delete" or
+/// "Remove" whose files are named only by name, with an extension a source
+/// or document file has (`Displays.h/.cpp`). Round v8's first phase-1 spec
+/// said "and the twelve retired files deleted" and "Delete the rest:
+/// `Displays.h/.cpp`, …", and named its 21 deletions by path nowhere. A
+/// sentence of what code does ("a file … that it deletes once read", "the
+/// file was deleted") is no deletion a task makes.
 fn vague_deletions(sources: &[&str]) -> Vec<String> {
-    static DELETES: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(?:delete[sd]?|deleting|remove[sd]?|removing|retire[sd]?|retiring)\b")
-            .expect("valid deletion regex")
+    static IN_WORDS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\bretired\b[^.;:]*\bfiles?\b|\bfiles?\b[^.;:]*\bretired\b")
+            .expect("valid deletion-in-words regex")
     });
-    static FILES: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\bfiles?\b").expect("valid files regex"));
     static SPAN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"`[^`]*`").expect("valid code span regex"));
     let mut found = Vec::new();
     for sentence in sources.iter().flat_map(|source| sentences(source)) {
+        let named = instruction(&sentence);
+        if named
+            .iter()
+            .any(|(change, path)| *change == Change::Delete && path.contains('/'))
+        {
+            continue;
+        }
         // The prose: each code span blanked, the same length.
         let mut prose = sentence.clone();
         for span in SPAN.find_iter(&sentence) {
             prose.replace_range(span.range(), &" ".repeat(span.len()));
         }
-        let Some(word) = DELETES.find(&prose) else {
-            continue;
+        let (from, to) = match IN_WORDS.find(&prose) {
+            Some(words) => (words.start(), words.end()),
+            None if named
+                .iter()
+                .any(|(change, path)| *change == Change::Delete && source_file_name(path)) =>
+            {
+                (0, 0)
+            }
+            None => continue,
         };
-        let names_bare = SPAN
-            .find_iter(&sentence)
-            .flat_map(|span| code_span_files(span.as_str()))
-            .any(|file| !file.contains('/'));
-        let names_a_path = instruction(&sentence)
-            .iter()
-            .any(|(change, path)| *change == Change::Delete && path.contains('/'));
-        if (FILES.is_match(&prose) || names_bare) && !names_a_path {
-            let start = sentence.floor_char_boundary(word.start().saturating_sub(60));
-            let end = sentence.ceil_char_boundary((word.end() + 40).min(sentence.len()));
-            found.push(format!(
-                "{}{}{}",
-                if start > 0 { "…" } else { "" },
-                sentence[start..end].trim(),
-                if end < sentence.len() { "…" } else { "" }
-            ));
-        }
+        let start = sentence.floor_char_boundary(from.saturating_sub(40));
+        let end = sentence.ceil_char_boundary((to + 40).min(sentence.len()));
+        found.push(format!(
+            "{}{}{}",
+            if start > 0 { "…" } else { "" },
+            sentence[start..end].trim(),
+            if end < sentence.len() { "…" } else { "" }
+        ));
     }
     found
 }
@@ -764,13 +782,15 @@ fn vague_deletions(sources: &[&str]) -> Vec<String> {
 pub fn vague_deletions_line(plan: &TasksFile, workdir: &Path) -> Option<String> {
     let texts = source_texts(plan, workdir);
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    // A bare name (`Displays.h`) is no path: phase 1's "Delete the rest:
+    // `Displays.h/.cpp`, …" named its files only so.
     let named_by_path = texts
         .iter()
         .flat_map(|text| sentences(text))
         .any(|sentence| {
-            instruction(&sentence)
-                .iter()
-                .any(|(change, path)| *change == Change::Delete && plain_relative(path))
+            instruction(&sentence).iter().any(|(change, path)| {
+                *change == Change::Delete && path.contains('/') && plain_relative(path)
+            })
         });
     let vague = vague_deletions(&texts);
     if named_by_path || vague.is_empty() {
@@ -1138,6 +1158,18 @@ mod tests {
         )
         .expect("the fixed spec");
         assert_eq!(found("PLAN_063"), Vec::<String>::new());
+
+        // What code does to files is no deletion a task makes (round v8's
+        // probe of roko's work items found these).
+        assert_eq!(
+            vague_deletions(&[
+                "It removes `serve.json`, `serve.token` and the serve's entry on shutdown.",
+                "It reads it from a private file with a random name that it deletes once read.",
+                "The size in the checkout (or null when the file was deleted).",
+                "Remove the direct `handle.wake` from the loop.",
+            ]),
+            Vec::<String>::new()
+        );
     }
 
     /// bug-aa93e9: `plan validate` warns once about phase 1's plan as

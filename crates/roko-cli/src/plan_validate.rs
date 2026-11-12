@@ -393,7 +393,15 @@ fn validate_plans_dir_impl(
                 // bug-aa93e9: the size limits count no file a task deletes,
                 // and a file the plan's sources tell a task to delete or
                 // change that no task lists is warned about (PLAN_062).
-                let named = roko_cli::plan_generate::named_files_of_plan(&tasks_file, workdir);
+                let mut named = roko_cli::plan_generate::named_files_of_plan(&tasks_file, workdir);
+                // gap-708931: a file a shorthand names beside one a task owns
+                // (`plugin/PluginEditor.h/.cpp`) is a file to change too.
+                named
+                    .changed
+                    .extend(roko_cli::plan_generate::shorthand_partners_of_plan(
+                        &tasks_file,
+                        workdir,
+                    ));
                 if !named.deleted.is_empty() {
                     plan.diagnostics
                         .retain(|diagnostic| diagnostic.rule_id != "PLAN_TIER_SIZE");
@@ -418,6 +426,19 @@ fn validate_plans_dir_impl(
                     plan.diagnostics.push(Diagnostic {
                         severity: Severity::Warning,
                         rule_id: "PLAN_062".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: None,
+                        message,
+                    });
+                }
+                // gap-708931: sources that delete files only in words
+                // (PLAN_063).
+                if let Some(message) =
+                    roko_cli::plan_generate::vague_deletions_line(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_063".to_string(),
                         plan_id: Some(plan.plan_id.clone()),
                         task_id: None,
                         message,

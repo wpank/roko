@@ -11,7 +11,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { PlanList } from '@/components/plans/PlanList';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { buildPlanRows } from '@/lib/planRows';
 import { initialRunState } from '@/lib/runState';
 import { foldEvents, renderWithClient, setStore } from '@/test/dom';
@@ -89,13 +89,13 @@ describe('a disabled button', () => {
     expectReasonShown('run', 'A run is already in progress');
   });
 
-  it('disabled reason is visible on ✦ Revise and ✎ Edit while the plan runs', () => {
+  it('offers no revise while the plan runs, and says why edit is off', () => {
     setStore(foldEvents(RUNNING));
     renderWithClient(
-      <PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
+      <PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
       { seed: [[queryKeys.planTasks('hello'), TASKS], [queryKeys.validation('hello'), VALID]] },
     );
-    expectReasonShown('✦ Revise', 'Cannot revise while the plan is running');
-    expectReasonShown('✎ Edit', 'Cannot edit while the plan is running');
+    expect(screen.queryByRole('button', { name: 'revise' })).toBeNull();
+    expectReasonShown('edit tasks.toml', 'Cannot edit while the plan is running');
   });
 });

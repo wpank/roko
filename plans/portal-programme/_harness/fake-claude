@@ -21,10 +21,13 @@ real plan run completes in seconds at no cost.
     a crashed or misconfigured CLI would. Evidence checks use it for the
     "agent exits before its first event" case.
   * Live mode, on when `.roko/fake-claude-live` exists in the working
-    directory: a task first streams a text block and one Write tool call per
+    directory or the nearest one above it that has a `.roko/` knob (roko
+    runs each try in a worktree under the workspace's `.roko/worktrees/`,
+    where the workspace's knobs are not): a task first streams a text block and one Write tool call per
     artifact, as the real CLI does, before any SLOW wait; after writing it
     streams the tool results. Checks use it to see output arrive mid-task.
-  * Slow knob, read from `.roko/fake-claude-slow` when it exists: the integer
+  * Slow knob, read from `.roko/fake-claude-slow` when it exists (found the
+    same way): the integer
     it holds is a minimum sleep (in seconds) applied after the live streaming
     blocks and before writing, taking the larger of that value and any `SLOW n`
     in the prompt. Lets tests hold a task active long enough for browser checks
@@ -40,6 +43,20 @@ import sys
 import time
 
 prompt = sys.stdin.read()
+
+
+def knob(name):
+    """The path of `.roko/<name>` in the working directory or the nearest
+    directory above it that has one, or None."""
+    here = os.getcwd()
+    while True:
+        path = os.path.join(here, ".roko", name)
+        if os.path.exists(path):
+            return path
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
 
 
 def log(mode, detail=""):
@@ -170,7 +187,7 @@ if exit_early:
     sys.exit(code)
 
 artifacts = list(dict.fromkeys(re.findall(r"ARTIFACT ([\w./-]+)", prompt)))
-live = os.path.exists(os.path.join(".roko", "fake-claude-live"))
+live = knob("fake-claude-live") is not None
 if live:
     blocks = [{"type": "text", "text": "Working on " + ", ".join(artifacts) + "."}]
     blocks += [{"type": "tool_use", "id": f"toolu_{i}", "name": "Write",
@@ -180,8 +197,8 @@ if live:
     sys.stdout.flush()
 slow = re.search(r"SLOW (\d+)", prompt)
 slow_secs = int(slow.group(1)) if slow else 0
-knob_path = os.path.join(".roko", "fake-claude-slow")
-if os.path.exists(knob_path):
+knob_path = knob("fake-claude-slow")
+if knob_path is not None:
     try:
         slow_secs = max(slow_secs, int(open(knob_path).read().strip()))
     except (ValueError, OSError):

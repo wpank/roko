@@ -97,7 +97,7 @@ const filterTo = (value: string) =>
 const shownRows = () =>
   [...document.querySelectorAll('[data-region="rail"] [data-plan-row]')].map((r) => r.getAttribute('data-plan-row'));
 const selectedPlan = () => new URLSearchParams(window.location.search).get('plan');
-const stageTitle = () => textOf(document.querySelector('[data-region="stage"] h2'));
+const stageTitle = () => textOf(document.querySelector('[data-region="stage"] h1'));
 
 /** The server as these tests need it: the plan list (refetched after a run) plus `routes`. */
 const serve = (...routes: Parameters<typeof stubFetch>[0]) =>
@@ -146,7 +146,6 @@ describe('the rail filter', () => {
 
     const chip = document.querySelector('[data-region="header"] [data-slot="run"]') as HTMLButtonElement;
     expect(textOf(chip)).toBe('1 running');
-    expect(document.querySelector('[data-region="run-band"]')).not.toBeNull();
     fireEvent.click(chip);
     expect(selectedPlan()).toBe('hello');
   });

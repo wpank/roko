@@ -82,6 +82,8 @@ export function useStateHubSSE(): UseStateHubSSEResult {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ token }),
         });
+        // Read the empty body: Chrome reports a response nobody read as an aborted request.
+        await res.arrayBuffer().catch(() => undefined);
         return res.status;
       },
 
@@ -101,7 +103,14 @@ export function useStateHubSSE(): UseStateHubSSEResult {
         api.get<WireStateHubSnapshotResponse>('/api/statehub/snapshot'),
 
       // Same origin and cookie as the event stream, whose refusal it explains.
-      probe: () => fetch('/api/status').then((res) => res.status, () => 0),
+      probe: () =>
+        fetch('/api/status').then(
+          async (res) => {
+            await res.arrayBuffer().catch(() => undefined);
+            return res.status;
+          },
+          () => 0,
+        ),
 
       openStream: (lastEventId, onEvent, onStatus) => {
         const client = new SseClient('', { lastEventId });

@@ -9,7 +9,7 @@
  *  - Unrecognised keys → null.
  */
 
-export type KeyAction = 'prev' | 'next' | 'run' | 'new' | 'filter' | 'stream' | 'escape';
+export type KeyAction = 'prev' | 'next' | 'run' | 'new' | 'filter' | 'escape';
 
 export interface KeyInput {
   key: string;
@@ -27,7 +27,6 @@ const BINDINGS: Record<string, KeyAction> = {
   r: 'run',
   n: 'new',
   '/': 'filter',
-  o: 'stream',
   Escape: 'escape',
 };
 

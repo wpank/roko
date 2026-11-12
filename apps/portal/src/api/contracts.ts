@@ -135,6 +135,34 @@ export type WireDashboardEvent =
       output_text?: string | null;
     }
   | { type: 'efficiency_event'; plan_id: string; task_id: string; metric: string; value: number }
+  | {
+      /** One try of a Graph task, settled: how it ended and what it used (AttemptSettled in roko-core). */
+      type: 'attempt_settled';
+      plan_id: string;
+      task_id: string;
+      attempt?: number;
+      /** `passed`, `gate_failed`, `turn_cap`, `timeout`, `provider_error`, `budget_exhausted`, `cancelled`, … */
+      verdict?: string;
+      /** The check that failed it (`verify:0/test`), when one did. */
+      failed_check?: string | null;
+      /** The first line of why it failed, when it did. */
+      detail?: string | null;
+      model?: string;
+      cost_usd?: number | null;
+      duration_ms?: number | null;
+      /** Whether this try moved the task up to a stronger model. */
+      climbed?: boolean;
+    }
+  | {
+      /** A plan's own check, run on its delivered work (PlanCheckFinished in roko-core). */
+      type: 'plan_check_finished';
+      plan_id: string;
+      passed: boolean;
+      name?: string;
+      step?: number;
+      steps?: number;
+      elapsed_ms?: number;
+    }
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
   | { type: 'snapshot_rebased'; revision: number; source?: string }
   | { type: 'error'; message: string };

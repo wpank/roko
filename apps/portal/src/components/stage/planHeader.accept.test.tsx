@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { initialRunState } from '@/lib/runState';
 import { foldEvents, renderWithClient, setStore, stubFetch, textOf } from '@/test/dom';
 
@@ -50,7 +50,7 @@ afterEach(() => {
 
 function renderView() {
   return renderWithClient(
-    <PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
+    <PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
     { seed: [[queryKeys.planTasks('hello'), TASKS], [queryKeys.validation('hello'), VALID]] },
   );
 }
@@ -96,31 +96,27 @@ describe('the editor and Run', () => {
 });
 
 describe('the plan header', () => {
-  it('sets the title in the title style and the id as meta', () => {
+  it('names the plan in its title beside its state, and never its id', () => {
     renderView();
-    const title = document.querySelector('h2');
+    const title = document.querySelector('[data-region="plan"] h1');
     expect(textOf(title)).toBe('Hello world');
-    expect(title?.classList.contains('rd-title')).toBe(true);
-    expect(title?.className).not.toMatch(/\btext-(xs|sm)\b/);
-    const id = [...document.querySelectorAll('.rd-meta')].find((e) => textOf(e) === 'hello');
-    expect(id).toBeDefined();
+    expect(textOf(document.querySelector('[data-region="plan"] .rk-pill'))).toBe('ready');
   });
 
-  it('draws Run with the primary button tokens and Cancel with the danger fill', () => {
+  it('makes run plan the orange key, and stop a plain one while the plan runs', () => {
     renderView();
-    expect(primary().className).toContain('bg-button-primary-bg');
-    expect(primary().className).toContain('text-button-primary-fg');
+    expect(primary().getAttribute('data-action')).toBe('run');
+    expect(primary().hasAttribute('data-you')).toBe(true);
     cleanup();
     setStore(foldEvents([SET, { type: 'plan_started', plan_id: 'hello', tasks_total: 2 }]));
     renderView();
     expect(primary().getAttribute('data-action')).toBe('cancel');
-    expect(primary().className).toContain('bg-danger-fill');
-    expect(primary().className).toContain('text-danger-fill-fg');
+    expect(textOf(primary())).toBe('stop');
+    expect(primary().hasAttribute('data-you')).toBe(false);
   });
 
-  it('draws the validation badge at the meta size or larger', () => {
+  it('shows no validation badge for a valid plan', () => {
     renderView();
-    const badge = screen.getByText('valid ✓');
-    expect(badge.className).not.toMatch(/text-\[(9|10|11)px\]/);
+    expect(screen.queryByText('valid ✓')).toBeNull();
   });
 });

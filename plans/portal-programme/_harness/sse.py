@@ -9,6 +9,7 @@ usage: sse.py FILE COMMAND ARGS
   between  X [k=v ...] -- A [k=v ...] -- B [k=v ...]
            some X lies between the first A and the first B after it
   positive TYPE FIELD [k=v ...]                 some match has numeric FIELD > 0
+  last     TYPE FIELD [k=v ...]                 print FIELD of the last match that has it
 
 `k=v` compares event[k] rendered as JSON (strings unquoted), so booleans are
 `true`/`false`. `k~text` holds when the rendered value contains text, and
@@ -114,6 +115,14 @@ def main(argv):
         values = [event.get(field) for event in events if predicate(event)]
         ok = any(isinstance(value, (int, float)) and value > 0 for value in values)
         reason = f"{kind}.{field} values {values[:8]}"
+    elif command == "last":
+        kind, field, filters = args[0], args[1], args[2:]
+        predicate = matcher([kind, *filters])
+        values = [event[field] for event in events if predicate(event) and event.get(field) is not None]
+        if values:
+            print(render(values[-1]))
+            return 0
+        ok, reason = False, f"no {kind} with {field} among {len(events)} events"
     else:
         print(f"unknown command {command}", file=sys.stderr)
         return 2

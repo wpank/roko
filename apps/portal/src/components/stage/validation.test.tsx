@@ -11,7 +11,7 @@ import type { WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contr
 import { createQueryClient } from '@/api/queryClient';
 import { queryKeys } from '@/api/queries';
 import { Workspace } from '@/components/shell/Workspace';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { ValidationBadge, validationCounts } from '@/components/stage/ValidationBadge';
 import { OUTDATED_SERVER } from '@/lib/apiErrors';
 import { initialRunState } from '@/lib/runState';
@@ -167,11 +167,11 @@ describe('an invalid plan', () => {
   it('disables Run, with the reason', async () => {
     stubFetch([{ method: 'POST', path: VALIDATE, body: INVALID }]);
     renderWithClient(
-      <PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
+      <PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
       { seed: [[queryKeys.planTasks('live-b'), TASKS]] },
     );
     await waitFor(() =>
-      expect(textOf(document.querySelector('[data-region="status-line"]'))).toContain('1 error'),
+      expect(textOf(document.querySelector('[data-region="status-line"]'))).toContain('can’t run yet: 1 problem'),
     );
     const run = document.querySelector('[data-action="run"]') as HTMLButtonElement;
     expect(run.disabled).toBe(true);

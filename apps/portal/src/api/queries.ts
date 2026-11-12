@@ -43,6 +43,8 @@ export const queryKeys = {
   validation: (id: string) => ['plans', id, 'validation'] as const,
   reviews: (id: string) => ['plans', id, 'reviews'] as const,
   taskDiff: (id: string, taskId: string) => ['plans', id, 'diff', taskId] as const,
+  planCosts: (id: string) => ['plans', id, 'costs'] as const,
+  gateRungs: ['config', 'gates', 'rungs'] as const,
   workspace: ['workspace'] as const,
 };
 
@@ -111,6 +113,44 @@ export function useValidation(id: string | undefined) {
     queryFn: () =>
       api.post<WireValidation>(`/api/plans/${encodeURIComponent(id!)}/validate`),
     enabled: Boolean(id),
+  });
+}
+
+/**
+ * The project's own checks, which roko runs on every task (`[[gates.rungs]]` in roko.toml), by name. An older or
+ * locked-down server that does not say gives none: the check count then shows each task's own checks only.
+ */
+export function useGateRungs() {
+  return useQuery<string[]>({
+    queryKey: queryKeys.gateRungs,
+    queryFn: async () => {
+      try {
+        const config = await api.get<{ gates?: { rungs?: { name?: string }[] } }>('/api/config');
+        return (config.gates?.rungs ?? []).map((r) => r.name ?? '').filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** A plan's spending cap in USD (`[budget] max_plan_usd`), or null when it has none or the server does not say. */
+export function usePlanCap(id: string | undefined) {
+  return useQuery<number | null>({
+    queryKey: queryKeys.planCosts(id ?? ''),
+    queryFn: async () => {
+      try {
+        const costs = await api.get<{ plan_budget?: number; budget?: { enabled?: boolean } }>(
+          `/api/plans/${encodeURIComponent(id!)}/costs`,
+        );
+        return costs.budget?.enabled === false || !costs.plan_budget ? null : costs.plan_budget;
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(id),
+    staleTime: 60_000,
   });
 }
 

@@ -239,7 +239,7 @@ export function Transcript({
             className="transcript-divider"
             style={{ color: 'var(--text-faint)', padding: '4px 0' }}
           >
-            — attempt {block.attempt} —
+            — try {block.attempt} —
           </div>
         );
 

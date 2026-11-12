@@ -6,10 +6,10 @@
  */
 
 import { useCallback, useMemo, useRef } from 'react';
-import { fetchPlanDetail, useCancelPlan, useValidation } from '@/api/queries';
+import { fetchPlanDetail, useCancelPlan, usePlanDetail, useValidation } from '@/api/queries';
 import { useStartRun } from '@/components/stage/RunChoice';
 import { describeRequestError } from '@/lib/apiErrors';
-import { planSetActive, queuePosition, runFinishing, waitReason } from '@/lib/planSet';
+import { detailStamp, planSetActive, queuePosition, runFinishing, waitReason } from '@/lib/planSet';
 import { useDashboardStore } from '@/stores/dashboard';
 
 // ── usePrimaryAction ───────────────────────────────────────────────────────────
@@ -27,7 +27,8 @@ export interface PrimaryAction {
  * the current validation state.
  *
  * - running          → cancel, the `stop` key (window.confirm first; stops the whole run)
- * - failed/cancelled → retry, the `resume` key (resume: true: only what did not pass runs again)
+ * - failed/cancelled → retry, the `resume` key (resume: true: only what did not pass runs again); once the plan's
+ *                      detail says no resume would continue its last run, run-again, the `run again` key
  * - completed        → run-again (a fresh run)
  * - otherwise        → run, the `run plan` key
  *
@@ -69,6 +70,13 @@ export function usePrimaryAction(
 
   const livePlan = planId ? run.plans[planId] : undefined;
   const phase = livePlan?.phase ?? null;
+  // A failed or stopped plan resumes only when its last run can be continued; its detail says.
+  const stopped = phase === 'failed' || phase === 'cancelled';
+  const { data: detail } = usePlanDetail(
+    planId ?? '',
+    planId ? detailStamp(run, planId) : '',
+    planId !== null && stopped,
+  );
 
   // ── Kind ──────────────────────────────────────────────────────────────────
 
@@ -77,8 +85,8 @@ export function usePrimaryAction(
     kind = 'none';
   } else if (phase === 'running') {
     kind = 'cancel';
-  } else if (phase === 'failed' || phase === 'cancelled') {
-    kind = 'retry';
+  } else if (stopped) {
+    kind = detail?.resumable_run === null ? 'run-again' : 'retry';
   } else if (phase === 'completed') {
     kind = 'run-again';
   } else {
@@ -165,8 +173,8 @@ export function usePrimaryAction(
         if (reading.current) return;
         reading.current = true;
         fetchPlanDetail(planId)
-          .then((detail) => {
-            const last = detail.resumable_run;
+          .then((fresh) => {
+            const last = fresh.resumable_run;
             if (last?.resumable) setRunChoice({ planId, run: last });
             else startRun(planId, false);
           }, handleError)

@@ -2,14 +2,18 @@
 
 /**
  * TaskDetail — one task, opened from its pad: what it does, its checks with their commands, each try with the model
- * that made it and how it ended, a review it waits for, and, folded, what the agent did and what its checks printed.
- * While the task runs, what the agent does is open, so a person watches it work.
+ * that made it and how it ended, what it changed (gap-6d2dd2), a review it waits for, and, folded, the change itself,
+ * what the agent did and what its checks printed. While the task runs, what the agent does is open, so a person
+ * watches it work.
  */
 
+import { useTaskDiff } from '@/api/queries';
 import { Key } from '@/components/kit/Key';
 import { Fold } from '@/components/kit/Fold';
 import { Pill } from '@/components/kit/Pill';
 import type { Signal } from '@/components/kit/Led';
+import { ChangeList, FileLine } from '@/components/plan/Changes';
+import type { ChangedFile } from '@/components/plan/Changes';
 import { ReviewPane } from '@/components/stage/ReviewPane';
 import { Checks } from '@/components/stream/Checks';
 import { Transcript } from '@/components/stream/Transcript';
@@ -29,6 +33,9 @@ const PAD_PILLS: Record<Pad['state'], { signal: Signal; word: string }> = {
   still: { signal: 'still', word: 'not checked' },
   skipped: { signal: 'still', word: 'skipped' },
 };
+
+/** How many changed files the task's own line names before it points at the change. */
+const CHANGED_LINES = 5;
 
 const MARK: Record<CheckRun['status'] | 'waiting', { glyph: string; signal: Signal }> = {
   passed: { glyph: '✓', signal: 'pass' },
@@ -72,6 +79,11 @@ export function TaskDetail({
   const find = (word: string) => checks.find((c) => checkWord(c.phase || c.name) === word || checkWord(c.name) === word);
   const own = row.verify.map((v) => ({ word: v.phase, command: v.command, check: find(v.phase) }));
   const project = rungs.map((word) => ({ word, check: find(word) }));
+
+  // What a task that passed changed, from the result its run recorded; a held task's review shows its own.
+  const done = !held && (pad.state === 'pass' || pad.state === 'still');
+  const { data: diff } = useTaskDiff(planId, row.id, done);
+  const changed: ChangedFile[] = done && diff ? diff.files.map((f) => ({ ...f, binary: false })) : [];
 
   return (
     <section className="rk-module pt-task" data-region="task-detail" aria-label={`Task ${pad.n.replace(/^0/, '')}`}>
@@ -124,6 +136,22 @@ export function TaskDetail({
           </div>
         )}
 
+        {changed.length > 0 && (
+          <div className="pt-row">
+            <span>changed</span>
+            <ul>
+              {changed.slice(0, CHANGED_LINES).map((file) => (
+                <li key={file.path}>
+                  <FileLine file={file} />
+                </li>
+              ))}
+              {changed.length > CHANGED_LINES && (
+                <li className="pt-dim">and {changed.length - CHANGED_LINES} more, in the change below</li>
+              )}
+            </ul>
+          </div>
+        )}
+
         {pad.waits !== null && (
           <div className="pt-row">
             <span>skipped</span>
@@ -135,6 +163,12 @@ export function TaskDetail({
       </div>
 
       {held && <ReviewPane planId={planId} taskId={row.id} />}
+
+      {changed.some((file) => file.patch) && (
+        <Fold summary="the change" data-fold="change">
+          <ChangeList files={changed} />
+        </Fold>
+      )}
 
       <Fold summary="what the agent did" open={running} data-fold="transcript">
         <Transcript

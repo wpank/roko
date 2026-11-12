@@ -398,6 +398,32 @@
 
 .pt-error b { color: var(--rk-ink); font-weight: 650; }
 
+/* ---- where the work went: the merge command, the changed files and their patches (gap-6d2dd2) --------- */
+
+.pt-merge { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: -8px; }
+.pt-merge .pt-code { padding: 6px 10px; font-size: 12.5px; user-select: all; overflow-wrap: anywhere; }
+.pt-file b { font: 500 13px/1.4 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-ink); }
+.pt-add { color: var(--rk-pass); font: 500 12px/1 var(--rk-mono); }
+.pt-del { color: var(--rk-fail); font: 500 12px/1 var(--rk-mono); }
+.pt-changes { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pt-changes .rk-fold { border-top: 0; }
+/* A file's fold names the file as it is spelled, not in the folds' capitals. */
+.pt-changes .rk-fold > summary { text-transform: none; letter-spacing: normal; }
+.pt-patch {
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font: 400 12px/1.5 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink-2);
+  background: var(--rk-module-2);
+  border-radius: var(--rk-r-1);
+  white-space: pre;
+}
+.pt-patch [data-line="add"] { color: var(--rk-pass); }
+.pt-patch [data-line="del"] { color: var(--rk-fail); }
+.pt-patch [data-line="hunk"], .pt-patch [data-line="meta"] { color: var(--rk-ink-3); }
+
 /* ---- signing in --------------------------------------------------------------------------------------- */
 
 .pt-center { display: grid; place-items: center; min-height: 0; overflow: auto; padding: 32px 16px; }

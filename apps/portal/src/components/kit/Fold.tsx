@@ -1,12 +1,12 @@
 import React from 'react';
 
+type FoldProps = { summary: React.ReactNode; open?: boolean; children: React.ReactNode } & Omit<
+  React.HTMLAttributes<HTMLDetailsElement>,
+  'children'
+>;
+
 /** Folded detail: `▸ details`, turning to `▾` when open. Every fold starts closed unless told otherwise. */
-export function Fold({
-  summary,
-  open,
-  children,
-  ...rest
-}: { summary: string; open?: boolean; children: React.ReactNode } & React.HTMLAttributes<HTMLDetailsElement>) {
+export function Fold({ summary, open, children, ...rest }: FoldProps) {
   return (
     <details className="rk-fold" open={open} {...rest}>
       <summary>{summary}</summary>

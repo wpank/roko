@@ -30,6 +30,9 @@ import type {
   WireReviews,
   WireTaskDiff,
   WireReviewDecision,
+  WireRunDiff,
+  WireRunResult,
+  WireRunSummary,
 } from '@/api/contracts';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +46,11 @@ export const queryKeys = {
   validation: (id: string) => ['plans', id, 'validation'] as const,
   reviews: (id: string) => ['plans', id, 'reviews'] as const,
   taskDiff: (id: string, taskId: string) => ['plans', id, 'diff', taskId] as const,
+  /** A plan's detail as it stood when `stamp` (its last run's end) was current. */
+  planDetail: (id: string, stamp: string) => ['plans', id, 'detail', stamp] as const,
+  /** A run's summary as it stood when `stamp` was current: a run's index is complete only once the run ends. */
+  runSummary: (runId: string, stamp: string) => ['runs', runId, 'summary', stamp] as const,
+  runDiff: (runId: string) => ['runs', runId, 'diff'] as const,
   planCosts: (id: string) => ['plans', id, 'costs'] as const,
   gateRungs: ['config', 'gates', 'rungs'] as const,
   workspace: ['workspace'] as const,
@@ -265,10 +273,54 @@ function taskPath(id: string, taskId: string): string {
   return `/api/plans/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}`;
 }
 
-export function useTaskDiff(id: string, taskId: string) {
+export function useTaskDiff(id: string, taskId: string, enabled = true) {
   return useQuery<WireTaskDiff>({
     queryKey: queryKeys.taskDiff(id, taskId),
     queryFn: () => api.get<WireTaskDiff>(`${taskPath(id, taskId)}/diff`),
+    enabled,
+    retry: false,
+  });
+}
+
+/**
+ * A plan's detail: its last run and the run a resume would continue. `stamp` names the live run state it goes
+ * with (when the plan and its run last ended), so the detail is read again once a run ends.
+ */
+export function usePlanDetail(id: string, stamp: string, enabled = true) {
+  return useQuery<WirePlanDetail>({
+    queryKey: queryKeys.planDetail(id, stamp),
+    queryFn: () => fetchPlanDetail(id),
+    enabled,
+  });
+}
+
+/** How many times a run's summary is read, a second apart, while it names no result yet. */
+const RESULT_READS = 15;
+
+/**
+ * Where run `runId`'s work went (its summary's `result`), or null when it has none. `stamp` is the plan's
+ * detailStamp, so the summary is read again when the plan and its run end; a result lands a moment after the run's
+ * end, so while it names none the summary is read again each second, RESULT_READS times at most.
+ */
+export function useRunResult(runId: string | null, stamp: string) {
+  return useQuery<WireRunResult | null>({
+    queryKey: queryKeys.runSummary(runId ?? '', stamp),
+    queryFn: () =>
+      api.get<WireRunSummary>(`/api/runs/${encodeURIComponent(runId!)}/summary`).then((s) => s.result ?? null),
+    enabled: runId !== null,
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.data === null && query.state.dataUpdateCount < RESULT_READS ? 1_000 : false,
+  });
+}
+
+/** The files run `runId`'s work changes, with their patches. */
+export function useRunDiff(runId: string | null, enabled = true) {
+  return useQuery<WireRunDiff>({
+    queryKey: queryKeys.runDiff(runId ?? ''),
+    queryFn: () => api.get<WireRunDiff>(`/api/runs/${encodeURIComponent(runId!)}/diff`),
+    enabled: runId !== null && enabled,
+    retry: false,
   });
 }
 

@@ -8,6 +8,7 @@
  * 2. the glass: TASKS, TIME, SPENT and CHECKS, in dot-matrix;
  * 3. the plan drawn as a sequencer; a click on a pad opens that task under it;
  * 4. one sentence, the state's own (or a line per task that runs now), and its keys, at most one of them orange;
+ *    after a pass, where the work went and the command that takes it, with review (gap-6d2dd2);
  * 5. `▸ details`: each task's tries, models, times and spend, the plan's own check, tokens, and the plan's file.
  *
  * Revise and the editor take the place of the glass and the sequencer while open. The resume question
@@ -17,11 +18,21 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { WirePlanDiff, WirePlanSummary } from '@/api/contracts';
-import { queryKeys, useGateRungs, usePlanCap, usePlanTasks, useValidation } from '@/api/queries';
+import {
+  queryKeys,
+  useGateRungs,
+  usePlanCap,
+  usePlanDetail,
+  usePlanTasks,
+  useRunResult,
+  useValidation,
+  useWorkspace,
+} from '@/api/queries';
 import { Fold } from '@/components/kit/Fold';
 import { Key } from '@/components/kit/Key';
 import { Pill } from '@/components/kit/Pill';
 import { Readout } from '@/components/plan/Readout';
+import { MergeRow, ResultSentence, RunChanges, hasWorkToTake } from '@/components/plan/Result';
 import { Sequencer } from '@/components/plan/Sequencer';
 import { TaskDetail } from '@/components/plan/TaskDetail';
 import { usePrimaryAction } from '@/components/plan/usePrimaryAction';
@@ -30,8 +41,10 @@ import { RevisionDiff } from '@/components/stage/RevisionDiff';
 import { RunChoice } from '@/components/stage/RunChoice';
 import { SourceEditor } from '@/components/stage/SourceEditor';
 import { ValidationBadge, validationCounts } from '@/components/stage/ValidationBadge';
-import { runFinishing, waitReason } from '@/lib/planSet';
-import { AWAITING_APPROVAL, becauseOf, buildCard } from '@/lib/runCard';
+import { digestOutput } from '@/lib/checks';
+import { detailStamp, runFinishing, waitReason } from '@/lib/planSet';
+import { failureReason } from '@/lib/reason';
+import { AWAITING_APPROVAL, becauseOf, buildCard, checkWord } from '@/lib/runCard';
 import type { Card, NowLine } from '@/lib/runCard';
 import type { RunState } from '@/lib/runState';
 import { taskKey } from '@/lib/runState';
@@ -49,6 +62,8 @@ export interface PlanPageProps {
 export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }: PlanPageProps) {
   const [editing, setEditing] = useState(false);
   const [revising, setRevising] = useState(false);
+  // The run's changes, open from the review key.
+  const [reviewing, setReviewing] = useState(false);
   // What the last revision changed, shown until dismissed (3229).
   const [revisionDiff, setRevisionDiff] = useState<WirePlanDiff | null>(null);
   // The editor's unsaved text is marked in the store, where the run key, the `r` key, run all and the selection
@@ -83,12 +98,28 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   );
   const primary = usePrimaryAction(plan.id, { onError: onRequestError });
 
+  // Where the last run's work went: the plan's detail names its last run, read again whenever the plan or its run
+  // ends (the event stream carries no run ids), and the run's summary says where its work is (gap-6d2dd2).
+  const ended = card.state !== 'running' && card.state !== 'queued';
+  const stamp = detailStamp(run, plan.id);
+  const { data: detail } = usePlanDetail(plan.id, stamp, ended);
+  const lastRun = detail?.last_run ?? null;
+  const runId = lastRun?.run_id ?? null;
+  const lastPassed = card.state === 'ready' && lastRun?.status === 'succeeded';
+  const { data: result } = useRunResult(card.state === 'passed' || lastPassed ? runId : null, stamp);
+  const { data: workspace } = useWorkspace();
+  const reviewable = (card.state === 'passed' || lastPassed) && hasWorkToTake(result);
+  const primaryOrange = !reviewable && card.state !== 'passed' && card.state !== 'not-checked';
+
   const selectedRow = card.rows.find((r) => r.id === selectedTaskId) ?? null;
   const selectedPad = selectedRow ? card.steps.flatMap((s) => s.pads).find((p) => p.id === selectedRow.id) : undefined;
   const heldIds = card.rows.filter((r) => run.tasks[taskKey(plan.id, r.id)]?.phase === AWAITING_APPROVAL).map((r) => r.id);
 
   const toggleTask = useCallback(
-    (id: string) => onSelectTask(id === selectedTaskId ? null : id),
+    (id: string) => {
+      setReviewing(false);
+      onSelectTask(id === selectedTaskId ? null : id);
+    },
     [onSelectTask, selectedTaskId],
   );
 
@@ -162,7 +193,9 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
           {card.steps.length > 0 && (
             <Sequencer steps={card.steps} edges={card.edges} selectedId={selectedTaskId} onSelect={toggleTask} />
           )}
-          {selectedRow && selectedPad && (
+          {reviewing && reviewable && runId !== null ? (
+            <RunChanges runId={runId} onClose={() => setReviewing(false)} />
+          ) : selectedRow && selectedPad && (
             <TaskDetail
               planId={plan.id}
               pad={selectedPad}
@@ -181,7 +214,14 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
           <NowLines now={card.now} />
         ) : (
           <p className="pt-sentence" data-region="run-summary">
-            {sentence(card, run, plan.id, problems.errors)}
+            {result && (card.state === 'passed' || lastPassed) ? (
+              <>
+                {lastPassed && 'Its last run passed. '}
+                <ResultSentence result={result} branch={workspace?.branch ?? null} />
+              </>
+            ) : (
+              sentence(card, run, plan.id, problems.errors, workspace?.path ?? null)
+            )}
           </p>
         )}
         <div className="rk-keys">
@@ -200,11 +240,11 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
             </Key>
           ) : (
             <>
-              {reviseKey}
+              {!reviewable && reviseKey}
               {primary.kind !== 'none' && (
                 <Key
-                  you={primary.kind !== 'run-again'}
-                  kbd={primary.kind === 'run-again' ? undefined : 'r'}
+                  you={primaryOrange}
+                  kbd={primaryOrange ? 'r' : undefined}
                   data-action={primary.kind}
                   disabled={primary.disabled}
                   onClick={primary.perform}
@@ -212,10 +252,24 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
                   {primary.label}
                 </Key>
               )}
+              {reviewable && (
+                <Key
+                  you
+                  data-action="review-run"
+                  aria-pressed={reviewing}
+                  onClick={() => {
+                    onSelectTask(null);
+                    setReviewing((r) => !r);
+                  }}
+                >
+                  review
+                </Key>
+              )}
             </>
           )}
         </div>
       </div>
+      {reviewable && result.merge_command && <MergeRow command={result.merge_command} />}
 
       <Fold summary="details" data-fold="plan">
         <PlanFacts card={card} run={run} planId={plan.id} />
@@ -272,8 +326,8 @@ function whenText(run: RunState, planId: string): string {
   return live.phase === 'running' || !live.finishedAtMs ? `started ${at(live.startedAtMs).replace(/^today /, '')}` : at(live.finishedAtMs);
 }
 
-/** The state's one sentence. */
-function sentence(card: Card, run: RunState, planId: string, errors: number): string {
+/** The state's one sentence. `root` is the project's path, which a failed check's paths are shown relative to. */
+function sentence(card: Card, run: RunState, planId: string, errors: number, root: string | null): React.ReactNode {
   const total = card.rows.length;
   const n = (id: string) => card.steps.flatMap((s) => s.pads).find((p) => p.id === id)?.n.replace(/^0/, '') ?? id;
   const passed = card.rows.filter((r) => ['passed', 'already_satisfied', 'passed_with_preexisting_failures'].includes(r.status)).length;
@@ -292,7 +346,8 @@ function sentence(card: Card, run: RunState, planId: string, errors: number): st
       return 'Finishing: checking the plan’s work and delivering it.';
     case 'passed': {
       const check = run.plans[planId]?.planCheck;
-      return `All ${count(total, 'task')} passed their checks${check?.passed ? ', and so did the plan’s own check' : ''}.`;
+      const tasks = total === 1 ? 'The task passed its checks' : `All ${count(total, 'task')} passed their checks`;
+      return `${tasks}${check?.passed ? ', and so did the plan’s own check' : ''}.`;
     }
     case 'not-checked': {
       const unchecked = card.rows.filter((r) => r.status === 'unverified').length;
@@ -309,10 +364,26 @@ function sentence(card: Card, run: RunState, planId: string, errors: number): st
     case 'failed': {
       const failed = card.rows.find((r) => r.status === 'failed' || r.status === 'interrupted');
       if (!failed) return 'The run failed.';
-      const tries = run.tasks[taskKey(planId, failed.id)]?.tries ?? [];
+      const task = run.tasks[taskKey(planId, failed.id)];
+      const tries = task?.tries ?? [];
       const last = tries[tries.length - 1];
       const after = tries.length > 1 ? ` after ${count(tries.length, 'try', 'tries')}` : '';
-      return `Task ${n(failed.id)} failed${after}${last ? `: ${becauseOf(last)}` : ''}. Resume runs it again; what passed stays.`;
+      // The check that failed, its command and the line of its output that says why (gap-6d2dd2).
+      const check = task?.checks.find((c) => c.status === 'failed');
+      const reason = check ? failureReason(check.output, root) : null;
+      if (check && reason) {
+        const word = checkWord(check.phase || check.name);
+        const command = failed.verify.find((v) => checkWord(v.phase) === word)?.command || digestOutput(check.output).command;
+        const what = command ? <code className="pt-code">{command}</code> : <>the {word} check</>;
+        const message = reason.message.replace(/\.$/, '');
+        return (
+          <>
+            Task {n(failed.id)}’s check failed{after}: {what}{' '}
+            {reason.at ? `stopped at ${reason.at}: ${message}` : `failed: ${message}`}.
+          </>
+        );
+      }
+      return `Task ${n(failed.id)} failed${after}${last ? `: ${becauseOf(last)}` : ''}.`;
     }
     case 'interrupted':
       return `roko stopped before it finished, with ${passed} of ${count(total, 'task')} passed. Resume runs only what is left.`;

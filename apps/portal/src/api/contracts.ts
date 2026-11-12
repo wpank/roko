@@ -408,10 +408,61 @@ export interface WireCheckpointRun {
   spent_usd?: number;
 }
 
-/** Response body from GET /api/plans/{id}: the plan's summary, with the run a resume would continue. */
+/** Response body from GET /api/plans/{id}: the plan's summary, with its last run and the run a resume would continue. */
 export interface WirePlanDetail extends WirePlanSummary {
   /** The plan's last run when a resume would continue it, else null (gap-b78706); absent on older servers. */
   resumable_run?: WireCheckpointRun | null;
+  /** The plan's last run, whatever became of it, else null (gap-6d2dd2); absent on older servers. */
+  last_run?: WireCheckpointRun | null;
+}
+
+// ---------------------------------------------------------------------------
+// Runs — GET /api/runs/{run_id}/summary and /diff (crates/roko-serve/src/routes/run_result.rs)
+// ---------------------------------------------------------------------------
+
+/** Where a finished run's verified work is: its batch branch, what it changes, and how to take it (gap-8409d0). */
+export interface WireRunResult {
+  /** `roko/batch/<run-id>`. */
+  branch: string;
+  commit: string;
+  base?: string;
+  diffstat?: { files: number; insertions: number; deletions: number };
+  files_changed?: string[];
+  /** Whether the checkout's HEAD already has the work. */
+  merged: boolean;
+  /** The command that takes the work, while the checkout lacks it. */
+  merge_command?: string;
+  /** A promoted run's tag, and the branch it was promoted into. */
+  tag?: string;
+  promoted_into?: string;
+  /** The branch holds part of the run's work: a plan that did not pass delivered only its verified tasks. */
+  partial?: boolean;
+}
+
+/** Response body from GET /api/runs/{run_id}/summary: only what the portal reads. */
+export interface WireRunSummary {
+  result?: WireRunResult | null;
+}
+
+/** One changed file of a run's diff. */
+export interface WireRunDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  /** The unified patch; null for a binary file. */
+  patch: string | null;
+  truncated?: boolean;
+}
+
+/** Response body from GET /api/runs/{run_id}/diff: each file the run's batch changes from its base. */
+export interface WireRunDiff {
+  run_id: string;
+  branch: string;
+  files: WireRunDiffFile[];
+  totals: { files: number; additions: number; deletions: number };
+  truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------

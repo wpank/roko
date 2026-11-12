@@ -35,8 +35,9 @@ pub(super) async fn list_plans(
     Ok(Json(Value::Array(summaries)))
 }
 
-/// `GET /api/plans/:id` — load a specific plan summary, with the run a resume
-/// would continue (`resumable_run`, or null).
+/// `GET /api/plans/:id` — load a specific plan summary, with the plan's last
+/// run whatever became of it (`last_run`, or null) and the run a resume would
+/// continue (`resumable_run`, or null).
 ///
 /// Delegates to `state.runtime.load_plan_summary()` so that directory-layout
 /// plans (the normal layout) are discovered correctly. The previous
@@ -61,20 +62,23 @@ pub(super) async fn get_plan(
     if let Some(tasks_done) = v.get("tasks_done").and_then(Value::as_u64) {
         v["completed_task_count"] = tasks_done.into();
     }
-    // The run a resume would continue, which a chat host's `plan_run` that
-    // says neither `resume` nor `fresh` is refused over (bug-cbdb6b), so the
-    // host can ask its person before any paid work is approved (gap-b78706).
-    // Reading it changes nothing; a checkpoint it cannot read leaves null.
-    let resumable = state
+    // The plan's last run, from its checkpoint, whatever became of it: the
+    // portal finds where a run's work went from its id, which the event
+    // stream does not carry (gap-6d2dd2). Within it, the run a resume would
+    // continue, which a chat host's `plan_run` that says neither `resume` nor
+    // `fresh` is refused over (bug-cbdb6b), so the host can ask its person
+    // before any paid work is approved (gap-b78706). Reading them changes
+    // nothing; a checkpoint it cannot read leaves both null.
+    let last_run = state
         .runtime
         .checkpoint_run(&state.workdir, &plan_dir_of(&state.workdir, &dto))
         .await
         .unwrap_or_else(|error| {
             tracing::warn!(plan_id = %id, %error, "could not read the plan's checkpoint");
             None
-        })
-        .filter(|run| run.resumable);
-    v["resumable_run"] = json!(resumable);
+        });
+    v["resumable_run"] = json!(last_run.as_ref().filter(|run| run.resumable));
+    v["last_run"] = json!(last_run);
     Ok(Json(v))
 }
 

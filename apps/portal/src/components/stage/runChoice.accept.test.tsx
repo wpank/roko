@@ -205,11 +205,15 @@ describe('Run asks before a fresh run sets a resumable run aside', () => {
     const fetchMock = serve(TASKS_LEFT);
     renderView();
     const retry = document.querySelector('[data-action="retry"]') as HTMLButtonElement;
+    // The page reads the plan's detail on its own, for where its last run went and whether it resumes
+    // (gap-6d2dd2); the press itself posts the resume before it reads anything.
+    const before = fetchMock.mock.calls.length;
     await act(async () => {
       fireEvent.click(retry);
     });
     await waitFor(() => expect(executeBodies(fetchMock)).toEqual([{ resume: true }]));
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/plans/hello'))).toEqual([]);
+    const [first] = fetchMock.mock.calls.slice(before);
+    expect([(first![1] as RequestInit | undefined)?.method, String(first![0])]).toEqual(['POST', EXECUTE]);
     expect(question()).toBeNull();
   });
 });

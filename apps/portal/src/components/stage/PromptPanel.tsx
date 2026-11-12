@@ -60,26 +60,27 @@ const GENERATE_EXAMPLES = [
 // ---------------------------------------------------------------------------
 
 /**
- * Maps a 409 revise error to a human-readable sentence.
- * All other errors are handled via isMissingRoute / describeRequestError.
+ * Maps a 409 revise error to a human-readable sentence, by what the server said: the plan is in a run that hasn't
+ * ended ("part of an active run … before revising"), or another revision of it is in progress ("already in
+ * progress"). All other errors are handled via isMissingRoute / describeRequestError.
  */
-function toRevise409Error(err: ApiError): string {
+export function toRevise409Error(err: ApiError): string {
   const body = err.body;
   if (body && typeof body === 'object') {
     const b = body as Record<string, unknown>;
     const msg = typeof b['message'] === 'string' ? b['message'] : null;
     if (msg) {
       const lower = msg.toLowerCase();
-      if (lower.includes('running')) {
-        return 'This plan is currently running and cannot be revised right now.';
+      if (lower.includes('active run') || lower.includes('running')) {
+        return 'This plan is part of a run that hasn’t finished; revise it when the run ends.';
       }
-      if (lower.includes('alread') || lower.includes('revis')) {
+      if (lower.includes('already')) {
         return 'This plan is already being revised.';
       }
       return msg;
     }
   }
-  return 'This plan is currently running or already being revised.';
+  return 'This plan is in a run that hasn’t finished, or already being revised.';
 }
 
 // ---------------------------------------------------------------------------

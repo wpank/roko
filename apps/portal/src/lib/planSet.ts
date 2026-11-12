@@ -19,6 +19,24 @@ export function planSetActive(run: RunState): boolean {
   });
 }
 
+/** How long a run may take to say it ended after its last plan did, before the portal stops waiting for it. */
+export const FINISHING_MS = 15_000;
+
+/**
+ * Whether the run that holds `planId` is still finishing: every plan in it has ended, but the run has not said so
+ * yet. Its `run_completed` follows the last `plan_completed` by up to a second while roko delivers the work, and
+ * until then the server refuses to revise the plan or run it again. Bounded by FINISHING_MS, so a run that never
+ * reports its end (a serve that died mid-run) can't hold the plan's keys for good.
+ */
+export function runFinishing(run: RunState, planId: string, nowMs: number): boolean {
+  if (run.planSet === null || run.run.outcome !== null) return false;
+  if (!run.planSet.planIds.includes(planId)) return false;
+  const members = run.planSet.planIds.map((id) => run.plans[id]);
+  if (members.some((p) => p === undefined || p.phase === 'pending' || p.phase === 'running')) return false;
+  const lastEnd = Math.max(...members.map((p) => p!.finishedAtMs ?? 0));
+  return lastEnd > 0 && nowMs - lastEnd < FINISHING_MS;
+}
+
 /**
  * Returns the 1-based position of `planId` in the active plan-set queue,
  * or null if:

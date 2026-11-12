@@ -1099,9 +1099,10 @@ pub struct AttemptVerdictRecord {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
-    /// The rung's bound the try ended at, when it did: [`BOUND_TURNS`],
-    /// [`BOUND_SPEND`] or [`BOUND_TIME`] (gap-3217a0). Its checks then judged
-    /// the work it left (gap-2c9412).
+    /// The bound the try ended at, when it did: its rung's, [`BOUND_TURNS`],
+    /// [`BOUND_SPEND`] or [`BOUND_TIME`] (gap-3217a0), or the plan's budget,
+    /// [`BOUND_BUDGET`] (bug-3e04a6). Its checks then judged the work it left
+    /// (gap-2c9412).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound: Option<String>,
     /// How many times the try's agent, having handed back while its task's
@@ -1118,6 +1119,9 @@ pub const BOUND_TURNS: &str = "turns";
 pub const BOUND_SPEND: &str = "spend";
 /// [`AttemptVerdictRecord::bound`] of a try that ran its rung's time.
 pub const BOUND_TIME: &str = "time";
+/// [`AttemptVerdictRecord::bound`] of a try the plan's budget stopped, whose
+/// checks then judged the work it left with no model call (bug-3e04a6).
+pub const BOUND_BUDGET: &str = "budget";
 
 impl AttemptVerdictRecord {
     /// Settle `identity` with `outcome`. Blame and the learning label follow

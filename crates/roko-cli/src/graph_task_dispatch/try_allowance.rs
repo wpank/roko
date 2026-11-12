@@ -10,8 +10,9 @@
 //! is (gap-2c9412): it passes when they pass, and otherwise fails on its
 //! check, blamed on the agent, so two such tries climb the ladder as two
 //! failed checks do. The plan's budget still bounds every try and is asked
-//! first: a stop for the plan's budget stays the harness's, and ends the
-//! attempt unchecked, as before.
+//! first, and a stop for it stays the harness's. The task's checks judge the
+//! work such a try left too, with no model call (bug-3e04a6): it passes when
+//! they pass, and otherwise ends budget-exhausted, never the agent's failure.
 //!
 //! A try's time runs while its provider call does, less any wait for the
 //! provider's concurrency permit. Once it has run its time, the watchdog
@@ -79,6 +80,10 @@ pub(super) enum BoundedStop {
     Spend(String),
     /// It ran the rung's time, `secs` seconds, for this reason (bug-f0007b).
     Time { secs: u64, reason: String },
+    /// The plan's budget could not pay for its next model call, for this
+    /// reason (bug-3e04a6): the harness's stop, whose checks run with no model
+    /// call.
+    Budget(String),
 }
 
 impl BoundedStop {
@@ -88,6 +93,7 @@ impl BoundedStop {
             Self::Turns(_) => roko_learn::telemetry::records::BOUND_TURNS,
             Self::Spend(_) => roko_learn::telemetry::records::BOUND_SPEND,
             Self::Time { .. } => roko_learn::telemetry::records::BOUND_TIME,
+            Self::Budget(_) => roko_learn::telemetry::records::BOUND_BUDGET,
         }
     }
 
@@ -97,6 +103,15 @@ impl BoundedStop {
             Self::Turns(stop) => format!("its {}-turn bound", stop.cap),
             Self::Spend(_) => "its spend allowance".to_string(),
             Self::Time { secs, .. } => format!("its {secs} s time bound"),
+            Self::Budget(_) => "the plan's budget".to_string(),
+        }
+    }
+
+    /// Why the plan's budget stopped the try, when it did (bug-3e04a6).
+    pub(super) fn budget_reason(&self) -> Option<&str> {
+        match self {
+            Self::Budget(reason) => Some(reason),
+            _ => None,
         }
     }
 }
@@ -386,12 +401,12 @@ impl CallAllowance for TryAllowance {
 
 impl GraphTaskDispatcher {
     /// How `dispatch`, an unsuccessful try of `task_id` that ran with
-    /// `max_turns` turns, ended at its rung's bound (gap-2c9412): its rung's
-    /// spend `allowance` or time bound (bug-f0007b) stopped it, or it used
-    /// up the turns `rung` gave it.
-    /// `None` for any other end: the plan's budget stopping it, the run
-    /// stopping, a provider failure, or a turn cap that was the tier's, as
-    /// on the highest rung.
+    /// `max_turns` turns, ended at a bound (gap-2c9412): its rung's spend
+    /// `allowance` or time bound (bug-f0007b) stopped it, it used up the
+    /// turns `rung` gave it, or the plan's budget could not pay for its next
+    /// call (bug-3e04a6).
+    /// `None` for any other end: the run stopping, a provider failure, or a
+    /// turn cap that was the tier's, as on the highest rung.
     pub(super) fn bounded_stop(
         &self,
         plan_id: &str,
@@ -405,8 +420,12 @@ impl GraphTaskDispatcher {
         if self.stopped_call(plan_id, task_id, message).is_some() {
             return None;
         }
-        match allowance.and_then(|allowance| allowance.stop(own_budget_stop(dispatch))) {
-            Some(TryStop::Plan(_)) => return None,
+        let stop = match allowance {
+            Some(allowance) => allowance.stop(own_budget_stop(dispatch)),
+            None => own_budget_stop(dispatch).map(TryStop::Plan),
+        };
+        match stop {
+            Some(TryStop::Plan(reason)) => return Some(BoundedStop::Budget(reason)),
             Some(TryStop::Rung(reason)) => return Some(BoundedStop::Spend(reason)),
             Some(TryStop::Time { secs, reason }) => {
                 return Some(BoundedStop::Time { secs, reason });
@@ -423,12 +442,12 @@ impl GraphTaskDispatcher {
     }
 
     /// The call the watchdog stopped at its try's bound: an agent that runs
-    /// its own loop once it spent its rung's allowance (gap-2c9412), or any
-    /// call once its try ran its rung's time (bug-f0007b). The call, with the
-    /// usage it streamed, as a try that ended at its rung's bound, for the
-    /// task's checks to judge the work it left. `None` for any other
-    /// interruption, for a call that never started, and once the run is
-    /// stopping.
+    /// its own loop once it spent its rung's allowance (gap-2c9412) or once
+    /// the plan's budget could not pay for more (bug-3e04a6), or any call
+    /// once its try ran its rung's time (bug-f0007b). The call, with the
+    /// usage it streamed, as a try that ended at a bound, for the task's
+    /// checks to judge the work it left. `None` for any other interruption,
+    /// for a call that never started, and once the run is stopping.
     pub(super) fn interrupted_at_bound(
         &self,
         plan_id: &str,
@@ -442,6 +461,9 @@ impl GraphTaskDispatcher {
         BoundedStop,
     )> {
         let stop = match ended_by {
+            Some(AttemptInterrupted::BudgetExhausted(reason)) => {
+                BoundedStop::Budget(reason.clone())
+            }
             Some(AttemptInterrupted::AllowanceSpent(reason)) => BoundedStop::Spend(reason.clone()),
             Some(AttemptInterrupted::TimeBound { secs, reason }) => BoundedStop::Time {
                 secs: *secs,
@@ -464,7 +486,9 @@ impl GraphTaskDispatcher {
     pub(super) fn keep_bounded_stop(&self, plan_id: &str, task_id: &str, stop: &BoundedStop) {
         match stop {
             BoundedStop::Turns(retry) => self.keep_turn_cap_retry(plan_id, task_id, *retry),
-            BoundedStop::Spend(reason) | BoundedStop::Time { reason, .. } => {
+            BoundedStop::Spend(reason)
+            | BoundedStop::Time { reason, .. }
+            | BoundedStop::Budget(reason) => {
                 self.keep_allowance_stop(plan_id, task_id, reason);
             }
         }

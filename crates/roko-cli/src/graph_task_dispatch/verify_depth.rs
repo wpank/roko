@@ -54,7 +54,7 @@ use serde_json::Value;
 
 use super::audit_select::{audit_task, task_type};
 use super::diff_snapshot::AttemptDiff;
-use super::helper_calls::{AUDIT_ROLE, SideCall};
+use super::helper_calls::{AUDIT_ROLE, HelperCalls, SideCall};
 use super::red_flags::finding_list;
 use super::verification::{verify_cancelled, verify_step_locked};
 use super::*;
@@ -69,6 +69,10 @@ const OUTPUT_TAIL_LINES: usize = 30;
 
 /// Why a check did not run: the depth's time ran out.
 const OUT_OF_TIME: &str = "the verify depth's [audit] per_audit_cpu_secs ran out";
+
+/// Why a check that calls a model did not run: the plan's budget stopped the
+/// try it checks (bug-3e04a6).
+const NO_MODEL_CALL: &str = "the plan's budget stopped the try, and this check calls a model";
 
 /// Why a check gave no verdict, when it says nothing more.
 const UNTOLD: &str = "the check could not tell";
@@ -588,6 +592,11 @@ impl GraphTaskDispatcher {
         let kind = run.unit.task.kind.as_str();
         if check == Check::B3 && !b3_counts(kind) {
             return Checked::Skipped(format!("B3 only corroborates on a `{kind}` task"));
+        }
+        // The checks of a try the plan's budget stopped call no model
+        // (bug-3e04a6).
+        if matches!(check, Check::B1 | Check::B3) && !HelperCalls::model_calls_allowed() {
+            return Checked::Skipped(NO_MODEL_CALL.to_string());
         }
         let phase_b = self.audit_phase_b();
         let hook = match check {

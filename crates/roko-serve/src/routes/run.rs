@@ -1233,6 +1233,7 @@ mod tests {
             status: crate::state::PlanRunStatus::running(),
             handle: tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(30))),
             cancel: roko_runtime::cancel::CancelToken::new(),
+            max_usd: None,
         };
         state
             .active_plans

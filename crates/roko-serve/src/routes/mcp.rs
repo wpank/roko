@@ -3081,14 +3081,20 @@ mod tests {
             }
         };
         let body = plan().await;
-        assert!(body["last_run"].get("max_usd").is_none(), "no run set a cap: {body}");
+        assert!(
+            body["last_run"].get("max_usd").is_none(),
+            "no run set a cap: {body}"
+        );
 
         let run = call(1, "plan_run", json!({ "plan_id": "alpha", "max_usd": 2.5 }));
         let (_, answer) = post_mcp(&router, &run, &[]).await;
         assert_eq!(answer["result"]["isError"], false, "{answer}");
         plan_runs_started(&runtime, 1).await;
         let body = plan().await;
-        assert_eq!(body["last_run"]["max_usd"], 2.5, "while the run goes: {body}");
+        assert_eq!(
+            body["last_run"]["max_usd"], 2.5,
+            "while the run goes: {body}"
+        );
 
         runtime.gate.add_permits(1);
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -3105,6 +3111,9 @@ mod tests {
         .await
         .expect("the run ends");
         let body = plan().await;
-        assert_eq!(body["last_run"]["max_usd"], 2.5, "once the run has ended: {body}");
+        assert_eq!(
+            body["last_run"]["max_usd"], 2.5,
+            "once the run has ended: {body}"
+        );
     }
 }

@@ -52,6 +52,7 @@ export const queryKeys = {
   runSummary: (runId: string, stamp: string) => ['runs', runId, 'summary', stamp] as const,
   runDiff: (runId: string) => ['runs', runId, 'diff'] as const,
   planCosts: (id: string) => ['plans', id, 'costs'] as const,
+  runCap: (id: string, stamp: string) => ['plans', id, 'run-cap', stamp] as const,
   gateRungs: ['config', 'gates', 'rungs'] as const,
   workspace: ['workspace'] as const,
 };
@@ -286,6 +287,21 @@ export function useTaskDiff(id: string, taskId: string, enabled = true) {
  * A plan's detail: its last run and the run a resume would continue. `stamp` names the live run state it goes
  * with (when the plan and its run last ended), so the detail is read again once a run ends.
  */
+/**
+ * What the plan's run may spend (gap-acfe4b): the cap its request set, which the plan's detail names as
+ * `last_run.max_usd`, or null when it names none. `stamp` changes when the run starts and ends, so it is read then;
+ * while the run is `live` and its cap isn't named yet (the run's checkpoint comes a moment after it starts), it is
+ * read again every 5 s.
+ */
+export function useRunCap(id: string, live: boolean, stamp: string) {
+  return useQuery<number | null>({
+    queryKey: queryKeys.runCap(id, stamp),
+    queryFn: () => fetchPlanDetail(id).then((detail) => detail.last_run?.max_usd ?? null),
+    retry: false,
+    refetchInterval: (query) => (live && query.state.data == null ? 5_000 : false),
+  });
+}
+
 export function usePlanDetail(id: string, stamp: string, enabled = true) {
   return useQuery<WirePlanDetail>({
     queryKey: queryKeys.planDetail(id, stamp),

@@ -257,6 +257,10 @@ pub struct PlanHandle {
     pub handle: JoinHandle<()>,
     /// Cancel token for pausing / stopping the execution.
     pub cancel: CancelToken,
+    /// What the run may spend, in USD: the cap its request set (9116), which
+    /// nothing else records, so a host can show spend against it
+    /// (gap-acfe4b). `None` when the request set none.
+    pub max_usd: Option<f64>,
 }
 
 impl PlanHandle {

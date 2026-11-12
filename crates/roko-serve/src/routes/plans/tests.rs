@@ -2405,6 +2405,7 @@ async fn rest_pause_holds_the_run_without_cancelling() {
         status: crate::state::PlanRunStatus::running(),
         handle,
         cancel: cancel.clone(),
+        max_usd: None,
     };
     state
         .active_plans
@@ -3022,6 +3023,7 @@ async fn put_plan_source_returns_409_when_run_is_active() {
         status: crate::state::PlanRunStatus::running(),
         handle,
         cancel,
+        max_usd: None,
     };
     state
         .active_plans

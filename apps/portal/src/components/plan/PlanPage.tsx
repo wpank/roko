@@ -23,6 +23,7 @@ import {
   useGateRungs,
   usePlanCap,
   usePlanDetail,
+  useRunCap,
   usePlanTasks,
   useRunResult,
   useValidation,
@@ -88,6 +89,13 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   );
 
   const running = run.plans[plan.id]?.phase === 'running';
+  // SPENT's cap: the one the run's request set (a chat host's max_usd), which only the plan's detail names, else the
+  // plan's budget; with neither, the glass shows the spend alone (gap-acfe4b).
+  const { data: runCap } = useRunCap(
+    plan.id,
+    running,
+    `${run.plans[plan.id]?.startedAtMs ?? 0}:${detailStamp(run, plan.id)}`,
+  );
   // The plan ended but its run hasn't: revise and run again wait for it, and the clock ticks so they come back.
   const finishing = runFinishing(run, plan.id, Date.now());
   const nowMs = useNow(running || finishing);
@@ -98,11 +106,11 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
         tasks: tasksData?.tasks ?? [],
         run,
         rungs: rungs ?? [],
-        capUsd: capUsd ?? null,
+        capUsd: runCap ?? capUsd ?? null,
         nowMs,
         problems: problemLines,
       }),
-    [plan, tasksData, run, rungs, capUsd, nowMs, problemLines],
+    [plan, tasksData, run, rungs, runCap, capUsd, nowMs, problemLines],
   );
   const cantRun = card.state === 'cant-run';
   const primary = usePrimaryAction(plan.id, { onError: onRequestError });

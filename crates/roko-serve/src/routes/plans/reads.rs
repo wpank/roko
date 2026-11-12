@@ -79,7 +79,24 @@ pub(super) async fn get_plan(
         });
     v["resumable_run"] = json!(last_run.as_ref().filter(|run| run.resumable));
     v["last_run"] = json!(last_run);
+    // What the run may spend, which only its request said (gap-acfe4b): the
+    // plan's live run, else its newest ended one serve still holds. A resume
+    // continues the run the checkpoint records, and its cap counts the whole
+    // run, so it belongs to `last_run` too.
+    if v["last_run"].is_object()
+        && let Some(max_usd) = run_cap(&state, &id).await
+    {
+        v["last_run"]["max_usd"] = json!(max_usd);
+    }
     Ok(Json(v))
+}
+
+/// The cap the request of plan `id`'s live run set, else that of its newest
+/// ended run serve still holds; `None` when that run set none (gap-acfe4b).
+async fn run_cap(state: &AppState, id: &str) -> Option<f64> {
+    let active = state.active_plans.read().await;
+    let key = active_run_for(&active, id).or_else(|| finished_run_for(&active, id))?;
+    active.get(&key)?.max_usd
 }
 
 /// `GET /api/plans/:id/tasks` — return the task list for a specific plan.

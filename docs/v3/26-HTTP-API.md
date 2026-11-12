@@ -511,7 +511,7 @@ aliases (both are mounted).
 |--------|------|-------------|
 | GET | `/api/plans` | List all plans: `id`, `title` (its `[meta] title`, else its `plan.md`'s first `# ` heading, else its id), task counts, `status` (its `[meta].status` until the plan has run, then its last run's state), `group` (its plan set) and `fixture`, true for a demo or test plan (`[meta].status = "fixture"`), also once it has run |
 | POST | `/api/plans` | Create a new plan |
-| GET | `/api/plans/{id}` | Full plan details |
+| GET | `/api/plans/{id}` | Full plan details, with `last_run` (the run the plan's checkpoint records, or null) and `resumable_run`; `last_run.max_usd` is what the run may spend when its request set a cap (`plan_run`'s `max_usd`), while serve holds the run |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan, and its `title` as `GET /api/plans` and the run events give it: its `[meta] title`, else the first `# ` heading of its `plan.md`, else its id |
 | POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
 | POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |

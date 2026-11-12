@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 85 changed since checked · 3 mentioned in commits · 51 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 92 changed since checked · 3 mentioned in commits · 51 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -68,7 +68,7 @@ _27 more open · on hold: find-70edcb · 3 unchecked (`TRIAGE.md`) · `goal = "c
 - **P2** [bug-df0e79](items/bug-df0e79-a-dead-cli-run-reads-as-running.md) A dead CLI run reads as running forever: only serve settles a run whose process died, so plan status, diagnose and show plans keep saying running, and serve's settle misses the run's events id [bug] · size M · verified 2026-10-26
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-27
 
-_11 more open · on hold: gap-ba20b0 · 7 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_11 more open · on hold: gap-ba20b0 · 5 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _11 more open · on hold: gap-ba20b0 · 7 unchecked (`TRIAGE.md`) · `goal = "vi
 - **P2** [gap-00e982](items/gap-00e982-a-new-price-snapshot-discards-every-workspace.md) A new price snapshot discards every workspace's learned self-model: the predictor version hashes the snapshot id, so load_or_new sets the state aside instead of re-pricing it · size M · verified 2026-10-28
 - **P2** [bug-fce0a7](items/bug-fce0a7-knowledge-tiers-have-two-promotion-rules-a.md) Knowledge tiers have two promotion rules: a pass that surfaces an entry re-tiers it through evaluate_tier_progression_v2 (transient to working at 1 confirmation, working to consolidated at 2), a repeat through the memory spec's 2 confirmations and 3 contexts, so every runtime lesson is Working at admission on its own pass (all 46 admissions in Undertow's store) [bug] · size M · verified 2026-10-27
 
-_13 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_11 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _13 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
 - **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
 
-_34 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_33 more open · on hold: gap-f36019 · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

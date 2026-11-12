@@ -422,7 +422,10 @@ export interface WirePlanDetail extends WirePlanSummary {
 
 /** Where a finished run's verified work is: its batch branch, what it changes, and how to take it (gap-8409d0). */
 export interface WireRunResult {
-  /** `roko/batch/<run-id>`. */
+  /**
+   * The run's batch branch as roko recorded it, e.g. `roko/work/greeting` (gap-b67fdd); older runs keep
+   * `roko/batch/<run-id>`. Read it from here, never build it from a run id.
+   */
   branch: string;
   commit: string;
   base?: string;

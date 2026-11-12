@@ -138,7 +138,7 @@ read_files = [
     { path = "plans/portal-programme/08e-portal-refine/accept/planBars.accept.test.ts", why = "the bar acceptance test", lines = "1-" },
     { path = "apps/portal/src/styles/rosedust.css", why = "accent primitives and --accent-error", lines = "50-125" },
     { path = "apps/portal/src/styles/tokens.css", why = "state, focus, progress, role and layout tokens", lines = "1-" },
-    { path = "apps/portal/src/styles/globals.css", why = "the band, notice and type classes in the components layer", lines = "650-954" },
+    { path = "apps/portal/src/styles/globals.css", why = "the band, notice and type classes in the components layer; the rail's plan rows moved to portal.css with gap-195374" },
     { path = "apps/portal/src/lib/planRows.ts", why = "planBarToken and its constants", lines = "1-90" },
     { path = "apps/portal/src/lib/planRows.test.ts", why = "tests 6 and 7 pin the bar tokens (their header lines are 10-11)", lines = "155-192" },
     { path = "apps/portal/src/lib/glyphs.ts", why = "GLYPHS and progressToken", lines = "30-97" },

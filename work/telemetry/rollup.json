@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_rollup/1",
- "date": "2026-11-06",
- "head": "8904a1c49",
+ "date": "2026-11-12",
+ "head": "530863eff",
  "definitions_sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
  "price_snapshot": "prices-2026-09-28",
  "labels": [
@@ -9,7 +9,7 @@
   "API-equivalent (subscription)"
  ],
  "inputs": {
-  "live_events": 1832,
+  "live_events": 1833,
   "backfill_events": 705,
   "invalid_events": 0,
   "harvest_calls_rows": 0
@@ -72,13 +72,13 @@
   },
   "escape": {
    "num": 0,
-   "den": 159,
+   "den": 212,
    "share": 0.0,
-   "pending": 53,
+   "pending": 0,
    "coverage": {
-    "k": 159,
+    "k": 212,
     "n": 212,
-    "share": 0.75
+    "share": 1.0
    }
   },
   "interventions": {
@@ -1322,13 +1322,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 24,
+     "den": 24,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 24,
       "n": 24,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1426,13 +1426,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 25,
+     "den": 25,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 25,
       "n": 25,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1530,13 +1530,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 4,
+     "den": 4,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 4,
       "n": 4,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1636,13 +1636,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 124,
+     "den": 171,
      "share": 0.0,
-     "pending": 47,
+     "pending": 0,
      "coverage": {
-      "k": 124,
+      "k": 171,
       "n": 171,
-      "share": 0.7251
+      "share": 1.0
      }
     },
     "interventions": {
@@ -1844,13 +1844,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 27,
+     "den": 33,
      "share": 0.0,
-     "pending": 6,
+     "pending": 0,
      "coverage": {
-      "k": 27,
+      "k": 33,
       "n": 33,
-      "share": 0.8182
+      "share": 1.0
      }
     },
     "interventions": {
@@ -2054,13 +2054,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 1,
+     "den": 1,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 1,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -2158,13 +2158,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 21,
+     "den": 26,
      "share": 0.0,
-     "pending": 5,
+     "pending": 0,
      "coverage": {
-      "k": 21,
+      "k": 26,
       "n": 26,
-      "share": 0.8077
+      "share": 1.0
      }
     },
     "interventions": {
@@ -2262,13 +2262,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 49,
+     "den": 68,
      "share": 0.0,
-     "pending": 19,
+     "pending": 0,
      "coverage": {
-      "k": 49,
+      "k": 68,
       "n": 68,
-      "share": 0.7206
+      "share": 1.0
      }
     },
     "interventions": {
@@ -2574,13 +2574,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 0,
-     "share": null,
-     "pending": 1,
+     "den": 1,
+     "share": 0.0,
+     "pending": 0,
      "coverage": {
-      "k": 0,
+      "k": 1,
       "n": 1,
-      "share": 0.0
+      "share": 1.0
      }
     },
     "interventions": {
@@ -2678,13 +2678,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 2,
+     "den": 3,
      "share": 0.0,
-     "pending": 1,
+     "pending": 0,
      "coverage": {
-      "k": 2,
+      "k": 3,
       "n": 3,
-      "share": 0.6667
+      "share": 1.0
      }
     },
     "interventions": {
@@ -2782,13 +2782,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 1,
+     "den": 3,
      "share": 0.0,
-     "pending": 2,
+     "pending": 0,
      "coverage": {
-      "k": 1,
+      "k": 3,
       "n": 3,
-      "share": 0.3333
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3094,13 +3094,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 25,
+     "den": 32,
      "share": 0.0,
-     "pending": 7,
+     "pending": 0,
      "coverage": {
-      "k": 25,
+      "k": 32,
       "n": 32,
-      "share": 0.7812
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3198,13 +3198,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 37,
+     "den": 54,
      "share": 0.0,
-     "pending": 17,
+     "pending": 0,
      "coverage": {
-      "k": 37,
+      "k": 54,
       "n": 54,
-      "share": 0.6852
+      "share": 1.0
      }
     },
     "interventions": {
@@ -3928,13 +3928,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 37,
+     "den": 41,
      "share": 0.0,
-     "pending": 4,
+     "pending": 0,
      "coverage": {
-      "k": 37,
+      "k": 41,
       "n": 41,
-      "share": 0.9024
+      "share": 1.0
      }
     },
     "interventions": {
@@ -4032,13 +4032,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 6,
+     "den": 10,
      "share": 0.0,
-     "pending": 4,
+     "pending": 0,
      "coverage": {
-      "k": 6,
+      "k": 10,
       "n": 10,
-      "share": 0.6
+      "share": 1.0
      }
     },
     "interventions": {
@@ -4240,13 +4240,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 32,
+     "den": 70,
      "share": 0.0,
-     "pending": 38,
+     "pending": 0,
      "coverage": {
-      "k": 32,
+      "k": 70,
       "n": 70,
-      "share": 0.4571
+      "share": 1.0
      }
     },
     "interventions": {
@@ -4448,13 +4448,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 34,
+     "den": 39,
      "share": 0.0,
-     "pending": 5,
+     "pending": 0,
      "coverage": {
-      "k": 34,
+      "k": 39,
       "n": 39,
-      "share": 0.8718
+      "share": 1.0
      }
     },
     "interventions": {
@@ -4552,13 +4552,13 @@
     },
     "escape": {
      "num": 0,
-     "den": 33,
+     "den": 35,
      "share": 0.0,
-     "pending": 2,
+     "pending": 0,
      "coverage": {
-      "k": 33,
+      "k": 35,
       "n": 35,
-      "share": 0.9429
+      "share": 1.0
      }
     },
     "interventions": {

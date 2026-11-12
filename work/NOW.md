@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 82 changed since checked · 3 mentioned in commits · 12 stale. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 82 changed since checked · 3 mentioned in commits · 53 stale. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -36,7 +36,7 @@ _20 more open · `goal = "truth"`_
 - **P1** [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) Epic: golden-path acceptance tests [spec] · size L · verified 2026-10-27
 - **P1** [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) Epic: specs a cheap model can execute [spec] · size L · verified 2026-10-27
 
-_14 more open · 1 blocked · on hold: gap-634954 · `goal = "golden-path"`_
+_15 more open · 1 blocked · on hold: gap-634954 · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -76,7 +76,7 @@ _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 - **P2** [gap-00e982](items/gap-00e982-a-new-price-snapshot-discards-every-workspace.md) A new price snapshot discards every workspace's learned self-model: the predictor version hashes the snapshot id, so load_or_new sets the state aside instead of re-pricing it · size M · verified 2026-10-28
 - **P2** [bug-fce0a7](items/bug-fce0a7-knowledge-tiers-have-two-promotion-rules-a.md) Knowledge tiers have two promotion rules: a pass that surfaces an entry re-tiers it through evaluate_tier_progression_v2 (transient to working at 1 confirmation, working to consolidated at 2), a repeat through the memory spec's 2 confirmations and 3 contexts, so every runtime lesson is Working at admission on its own pass (all 46 admissions in Undertow's store) [bug] · size M · verified 2026-10-27
 
-_11 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 

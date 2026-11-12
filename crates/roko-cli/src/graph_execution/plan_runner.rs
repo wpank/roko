@@ -71,13 +71,13 @@ impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
     }
 }
 
-fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>) {
+fn join_approval_tui_thread<T>(handle: Option<std::thread::JoinHandle<anyhow::Result<T>>>) {
     let Some(handle) = handle else {
         return;
     };
 
     match handle.join() {
-        Ok(Ok(())) => {}
+        Ok(Ok(_)) => {}
         Ok(Err(err)) => {
             tracing::error!(error = %err, "approval TUI exited with error");
         }
@@ -661,12 +661,14 @@ fn restore_redirected_stderr() {
 /// terminal before the caller reports anything.
 struct TuiSession {
     shutdown: Option<std::sync::mpsc::Sender<()>>,
-    handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
+    handle: Option<std::thread::JoinHandle<anyhow::Result<crate::tui::TuiExit>>>,
 }
 
 impl TuiSession {
-    /// `true` once, when the operator closed the TUI while the run still
-    /// owned it. A TUI that failed rather than quit is logged and ignored.
+    /// `true` once, when the operator quit the TUI while the run still
+    /// owned it. A TUI that closed itself because the plan set completed
+    /// (bug-a362b8), or that failed, is no stop: it is joined, and stderr
+    /// goes back to the terminal for the rest of the run.
     fn closed_by_operator(&mut self) -> bool {
         if self.shutdown.is_none()
             || !self
@@ -676,8 +678,11 @@ impl TuiSession {
         {
             return false;
         }
-        match self.handle.take().map(std::thread::JoinHandle::join) {
-            Some(Ok(Ok(()))) => true,
+        let quit = match self.handle.take().map(std::thread::JoinHandle::join) {
+            Some(Ok(Ok(crate::tui::TuiExit::Quit))) => true,
+            Some(Ok(Ok(crate::tui::TuiExit::Finished | crate::tui::TuiExit::Stopped))) | None => {
+                false
+            }
             Some(Ok(Err(error))) => {
                 tracing::error!(%error, "Graph Engine TUI exited with error; continuing without it");
                 false
@@ -686,8 +691,11 @@ impl TuiSession {
                 tracing::error!("Graph Engine TUI thread panicked; continuing without it");
                 false
             }
-            None => false,
+        };
+        if !quit {
+            restore_redirected_stderr();
         }
+        quit
     }
 
     /// Ask the TUI to exit and wait until it has restored the terminal.
@@ -1988,7 +1996,7 @@ async fn run_graph_plan_body(
                 // keybindings (s=soft-retry, S=repair, c=reverify, F=force-advance,
                 // V=reverify-plan, p=pause/resume) forward commands to this loop.
                 app.with_execution_command_sender(tui_cmd_sender, tui_ack_receiver)
-                    .run()
+                    .run_to_exit()
             });
         let handle = match handle {
             Ok(handle) => handle,
@@ -9860,7 +9868,7 @@ exec sleep 60
         let (shutdown, _shutdown_rx) = std::sync::mpsc::channel();
         let mut tui = Some(TuiSession {
             shutdown: Some(shutdown),
-            handle: Some(std::thread::spawn(|| Ok(()))),
+            handle: Some(std::thread::spawn(|| Ok(crate::tui::TuiExit::Quit))),
         });
         wait_until_finished(tui.as_ref().expect("session"));
         let interrupt = PlanRunInterruptHandle::default();
@@ -9870,6 +9878,28 @@ exec sleep 60
             Some(PlanRunInterrupt::TuiClosed)
         );
         assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::TuiClosed));
+    }
+
+    /// bug-a362b8: the TUI closes itself once the plan set completes, while
+    /// the run still delivers. That is no stop: the run ends as it ends,
+    /// and asks for no resume.
+    #[test]
+    fn a_tui_that_closes_itself_at_the_end_does_not_stop_the_run() {
+        for exit in [crate::tui::TuiExit::Finished, crate::tui::TuiExit::Stopped] {
+            let (shutdown, _shutdown_rx) = std::sync::mpsc::channel();
+            let mut tui = Some(TuiSession {
+                shutdown: Some(shutdown),
+                handle: Some(std::thread::spawn(move || Ok(exit))),
+            });
+            wait_until_finished(tui.as_ref().expect("session"));
+            let interrupt = PlanRunInterruptHandle::default();
+
+            assert_eq!(pending_interrupt(&interrupt, &mut tui), None, "{exit:?}");
+            assert_eq!(interrupt.requested(), None, "{exit:?}");
+            // Joined once: later passes of the driver loop see no TUI to read.
+            assert!(tui.as_ref().is_some_and(|session| session.handle.is_none()));
+            assert_eq!(pending_interrupt(&interrupt, &mut tui), None, "{exit:?}");
+        }
     }
 
     #[test]
@@ -9895,7 +9925,7 @@ exec sleep 60
                 // Like the TUI loop: exit on the signal or a closed channel.
                 let _ = shutdown_rx.recv();
                 stopped_tx.send(()).expect("report stop");
-                Ok(())
+                Ok(crate::tui::TuiExit::Stopped)
             })),
         };
 

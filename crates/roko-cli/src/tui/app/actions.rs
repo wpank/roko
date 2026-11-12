@@ -37,6 +37,7 @@ impl App {
             TuiAction::QuitConfirmed => {
                 tracing::info!("TUI exiting: user quit");
                 self.running = false;
+                self.exit = TuiExit::Quit;
             }
             TuiAction::SwitchTab(tab) => {
                 let previous_tab = self.tui_state.active_tab;

@@ -2,7 +2,7 @@
 id = "bug-a362b8"
 kind = "bug"
 title = "A terminal plan run that finishes reads as stopped: the dashboard closes itself when the plan set completes, roko takes that for the operator quitting, prints 'stopped by closing the TUI … resume with --resume-plan' and exits 130 after delivering the work"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-cli/tui"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "58fd30ad4"
 source = "round v8 roko-recovery terminal captures (tmp/hermes-roko-v8/design/terminal/before, a0089c19c), the lead's approved proposal (tmp/hermes-roko-v8/design/terminal/README.md)"
 discovered_from = "agent:roko-recovery (round v8, a0089c19c)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::pending_interrupt", "crates/roko-cli/src/graph_execution/plan_runner.rs::TuiSession", "crates/roko-cli/src/tui/app/channels.rs::update_plan_completion_exit", "crates/roko-cli/src/tui/app/event_loop.rs::run"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-0d6ae5", "bug-415db3"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_tui_that_closes_itself_at_the_end_does_not_stop_the_run' crates/roko-cli/src && cargo test -p roko-cli --lib a_tui_that_closes_itself_at_the_end_does_not_stop_the_run"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T10:28:02Z"
+commit = "58fd30ad4"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-12T09:50:07Z"
+forced = false
+evidence = "58fd30ad4 on work/bug-a362b8: App::run_to_exit says why the TUI closed (Quit, Finished, Stopped), and only a Quit stops the run; a TUI that closed itself is joined and stderr goes back to the terminal. Branch checks: nightly fmt; roko-cli lib 4100 passed, 0 failed, a_tui_that_closes_itself_at_the_end_does_not_stop_the_run among them; workspace clippy -D warnings clean; the binary builds. Round v8's $0 terminal captures on that binary: plans/greeting exits 0 with its summary and no resume line, plans/broken exits 1 (tmp/hermes-roko-v8/roko-recovery/runs/item1/)."
 +++
 
 ## Problem

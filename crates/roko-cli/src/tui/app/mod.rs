@@ -61,6 +61,18 @@ use super::ws_client::AgentStreamClient;
 
 pub use event_loop::run;
 
+/// Why the TUI closed (bug-a362b8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiExit {
+    /// The person quit it.
+    Quit,
+    /// It closed itself: the plan set it watched completed, or its run
+    /// finished.
+    Finished,
+    /// Its owner asked it to stop.
+    Stopped,
+}
+
 /// Interactive dashboard shell backed by the existing snapshot renderer.
 ///
 /// Supports two rendering paths:
@@ -101,6 +113,8 @@ pub struct App {
     // -- Common --
     /// Whether the event loop should keep running.
     pub running: bool,
+    /// Why the event loop stopped running.
+    exit: TuiExit,
     /// Timestamp of the last data refresh.
     pub last_refresh: Instant,
     /// Per-page scroll position (legacy).
@@ -1091,6 +1105,7 @@ impl App {
             last_data_gen,
             verdicts_aggregator: None,
             running: true,
+            exit: TuiExit::Quit,
             last_refresh: Instant::now(),
             scroll_offset: HashMap::new(),
             signal_selection: 0,

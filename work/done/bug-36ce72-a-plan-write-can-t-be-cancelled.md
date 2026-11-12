@@ -2,7 +2,7 @@
 id = "bug-36ce72"
 kind = "bug"
 title = "A plan write can't be cancelled: plan_generate answers with its operation id as run_id, but run_cancel looks only for prompt and plan runs and fails not_found for that id, so phase 5.5's cancelled write f43afc45 ran on to completion and was billed (the 'interrupted' the host showed is the plugin's wording)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -10,7 +10,8 @@ size = "M"
 subsystem = ["roko-serve/mcp"]
 created = 2026-10-28
 updated = 2026-11-12
-last_verified = 2026-10-28
+last_verified = 2026-11-12
+last_verified_rev = "0ba44e29e"
 source = "round-v7 team-lead: phase 5.5 plan write, op f43afc45, roko-main-38bedecea"
 discovered_from = "agent:hermes-pilot (round v7, phase 5.5), the lead's ask"
 anchors = ["crates/roko-serve/src/routes/mcp.rs::cancel_run", "crates/roko-serve/src/state.rs::OperationHandle", "crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation"]
@@ -18,6 +19,19 @@ links = { depends_on = [], blocks = [], related = ["bug-a0f01e", "bug-1e8263", "
 
 [[verify]]
 command = "grep -rqw 'fn run_cancel_stops_a_plan_write' crates/roko-serve/src && grep -rqw 'fn the_cancel_route_stops_a_plan_write' crates/roko-serve/src && grep -rqw 'fn a_cancel_never_stops_a_plan_write_being_saved' crates/roko-serve/src && cargo test -p roko-serve --lib stops_a_plan_write"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T21:37:59Z"
+commit = "0ba44e29e"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "M"
+claimed_at = "2026-11-12T20:36:38Z"
+forced = false
+evidence = "run_cancel and POST /api/plans/{id}/cancel stop a plan write by its operation id (plan_generate's run_id) or its plan's id: the write's task drops the generation (its planner call with it) unless the plan is being saved, the operation ends cancelled (OperationStatus::Cancelled) in its handle and operations.jsonl with its last progress, plan_generate.cancelled goes on the event stream, and the answer is {cancelled, run_id, plan_id, state: cancelled, cost_usd} (again: already_ended; a write that wrote or failed first: 409); answers only add fields. Red first: at 90467b6dc the three tests failed with not_found 'no active execution for this plan' (tmp/hermes-roko-v8/portal-v8/logs/36ce72-red.kept.log). At 0ba44e29e's tree in roko-work-bug-36ce72: run_cancel_stops_a_plan_write, the_cancel_route_stops_a_plan_write and a_cancel_never_stops_a_plan_write_being_saved pass; roko-serve lib 1099/1099; integration plan_authoring 19, plan_revision 6, api_integration 97, route_coverage_matrix 8, plan_execute 6, all passing; nightly fmt and clippy -D warnings clean."
 +++
 
 ## Problem

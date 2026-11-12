@@ -3642,3 +3642,277 @@ async fn plan_generation_status_outlives_its_handle() {
         assert!(status.get("elapsed_secs").is_none(), "{status}");
     }
 }
+
+/// Sets its flag when it is dropped before it is disarmed: a planner call
+/// whose future a cancel dropped, as a CLI planner's child is killed when its
+/// future is. A call that ends disarms it.
+struct DropFlag(Option<Arc<std::sync::atomic::AtomicBool>>);
+
+impl DropFlag {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        if let Some(flag) = &self.0 {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// A runtime whose plan write reports its first planner call settled, at
+/// stage `planning`, or (`saving`) reports that it saves its plan, then waits
+/// at `gate`. A saving write writes its plan once `gate` opens; `dropped`
+/// says whether a cancel dropped the write (bug-36ce72).
+struct HeldWriteRuntime {
+    saving: bool,
+    gate: Arc<Notify>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl HeldWriteRuntime {
+    fn new(saving: bool) -> Self {
+        Self {
+            saving,
+            gate: Arc::new(Notify::new()),
+            dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for HeldWriteRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("a held plan write runs nothing")
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        _prompt: &str,
+        _for_chat_host: bool,
+        _options: crate::runtime::PlanGenerationOptions,
+        progress: crate::runtime::ProgressReporter,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        let mut call = DropFlag(Some(Arc::clone(&self.dropped)));
+        progress(json!({
+            "stage": if self.saving { "recording" } else { "planning" },
+            "attempt": 1,
+            "attempts": 1,
+            "model": "planner",
+            "calls": 1,
+            "cost_usd": 0.0375,
+            "max_usd": 2.0,
+        }));
+        self.gate.notified().await;
+        call.disarm();
+        let plan_dir = workdir.join("plans").join(slug);
+        std::fs::create_dir_all(&plan_dir)?;
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]\n")?;
+        Ok(crate::runtime::PlanGenerationResult {
+            plan_targets: vec![plan_dir],
+            plans_root: workdir.join("plans"),
+            artifacts: Vec::new(),
+            cost_usd: 0.0375,
+            source_checks: None,
+            repairs: Vec::new(),
+        })
+    }
+
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        if !workdir.join("plans").join(plan_id).exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(json!({
+            "id": plan_id,
+            "title": "Widgets",
+            "task_count": 1,
+            "tasks_done": 0,
+            "tasks_failed": 0,
+            "completed": false,
+            "status": "ready",
+            "old_format": false,
+        }))?))
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// `method` on `uri` through the router, with auth off: the status and JSON
+/// body.
+async fn route_json(
+    state: &Arc<AppState>,
+    method: &str,
+    uri: &str,
+) -> (axum::http::StatusCode, Value) {
+    let app = build_router(
+        Arc::clone(state),
+        &[],
+        ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        },
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Start a plan write on `state` and wait until it reports its first
+/// progress: its operation id and its plan's id.
+async fn held_write(state: &Arc<AppState>) -> (String, String) {
+    let (op_id, slug) = start_plan_generation(
+        state,
+        "Build a widget library".into(),
+        &crate::runtime::RunOrigin::Http,
+        None,
+        GenerationCap::resolve(state, None),
+        None,
+    )
+    .await;
+    let uri = format!("/api/operations/{op_id}");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while route_json(state, "GET", &uri)
+            .await
+            .1
+            .get("progress")
+            .is_none()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the write reports its progress");
+    (op_id, slug)
+}
+
+/// bug-36ce72: `POST /api/plans/{id}/cancel`, the route a run's cancel
+/// takes, stops a plan write named by its operation id or by its plan's id.
+/// It answers 200 with `cancelled` and what the write's settled calls cost,
+/// the planner call is dropped, no plan directory is left, the operation's
+/// status says `cancelled`, and `plan_generate.cancelled` is on the event
+/// stream. A second cancel answers the same, as already ended.
+#[tokio::test]
+async fn the_cancel_route_stops_a_plan_write() {
+    for by_plan_id in [false, true] {
+        let runtime = Arc::new(HeldWriteRuntime::new(false));
+        let (dir, state) = test_state_with_runtime(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+        let (op_id, slug) = held_write(&state).await;
+        let name = if by_plan_id { &slug } else { &op_id };
+
+        let (status, body) = route_json(&state, "POST", &format!("/api/plans/{name}/cancel")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["cancelled"], true, "{body}");
+        assert_eq!(body["state"], "cancelled", "{body}");
+        assert_eq!(body["run_id"], op_id.as_str(), "{body}");
+        assert_eq!(body["plan_id"], slug.as_str(), "{body}");
+        assert_eq!(body["cost_usd"], 0.0375, "{body}");
+        assert!(
+            runtime.dropped.load(Ordering::SeqCst),
+            "the planner call is stopped"
+        );
+        assert!(!dir.path().join("plans").join(&slug).exists());
+
+        let (_, operation) = route_json(&state, "GET", &format!("/api/operations/{op_id}")).await;
+        assert_eq!(operation["status"], "cancelled", "{operation}");
+        assert_eq!(operation["progress"]["cost_usd"], 0.0375, "{operation}");
+        let cancelled_events = state
+            .state_hub
+            .replay_from(0)
+            .into_iter()
+            .filter(|envelope| {
+                matches!(
+                    &envelope.payload,
+                    roko_core::DashboardEvent::EventLogEntry { event_type, plan_id, .. }
+                        if event_type == "plan_generate.cancelled" && *plan_id == slug
+                )
+            })
+            .count();
+        assert_eq!(cancelled_events, 1);
+
+        let (status, again) =
+            route_json(&state, "POST", &format!("/api/plans/{op_id}/cancel")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{again}");
+        assert_eq!(again["state"], "cancelled", "{again}");
+        assert_eq!(again["already_ended"], true, "{again}");
+    }
+}
+
+/// bug-36ce72: a cancel that comes while a plan write saves its plan lets
+/// the write end as it would have. The plan is written whole, the operation
+/// completes, and the cancel waits for it, then answers 409: the write had
+/// already written its plan.
+#[tokio::test]
+async fn a_cancel_never_stops_a_plan_write_being_saved() {
+    let runtime = Arc::new(HeldWriteRuntime::new(true));
+    let (dir, state) = test_state_with_runtime(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+    let (op_id, slug) = held_write(&state).await;
+
+    let cancel = tokio::spawn({
+        let state = Arc::clone(&state);
+        let uri = format!("/api/plans/{op_id}/cancel");
+        async move { route_json(&state, "POST", &uri).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!cancel.is_finished(), "the cancel waits for the save");
+    runtime.gate.notify_one();
+    let (status, body) = cancel.await.expect("the cancel answers");
+    assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("had already written it")),
+        "{body}"
+    );
+    assert!(!runtime.dropped.load(Ordering::SeqCst));
+    assert!(
+        dir.path()
+            .join("plans")
+            .join(&slug)
+            .join("tasks.toml")
+            .is_file()
+    );
+    let (_, operation) = route_json(&state, "GET", &format!("/api/operations/{op_id}")).await;
+    assert_eq!(operation["status"], "completed", "{operation}");
+}

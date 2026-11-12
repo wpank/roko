@@ -331,6 +331,19 @@ pub struct OperationHandle {
     /// What the operation is doing, for a producer that reports it as it
     /// moves on (plan generation, gap-11d870): its latest JSON object.
     pub progress: Option<tokio::sync::watch::Receiver<serde_json::Value>>,
+    /// A plan write's own parts, which other operations don't have
+    /// (bug-36ce72).
+    pub write: Option<PlanWrite>,
+}
+
+/// What a plan write has beside its operation (bug-36ce72).
+pub struct PlanWrite {
+    /// The plan it writes.
+    pub plan_id: String,
+    /// Stops the write while its planner works. Once the plan is being
+    /// saved, the write ends as it would have, so a plan is never half
+    /// written.
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 /// Status of an async operation.
@@ -349,6 +362,9 @@ pub enum OperationStatus {
         /// Error description.
         error: String,
     },
+    /// The operation was stopped before it ended: a plan write that
+    /// `run_cancel` or `POST /api/plans/{id}/cancel` stopped (bug-36ce72).
+    Cancelled,
 }
 
 /// The state of a run, in the words every run route reports.

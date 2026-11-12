@@ -741,6 +741,7 @@ pub(crate) fn run_handle_state(handle: &RunHandle) -> (RunState, Option<&str>) {
             (verdict, None)
         }
         OperationStatus::Failed { error } => (RunState::Failed, Some(error.as_str())),
+        OperationStatus::Cancelled => (RunState::Cancelled, None),
     }
 }
 

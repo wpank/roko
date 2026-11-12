@@ -301,8 +301,9 @@ fn tools() -> Vec<(Value, &'static str)> {
                  workspace's plan-writing cap applies, and the answer gives the cap that \
                  applies. To plan from a spec file in the workspace, \
                  pass its path as spec_path: Roko reads the file exactly, so never copy a spec \
-                 into prompt. Answers at once with a run id, which run_status follows, and the \
-                 plan's id, which plan_run takes once the plan is written.",
+                 into prompt. Answers at once with a run id, which run_status follows and \
+                 run_cancel stops, and the plan's id, which plan_run takes once the plan is \
+                 written.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -341,7 +342,9 @@ fn tools() -> Vec<(Value, &'static str)> {
         (
             tool(
                 "run_cancel",
-                "Stop a Roko run that is running or queued: a run_prompt or plan_run run.",
+                "Stop a Roko run that is running or queued: a run_prompt or plan_run run, or a \
+                 plan_generate plan write. A stopped write writes no plan, and the answer says \
+                 what it spent.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -942,7 +945,8 @@ async fn run_or_operation(state: &Arc<AppState>, id: &str) -> Result<Value, ApiE
 }
 
 /// The state of operation `id` as `run_status` reports a run's: `running`,
-/// then `succeeded` with its result or `failed` with its error. A running
+/// then `succeeded` with its result, `failed` with its error, or `cancelled`
+/// (a plan write that was stopped, bug-36ce72). A running
 /// operation says how long it has run, and one that reports progress
 /// carries its latest report, and keeps it once it ends (gap-11d870). A
 /// finished one whose handle is gone is read from the kept record of
@@ -969,6 +973,7 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
         OperationStatus::Running => (RunState::Running, None, None),
         OperationStatus::Completed { result } => (RunState::Succeeded, result.as_deref(), None),
         OperationStatus::Failed { error } => (RunState::Failed, None, Some(error.as_str())),
+        OperationStatus::Cancelled => (RunState::Cancelled, None, None),
     };
     let result = result.and_then(|result| serde_json::from_str::<Value>(result).ok());
     let mut summary = json!({
@@ -1130,7 +1135,14 @@ async fn generate_plan(
 /// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run. A run
 /// whose roko process stopped while it ran is over already: the answer says
 /// `interrupted` and why (bug-dceafd).
+///
+/// The run id `plan_generate` answers is a plan write's, which this stops
+/// first (bug-36ce72); its answer adds the plan's id and what the write
+/// spent (`plan_id`, `cost_usd`).
 async fn cancel_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    if let Some(cancelled) = super::plans::cancel_plan_write(state, run_id).await {
+        return cancelled;
+    }
     let mut answer = json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() });
     match super::run::cancel_background_run(state, run_id).await {
         Some(stopped) => stopped.map_err(ApiError::conflict)?,
@@ -2912,5 +2924,136 @@ mod tests {
         assert_eq!(summary["active"], false, "{summary}");
         assert_eq!(summary["result"]["answer"], 42, "{summary}");
         assert!(operation_state(&state, "op-2").await.is_none());
+    }
+
+    /// A runtime whose plan write reports its first planner call settled,
+    /// then waits on the next until a cancel drops it, which `dropped` records:
+    /// a CLI planner's child is killed when its future is (bug-36ce72).
+    struct HeldWrite {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    /// Sets its flag when it is dropped.
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for HeldWrite {
+        async fn generate_plan_reporting(
+            &self,
+            _workdir: &std::path::Path,
+            _slug: &str,
+            _prompt: &str,
+            _for_chat_host: bool,
+            _options: crate::runtime::PlanGenerationOptions,
+            progress: crate::runtime::ProgressReporter,
+        ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+            let _call = DropFlag(Arc::clone(&self.dropped));
+            progress(json!({
+                "stage": "planning",
+                "attempt": 1,
+                "attempts": 1,
+                "model": "planner",
+                "calls": 1,
+                "cost_usd": 0.0375,
+                "max_usd": 2.0,
+            }));
+            std::future::pending::<()>().await;
+            anyhow::bail!("a held write never ends on its own")
+        }
+
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            anyhow::bail!("HeldWrite only writes plans")
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// bug-36ce72: `run_cancel` on the run id `plan_generate` answered stops
+    /// the plan write. The planner call is dropped, and the answer says
+    /// `cancelled`, the plan's id and what the write's settled calls cost.
+    /// `run_status` and the kept record say `cancelled` too, and no plan
+    /// directory is left. A second cancel answers the same, as already ended.
+    #[tokio::test]
+    async fn run_cancel_stops_a_plan_write() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = Arc::new(HeldWrite {
+            dropped: Arc::clone(&dropped),
+        });
+        let (dir, state, open) = state_and_router(runtime, open_config());
+        let asked = call(1, "plan_generate", json!({ "prompt": "Add a flag." }));
+        let (_, body) = post_mcp(&open, &asked, &[]).await;
+        let answer = &body["result"]["structuredContent"];
+        let run_id = answer["run_id"].as_str().expect("a run id").to_string();
+        let plan_id = answer["plan_id"].as_str().expect("a plan id").to_string();
+        let status = call(2, "run_status", json!({ "run_id": run_id }));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (_, body) = post_mcp(&open, &status, &[]).await;
+                if body["result"]["structuredContent"]["progress"]["calls"] == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the write reports its first call");
+
+        let cancel = call(3, "run_cancel", json!({ "run_id": run_id }));
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let cancelled = &body["result"]["structuredContent"];
+        assert_eq!(cancelled["state"], "cancelled", "{body}");
+        assert_eq!(cancelled["run_id"], run_id.as_str(), "{body}");
+        assert_eq!(cancelled["plan_id"], plan_id.as_str(), "{body}");
+        assert_eq!(cancelled["cost_usd"], 0.0375, "{body}");
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "the planner call is stopped"
+        );
+
+        let (_, body) = post_mcp(&open, &status, &[]).await;
+        let summary = &body["result"]["structuredContent"];
+        assert_eq!(summary["state"], "cancelled", "{body}");
+        assert_eq!(summary["active"], false, "{body}");
+        assert_eq!(summary["progress"]["cost_usd"], 0.0375, "{body}");
+        assert!(!dir.path().join("plans").join(&plan_id).exists());
+        let kept = std::fs::read_to_string(state.layout.state_dir().join("operations.jsonl"))
+            .expect("the kept record");
+        assert!(
+            kept.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|row| row["id"] == run_id.as_str() && row["status"]["state"] == "cancelled"),
+            "{kept}"
+        );
+
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        let again = &body["result"]["structuredContent"];
+        assert_eq!(again["state"], "cancelled", "{body}");
+        assert_eq!(again["already_ended"], true, "{body}");
     }
 }

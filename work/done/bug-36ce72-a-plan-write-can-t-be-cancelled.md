@@ -2,22 +2,36 @@
 id = "bug-36ce72"
 kind = "bug"
 title = "A plan write can't be cancelled: plan_generate answers with its operation id as run_id, but run_cancel looks only for prompt and plan runs and fails not_found for that id, so phase 5.5's cancelled write f43afc45 ran on to completion and was billed (the 'interrupted' the host showed is the plugin's wording)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-serve/mcp"]
 created = 2026-10-28
-updated = 2026-10-28
-last_verified = 2026-10-28
+updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "0ba44e29e"
 source = "round-v7 team-lead: phase 5.5 plan write, op f43afc45, roko-main-38bedecea"
 discovered_from = "agent:hermes-pilot (round v7, phase 5.5), the lead's ask"
 anchors = ["crates/roko-serve/src/routes/mcp.rs::cancel_run", "crates/roko-serve/src/state.rs::OperationHandle", "crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation"]
-links = { depends_on = [], blocks = [], related = ["bug-a0f01e", "bug-1e8263"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-a0f01e", "bug-1e8263", "gap-6774b5", "gap-f8c57a"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn run_cancel_stops_a_plan_write' crates/roko-serve/src && cargo test -p roko-serve --lib run_cancel_stops_a_plan_write"
+command = "grep -rqw 'fn run_cancel_stops_a_plan_write' crates/roko-serve/src && grep -rqw 'fn the_cancel_route_stops_a_plan_write' crates/roko-serve/src && grep -rqw 'fn a_cancel_never_stops_a_plan_write_being_saved' crates/roko-serve/src && cargo test -p roko-serve --lib stops_a_plan_write"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T21:37:59Z"
+commit = "0ba44e29e"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "M"
+claimed_at = "2026-11-12T20:36:38Z"
+forced = false
+evidence = "run_cancel and POST /api/plans/{id}/cancel stop a plan write by its operation id (plan_generate's run_id) or its plan's id: the write's task drops the generation (its planner call with it) unless the plan is being saved, the operation ends cancelled (OperationStatus::Cancelled) in its handle and operations.jsonl with its last progress, plan_generate.cancelled goes on the event stream, and the answer is {cancelled, run_id, plan_id, state: cancelled, cost_usd} (again: already_ended; a write that wrote or failed first: 409); answers only add fields. Red first: at 90467b6dc the three tests failed with not_found 'no active execution for this plan' (tmp/hermes-roko-v8/portal-v8/logs/36ce72-red.kept.log). At 0ba44e29e's tree in roko-work-bug-36ce72: run_cancel_stops_a_plan_write, the_cancel_route_stops_a_plan_write and a_cancel_never_stops_a_plan_write_being_saved pass; roko-serve lib 1099/1099; integration plan_authoring 19, plan_revision 6, api_integration 97, route_coverage_matrix 8, plan_execute 6, all passing; nightly fmt and clippy -D warnings clean."
 +++
 
 ## Problem
@@ -72,21 +86,33 @@ handles the plugin's side. This item is roko's: the cancel has nothing to stop t
 
 ## Plan
 
-1. Give `OperationHandle` a cancel token, and pass it to the plan write, so a cancel stops the planner call. That
-   means a CLI planner's process group, or dropping the HTTP stream.
-2. Record the operation as `cancelled` in its handle and in `operations.jsonl`, with what it spent so far. Publish
-   `OperationCompleted { success: false }`.
-3. Make `run_cancel` look in `AppState.operations` for a running plan write under that id, before the run lookups,
-   and answer `{ run_id, state: "cancelled" }`. Add `POST /api/operations/{id}/cancel` for the REST side.
-4. A write cancelled before it writes leaves no plan directory. One cancelled while writing leaves the directory as
-   it was before.
-5. Test: start a plan write held at its planner call, then `run_cancel` its `run_id`. It answers `cancelled`, the
-   planner is stopped, and `run_status` says `cancelled`.
+The lead's ask (round v8, 2026-11-12): a plan write is cancellable through the same `run_cancel` and REST route
+the runs use, and `--json` and the MCP shapes stay backward compatible.
+
+1. `OperationHandle` gets a plan write's parts (`write: Option<PlanWrite>`), with a cancel token. The write's task
+   races the generation against it. A cancel drops the generation's future, which stops the planner call: a CLI
+   planner's child is killed on drop, and an HTTP stream is closed.
+2. A cancel that comes once the plan is being saved (stage `writing` or `recording`, gap-11d870) lets the write
+   end, so a plan is never half written. Before that stage nothing is in `plans/<slug>/`, so a cancelled write
+   leaves no plan directory.
+3. The operation ends `cancelled`, a new `OperationStatus::Cancelled`, in its handle and in `operations.jsonl`. It
+   keeps its last progress, whose `cost_usd` is what its settled calls cost. `plan_generate.cancelled` goes on the
+   event stream, and `OperationCompleted { success: false }` on the bus.
+4. `run_cancel` and `POST /api/plans/{id}/cancel` look for a running plan write first, named by its operation id
+   (the `run_id` that `plan_generate` answers) or by its plan's id. Both answer
+   `{ cancelled: true, run_id, plan_id, state: "cancelled", cost_usd }`, which only adds fields to what each
+   answered for a run. A write that has already ended is a 409 that says how it ended. `run_status` and
+   `GET /api/operations/{id}` report `cancelled`.
+5. Tests:
+   - `run_cancel_stops_a_plan_write` (MCP);
+   - `the_cancel_route_stops_a_plan_write` (REST, by operation id and by plan id);
+   - `a_cancel_never_stops_a_plan_write_being_saved`.
 
 ## Done when
 
-- `run_cancel` on the `run_id` that `plan_generate` returned stops the write and answers `cancelled`, and
-  `run_status` and `GET /api/operations/{id}` report `cancelled`.
+- `run_cancel` on the `run_id` that `plan_generate` returned stops the write and answers `cancelled`, as
+  `POST /api/plans/{id}/cancel` does. `run_status` and `GET /api/operations/{id}` report `cancelled`.
+- The planner call is stopped, no plan directory is left, and the answer says what the write had spent.
 - The `[[verify]]` passes.
 
 ## Notes
@@ -94,3 +120,7 @@ handles the plugin's side. This item is roko's: the cancel has nothing to stop t
 - I couldn't tell from roko's records which call the plugin sent: `auth-audit.jsonl` records `POST /mcp` without a
   tool name. Whichever it was, roko has no path that stops a plan write. plugin-wow is checking the plugin's call
   and owns the "interrupted" wording.
+- A revision (`plan_revise:<id>`) has no cancel yet. It rewrites an existing plan in place, so stopping it needs
+  the same "never half written" rule; that's left for a later item.
+- The spend on the event stream as calls settle, and a plan list row for a write in progress, are gap-6774b5. The
+  portal's stop key and SPENT are gap-f8c57a.

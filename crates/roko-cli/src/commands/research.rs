@@ -409,6 +409,7 @@ pub(crate) async fn cmd_research(
                     role: Some(resolved_role),
                     allowed_tools: Some("Read,Write,Edit"),
                     max_turns: None,
+                    spend_limit: None,
                 },
                 &spend,
             )
@@ -476,6 +477,7 @@ pub(crate) async fn cmd_research(
                     role: Some(resolved_role),
                     allowed_tools: Some("Read,Write,Edit"),
                     max_turns: None,
+                    spend_limit: None,
                 },
                 &spend,
             )
@@ -554,6 +556,7 @@ pub(crate) async fn cmd_research(
                     role: Some(resolved_role),
                     allowed_tools: Some("Read,Write,Edit"),
                     max_turns: None,
+                    spend_limit: None,
                 },
                 &spend,
             )
@@ -815,6 +818,8 @@ async fn run_perplexity_deep(
             dangerously_skip_permissions: false,
             name: String::new(),
             role: Some(role.to_string()),
+            turn_budget: None,
+            max_budget_usd: None,
         },
         format!("create Perplexity deep research agent for model {model_slug}"),
     )?;
@@ -1030,6 +1035,8 @@ async fn run_gemini_grounded(
             bare_mode: false,
             dangerously_skip_permissions: false,
             role: Some(role.to_string()),
+            turn_budget: None,
+            max_budget_usd: None,
         },
         format!("create Gemini research agent for model {model_slug}"),
     )?;
@@ -1166,6 +1173,8 @@ async fn run_perplexity_standard(
             dangerously_skip_permissions: false,
             name: String::new(),
             role: Some(role.to_string()),
+            turn_budget: None,
+            max_budget_usd: None,
         },
         format!("create Perplexity research agent for model {model_slug}"),
     )?;
@@ -1282,6 +1291,7 @@ async fn run_agent_fallback(
             role: Some(role),
             allowed_tools: Some("Read,Write,Edit"),
             max_turns: None,
+            spend_limit: None,
         },
         &spend,
     )

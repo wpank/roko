@@ -720,6 +720,7 @@ pub async fn revise_plan_source(
                 role: Some("strategist"),
                 allowed_tools: Some("Read,Grep,Glob"),
                 max_turns: Some(crate::plan_generate::PLANNER_MAX_TURNS),
+                spend_limit: None,
             })
             .await?;
             spend.record(&call).await;
@@ -804,6 +805,9 @@ pub struct AuthoringSpend {
     calls: AtomicU32,
     /// What the recorded calls cost together, in micro-USD (bug-a0432b).
     spent_micro_usd: AtomicU64,
+    /// What the costliest recorded call cost, in micro-USD: what the next is
+    /// expected to cost (bug-187c5c).
+    costliest_micro_usd: AtomicU64,
 }
 
 impl AuthoringSpend {
@@ -854,6 +858,7 @@ impl AuthoringSpend {
             live,
             calls: AtomicU32::new(0),
             spent_micro_usd: AtomicU64::new(0),
+            costliest_micro_usd: AtomicU64::new(0),
         }
     }
 
@@ -869,14 +874,24 @@ impl AuthoringSpend {
         self.calls.load(Ordering::Relaxed)
     }
 
+    /// What the costliest call recorded so far cost, in USD: what the next
+    /// one is expected to cost (bug-187c5c).
+    #[must_use]
+    pub fn costliest_call_usd(&self) -> f64 {
+        self.costliest_micro_usd.load(Ordering::Relaxed) as f64 / 1e6
+    }
+
     /// Record one agent call. Best-effort: a failed write is logged and never
     /// fails the operation.
     pub async fn record(&self, call: &AgentCapture) {
         let attempt = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let usage = call.usage;
         let cost_usd = f64::from(usage.cost_usd);
+        let cost_micro_usd = (cost_usd.max(0.0) * 1e6).round() as u64;
         self.spent_micro_usd
-            .fetch_add((cost_usd.max(0.0) * 1e6).round() as u64, Ordering::Relaxed);
+            .fetch_add(cost_micro_usd, Ordering::Relaxed);
+        self.costliest_micro_usd
+            .fetch_max(cost_micro_usd, Ordering::Relaxed);
         let input_tokens = u64::from(usage.input_tokens);
         let output_tokens = u64::from(usage.output_tokens);
         let cache_read_tokens = u64::from(usage.cache_read_tokens);

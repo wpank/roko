@@ -114,11 +114,22 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   const { data: detail } = usePlanDetail(plan.id, stamp, ended);
   const lastRun = detail?.last_run ?? null;
   const runId = lastRun?.run_id ?? null;
-  const lastPassed = card.state === 'ready' && lastRun?.status === 'succeeded';
-  const { data: result } = useRunResult(card.state === 'passed' || lastPassed ? runId : null, stamp);
+  const lastPassed = card.state === 'ready' && !run.plans[plan.id] && lastRun?.status === 'succeeded';
+  const ranToEnd = card.state === 'passed' || card.state === 'not-checked' || lastPassed;
+  const { data: result } = useRunResult(ranToEnd || card.state === 'failed' ? runId : null, stamp);
   const { data: workspace } = useWorkspace();
-  const reviewable = (card.state === 'passed' || lastPassed) && hasWorkToTake(result);
-  const primaryOrange = !reviewable && card.state !== 'passed' && card.state !== 'not-checked';
+  // A run that ran to its end has one key, the orange review (§4.8): the plan's own keys, revise and run again, wait
+  // in the details fold. A merged run has no key; a failed run with delivered work adds a plain review.
+  const passedRun = ranToEnd && (card.state !== 'ready' || !!result);
+  const reviewable = (passedRun || card.state === 'failed') && hasWorkToTake(result);
+  const planKeysInFold = passedRun || (card.state === 'failed' && reviewable);
+  const reviewWhy =
+    card.state === 'not-checked'
+      ? 'Some tasks finished without a check that judged them: look at what they changed before you merge.'
+      : result?.partial
+        ? 'Only part of the run’s work is on this branch: the tasks that passed their checks.'
+        : null;
+  const primaryOrange = !passedRun && card.state !== 'not-checked';
 
   const selectedRow = card.rows.find((r) => r.id === selectedTaskId) ?? null;
   const selectedPad = selectedRow ? card.steps.flatMap((s) => s.pads).find((p) => p.id === selectedRow.id) : undefined;
@@ -170,6 +181,34 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
     </Key>
   );
 
+  /** The run's changes: orange when it is the run's one key (§4.8), plain beside a failed run's own key. */
+  const reviewKey = (orange: boolean) => (
+    <Key
+      you={orange}
+      data-action="review-run"
+      aria-pressed={reviewing}
+      title={reviewWhy ?? undefined}
+      onClick={() => {
+        onSelectTask(null);
+        setReviewing((r) => !r);
+      }}
+    >
+      review
+    </Key>
+  );
+
+  const primaryKey = (orange: boolean) => (
+    <Key
+      you={orange}
+      kbd={orange ? 'r' : undefined}
+      data-action={primary.kind}
+      disabled={primary.disabled}
+      onClick={primary.perform}
+    >
+      {primary.label}
+    </Key>
+  );
+
   return (
     // While editing, the page grows to fill the stage and the editor takes what is left (design §2, §4a).
     <article className={editing ? 'pt-planpage flex flex-col flex-1' : 'pt-planpage'} data-region="plan" data-state={card.state}>
@@ -212,7 +251,7 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
             <Sequencer steps={card.steps} edges={card.edges} selectedId={selectedTaskId} onSelect={toggleTask} />
           )}
           {reviewing && reviewable && runId !== null ? (
-            <RunChanges runId={runId} onClose={() => setReviewing(false)} />
+            <RunChanges runId={runId} banner={reviewWhy} onClose={() => setReviewing(false)} />
           ) : selectedRow && selectedPad && (
             <TaskDetail
               planId={plan.id}
@@ -234,7 +273,7 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
           <span className="pt-spacer" />
         ) : (
           <p className="pt-sentence" data-region="run-summary">
-            {result && (card.state === 'passed' || lastPassed) ? (
+            {result && passedRun && card.state !== 'not-checked' ? (
               <>
                 {lastPassed && 'Its last run passed. '}
                 <ResultSentence result={result} branch={workspace?.branch ?? null} />
@@ -245,7 +284,7 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
           </p>
         )}
         <div className="rk-keys">
-          {!cantRun && primary.disabled && primary.reason !== null && (
+          {!cantRun && !planKeysInFold && primary.disabled && primary.reason !== null && (
             <span data-reason className="pt-reason">
               {primary.reason}
             </span>
@@ -273,33 +312,13 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
             <Key data-action="cancel" disabled={primary.disabled} onClick={primary.perform}>
               {primary.label}
             </Key>
+          ) : passedRun ? (
+            reviewable && reviewKey(true)
           ) : (
             <>
-              {!reviewable && reviseKey}
-              {primary.kind !== 'none' && (
-                <Key
-                  you={primaryOrange}
-                  kbd={primaryOrange ? 'r' : undefined}
-                  data-action={primary.kind}
-                  disabled={primary.disabled}
-                  onClick={primary.perform}
-                >
-                  {primary.label}
-                </Key>
-              )}
-              {reviewable && (
-                <Key
-                  you
-                  data-action="review-run"
-                  aria-pressed={reviewing}
-                  onClick={() => {
-                    onSelectTask(null);
-                    setReviewing((r) => !r);
-                  }}
-                >
-                  review
-                </Key>
-              )}
+              {reviewable && reviewKey(false)}
+              {!planKeysInFold && reviseKey}
+              {primary.kind !== 'none' && primaryKey(primaryOrange)}
             </>
           )}
         </div>
@@ -309,7 +328,22 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
       <Fold summary="details" data-fold="plan">
         <PlanFacts card={card} run={run} planId={plan.id} />
         <div className="pt-line" style={{ marginTop: 14 }}>
-          <span className="pt-hint">The plan lives in its tasks.toml; edit it by hand here.</span>
+          <span className="pt-hint">
+            {passedRun
+              ? 'To change the plan, revise it in words or edit its tasks.toml; run again runs every task once more.'
+              : 'The plan lives in its tasks.toml; edit it by hand here.'}
+          </span>
+          {planKeysInFold && (
+            <div className="rk-keys">
+              {primary.disabled && primary.reason !== null && (
+                <span data-reason className="pt-reason">
+                  {primary.reason}
+                </span>
+              )}
+              {reviseKey}
+              {primary.kind !== 'none' && primary.kind !== 'cancel' && primaryKey(false)}
+            </div>
+          )}
           <Key
             size="s"
             data-action="edit"
@@ -367,8 +401,14 @@ function sentence(card: Card, run: RunState, planId: string, errors: number, roo
   const n = (id: string) => card.steps.flatMap((s) => s.pads).find((p) => p.id === id)?.n.replace(/^0/, '') ?? id;
   const passed = card.rows.filter((r) => ['passed', 'already_satisfied', 'passed_with_preexisting_failures'].includes(r.status)).length;
   switch (card.state) {
-    case 'ready':
+    case 'ready': {
+      // Revised after a run that finished: the tasks it never ran are what is new (gap-a5b2e8).
+      const unrun = run.plans[planId]?.phase === 'completed' ? card.rows.filter((r) => r.status === 'pending').length : 0;
+      if (unrun > 0) {
+        return `The plan changed since its last run: ${count(unrun, 'task')} ${unrun === 1 ? 'hasn’t' : 'haven’t'} run.`;
+      }
       return 'Each task has a check your project runs. roko works on its own branch, so your files change only when you merge.';
+    }
     case 'cant-run':
       return `This plan can’t run yet. Fix ${errors === 1 ? 'the problem' : 'the problems'} below by editing the plan, or ask roko to revise it.`;
     case 'queued': {

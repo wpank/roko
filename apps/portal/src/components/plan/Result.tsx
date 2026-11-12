@@ -31,12 +31,14 @@ function changeWords(result: WireRunResult): string {
 /** The sentence for a passed run whose `result` is known. `branch` is the checkout's branch, when known. */
 export function ResultSentence({ result, branch }: { result: WireRunResult; branch: string | null }) {
   if (result.merged) {
+    const files = result.diffstat ? `: ${count(result.diffstat.files, 'file')} changed` : '';
     return (
       <>
         <span className="pt-g" data-state="pass" aria-hidden="true">
           ✓
         </span>{' '}
-        <b>Merged into {branch ?? 'your checkout'}.</b>
+        <b>Merged into {branch ?? 'your checkout'}</b>
+        {files}.
       </>
     );
   }
@@ -77,8 +79,11 @@ export function MergeRow({ command }: { command: string }) {
   );
 }
 
-/** Every file run `runId` changed, each with its patch folded: what the review key opens. */
-export function RunChanges({ runId, onClose }: { runId: string; onClose(): void }) {
+/**
+ * Every file run `runId` changed, each with its patch folded: what the review key opens. `banner` is why the work
+ * needs a closer look (unchecked tasks, part of the work), shown above the files.
+ */
+export function RunChanges({ runId, banner, onClose }: { runId: string; banner?: string | null; onClose(): void }) {
   const { data: diff, isError } = useRunDiff(runId);
   const totals = diff?.totals;
   const totalsWords = totals
@@ -99,6 +104,11 @@ export function RunChanges({ runId, onClose }: { runId: string; onClose(): void 
           close
         </Key>
       </div>
+      {banner && (
+        <p className="pt-banner" data-banner>
+          {banner}
+        </p>
+      )}
       {diff ? (
         <>
           <p className="pt-task-what">

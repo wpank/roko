@@ -84,6 +84,8 @@ afterEach(() => {
 
 const summaryText = () => textOf(document.querySelector('[data-region="run-summary"]'));
 const orange = () => [...document.querySelectorAll('[data-region="status-line"] [data-you]')].map((k) => k.getAttribute('data-action'));
+const statusKeys = () =>
+  [...document.querySelectorAll('[data-region="status-line"] button')].map((k) => k.getAttribute('data-action'));
 
 describe('a passed run', () => {
   it('a passed run says where its work is', async () => {
@@ -94,7 +96,9 @@ describe('a passed run', () => {
     expect(textOf(document.querySelector('[data-merge-command]'))).toBe('git merge --ff-only roko/work/greeting');
     expect(document.querySelector('[data-action="copy-merge"]')).not.toBeNull();
     expect(orange()).toEqual(['review-run']);
-    expect(document.querySelector('[data-action="run-again"]')).not.toBeNull();
+    // Its one key (§4.8): run again and revise wait in the plan's details (gap-a5b2e8).
+    expect(statusKeys()).toEqual(['review-run']);
+    expect(document.querySelector('[data-fold="plan"] [data-action="run-again"]')).not.toBeNull();
   });
 
   it('opens every file the run changed from the review key, each with its patch folded', async () => {
@@ -114,12 +118,13 @@ describe('a passed run', () => {
     ]);
   });
 
-  it('says a run whose work is in the checkout already was merged, with no command to copy', async () => {
+  it('says a run whose work is in the checkout already was merged, with its file count and no key', async () => {
     stubFetch(routes({ ...RESULT, merged: true, merge_command: undefined }));
     renderPlanPage(PLAN, TASKS, ran('passed'), { seed: [WORKSPACE] });
-    await waitFor(() => expect(summaryText()).toBe('✓ Merged into main.'));
+    await waitFor(() => expect(summaryText()).toBe('✓ Merged into main: 3 files changed.'));
     expect(document.querySelector('[data-region="merge"]')).toBeNull();
     expect(orange()).toEqual([]);
+    expect(statusKeys()).toEqual([]);
   });
 
   it('shows what a task that passed changed', async () => {

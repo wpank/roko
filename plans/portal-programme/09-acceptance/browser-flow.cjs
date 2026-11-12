@@ -272,7 +272,11 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
     if (!isReal) {
         // 10. revise
         await requireStep(page, 'revise', evidenceDir, async () => {
-            await page.locator('[data-action="revise"]').click();
+            // A passed run's one key is review (design system §4.8): revise waits in the plan's details (gap-a5b2e8).
+            if (await page.locator('[data-region="status-line"] [data-action="revise"]').count() === 0) {
+                await page.locator('[data-fold="plan"] > summary').click();
+            }
+            await page.locator('[data-action="revise"]:visible').first().click();
             await page.locator('[data-prompt]').fill('add a closing task');
             await page.locator('[data-prompt]').press('Control+Enter');
             await page.locator('[data-task-row="T99"]').waitFor({ state: 'visible', timeout: T.revise });

@@ -191,7 +191,7 @@ function tryPips(live: TaskRun | undefined, state: PadState): Signal[] {
   return [];
 }
 
-function padFoot(row: TaskRowModel, live: TaskRun | undefined, state: PadState, held: boolean, ran: boolean): string {
+function padFoot(row: TaskRowModel, live: TaskRun | undefined, state: PadState, held: boolean, running: boolean): string {
   const tries = live?.tries?.length ?? row.attempts;
   if (held) return 'waits for you';
   switch (state) {
@@ -212,7 +212,7 @@ function padFoot(row: TaskRowModel, live: TaskRun | undefined, state: PadState, 
     case 'skipped':
       return 'skipped';
     default:
-      return row.blocked !== null ? 'blocked' : ran ? 'waiting' : 'not run';
+      return row.blocked !== null ? 'blocked' : running ? 'waiting' : 'not run';
   }
 }
 
@@ -231,6 +231,8 @@ function stateOf(live: PlanRun | undefined, rows: readonly TaskRowModel[], held:
     case 'pending':
       return queued ? 'queued' : 'ready';
     case 'completed': {
+      // A revision added tasks its last run never ran: the plan is ready to run again, not passed (gap-a5b2e8).
+      if (rows.some((r) => r.status === 'pending')) return 'ready';
       if (rows.some((r) => r.status === 'accepted_with_failures')) return 'needs-you';
       return rows.some((r) => r.status === 'unverified') ? 'not-checked' : 'passed';
     }
@@ -284,7 +286,8 @@ export function buildCard(input: CardInput): Card {
       title: row.title || row.id,
       state: padState,
       tries: tryPips(liveTask(row.id), padState),
-      foot: (!ran && problemOf(row.id)) || padFoot(row, liveTask(row.id), padState, held, ran),
+      // A task that hasn't run waits only while its run goes on; after it, it simply hasn't run (gap-a5b2e8).
+      foot: (!ran && problemOf(row.id)) || padFoot(row, liveTask(row.id), padState, held, state === 'running'),
       problem: ran ? null : problemOf(row.id),
       waits: row.blocked === null ? null : waitsFor(liveTask(row.id)?.blockedBy, order),
     });

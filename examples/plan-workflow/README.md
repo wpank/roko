@@ -145,7 +145,7 @@ This is the same run as `roko plan run plans/gate-retry-counter`, which takes
 every plan-run option (`--max-tasks`, `--budget-override`, `--no-tui` and the
 rest). Independent tasks run in parallel, each in its own git worktree, and a
 failed check goes back to the agent with its errors for another attempt.
-Finished work is delivered to the run's batch branch, `roko/batch/<run-id>`.
+Finished work is delivered to the run's batch branch, named from the plan: `roko/work/<plan>`.
 Your checkout is not changed; the run ends by printing the command that takes
 the work into it.
 

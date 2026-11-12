@@ -742,7 +742,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--no-audit` | false | Run no audits for this run alone (decision 7103), as `[audit] enabled = false` does for every run: no green attempt is drawn for a deep audit (see [`roko audit`](#roko-audit)), so audits spend nothing. Refused when a server owns the workspace. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
-| `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
+| `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, named from its plans: `roko/work/<slug>`, with `-2` and on while that name is taken (a one-task run's slug is its request's). Your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/work/greeting`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
 | `--no-worktree-per-task` | false | Run every task in the shared working tree, whatever `[runner] worktree_per_task` says: tasks edit your checkout directly. |
 | `--rich-topology` | false | Use the 5-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
 | `--promote <branch>` | -- | Once every plan is delivered, promote the batch into BRANCH and tag it `roko/run/<run-id>`. A BRANCH checked out anywhere is not moved: the promotion is parked at `refs/roko/delivered/run-<run-id>`. Needs per-task worktrees. |
@@ -775,7 +775,7 @@ roko plan run plans/ --budget-override 50.0     # $50 cost ceiling
 - **The end:** the tasks as they finished, the plan check, then the summary on stdout: `✓ Done  3/3 tasks · 7 checks
   passed · 17s · $0.44 of $3.00`, or `✗ Failed  task 1's check imports still failed after 2 tries`; where the work
   is (`The work is on its own branch: +9 −1 in 3 files.`); and **Next**, one command to paste (`git merge --ff-only
-  roko/batch/<run-id>`, `roko diagnose <plan>`, or `roko run <plan-dir> --resume-plan` after a stop).
+  roko/work/<slug>`, `roko diagnose <plan>`, or `roko run <plan-dir> --resume-plan` after a stop).
 
 The view writes to stderr and the summary to stdout; `--json` prints only the JSON report on stdout. Colour follows
 `--color` and [its rules](#global-flags).
@@ -952,15 +952,15 @@ run view's style:
 ◆ roko  plan greeting
   plans/greeting · done just now · 3/3 tasks · $0.44
 
-  ✓ task 1  Write the greeting module         1 try       4.5s  $0.10
-  ✓ task 2  Add the command-line entry point  1 try       4.3s  $0.10
-  ✓ task 3  Document how to run it            2 tries     9.0s  $0.23
+  ✓ task 1  Write the greeting module         1 try       5.4s  $0.10
+  ✓ task 2  Add the command-line entry point  1 try       4.7s  $0.10
+  ✓ task 3  Document how to run it            2 tries      10s  $0.23
             try 1: check usage failed, so roko tried again
-  ✓ plan check  python3 cli.py world | grep -qx 'hel…     0.0s
+  ✓ plan check  python3 cli.py world | grep -qx 'hel…     0.3s
 
   The work is on its own branch, not merged yet.
 
-  Next  git merge --ff-only roko/batch/graph-787c2048-ff7a-406e-b9ef-3436fb0dc9f2
+  Next  git merge --ff-only roko/work/greeting
 ```
 
 ```

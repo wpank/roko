@@ -115,7 +115,7 @@ the demos among them, and starts one with a spending cap ("Run plan…").
   and `demo-fibonacci`, `demo-parallel-integration` and the `hello-color` set;
   `demo-release-readiness` ran for $0.06 and `demo-incident-tabletop` for
   $0.05. `demo-multistage` used $0.19 of a $0.25 cap, so give it more.
-- Each run leaves its output on its own branch, `roko/batch/<run>`, and the
+- Each run leaves its output on its own branch, `roko/work/<demo>`, and the
   run card offers to merge it into your current branch. For a demo, look at
   the diff and leave it there: merged demo output is junk on your branch, and
   it makes the next run of that demo pass before any agent starts, which roko

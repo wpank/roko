@@ -5261,6 +5261,96 @@ mod tests {
         assert_eq!(work["fixture"], false, "{work}");
     }
 
+    /// gap-b67fdd: a run's batch branch is named from its plans,
+    /// `roko/work/<slug>`, and no longer says the run, so the summary takes
+    /// it from the run's batch records: its result and merge command name
+    /// `roko/work/greeting`, not `roko/batch/<run-id>`.
+    #[tokio::test]
+    async fn a_run_result_names_the_recorded_batch_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("greeting.py"), "def hello():\n    return 'hi'\n").unwrap();
+        git(&["add", "greeting.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/work/greeting"]);
+        std::fs::write(repo.join("cli.py"), "print('hi')\n").unwrap();
+        git(&["add", "cli.py"]);
+        git(&["commit", "--quiet", "-m", "roko: greeting/T1: add the cli"]);
+        git(&["switch", "--quiet", "main"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "w9").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"w9","timestamp_ms":1,"plan_id":"greeting"}),
+                json!({"type":"task_completed","run_id":"w9","timestamp_ms":2,"plan_id":"greeting","task_id":"T1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":"w9","timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ],
+        );
+        let checkpoint = super::super::run_result::graph_plan_state_dir(&repo, "greeting")
+            .join("checkpoint.json");
+        std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        std::fs::write(
+            &checkpoint,
+            json!({"extensions":{"roko.batch@1":{"value":{
+                "run_id":"w9","branch":"roko/work/greeting","base_oid":base,
+                "plan_id":"greeting","state":"delivered"
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("w9".into()))
+            .await
+            .unwrap();
+        let result = &summary["result"];
+        assert_eq!(result["branch"], "roko/work/greeting", "{summary}");
+        assert_eq!(
+            result["merge_command"], "git merge --ff-only roko/work/greeting",
+            "{summary}"
+        );
+        assert_eq!(result["files_changed"], json!(["cli.py"]), "{summary}");
+    }
+
     /// bug-db89d4: a plan that ended unverified was not delivered, so its
     /// run's batch is still at its base and has nothing to merge. Its batch
     /// record names the work no check ran on, which the summary's

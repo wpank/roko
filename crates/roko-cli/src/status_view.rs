@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn status_says_what_runs_and_how_the_last_runs_ended() {
         let mut greeting = run("greeting", RunState::Passed, 3, (3, 3), 0.4363);
-        greeting.merge_command = Some("git merge --ff-only roko/batch/graph-9a438141".into());
+        greeting.merge_command = Some("git merge --ff-only roko/work/greeting".into());
         let mut farewell = run("run-1", RunState::Passed, 4, (1, 1), 0.1007);
         farewell.name = "\u{201c}Give greeting.py a farewell(name) function\u{201d}".into();
         let status = WorkspaceStatus {
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn the_next_step_is_the_newest_runs_that_wants_one() {
         let mut passed = run("greeting", RunState::Passed, 3, (3, 3), 0.44);
-        passed.merge_command = Some("git merge --ff-only roko/batch/x".into());
+        passed.merge_command = Some("git merge --ff-only roko/work/greeting".into());
         let interrupted = run("long", RunState::Interrupted, 1, (1, 4), 0.2);
         let status = WorkspaceStatus {
             runs: vec![

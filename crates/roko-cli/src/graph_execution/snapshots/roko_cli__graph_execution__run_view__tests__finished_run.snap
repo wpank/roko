@@ -11,4 +11,4 @@ expression: "text.join(\"\\n\")"
   ✓ Done  3/3 tasks · 7 checks passed · 16s · $0.44 of $3.00
   The work is on its own branch: +9 −1 in 3 files. Your checkout is unchanged.
 
-  Next  git merge --ff-only roko/batch/graph-9a438141
+  Next  git merge --ff-only roko/work/greeting

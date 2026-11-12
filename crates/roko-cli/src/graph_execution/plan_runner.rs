@@ -1727,20 +1727,29 @@ async fn run_graph_plan_body(
     // ── Batch integration (spec-f830c4) ──
     // Under --worktree-per-task every plan whose tasks all passed is
     // delivered into one batch branch, and every plan's attempts start from
-    // it. A resumed run continues the batch an earlier process recorded.
+    // it. A resumed run continues the batch an earlier process recorded; a
+    // new run's batch is named from its plans, `roko/work/<slug>`
+    // (gap-b67fdd).
     let batch = if worktree_per_task {
         let resumed = if resume_plan.is_some() {
             let plan_ids: Vec<&str> = plans.iter().map(|plan| plan.id.as_str()).collect();
-            super::batch::resumed_batch_run(workdir, &plan_ids).await
+            super::batch::resumed_batch(workdir, &plan_ids).await
         } else {
             None
         };
-        let batch_run = resumed
-            .or_else(|| run_id.clone())
-            .unwrap_or_else(super::batch::new_batch_run_id);
-        let batch = super::batch::BatchIntegration::open(workdir, &batch_run)
-            .await
-            .map_err(|error| anyhow!("open the run's batch branch: {error}"))?;
+        let batch = match resumed {
+            Some((batch_run, branch)) => {
+                super::batch::BatchIntegration::open(workdir, &batch_run, &branch).await
+            }
+            None => {
+                let batch_run = run_id
+                    .clone()
+                    .unwrap_or_else(super::batch::new_batch_run_id);
+                let slug = super::batch::batch_slug(&plans, plans_dir, workdir);
+                super::batch::BatchIntegration::create(workdir, &batch_run, &slug).await
+            }
+        }
+        .map_err(|error| anyhow!("open the run's batch branch: {error}"))?;
         // The branch says which run it is for, as `git branch -v` and hosts
         // show it (gap-c2efe7).
         let titles = plans.iter().map(plan_title).collect::<Vec<_>>();
@@ -10976,7 +10985,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
     /// records (`.roko/runs/graph-<plan>-<uuid>/`) and its events (the index
     /// serve's summary reads, `status.json`) took two unrelated ids. A run no
     /// caller names now takes one id for its records, its events, its status
-    /// and its batch branch.
+    /// and its batch, whose branch is named from its plan (gap-b67fdd).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cli_plan_run_uses_one_run_id_for_records_and_events() {
         let dir = repo_with_file_plans(&["alpha"], None);
@@ -11015,10 +11024,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         )
         .expect("checkpoint json");
         assert_eq!(checkpoint["run_id"], run_id.as_str());
-        assert_eq!(
-            checkpoint["extensions"]["roko.batch@1"]["value"]["branch"],
-            format!("roko/batch/{run_id}")
-        );
+        let batch = &checkpoint["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(batch["run_id"], run_id.as_str(), "{batch}");
+        assert_eq!(batch["branch"], "roko/work/01-alpha", "{batch}");
     }
 
     /// spec-f830c4: a `--worktree-per-task` run of two plans delivers each
@@ -11042,7 +11050,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             .expect("run the plans");
 
         assert_eq!(exit_code, EXIT_SUCCESS);
-        let batch = "roko/batch/run-e2e";
+        let batch = "roko/work/plans";
         let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
         assert!(
             files.contains("alpha.txt") && files.contains("beta.txt"),
@@ -11134,7 +11142,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         extensions.remove("roko.batch@1");
         extensions.remove("roko.delivery@1");
         std::fs::write(&checkpoint, serde_json::to_vec(&manifest).expect("json")).expect("write");
-        git_in(repo, &["branch", "-D", "roko/batch/run-cut"]);
+        git_in(repo, &["branch", "-D", "roko/work/01-alpha"]);
 
         let again = run_graph_plan_in_run(worktree_run_params(repo), Some("run-resume".into()))
             .await
@@ -11149,8 +11157,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         let record = &read()["extensions"]["roko.batch@1"]["value"];
         assert_eq!(record["state"], "delivered", "{record}");
-        assert_eq!(record["branch"], "roko/batch/run-resume", "{record}");
-        let files = git_stdout(repo, &["ls-tree", "--name-only", "roko/batch/run-resume"]);
+        assert_eq!(record["run_id"], "run-resume", "{record}");
+        assert_eq!(record["branch"], "roko/work/01-alpha", "{record}");
+        let files = git_stdout(repo, &["ls-tree", "--name-only", "roko/work/01-alpha"]);
         assert!(files.contains("alpha.txt"), "{files}");
     }
 
@@ -11202,7 +11211,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
 
             assert_eq!(exit_code, EXIT_SUCCESS, "width {width}");
             let lifecycle = plan_lifecycle(&hub);
-            let batch = format!("roko/batch/{run_id}");
+            let batch = "roko/work/plans".to_string();
             let files = git_stdout(repo, &["ls-tree", "--name-only", batch.as_str()]);
             assert!(
                 files.contains("alpha.txt") && files.contains("beta.txt"),
@@ -11266,7 +11275,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             1,
             "{worktrees}"
         );
-        let batch = "roko/batch/run-delete";
+        let batch = "roko/work/01-alpha";
         let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
         assert!(files.contains("alpha.txt"), "{files}");
         assert_eq!(
@@ -11314,7 +11323,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             );
             if worktree_per_task {
                 assert_eq!(
-                    git_stdout(repo, &["rev-parse", "roko/batch/run-check"]),
+                    git_stdout(repo, &["rev-parse", "roko/work/01-alpha"]),
                     head,
                     "the failed plan stayed out of the batch"
                 );
@@ -11323,12 +11332,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 assert_eq!(
                     git_stdout(
                         repo,
-                        &[
-                            "log",
-                            "--walk-reflogs",
-                            "--format=%H",
-                            "roko/batch/run-check"
-                        ]
+                        &["log", "--walk-reflogs", "--format=%H", "roko/work/01-alpha"]
                     ),
                     head,
                     "the batch moved to the failed plan's merge"
@@ -11634,7 +11638,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
                 "{mode}: {handbacks}"
             );
             if worktree_per_task {
-                let batch = "roko/batch/run-handback";
+                let batch = "roko/work/01-alpha";
                 assert_eq!(
                     git_stdout(repo, &["show", &format!("{batch}:alpha.txt")]),
                     "fixed",
@@ -11742,7 +11746,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             );
             if worktree_per_task {
                 assert_eq!(
-                    git_stdout(repo, &["rev-parse", "roko/batch/run-bounded"]),
+                    git_stdout(repo, &["rev-parse", "roko/work/01-alpha"]),
                     head,
                     "{mode}: the failed plan stayed out of the batch"
                 );
@@ -11921,7 +11925,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             assert_eq!(handbacks[0]["lead"], "T2", "{mode}");
             assert_eq!(handbacks[0]["result"], "passed", "{mode}");
             let (look, status) = if worktree_per_task {
-                let batch = "roko/batch/run-panel";
+                let batch = "roko/work/01-panel";
                 (
                     git_stdout(repo, &["show", &format!("{batch}:look.txt")]),
                     git_stdout(repo, &["show", &format!("{batch}:status.txt")]),
@@ -12023,7 +12027,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
             Some(GraphCheckpointStatus::Failed)
         );
-        let batch = "roko/batch/run-overlap";
+        let batch = "roko/work/plans";
         let delivered = crate::graph_checkpoint::recorded_batch_delivery(repo, "03-gamma")
             .expect("gamma was delivered");
         assert_eq!(
@@ -12121,7 +12125,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
                         "rev-parse",
                         "--verify",
                         "--quiet",
-                        "refs/heads/roko/batch/run-cancel",
+                        "refs/heads/roko/work/01-alpha",
                     ])
                     .output()
                     .expect("git rev-parse");
@@ -12217,7 +12221,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         assert_eq!(
             deliveries(&hub),
             [
-                "started 01-alpha: roko/plan/01-alpha into roko/batch/run-delivered",
+                "started 01-alpha: roko/plan/01-alpha into roko/work/01-alpha",
                 "finished 01-alpha: delivered, stopped by nothing",
             ]
         );
@@ -12252,7 +12256,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         assert_eq!(
             deliveries(&hub),
             [
-                "started 01-alpha: roko/plan/01-alpha into roko/batch/run-stopped",
+                "started 01-alpha: roko/plan/01-alpha into roko/work/01-alpha",
                 "finished 01-alpha: cancelled, stopped by cancel",
             ]
         );
@@ -12410,7 +12414,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             Some(GraphCheckpointStatus::Unverified)
         );
         assert_eq!(
-            git_stdout(repo, &["rev-parse", "roko/batch/run-unverified"]),
+            git_stdout(repo, &["rev-parse", "roko/work/01-alpha"]),
             base,
             "unverified work is not delivered"
         );
@@ -12426,7 +12430,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         .expect("checkpoint json");
         let record = &manifest["extensions"]["roko.batch@1"]["value"];
         assert_eq!(record["run_id"], "run-unverified", "{record}");
-        assert_eq!(record["branch"], "roko/batch/run-unverified", "{record}");
+        assert_eq!(record["branch"], "roko/work/01-alpha", "{record}");
         assert_eq!(record["plan_branch"], "roko/plan/01-alpha", "{record}");
         assert!(
             record.get("state").is_none(),
@@ -12523,7 +12527,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
             crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
             Some(GraphCheckpointStatus::Failed)
         );
-        let batch = "roko/batch/run-partial";
+        let batch = "roko/work/01-alpha";
         let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
         assert!(
             files.contains("alpha.txt") && !files.contains("beta.txt"),
@@ -12678,7 +12682,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         );
         let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
         assert!(git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"));
-        assert!(!git_stdout(repo, &["rev-parse", "roko/batch/run-released"]).is_empty());
+        assert!(!git_stdout(repo, &["rev-parse", "roko/work/01-alpha"]).is_empty());
     }
 
     /// bug-7b62ff: the tasks of a plan whose whole-plan check a stop cut
@@ -12782,7 +12786,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         assert_eq!(
             git_stdout(
                 repo,
-                &["config", "--get", "branch.roko/batch/run-named.description"]
+                &["config", "--get", "branch.roko/work/01-alpha.description"]
             ),
             "Alpha, written for people"
         );

@@ -556,7 +556,8 @@ closed.
 > under `.roko/worktrees/` by default (`[runner] worktree_per_task`; `--no-worktree-per-task`
 > opts out). An attempt starts from its plan's branch, `roko/plan/<plan>`, and a passed
 > attempt is committed onto it. Each finished plan is delivered into the run's batch
-> branch, `roko/batch/<run-id>`. The operator's checkout is never changed: the run ends
+> branch, named from its plans: `roko/work/<slug>`, with `-2` and on while the name is
+> taken (gap-b67fdd; `roko/batch/<run-id>` before). The operator's checkout is never changed: the run ends
 > with the `git merge` command that takes the work. A workdir that is not the top level
 > of a git checkout with a commit runs its tasks in the shared working tree.
 > With worktrees, plans also run side by side (`max_parallel_plans` above 1, backlog 3104):

@@ -2,7 +2,7 @@
 id = "bug-399240"
 kind = "bug"
 title = "roko learn all and roko learn efficiency rewrite the whole efficiency log on every call, outside the lock its appenders hold: a row a run appends meanwhile is lost, and since bug-808700 these views run beside roko serve's runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/efficiency", "roko-cli/commands"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "efb53e6e6"
 source = "round-v8 roko-learnguard survey ($V8/roko-learnguard/survey, roko a0089c19c, a copy of Undertow's .roko)"
 discovered_from = "agent:roko-learnguard (round v8)"
 anchors = ["crates/roko-learn/src/efficiency.rs::null_ambiguous_gate_failed_entries", "crates/roko-cli/src/commands/learn.rs::print_learn_efficiency"]
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn the_gate_passed_migration_waits_for_the_append_lock' cr
 
 [[verify]]
 command = "grep -rqw 'fn the_gate_passed_migration_leaves_a_clean_log_alone' crates/roko-learn/ && cargo test -p roko-learn the_gate_passed_migration_leaves_a_clean_log_alone"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T14:21:28Z"
+commit = "efb53e6e6"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-11-12T13:21:01Z"
+forced = false
+evidence = "efb53e6e6. crates/roko-learn efficiency.rs: null_ambiguous_gate_failed_entries takes roko_fs::log_rotation::lock_jsonl, the lock the log's appenders and rotation hold, before it reads and holds it through the rename, as compact_jsonl_to_latest_sync does, and writes nothing when no line needs patching (every log written since P0-GA-1). Red first on cb18faf10: the_gate_passed_migration_leaves_a_clean_log_alone (main rewrote the clean log, its keys re-sorted) and the_gate_passed_migration_waits_for_the_append_lock (main's migration finished while the test held the lock) both failed. Green: both pass with the three null_ambiguous_gate_failed tests; roko-learn lib 1415/0; roko-cli lib and bins filtered to learn 55/0, 0/0 and 51/0; learn_paths_fixture 2/0, reflexes_cli 3/0; clippy -p roko-learn -D warnings and nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/399240-chain.log). Live, $0: the branch's roko over copies of Undertow's and roko's workspaces: roko learn all and roko learn efficiency leave .roko/learn/efficiency.jsonl the same bytes in the same file (bin/changed.py); they create the empty efficiency.jsonl.lock the copies lacked, which both real workspaces already hold. Main b81f8a915 replaced the log on every roko learn all (survey-after/*/writes.txt)."
 +++
 
 ## Problem

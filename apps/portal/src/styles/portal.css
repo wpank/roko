@@ -409,6 +409,8 @@
 .pt-changes .rk-fold { border-top: 0; }
 /* A file's fold names the file as it is spelled, not in the folds' capitals. */
 .pt-changes .rk-fold > summary { text-transform: none; letter-spacing: normal; }
+/* Why a run's changes need a closer look before a merge: unchecked tasks, or only part of the work (§4.8). */
+.pt-banner { margin: 0; padding: 8px 12px; font-size: 13.5px; color: var(--rk-ink); background: var(--rk-module-2); border-left: 2px solid var(--rk-you); border-radius: var(--rk-r-1); }
 .pt-patch {
   margin: 6px 0 4px;
   padding: 10px 12px;

@@ -439,6 +439,19 @@ fn validate_plans_dir_impl(
                         message,
                     });
                 }
+                // gap-29c1e8: sources that give a task a tier its stated size
+                // is over, "Focused: about 90 lines" (PLAN_064).
+                if let Some(message) =
+                    roko_cli::plan_generate::tiers_under_sizes_line(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_064".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: None,
+                        message,
+                    });
+                }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
                 let diagnostics =

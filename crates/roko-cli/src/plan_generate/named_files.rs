@@ -323,10 +323,17 @@ fn instruction(sentence: &str) -> Vec<(Change, String)> {
         end = end.min(colon);
     }
     let mut named = Vec::new();
-    // Where the prose since the verb, or since the span before, starts.
+    // Where the prose since the verb, or since the span after it before
+    // this one, starts.
     let mut since = word_end;
     for span in spans.into_iter().filter(|span| span.start() < end) {
-        let change = if delete && !WITHIN.is_match(&prose[since..span.start()]) {
+        // A span before the verb names the file the sentence is about
+        // ("`src/a.rs`: remove the old clock"), which is changed, never
+        // deleted (bug-1bbe2b).
+        let change = if delete
+            && span.start() >= word_end
+            && !WITHIN.is_match(&prose[since.max(word_end)..span.start()])
+        {
             Change::Delete
         } else {
             Change::Edit

@@ -3748,6 +3748,13 @@ impl CliRuntime for HeldWriteRuntime {
         }))?))
     }
 
+    async fn list_plans(
+        &self,
+        _workdir: &std::path::Path,
+    ) -> anyhow::Result<Vec<crate::plan_types::PlanSummaryDto>> {
+        Ok(Vec::new())
+    }
+
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
         SessionStatusInfo {
             session_id: None,
@@ -3917,4 +3924,43 @@ async fn a_cancel_never_stops_a_plan_write_being_saved() {
     );
     let (_, operation) = route_json(&state, "GET", &format!("/api/operations/{op_id}")).await;
     assert_eq!(operation["status"], "completed", "{operation}");
+}
+
+/// gap-6774b5: `GET /api/plans?writing=true` lists a plan being written, until
+/// the write ends: a row with the plan summary's fields, `status: "writing"`
+/// and no tasks, its request's first line as its title, and what the write is
+/// doing and has spent. Without `writing`, the list is the plans on disk alone.
+#[tokio::test]
+async fn the_plan_list_shows_a_plan_being_written() {
+    let runtime = Arc::new(HeldWriteRuntime::new(false));
+    let (_dir, state) = test_state_with_runtime(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+    let (op_id, slug) = held_write(&state).await;
+
+    let (status, listed) = route_json(&state, "GET", "/api/plans").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{listed}");
+    assert_eq!(listed, json!([]));
+
+    let (status, listed) = route_json(&state, "GET", "/api/plans?writing=true").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{listed}");
+    let rows = listed.as_array().expect("a plan list");
+    assert_eq!(rows.len(), 1, "{listed}");
+    let row = &rows[0];
+    assert_eq!(row["id"], slug.as_str(), "{row}");
+    assert_eq!(row["title"], "Build a widget library", "{row}");
+    assert_eq!(row["status"], "writing", "{row}");
+    assert_eq!(row["task_count"], 0, "{row}");
+    assert_eq!(row["tasks_done"], 0, "{row}");
+    assert_eq!(row["completed"], false, "{row}");
+    let writing = &row["writing"];
+    assert_eq!(writing["run_id"], op_id.as_str(), "{row}");
+    assert_eq!(writing["stage"], "planning", "{row}");
+    assert_eq!(writing["calls"], 1, "{row}");
+    assert_eq!(writing["cost_usd"], 0.0375, "{row}");
+    assert_eq!(writing["max_usd"], 2.0, "{row}");
+    assert!(writing["elapsed_secs"].is_u64(), "{row}");
+
+    let (status, _) = route_json(&state, "POST", &format!("/api/plans/{op_id}/cancel")).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let (_, listed) = route_json(&state, "GET", "/api/plans?writing=true").await;
+    assert_eq!(listed, json!([]));
 }

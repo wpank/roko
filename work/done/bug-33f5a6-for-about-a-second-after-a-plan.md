@@ -2,14 +2,16 @@
 id = "bug-33f5a6"
 kind = "bug"
 title = "For about a second after a plan passes, the portal offers revise and run again while the run that holds the plan is still finishing; the server answers 409 (part of an active run), the portal reads it as 'This plan is already being revised', and the CI browser check's revise step fails now and then"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["apps/portal"]
 created = 2026-11-12
 updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "92608b967"
 source = "round v8 portal-v8, the CI browser check at 58ce1b9bb (2026-11-12)"
 discovered_from = "agent:portal-v8 (round v8, 58ce1b9bb)"
 anchors = ["apps/portal/src/components/plan/PlanPage.tsx::PlanPage", "apps/portal/src/components/plan/usePrimaryAction.ts::usePrimaryAction", "apps/portal/src/components/stage/PromptPanel.tsx::toRevise409Error", "apps/portal/src/lib/planSet.ts"]
@@ -17,6 +19,19 @@ links = { depends_on = [], blocks = [], related = ["gap-60f6b6"], supersedes = [
 
 [[verify]]
 command = "cd apps/portal && npx vitest run src/components/plan/finishing.accept.test.tsx"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T15:40:00Z"
+commit = "92608b967"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "S"
+claimed_at = "2026-11-12T15:15:00Z"
+forced = false
+evidence = "runFinishing (apps/portal/src/lib/planSet.ts) holds revise and run again, with the reason 'roko is finishing the run', from the run's last plan_completed until its run_completed (15 s at most); toRevise409Error reads 'part of an active run' as a run that hasn't finished. Checks at 92608b967's tree in roko-work-bug-33f5a6: tsc clean, vitest 706/706 (finishing.accept 4 cases), orphans none, build:export OK, roko plan validate over every portal plan without errors, and the CI browser check (09-acceptance/portal-check.sh, fenced $0 copy) PASS 37 of 37 twice in a row."
 +++
 
 ## Problem

@@ -94,7 +94,7 @@ read_files = [
     { path = "plans/portal-programme/08f-final-polish/accept/semantics.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
     { path = "apps/portal/src/styles/rosedust.css", why = "the state and role primitives", lines = "60-135" },
     { path = "apps/portal/src/styles/tokens.css", why = "role tokens", lines = "60-105" },
-    { path = "apps/portal/src/styles/globals.css", why = "rail bar, progress bar and the end of the components layer", lines = "850-930" },
+    { path = "apps/portal/src/styles/globals.css", why = "the components layer; the rail's plan rows moved to portal.css with gap-195374" },
 ]
 anti_patterns = [
     "Do not use colour literals in the components layer; use tokens.",

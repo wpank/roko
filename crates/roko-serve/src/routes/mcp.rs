@@ -3116,4 +3116,57 @@ mod tests {
             "once the run has ended: {body}"
         );
     }
+
+    /// gap-c1726f: `GET /api/plans/{id}` says when the plan's run started,
+    /// as `last_run.started_at`: the moment roko accepted it, which a
+    /// surface counts TIME from, as roko's own `run_completed.duration_ms`
+    /// does. Nothing else records it while the run goes.
+    #[tokio::test]
+    async fn plan_detail_names_when_its_run_started() {
+        let passed = checkpoint_of(LATER_RUN, "succeeded", &["T1", "T2", "T3"], &[]);
+        let runtime = Arc::new(HeldPlans::with_checkpoints(passed, Vec::new()));
+        let (_dir, state, router) = state_and_router(runtime.clone(), open_config());
+        let started = |router: Router| async move {
+            let request = Request::builder()
+                .uri("/api/plans/alpha")
+                .body(Body::empty())
+                .expect("a request");
+            let response = router.oneshot(request).await.expect("a response");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("a body");
+            let body: Value = serde_json::from_slice(&bytes).expect("JSON");
+            body["last_run"]["started_at"].as_str().map(|at| {
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .unwrap_or_else(|error| panic!("{at}: {error}"))
+                    .with_timezone(&chrono::Utc)
+            })
+        };
+        assert_eq!(started(router.clone()).await, None, "no run yet");
+
+        let before = chrono::Utc::now();
+        let run = call(1, "plan_run", json!({ "plan_id": "alpha", "max_usd": 2.5 }));
+        let (_, answer) = post_mcp(&router, &run, &[]).await;
+        assert_eq!(answer["result"]["isError"], false, "{answer}");
+        plan_runs_started(&runtime, 1).await;
+        let at = started(router.clone()).await.expect("while the run goes");
+        assert!(at >= before - chrono::Duration::seconds(1), "{at} before {before}");
+        assert!(at <= chrono::Utc::now(), "{at}");
+
+        runtime.gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state
+                .active_plans
+                .read()
+                .await
+                .values()
+                .any(crate::state::PlanHandle::is_live)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run ends");
+        assert_eq!(started(router.clone()).await, Some(at), "once the run has ended");
+    }
 }

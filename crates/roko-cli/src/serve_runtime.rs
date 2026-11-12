@@ -2256,6 +2256,54 @@ mod tests {
         );
     }
 
+    /// gap-c1726f: a plan's tasks say what else roko checks, so a surface
+    /// counts every check from the start: the plan's own checks (`[meta]
+    /// verify`) as `plan_checks`, and whether its tasks run the workspace's
+    /// rungs (`workspace_rungs`).
+    #[tokio::test]
+    async fn plan_tasks_list_the_plans_own_checks() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plan_dir = workdir.path().join("plans").join("checked");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"checked\"\nworkspace_rungs = false\n\n\
+             [[meta.verify]]\nphase = \"plan\"\ncommand = \"tools/check.sh --plugin\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"One\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let dto = runtime
+            .load_plan_tasks(workdir.path(), "checked")
+            .await
+            .unwrap()
+            .expect("the plan is found");
+        let dto = serde_json::to_value(&dto).unwrap();
+        assert_eq!(
+            dto["plan_checks"],
+            serde_json::json!([{ "phase": "plan", "command": "tools/check.sh --plugin" }]),
+            "{dto}"
+        );
+        assert_eq!(dto["workspace_rungs"], false, "{dto}");
+
+        // A plan that says neither has no checks of its own, and runs the rungs.
+        let plain = workdir.path().join("plans").join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(
+            plain.join("tasks.toml"),
+            "[meta]\nplan = \"plain\"\n\n[[task]]\nid = \"T1\"\ntitle = \"One\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+        let dto = runtime
+            .load_plan_tasks(workdir.path(), "plain")
+            .await
+            .unwrap()
+            .expect("the plan is found");
+        let dto = serde_json::to_value(&dto).unwrap();
+        assert_eq!(dto["plan_checks"], serde_json::json!([]), "{dto}");
+        assert_eq!(dto["workspace_rungs"], true, "{dto}");
+    }
+
     /// bug-9f340c: the plan API counts a task as completed exactly when the
     /// CLI's plan listing does: `done`, `completed`, `passed` or `skipped`.
     #[tokio::test]

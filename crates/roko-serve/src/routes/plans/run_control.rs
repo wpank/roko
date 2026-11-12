@@ -1330,6 +1330,11 @@ pub(super) async fn resume_plan(
 ///
 /// `{id}` may be the run key, the run id **or** any member plan id of an
 /// active or queued run.
+///
+/// It also stops a plan write (bug-36ce72), named by its operation id (the
+/// `id` `POST /api/plans/generate` answers) or its plan's id: 200 `{
+/// "cancelled": true, "run_id", "plan_id", "state": "cancelled", "cost_usd"
+/// }`, or 409 when the write had already written its plan or failed.
 pub(super) async fn cancel_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1339,8 +1344,12 @@ pub(super) async fn cancel_plan(
 
 /// Cancel the live or queued plan run `id` names, as `POST
 /// /api/plans/{id}/cancel` does: the route and the MCP `run_cancel` tool
-/// (9115) share it.
+/// (9115) share it. A plan write, named by its operation id or its plan's
+/// id, is stopped first ([`cancel_plan_write`], bug-36ce72).
 pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<Value, ApiError> {
+    if let Some(cancelled) = cancel_plan_write(state, id).await {
+        return cancelled;
+    }
     let mut active = state.active_plans.write().await;
     // Resolve by key, run id or member plan id; else look in the queue, then
     // for a run whose process is gone.

@@ -301,8 +301,9 @@ fn tools() -> Vec<(Value, &'static str)> {
                  workspace's plan-writing cap applies, and the answer gives the cap that \
                  applies. To plan from a spec file in the workspace, \
                  pass its path as spec_path: Roko reads the file exactly, so never copy a spec \
-                 into prompt. Answers at once with a run id, which run_status follows, and the \
-                 plan's id, which plan_run takes once the plan is written.",
+                 into prompt. Answers at once with a run id, which run_status follows and \
+                 run_cancel stops, and the plan's id, which plan_run takes once the plan is \
+                 written.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -341,7 +342,9 @@ fn tools() -> Vec<(Value, &'static str)> {
         (
             tool(
                 "run_cancel",
-                "Stop a Roko run that is running or queued: a run_prompt or plan_run run.",
+                "Stop a Roko run that is running or queued: a run_prompt or plan_run run, or a \
+                 plan_generate plan write. A stopped write writes no plan, and the answer says \
+                 what it spent.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -942,7 +945,8 @@ async fn run_or_operation(state: &Arc<AppState>, id: &str) -> Result<Value, ApiE
 }
 
 /// The state of operation `id` as `run_status` reports a run's: `running`,
-/// then `succeeded` with its result or `failed` with its error. A running
+/// then `succeeded` with its result, `failed` with its error, or `cancelled`
+/// (a plan write that was stopped, bug-36ce72). A running
 /// operation says how long it has run, and one that reports progress
 /// carries its latest report, and keeps it once it ends (gap-11d870). A
 /// finished one whose handle is gone is read from the kept record of
@@ -969,6 +973,7 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
         OperationStatus::Running => (RunState::Running, None, None),
         OperationStatus::Completed { result } => (RunState::Succeeded, result.as_deref(), None),
         OperationStatus::Failed { error } => (RunState::Failed, None, Some(error.as_str())),
+        OperationStatus::Cancelled => (RunState::Cancelled, None, None),
     };
     let result = result.and_then(|result| serde_json::from_str::<Value>(result).ok());
     let mut summary = json!({
@@ -1130,7 +1135,14 @@ async fn generate_plan(
 /// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run. A run
 /// whose roko process stopped while it ran is over already: the answer says
 /// `interrupted` and why (bug-dceafd).
+///
+/// The run id `plan_generate` answers is a plan write's, which this stops
+/// first (bug-36ce72); its answer adds the plan's id and what the write
+/// spent (`plan_id`, `cost_usd`).
 async fn cancel_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    if let Some(cancelled) = super::plans::cancel_plan_write(state, run_id).await {
+        return cancelled;
+    }
     let mut answer = json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() });
     match super::run::cancel_background_run(state, run_id).await {
         Some(stopped) => stopped.map_err(ApiError::conflict)?,

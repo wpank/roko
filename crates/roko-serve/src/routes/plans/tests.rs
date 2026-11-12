@@ -3643,13 +3643,22 @@ async fn plan_generation_status_outlives_its_handle() {
     }
 }
 
-/// Sets its flag when it is dropped: a planner call whose future a cancel
-/// dropped, as a CLI planner's child is killed when its future is.
-struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+/// Sets its flag when it is dropped before it is disarmed: a planner call
+/// whose future a cancel dropped, as a CLI planner's child is killed when its
+/// future is. A call that ends disarms it.
+struct DropFlag(Option<Arc<std::sync::atomic::AtomicBool>>);
+
+impl DropFlag {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for DropFlag {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        if let Some(flag) = &self.0 {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -3692,7 +3701,7 @@ impl CliRuntime for HeldWriteRuntime {
         _options: crate::runtime::PlanGenerationOptions,
         progress: crate::runtime::ProgressReporter,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
-        let _call = DropFlag(Arc::clone(&self.dropped));
+        let mut call = DropFlag(Some(Arc::clone(&self.dropped)));
         progress(json!({
             "stage": if self.saving { "recording" } else { "planning" },
             "attempt": 1,
@@ -3703,6 +3712,7 @@ impl CliRuntime for HeldWriteRuntime {
             "max_usd": 2.0,
         }));
         self.gate.notified().await;
+        call.disarm();
         let plan_dir = workdir.join("plans").join(slug);
         std::fs::create_dir_all(&plan_dir)?;
         std::fs::write(plan_dir.join("tasks.toml"), "[meta]\n")?;

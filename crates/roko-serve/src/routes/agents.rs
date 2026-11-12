@@ -1745,6 +1745,9 @@ async fn background_run_completion(state: &AppState, run_id: &str) -> Option<Run
         OperationStatus::Failed { error } => Some(RunCompletion::Failed {
             error: error.clone(),
         }),
+        OperationStatus::Cancelled => Some(RunCompletion::Failed {
+            error: "the run was cancelled".to_string(),
+        }),
         OperationStatus::Running => handle
             .handle
             .is_finished()

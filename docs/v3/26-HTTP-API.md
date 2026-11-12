@@ -497,7 +497,7 @@ aliases (both are mounted).
 | GET | `/api/health` | Rich health check with telemetry and provider status |
 | GET | `/api/status` | Session overview, supervised processes |
 | GET | `/api/dashboard` | Dashboard scaffold from the runtime |
-| GET | `/api/operations/{id}` | Background operation status |
+| GET | `/api/operations/{id}` | Background operation status: `running`, `completed`, `failed`, or `cancelled` for a plan write that was stopped |
 | GET | `/api/relay/health` | Relay connection diagnostics |
 | GET | `/api/parity` | TUI / HTTP / CLI feature coverage matrix |
 | GET | `/api/retention` | Retention policies and violations |
@@ -518,7 +518,7 @@ aliases (both are mounted).
 | GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |
-| POST | `/api/plans/{id}/cancel` | Cancel a running run, or take a queued one out of the queue; either ends `cancelled` |
+| POST | `/api/plans/{id}/cancel` | Cancel a running run, or take a queued one out of the queue; either ends `cancelled`. It also stops a plan write, named by its operation `id` or its `plan_id`: 200 `{"cancelled": true, "run_id", "plan_id", "state": "cancelled", "cost_usd"}` (what its settled planner calls cost), and the write leaves no plan; a write that had already written its plan, or failed, is a 409 |
 | GET | `/api/plans/{id}/gates` | Gate results grouped by task |
 | GET | `/api/plans/{id}/costs` | Retry-inclusive spend, ceilings, projections |
 | GET | `/api/plans/{id}/reviews` | Human reviews |
@@ -1147,7 +1147,7 @@ routing stays with the ladder.
 | `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it, or its place in the run queue (`state: "queued"`, `position`) while another run holds the workspace; refused before it gets an id when the queue is full or a run outside the server holds the workspace |
 | `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
 | `plan_generate` | `prompt` (string) or `spec_path` (string, a spec file in the workspace), one of them required; `title` (string, at most 120 characters); `max_usd` (number above 0, at most `[serve.mcp] max_run_usd`) | The planner's operation as `run_id`, the new plan's `plan_id`, and the cap the planner runs under: `max_usd` (null when uncapped) and `max_usd_source` (`request`, or `config` for `[authoring] max_generation_usd`), as `POST /api/plans/generate` starts it |
-| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped or taken out of the run queue, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
+| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped or taken out of the run queue, a live or queued plan run cancelled, or a `plan_generate` write stopped (its answer adds `plan_id` and `cost_usd`), as `POST /api/plans/{id}/cancel` cancels it |
 | `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary`, `held_at`, the rung's `timeout_secs` and `deadline_at` (`held_at` plus the timeout, RFC 3339: when the rung stops waiting and the task ends unverified; null for a hold without a timeout). Read-only |
 | `confirm_answer` | `run_id`, `task_id`, `attempt_key` (strings, required); `approve` (boolean, required); `note` (string) | The person's answer recorded in the review log, as `POST /api/plans/{id}/tasks/{task_id}/review` records a decision: a yes passes the rung as `confirmed_by_user`, a no fails the attempt with the note as its feedback. `write` scope; a task that waits for no such confirmation is an error |
 | `effects_pending` | `run_id` (string) | The tool calls runs hold for approval under a `stage` outbound policy (9131), as `GET /api/effects` lists them: each with `effect_id`, `tool`, `server`, `arguments` summarised without their values (each field's type, a string's length) and `proposed_at`, plus the decisions made. Read-only |

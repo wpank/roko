@@ -400,9 +400,13 @@ pub(crate) async fn start_plan_generation(
     // gap-11d870: the generation reports what it is doing, and the
     // operation's status shows its latest report.
     let (progress_tx, progress_rx) = tokio::sync::watch::channel(Value::Null);
+    // bug-36ce72: a cancel stops the write while its planner works.
+    let cancel = tokio_util::sync::CancellationToken::new();
 
     let handle = tokio::spawn({
         let op_id = op_id.clone();
+        let cancel = cancel.clone();
+        let stage = progress_rx.clone();
         async move {
             // Wait until the caller has inserted the OperationHandle.
             let _ = start_rx.await;
@@ -436,16 +440,18 @@ pub(crate) async fn start_plan_generation(
             let report: ProgressReporter = Arc::new(move |progress| {
                 progress_tx.send_replace(progress);
             });
-            let generation = runtime
-                .generate_plan_reporting(
-                    &workdir,
-                    &slug_for_task,
-                    &prompt_text,
-                    for_chat_host,
-                    options,
-                    report,
-                )
-                .await;
+            let generation = runtime.generate_plan_reporting(
+                &workdir,
+                &slug_for_task,
+                &prompt_text,
+                for_chat_host,
+                options,
+                report,
+            );
+            let Some(generation) = unless_cancelled(generation, &cancel, &stage).await else {
+                end_cancelled_write(&state_for_task, &op_id, &slug_for_task).await;
+                return;
+            };
             let generated = match generation {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
                 Ok(gen_result) => {
@@ -556,6 +562,10 @@ pub(crate) async fn start_plan_generation(
         handle,
         started: std::time::Instant::now(),
         progress: Some(progress_rx),
+        write: Some(crate::state::PlanWrite {
+            plan_id: slug.clone(),
+            cancel,
+        }),
     };
 
     state.operations.write().await.insert(op_id.clone(), op);
@@ -563,6 +573,198 @@ pub(crate) async fn start_plan_generation(
     let _ = start_tx.send(());
 
     (op_id, slug)
+}
+
+/// Drive a plan write's `generation` until it ends, or until `cancel` stops
+/// it while its planner works (bug-36ce72): `None` when it was stopped. The
+/// stopped generation's future is dropped, and the planner call with it: a
+/// CLI planner's child is killed on drop, and an HTTP stream is closed.
+///
+/// A cancel that comes once the plan is being saved, which the write's last
+/// `progress` says (stage `writing` or `recording`, gap-11d870), lets the
+/// write end as it would have, so a plan is never half written. Before that
+/// stage the generation has written nothing in the plan's directory.
+async fn unless_cancelled<T>(
+    generation: impl Future<Output = T>,
+    cancel: &tokio_util::sync::CancellationToken,
+    progress: &tokio::sync::watch::Receiver<Value>,
+) -> Option<T> {
+    let mut generation = std::pin::pin!(generation);
+    tokio::select! {
+        biased;
+        ended = &mut generation => return Some(ended),
+        () = cancel.cancelled() => {}
+    }
+    if plan_being_saved(&progress.borrow()) {
+        return Some(generation.await);
+    }
+    None
+}
+
+/// Whether a plan write's latest progress says its plan is being saved.
+fn plan_being_saved(progress: &Value) -> bool {
+    matches!(
+        progress.get("stage").and_then(Value::as_str),
+        Some("writing" | "recording")
+    )
+}
+
+/// End plan write `op_id`, for plan `slug`, as cancelled (bug-36ce72): in its
+/// handle and the kept record, which keep its last progress and so what its
+/// settled calls cost, and on both event streams.
+async fn end_cancelled_write(state: &AppState, op_id: &str, slug: &str) {
+    crate::operations::finish_operation(state, op_id, OperationStatus::Cancelled).await;
+    state
+        .state_hub
+        .publish_batch(vec![roko_core::DashboardEvent::EventLogEntry {
+            timestamp_ms: generate_now_millis(),
+            event_type: "plan_generate.cancelled".into(),
+            plan_id: slug.to_string(),
+            task_id: String::new(),
+            message: format!("op={op_id} cancelled"),
+        }]);
+    state.event_bus.publish(ServerEvent::OperationCompleted {
+        op_id: op_id.to_string(),
+        kind: "plan_generate".into(),
+        success: false,
+    });
+}
+
+/// How long a cancel waits for the plan write it stopped to end.
+const WRITE_CANCEL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Stop the plan write `id` names, as `run_cancel` and `POST
+/// /api/plans/{id}/cancel` do (bug-36ce72): `None` when `id` names no plan
+/// write, so the caller looks for a run. `id` is the write's operation id,
+/// the `run_id` `plan_generate` answers, or the id of the plan a running
+/// write writes.
+///
+/// Once the write has ended, the answer is `{ cancelled: true, run_id,
+/// plan_id, state: "cancelled", cost_usd }`, where `cost_usd` is what its
+/// settled calls cost (a planner call it stopped returned no usage). A cancel
+/// of a cancelled write answers the same, with `already_ended`. A write that
+/// was written or failed first, or that is saving its plan, is a 409 that
+/// says so.
+pub(crate) async fn cancel_plan_write(
+    state: &AppState,
+    id: &str,
+) -> Option<Result<Value, ApiError>> {
+    let found = {
+        let operations = state.operations.read().await;
+        let named = operations
+            .get(id)
+            .filter(|operation| operation.write.is_some());
+        let running = || {
+            operations.values().find(|operation| {
+                matches!(operation.status, OperationStatus::Running)
+                    && operation
+                        .write
+                        .as_ref()
+                        .is_some_and(|write| write.plan_id == id)
+            })
+        };
+        named.or_else(running).and_then(|operation| {
+            let write = operation.write.as_ref()?;
+            Some((
+                operation.id.clone(),
+                write.plan_id.clone(),
+                write.cancel.clone(),
+                operation.status.clone(),
+                crate::operations::latest_progress(operation),
+            ))
+        })
+    };
+    let Some((op_id, plan_id, cancel, status, progress)) = found else {
+        // A write whose handle was collected is in the kept record.
+        let finished = crate::operations::finished_operation(state, id)?;
+        let plan_id = finished.kind.strip_prefix("plan_generate:")?;
+        return Some(write_ended(
+            id,
+            plan_id,
+            &finished.status,
+            finished.progress,
+        ));
+    };
+    if !matches!(status, OperationStatus::Running) {
+        return Some(write_ended(&op_id, &plan_id, &status, progress));
+    }
+
+    cancel.cancel();
+    let deadline = tokio::time::Instant::now() + WRITE_CANCEL_WAIT;
+    loop {
+        let held = state.operations.read().await.get(&op_id).map(|operation| {
+            (
+                operation.status.clone(),
+                crate::operations::latest_progress(operation),
+            )
+        });
+        // A handle collected already left its kept record.
+        let (status, progress) = match held {
+            Some(held) => held,
+            None => crate::operations::finished_operation(state, &op_id)
+                .map_or((OperationStatus::Cancelled, None), |finished| {
+                    (finished.status, finished.progress)
+                }),
+        };
+        match status {
+            OperationStatus::Running if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            OperationStatus::Running => {
+                let what = if progress.as_ref().is_some_and(plan_being_saved) {
+                    "is saving its plan, so a cancel can't stop it now"
+                } else {
+                    "has not stopped yet; it stops at its next step"
+                };
+                return Some(Err(ApiError::conflict(format!(
+                    "the write of plan '{plan_id}' {what}"
+                ))));
+            }
+            OperationStatus::Cancelled => {
+                return Some(Ok(cancelled_write(&op_id, &plan_id, progress)));
+            }
+            status => return Some(write_ended(&op_id, &plan_id, &status, progress)),
+        }
+    }
+}
+
+/// The answer to a cancel of plan write `op_id` that ended with `status`
+/// before it: a cancelled write's own answer, else a 409 that says how it
+/// ended.
+fn write_ended(
+    op_id: &str,
+    plan_id: &str,
+    status: &OperationStatus,
+    progress: Option<Value>,
+) -> Result<Value, ApiError> {
+    let ended = match status {
+        OperationStatus::Cancelled => {
+            let mut answer = cancelled_write(op_id, plan_id, progress);
+            answer["already_ended"] = json!(true);
+            return Ok(answer);
+        }
+        OperationStatus::Running => "is still running",
+        OperationStatus::Completed { .. } => "had already written it",
+        OperationStatus::Failed { .. } => "had already failed",
+    };
+    Err(ApiError::conflict(format!(
+        "the write of plan '{plan_id}' {ended}"
+    )))
+}
+
+/// A cancelled plan write's answer, with what its settled calls cost, from
+/// its last `progress`.
+fn cancelled_write(op_id: &str, plan_id: &str, progress: Option<Value>) -> Value {
+    let cost_usd = progress
+        .and_then(|progress| progress.get("cost_usd").cloned())
+        .unwrap_or(Value::Null);
+    json!({
+        "cancelled": true,
+        "run_id": op_id,
+        "plan_id": plan_id,
+        "state": crate::state::RunState::Cancelled.as_str(),
+        "cost_usd": cost_usd,
+    })
 }
 
 /// Request body for `POST /api/plans/{id}/revise`.
@@ -803,6 +1005,7 @@ pub(super) async fn revise_plan(
         handle,
         started: std::time::Instant::now(),
         progress: None,
+        write: None,
     };
 
     state.operations.write().await.insert(op_id.clone(), op);

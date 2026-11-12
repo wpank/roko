@@ -2,7 +2,7 @@
 id = "gap-c63eb1"
 kind = "gap"
 title = "roko learn self-model fit's prequential line says 'over all 129 units' while the fit trains on 139: it leaves out the failover substitutes without saying so, and the live-forecast line reads '1 scored against their verdicts'"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "62d13f060"
 source = "round-v8 roko-learnguard after-survey ($V8/roko-learnguard/survey-after, roko b81f8a915, a copy of Undertow's .roko)"
 discovered_from = "agent:roko-learnguard (round v8)"
 anchors = ["crates/roko-cli/src/commands/learn_self_model.rs::render_fit"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-45f6bb", "bug-a35286"], 
 
 [[verify]]
 command = "grep -rqw 'fn the_prequential_line_counts_the_units_it_scores' crates/roko-cli/src && cargo test -p roko-cli the_prequential_line_counts_the_units_it_scores"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T14:40:26Z"
+commit = "62d13f060"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-11-12T14:01:11Z"
+forced = false
+evidence = "62d13f060. crates/roko-cli learn_self_model.rs: render_fit's prequential line names the units it scores (prequential_scope): all N units when every unit trained on is scored, else 129 of the 139 units (the 10 failover substitutes train but aren't scored), since the prequential scores leave failover substitutes out (bug-a35286); the live-forecast line reads N with a verdict, Brier ..., which reads right at n = 1. No red: the new test calls the function the fix adds; the old lines are in tmp/hermes-roko-v8/roko-learnguard/survey-after/{undertow,roko}/self-model.out (b81f8a915). Green on e8b0ced0d: the_prequential_line_counts_the_units_it_scores and the updated the_fit_names_its_windows_and_scores_the_live_forecasts pass with the 8 learn_self_model and 19 self_model tests; roko-cli lib and bins filtered to learn 55/0, 0/0 and 52/0; clippy -p roko-cli -D warnings and nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/399240-verify-c63eb1-chain.log)."
 +++
 
 ## Problem

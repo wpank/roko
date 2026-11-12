@@ -360,6 +360,21 @@ fn plan_task(unit: &Unit) -> (&str, &str) {
     (unit.plan_id.as_str(), unit.task_id.as_str())
 }
 
+/// The units the prequential scores cover: every unit the fit trains on but the failover
+/// substitutes, which teach the model and are not scored (bug-a35286, gap-c63eb1).
+fn prequential_scope(scored: usize, trained: usize) -> String {
+    match trained.saturating_sub(scored) {
+        0 => format!("all {scored} units"),
+        1 => format!(
+            "{scored} of the {trained} units (the failover substitute trains but isn't scored)"
+        ),
+        substitutes => format!(
+            "{scored} of the {trained} units (the {substitutes} failover substitutes train but \
+             aren't scored)"
+        ),
+    }
+}
+
 /// The fit report as text.
 pub(crate) fn render_fit(report: &FitReport) -> String {
     let audit = &report.data_audit;
@@ -383,9 +398,9 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
     );
     let _ = writeln!(
         out,
-        "prequential, over all {} units: Brier {}, base rate {}, Brier skill {}, ECE {}, \
+        "prequential, over {}: Brier {}, base rate {}, Brier skill {}, ECE {}, \
          calibration in the large {}, AUROC {}",
-        scores.n,
+        prequential_scope(scores.n, audit.training_units),
         number(scores.brier),
         number(scores.base_rate),
         number(scores.brier_skill),
@@ -450,8 +465,8 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
     } else {
         let _ = writeln!(
             out,
-            "live forecasts, as the runs made them: {} scored against their verdicts, Brier {} \
-             against {} for always forecasting the pass rate (Brier skill {})",
+            "live forecasts, as the runs made them: {} with a verdict, Brier {} against {} for \
+             always forecasting the pass rate (Brier skill {})",
             live.n,
             number(live.brier),
             number(live.base_rate_brier),
@@ -1170,8 +1185,23 @@ mod tests {
         let text = render_fit(&report);
         assert!(text.contains("prequential, over all "), "{text}");
         assert!(
-            text.contains("live forecasts, as the runs made them: 1 scored against their verdicts"),
+            text.contains("live forecasts, as the runs made them: 1 with a verdict, Brier"),
             "{text}"
+        );
+    }
+
+    /// gap-c63eb1: the prequential line counts the units it scores, and says why they are
+    /// fewer than the units the fit trains on.
+    #[test]
+    fn the_prequential_line_counts_the_units_it_scores() {
+        assert_eq!(prequential_scope(132, 132), "all 132 units");
+        assert_eq!(
+            prequential_scope(129, 139),
+            "129 of the 139 units (the 10 failover substitutes train but aren't scored)"
+        );
+        assert_eq!(
+            prequential_scope(5, 6),
+            "5 of the 6 units (the failover substitute trains but isn't scored)"
         );
     }
 

@@ -2,15 +2,16 @@
 id = "bug-62760a"
 kind = "bug"
 title = "roko plan status and roko diagnose write the checkout's .git/index: the git status --porcelain behind the report's git state refreshes the index's stat cache and writes it back under index.lock; a view never writes (bug-399240)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-11-12
-updated = 2026-11-12
-last_verified = 2026-11-12
+updated = 2026-11-13
+last_verified = 2026-11-13
+last_verified_rev = "85799278f"
 source = "round v8 lead: plan status rewrote .git/index on a clone of Undertow's workspace (guide-v8's check)"
 discovered_from = "agent:roko-recovery (round v8)"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::run_git", "crates/roko-cli/src/commands/diagnose.rs::collect_git_state"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-2e5023", "bug-399240"], 
 
 [[verify]]
 command = "grep -rqw 'fn plan_status_writes_nothing' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_writes_nothing"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-12T23:00:58Z"
+commit = "85799278f"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-12T22:17:37Z"
+forced = false
+evidence = "85799278f on work/bug-2e5023: diagnose::run_git passes --no-optional-locks, so the report's git status no longer refreshes the stat cache and rewrites .git/index (roko plan status and roko diagnose). Red first: plan_status_writes_nothing (stale stat cache for tasks.toml, every byte under the workspace compared) failed on bd49800b5 with 'plan status wrote [\".git/index\"]', now passes. On an APFS clone of ~/dev/undertow without GIT_OPTIONAL_LOCKS, roko-item7d changed .git/index (9f3d15633a4f56b7 -> d1c75206c362ef59); roko-item8a ran plan status for phases 1-6 and diagnose p6 and left it at 9f3d15633a4f56b7. Branch checks: roko-cli lib 4149 passed; bin 21 passed; clippy clean."
 +++
 
 ## Problem

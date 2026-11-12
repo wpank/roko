@@ -2,15 +2,16 @@
 id = "bug-2e5023"
 kind = "bug"
 title = "roko plan status and roko diagnose list a plan's writing as tasks: on a plan roko wrote, the planner call's spend (pseudo task generate) and its episode (plan:generate:<plan>) show as 'task 7 (not in tasks.toml) running' and 'task 8', and count as the run's calls"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-11-12
-updated = 2026-11-12
-last_verified = 2026-11-12
+updated = 2026-11-13
+last_verified = 2026-11-13
+last_verified_rev = "85799278f"
 source = "round v8 lead: phantom rows in phase 6's live plan status (Undertow p6-the-window, run 23837ede)"
 discovered_from = "agent:roko-recovery (round v8)"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::diagnose_tasks", "crates/roko-cli/src/commands/diagnose.rs::RunRecords"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn plan_status_lists_only_the_plans_tasks' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_lists_only_the_plans_tasks"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-12T23:00:56Z"
+commit = "85799278f"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-12T22:17:28Z"
+forced = false
+evidence = "85799278f on work/bug-2e5023: roko plan status and roko diagnose list only the plan's tasks. The phantom rows were the plan write's records, not cells: the planner call's cost row (task_id generate) and its episode (plan:generate:<plan>). RunRecords::load now leaves out authoring spend and direct-call (capture) episodes unless the plan has a task by that id, and diagnose_tasks lists recorded ids only when tasks.toml can't be read. Red first: plan_status_lists_only_the_plans_tasks failed on bd49800b5 with '■ task 4 (not in tasks.toml) stopped' / '■ task 5 …', now passes. On an APFS clone of ~/dev/undertow, every phase 1-6 showed two such rows with roko-item7d (repro/before-item8.txt); roko-item8a shows 0 and the tables are otherwise identical (repro/after-item8.txt). Branch checks: nightly fmt; roko-cli lib 4149 passed, 0 failed; bin tests (diagnose, plan_status, status) 21 passed; workspace clippy -D warnings clean; the binary builds."
 +++
 
 ## Problem

@@ -490,6 +490,48 @@ pub fn render_text(report: &CensusReport) -> String {
     out
 }
 
+/// The census in one line, for the reader who knows no S03 (gap-2e6afb): how many loops the runs
+/// measure and how many have a judged β, how far the most measured is from β's `n_beta`
+/// opportunities while none is judged, and how many are flagged and retired.
+#[must_use]
+pub fn render_summary(report: &CensusReport, n_beta: u64) -> String {
+    let rows = &report.rows;
+    let measured: Vec<(&str, &MeasuredLoop)> = rows
+        .iter()
+        .filter_map(|row| row.measured.as_ref().map(|m| (row.loop_id.as_str(), m)))
+        .filter(|(_, measured)| measured.n_opp > 0)
+        .collect();
+    let judged = measured
+        .iter()
+        .filter(|(_, measured)| measured.beta.est.is_some())
+        .count();
+    let flagged = rows
+        .iter()
+        .filter(|row| row.state == Some(AuditState::Flagged))
+        .count();
+    let retired = rows
+        .iter()
+        .filter(|row| matches!(row.lifecycle, Lifecycle::Retired { .. }))
+        .count();
+    let mut line = format!(
+        "{} loops: {} measured, {judged} with a judged benefit",
+        rows.len(),
+        measured.len()
+    );
+    let most = measured
+        .iter()
+        .max_by_key(|(_, measured)| measured.n_opp)
+        .filter(|_| judged == 0);
+    if let Some((id, most)) = most {
+        line.push_str(&format!(
+            " (a benefit is judged at {n_beta} opportunities; the most measured, {id}, has {})",
+            most.n_opp
+        ));
+    }
+    line.push_str(&format!("; {flagged} flagged, {retired} retired"));
+    line
+}
+
 /// A census row's measured columns: `n_L/n_D`, ε̂, ι_net and [`beta_text`];
 /// `-` in each for a loop no decision row measures.
 fn measured_columns(measured: Option<&MeasuredLoop>) -> [String; 4] {

@@ -220,7 +220,12 @@ pub fn loops_output(workdir: &Path, json: bool) -> anyhow::Result<String> {
     if json {
         Ok(census::render_json(&report)?)
     } else {
-        Ok(census::render_text(&report))
+        // One plain line first, then the table (gap-2e6afb).
+        Ok(format!(
+            "{}\n\n{}",
+            census::render_summary(&report, audit.n_beta),
+            census::render_text(&report)
+        ))
     }
 }
 
@@ -270,13 +275,62 @@ mod tests {
         );
 
         let table = loops_output(workdir, false).expect("the table");
-        assert_eq!(table.lines().count(), registry.loops().len() + 1, "{table}");
+        // The summary line, a blank line, the header and one line per loop (gap-2e6afb).
+        assert_eq!(table.lines().count(), registry.loops().len() + 3, "{table}");
         assert!(
             table
                 .lines()
                 .any(|line| line.starts_with("L-linucb") && line.contains("dormant:no_learning")),
             "{table}"
         );
+    }
+
+    /// gap-2e6afb: `roko learn loops` opens with one plain line, then the table: how many loops
+    /// the runs measure, how many have a judged benefit, how far the most measured is from
+    /// being judged, and how many are flagged and retired. The JSON keeps no such line.
+    #[test]
+    fn learn_loops_leads_with_a_plain_summary() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../roko-learn/tests/fixtures/loop_census");
+        let temp = tempfile::tempdir().expect("tempdir");
+        copy_tree(&fixture, &temp.path().join(".roko"));
+        let workdir = temp.path();
+        let registry = Registry::load(workdir).expect("the registry");
+        let config = roko_core::config::loader::load_config_unified(workdir).expect("the config");
+        let audit = &config.learning.audit;
+        let sha = census::harness_sha(workdir);
+        let report = census::run_audited(workdir, &registry, sha.as_deref(), audit);
+
+        let text = loops_output(workdir, false).expect("the census");
+        let mut lines = text.lines();
+        let summary = lines.next().expect("a summary line");
+        assert_eq!(summary, census::render_summary(&report, audit.n_beta));
+        let loops = registry.loops().len();
+        assert!(
+            summary.starts_with(&format!("{loops} loops: ")),
+            "{summary}"
+        );
+        assert!(summary.contains(" with a judged benefit"), "{summary}");
+        assert!(summary.ends_with(" retired"), "{summary}");
+        assert_eq!(lines.next(), Some(""), "{text}");
+        assert!(
+            lines
+                .next()
+                .is_some_and(|header| header.starts_with("loop ")),
+            "{text}"
+        );
+
+        let empty = tempfile::tempdir().expect("tempdir");
+        let text = loops_output(empty.path(), false).expect("the census of no runs");
+        let summary = text.lines().next().expect("a summary line");
+        assert!(
+            summary.starts_with(&format!(
+                "{loops} loops: 0 measured, 0 with a judged benefit; "
+            )),
+            "{summary}"
+        );
+        let json = loops_output(empty.path(), true).expect("the census as JSON");
+        assert!(json.trim_start().starts_with('{'), "{json}");
     }
 
     /// `record` as line `seq` of a run file, in the writer's envelope.
@@ -471,7 +525,11 @@ mod tests {
         let iota = measured["iota_net"].as_f64().expect("ι_net");
 
         let table = loops_output(workdir, false).expect("the table");
-        let header = table.lines().next().expect("a header");
+        // The header follows the summary line (gap-2e6afb).
+        let header = table
+            .lines()
+            .find(|line| line.starts_with("loop "))
+            .expect("a header");
         assert!(
             header.contains("n_L/n_D") && header.contains("β [LCB, UCB]"),
             "{header}"

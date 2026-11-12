@@ -2,7 +2,7 @@
 id = "gap-2e6afb"
 kind = "gap"
 title = "roko learn loops opens on a 10-column table only S03 explains and says nothing in plain words: on v7's Undertow workspace 4 of 20 loops are measured, none judged (beta needs 200 opportunities, the most measured has 101), and no line says so"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/loop-audit", "roko-cli/commands"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "0939be82f"
 source = "round-v8 roko-learnguard survey ($V8/roko-learnguard/survey, roko a0089c19c)"
 discovered_from = "agent:roko-learnguard (round v8)"
 anchors = ["crates/roko-learn/src/loop_audit/census.rs", "crates/roko-cli/src/commands/learn_loops.rs"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-2cc5be"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn learn_loops_leads_with_a_plain_summary' crates/ && cargo test -p roko-learn -p roko-cli learn_loops_leads_with_a_plain_summary"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T13:08:58Z"
+commit = "0939be82f"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-11-12T12:00:54Z"
+forced = false
+evidence = "0939be82f. crates/roko-learn loop_audit/census.rs: render_summary, one plain line: how many loops the runs measure, how many have a judged benefit, how far the most measured is from the N_beta opportunities a judgement needs while none is judged, and how many are flagged and retired; crates/roko-cli learn_loops.rs prints it, a blank line, then the unchanged table; the JSON is unchanged. Not done: the per-loop sentences below the table (the table holds them; cut, not added). No red: the test needs the function the fix adds. Green: learn_loops_leads_with_a_plain_summary passes, with the census and learn_loops tests (learn_loops_census_json_matches_library and learn_loops_table_prints_beta_interval read the header after the summary); lib suites roko-cli 4109/0 (bins 10/0, 483/0), roko-learn 1413/0, roko-serve 1091/0; clippy -D warnings and nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/45f6bb-2e6afb-chain.log, 45f6bb-2e6afb-rerun.log)."
 +++
 
 ## Problem

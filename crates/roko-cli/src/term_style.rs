@@ -1,9 +1,10 @@
 //! One terminal style for roko's command output (gap-cf3940).
 //!
-//! [`Style`] says how one output stream looks: whether it gets colour, whether
-//! live output may redraw lines in place, Unicode or ASCII glyphs, and how
-//! wide the terminal is. [`Style::stdout`] and [`Style::stderr`] read the
-//! process's `--color` choice ([`set_color_choice`]) and its environment.
+//! [`Style`] says how one output stream looks: whether it gets colour, how
+//! many colours the terminal takes, whether live output may redraw lines in
+//! place, Unicode or ASCII glyphs, and how wide the terminal is.
+//! [`Style::stdout`] and [`Style::stderr`] read the process's `--color`
+//! choice ([`set_color_choice`]) and its environment.
 //!
 //! Colour follows, in order: `--color always|never`; `NO_COLOR` set and not
 //! empty turns it off; `CLICOLOR_FORCE` set and not `0` turns it on;
@@ -11,9 +12,13 @@
 //! terminal. Live redraw needs a terminal, a `TERM` other than `dumb`, and no
 //! `CI`. Without colour or redraw the words and their order stay the same.
 //!
-//! The colour roles are roko's design system's. Text roles use the 16 ANSI
-//! colours, so they follow the person's light or dark terminal theme; the
-//! black glass behind changing numbers is the one fixed colour.
+//! The colour roles, glyphs and number formats are roko's design system's
+//! (`tmp/hermes-roko-v8/design/roko-design-system.md`, §5.3 and §6.3): four
+//! signal colours (live blue, pass green, you orange, fail red) in mid-tones
+//! that read on dark and light terminals, in truecolor, xterm-256 or the 16
+//! ANSI colours as the terminal has them; faint for context; the terminal's
+//! own foreground for everything else; and black glass behind the figures
+//! that change while a run is live. No other background is ever set.
 
 use std::fmt::Display;
 use std::io::IsTerminal;
@@ -67,6 +72,9 @@ pub struct TermEnv {
     pub clicolor: Option<String>,
     /// `TERM`.
     pub term: Option<String>,
+    /// `COLORTERM`: `truecolor` or `24bit` when the terminal takes 24-bit
+    /// colour.
+    pub colorterm: Option<String>,
     /// `CI`.
     pub ci: Option<String>,
     /// `COLUMNS`: the width a pipe's output is laid out for.
@@ -83,8 +91,25 @@ impl TermEnv {
             clicolor_force: var("CLICOLOR_FORCE"),
             clicolor: var("CLICOLOR"),
             term: var("TERM"),
+            colorterm: var("COLORTERM"),
             ci: var("CI"),
             columns: var("COLUMNS"),
+        }
+    }
+
+    /// How many colours the terminal takes.
+    #[must_use]
+    pub fn depth(&self) -> Depth {
+        if matches!(self.colorterm.as_deref(), Some("truecolor" | "24bit")) {
+            Depth::True
+        } else if self
+            .term
+            .as_deref()
+            .is_some_and(|term| term.contains("256color"))
+        {
+            Depth::Ansi256
+        } else {
+            Depth::Ansi16
         }
     }
 
@@ -134,42 +159,55 @@ pub fn live_for(env: &TermEnv, is_terminal: bool) -> bool {
     is_terminal && !env.dumb() && !env.in_ci()
 }
 
+/// How many colours a terminal takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Depth {
+    /// 24-bit colour (`COLORTERM=truecolor`).
+    True,
+    /// xterm's 256 colours.
+    Ansi256,
+    /// The 16 ANSI colours.
+    Ansi16,
+}
+
 /// A colour role of roko's design system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
-    /// The roko mark.
+    /// The ◆ of `◆ roko`: live's blue.
     Mark,
-    /// Something running now.
+    /// roko is working.
     Live,
     /// Passed.
     Pass,
     /// Failed.
     Fail,
-    /// What the person should do: the next step.
+    /// The person's turn: the Next line, a waiting approval.
     You,
-    /// Something roko learned.
-    Learn,
-    /// Secondary text.
+    /// Context, times, hints, anything waiting (faint).
     Dim,
-    /// The quietest text: rule ids, gutters.
-    Faint,
 }
 
 impl Role {
-    fn sgr(self) -> &'static str {
-        match self {
-            Self::Mark | Self::Live => "35",
-            Self::Pass => "32",
-            Self::Fail => "31",
-            Self::You => "33",
-            Self::Learn => "34",
-            Self::Dim => "2",
-            Self::Faint => "2;90",
+    const fn sgr(self, depth: Depth) -> &'static str {
+        match (self, depth) {
+            (Self::Mark | Self::Live, Depth::True) => "38;2;68;121;255",
+            (Self::Mark | Self::Live, Depth::Ansi256) => "38;5;69",
+            (Self::Mark | Self::Live, Depth::Ansi16) => "34",
+            (Self::Pass, Depth::True) => "38;2;28;154;85",
+            (Self::Pass, Depth::Ansi256) => "38;5;29",
+            (Self::Pass, Depth::Ansi16) => "32",
+            (Self::You, Depth::True) => "38;2;236;95;24",
+            (Self::You, Depth::Ansi256) => "38;5;202",
+            (Self::You, Depth::Ansi16) => "33",
+            (Self::Fail, Depth::True) => "38;2;224;69;60",
+            (Self::Fail, Depth::Ansi256) => "38;5;160",
+            (Self::Fail, Depth::Ansi16) => "31",
+            (Self::Dim, _) => "2",
         }
     }
 }
 
-/// A glyph of roko's output.
+/// A glyph of roko's output, with its ASCII form for `TERM=dumb`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
     /// The roko mark.
@@ -178,12 +216,22 @@ pub enum Glyph {
     Pass,
     /// Failed.
     Fail,
-    /// A failed try that roko tries again.
+    /// Trying again.
     Retry,
-    /// A task waiting to start.
+    /// Running.
+    Running,
+    /// Waiting to start.
     Waiting,
-    /// A task starting (in appended output).
-    Start,
+    /// Stopped.
+    Stopped,
+    /// roko itself stopped; it can resume.
+    Interrupted,
+    /// Finished, but no check ran.
+    NotChecked,
+    /// Not needed, or not run.
+    Skipped,
+    /// Next.
+    Next,
     /// Between items on a line.
     Dot,
 }
@@ -195,17 +243,21 @@ const SPINNER_ASCII: [&str; 4] = ["-", "\\", "|", "/"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Style {
     colour: bool,
+    depth: Depth,
     live: bool,
     unicode: bool,
     width: usize,
+    height: usize,
 }
 
 /// The narrowest layout roko draws.
 pub const MIN_WIDTH: usize = 60;
-/// The widest layout roko draws.
-pub const MAX_WIDTH: usize = 120;
+/// The widest layout roko draws: it fits 80 columns, and uses up to 100.
+pub const MAX_WIDTH: usize = 100;
 /// The width roko assumes when it can't ask the terminal.
 pub const DEFAULT_WIDTH: usize = 100;
+/// The height roko assumes when it can't ask the terminal.
+pub const DEFAULT_HEIGHT: usize = 24;
 
 impl Style {
     /// Standard output's style.
@@ -222,19 +274,25 @@ impl Style {
 
     fn for_stream(is_terminal: bool) -> Self {
         let env = TermEnv::from_process();
-        let width = if is_terminal {
-            crossterm::terminal::size().map_or(DEFAULT_WIDTH, |(cols, _)| usize::from(cols))
+        let (width, height) = if is_terminal {
+            crossterm::terminal::size().map_or((DEFAULT_WIDTH, DEFAULT_HEIGHT), |(cols, rows)| {
+                (usize::from(cols), usize::from(rows))
+            })
         } else {
-            env.columns
+            let cols = env
+                .columns
                 .as_deref()
                 .and_then(|cols| cols.parse().ok())
-                .unwrap_or(DEFAULT_WIDTH)
+                .unwrap_or(DEFAULT_WIDTH);
+            (cols, DEFAULT_HEIGHT)
         };
         Self {
             colour: colour_for(color_choice(), &env, is_terminal),
+            depth: env.depth(),
             live: live_for(&env, is_terminal),
             unicode: !env.dumb(),
             width: width.clamp(MIN_WIDTH, MAX_WIDTH),
+            height: height.max(DEFAULT_HEIGHT / 2),
         }
     }
 
@@ -244,9 +302,11 @@ impl Style {
     pub const fn plain() -> Self {
         Self {
             colour: false,
+            depth: Depth::Ansi16,
             live: false,
             unicode: true,
             width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
         }
     }
 
@@ -254,6 +314,13 @@ impl Style {
     #[must_use]
     pub const fn with_colour(mut self, colour: bool) -> Self {
         self.colour = colour;
+        self
+    }
+
+    /// The same style, with `depth` colours.
+    #[must_use]
+    pub const fn with_depth(mut self, depth: Depth) -> Self {
+        self.depth = depth;
         self
     }
 
@@ -279,6 +346,13 @@ impl Style {
         self
     }
 
+    /// The same style, for a terminal of `height` rows.
+    #[must_use]
+    pub const fn with_height(mut self, height: usize) -> Self {
+        self.height = height;
+        self
+    }
+
     /// Whether this stream gets colour.
     #[must_use]
     pub const fn colour(self) -> bool {
@@ -297,11 +371,17 @@ impl Style {
         self.width
     }
 
+    /// How many rows the terminal has.
+    #[must_use]
+    pub const fn height(self) -> usize {
+        self.height
+    }
+
     /// `text` in `role`'s colour.
     #[must_use]
     pub fn paint(self, role: Role, text: impl Display) -> String {
         if self.colour {
-            format!("\x1b[{}m{text}\x1b[0m", role.sgr())
+            format!("\x1b[{}m{text}\x1b[0m", role.sgr(self.depth))
         } else {
             text.to_string()
         }
@@ -311,7 +391,7 @@ impl Style {
     #[must_use]
     pub fn paint_bold(self, role: Role, text: impl Display) -> String {
         if self.colour {
-            format!("\x1b[1;{}m{text}\x1b[0m", role.sgr())
+            format!("\x1b[1;{}m{text}\x1b[0m", role.sgr(self.depth))
         } else {
             text.to_string()
         }
@@ -327,15 +407,20 @@ impl Style {
         }
     }
 
-    /// A number that changes, on black glass: bright digits on a near-black
-    /// chip, a space either side. Without colour, the number alone.
+    /// A figure that changes while a run is live, on black glass: bold bone
+    /// digits on a near-black chip, a space either side (reverse video in 16
+    /// colours). Without colour, the figure alone.
     #[must_use]
     pub fn glass(self, text: impl Display) -> String {
-        if self.colour {
-            format!("\x1b[48;2;12;11;16m\x1b[1;38;2;239;233;243m {text} \x1b[0m")
-        } else {
-            text.to_string()
+        if !self.colour {
+            return text.to_string();
         }
+        let sgr = match self.depth {
+            Depth::True => "1;38;2;242;240;233;48;2;11;12;13",
+            Depth::Ansi256 => "1;38;5;255;48;5;232",
+            Depth::Ansi16 => "1;7",
+        };
+        format!("\x1b[{sgr}m {text} \x1b[0m")
     }
 
     /// `glyph` in this stream's glyph set.
@@ -343,17 +428,25 @@ impl Style {
     pub const fn glyph(self, glyph: Glyph) -> &'static str {
         match (glyph, self.unicode) {
             (Glyph::Mark, true) => "◆",
-            (Glyph::Mark, false) => "*",
+            (Glyph::Mark | Glyph::Running, false) => "*",
             (Glyph::Pass, true) => "✓",
             (Glyph::Pass, false) => "ok",
             (Glyph::Fail, true) => "✗",
             (Glyph::Fail, false) => "x",
             (Glyph::Retry, true) => "↻",
             (Glyph::Retry, false) => "~",
-            (Glyph::Waiting, true) => "·",
-            (Glyph::Waiting, false) => ".",
-            (Glyph::Start, true) => "▸",
-            (Glyph::Start, false) => ">",
+            (Glyph::Running, true) => "●",
+            (Glyph::Waiting, true) => "○",
+            (Glyph::Waiting, false) => "o",
+            (Glyph::Stopped, true) => "■",
+            (Glyph::Stopped, false) => "#",
+            (Glyph::Interrupted, true) => "‖",
+            (Glyph::Interrupted, false) => "||",
+            (Glyph::NotChecked, _) => "?",
+            (Glyph::Skipped, true) => "⊘",
+            (Glyph::Skipped, false) => "-",
+            (Glyph::Next, true) => "→",
+            (Glyph::Next, false) => "->",
             (Glyph::Dot, true) => "·",
             (Glyph::Dot, false) => "-",
         }
@@ -370,26 +463,41 @@ impl Style {
     }
 }
 
-/// How long something took: `0.4s`, `16.9s`, `4m 05s`, `1h 02m`.
+/// How long something took: `5.3s` under ten seconds, `42s` under a minute,
+/// `4m 05s` under an hour, then `1h 12m`.
 #[must_use]
 pub fn duration(elapsed: Duration) -> String {
     let tenths = elapsed.as_millis() / 100;
-    if tenths < 600 {
+    if tenths < 100 {
         return format!("{}.{}s", tenths / 10, tenths % 10);
     }
     let secs = elapsed.as_secs();
-    if secs < 3600 {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
         format!("{}m {:02}s", secs / 60, secs % 60)
     } else {
         format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
-/// A dollar amount: `$0.44`, or four decimals below a cent (`$0.0042`).
+/// A clock on the glass: `0:42`, `4:05`, then `1H 12M`.
+#[must_use]
+pub fn clock(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 3600 {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    } else {
+        format!("{}H {:02}M", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// A dollar amount, always two decimals: `$0.44`; `<$0.01` below a cent
+/// when it isn't zero.
 #[must_use]
 pub fn money(usd: f64) -> String {
-    if usd > 0.0 && usd < 0.01 {
-        format!("${usd:.4}")
+    if usd > 0.0 && usd < 0.005 {
+        "<$0.01".to_string()
     } else {
         format!("${:.2}", usd.max(0.0))
     }
@@ -408,7 +516,7 @@ pub fn visible_width(text: &str) -> usize {
     let mut chars = text.chars();
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            // An SGR sequence: ESC '[' params 'm'.
+            // A CSI sequence: ESC '[' params, then a letter.
             for next in chars.by_ref() {
                 if next.is_ascii_alphabetic() {
                     break;
@@ -419,6 +527,25 @@ pub fn visible_width(text: &str) -> usize {
         }
     }
     width
+}
+
+/// `text` without its ANSI escapes.
+#[must_use]
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// `text` cut to `max` columns, ending in `…` when it was longer. Plain text
@@ -469,6 +596,7 @@ mod tests {
                 "CLICOLOR_FORCE" => env.clicolor_force = value,
                 "CLICOLOR" => env.clicolor = value,
                 "TERM" => env.term = value,
+                "COLORTERM" => env.colorterm = value,
                 "CI" => env.ci = value,
                 other => panic!("unknown variable {other}"),
             }
@@ -514,6 +642,13 @@ mod tests {
     }
 
     #[test]
+    fn terminals_say_how_many_colours_they_take() {
+        assert_eq!(env(&[("COLORTERM", "truecolor")]).depth(), Depth::True);
+        assert_eq!(env(&[("TERM", "xterm-256color")]).depth(), Depth::Ansi256);
+        assert_eq!(env(&[("TERM", "xterm")]).depth(), Depth::Ansi16);
+    }
+
+    #[test]
     fn plain_text_carries_no_escape_codes() {
         let plain = Style::plain();
         for text in [
@@ -526,32 +661,48 @@ mod tests {
         }
         let colour = plain.with_colour(true);
         assert_eq!(colour.paint(Role::Pass, "ok"), "\x1b[32mok\x1b[0m");
+        assert_eq!(colour.glass("1/3"), "\x1b[1;7m 1/3 \x1b[0m");
         assert_eq!(visible_width(&colour.glass("1/3")), 5);
+        assert_eq!(
+            colour.with_depth(Depth::True).paint(Role::Live, "●"),
+            "\x1b[38;2;68;121;255m●\x1b[0m"
+        );
+        assert_eq!(
+            colour
+                .with_depth(Depth::Ansi256)
+                .paint_bold(Role::You, "Next"),
+            "\x1b[1;38;5;202mNext\x1b[0m"
+        );
     }
 
     #[test]
     fn durations_read_at_a_glance() {
         assert_eq!(duration(Duration::from_millis(0)), "0.0s");
         assert_eq!(duration(Duration::from_millis(5_349)), "5.3s");
-        assert_eq!(duration(Duration::from_millis(16_900)), "16.9s");
-        assert_eq!(duration(Duration::from_millis(59_999)), "59.9s");
+        assert_eq!(duration(Duration::from_millis(9_999)), "9.9s");
+        assert_eq!(duration(Duration::from_millis(16_900)), "16s");
+        assert_eq!(duration(Duration::from_secs(42)), "42s");
         assert_eq!(duration(Duration::from_secs(60)), "1m 00s");
         assert_eq!(duration(Duration::from_secs(245)), "4m 05s");
-        assert_eq!(duration(Duration::from_secs(3_720)), "1h 02m");
+        assert_eq!(duration(Duration::from_secs(4_320)), "1h 12m");
+        assert_eq!(clock(Duration::from_secs(42)), "0:42");
+        assert_eq!(clock(Duration::from_secs(245)), "4:05");
+        assert_eq!(clock(Duration::from_secs(4_320)), "1H 12M");
     }
 
     #[test]
-    fn money_keeps_two_decimals_and_four_below_a_cent() {
+    fn money_keeps_two_decimals() {
         assert_eq!(money(0.0), "$0.00");
         assert_eq!(money(0.4363), "$0.44");
-        assert_eq!(money(0.0042), "$0.0042");
+        assert_eq!(money(0.0042), "<$0.01");
         assert_eq!(money(3.0), "$3.00");
         assert_eq!(money(-0.0), "$0.00");
     }
 
     #[test]
     fn widths_ignore_escapes_and_truncation_ends_in_an_ellipsis() {
-        assert_eq!(visible_width("\x1b[1;35m◆\x1b[0m roko"), 6);
+        assert_eq!(visible_width("\x1b[1;34m◆\x1b[0m roko"), 6);
+        assert_eq!(strip_ansi("\x1b[1;34m◆\x1b[0m roko"), "◆ roko");
         assert_eq!(
             truncate("Add the command-line entry point", 12),
             "Add the com…"
@@ -567,7 +718,9 @@ mod tests {
     fn a_dumb_terminal_gets_ascii_glyphs() {
         let ascii = Style::plain().with_unicode(false);
         assert_eq!(ascii.glyph(Glyph::Pass), "ok");
+        assert_eq!(ascii.glyph(Glyph::Next), "->");
         assert_eq!(ascii.spinner(1), "\\");
         assert_eq!(Style::plain().glyph(Glyph::Pass), "✓");
+        assert_eq!(Style::plain().glyph(Glyph::Waiting), "○");
     }
 }

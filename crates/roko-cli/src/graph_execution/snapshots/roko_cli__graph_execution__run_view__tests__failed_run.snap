@@ -1,0 +1,15 @@
+---
+source: crates/roko-cli/src/graph_execution/run_view.rs
+expression: "text.join(\"\\n\")"
+---
+  ✗ task 1  Write the greeting module         2 tries      10s
+            check imports failed: SyntaxError: invalid syntax
+  ⊘ task 2  Add the command-line entry point  did not run
+            task 1 did not pass, so it did not run
+  ○ task 3  Document how to run it            waiting
+
+  ✗ Failed  task 1's check imports still failed after 2 tries
+  0/3 tasks · 0 of 1 check · 12s · $0.30 of $3.00
+  Nothing was delivered; your checkout is unchanged.
+
+  Next  roko diagnose greeting

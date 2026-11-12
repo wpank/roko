@@ -6309,6 +6309,7 @@ dependencies = [
  "hmac",
  "indexmap 2.14.0",
  "indicatif",
+ "insta",
  "libc",
  "notify 6.1.1",
  "notify-debouncer-full",

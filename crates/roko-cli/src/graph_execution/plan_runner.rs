@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::IsTerminal as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
@@ -25,51 +26,6 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS};
 use crate::graph_checkpoint::{GraphCheckpointStatus, TaskOutcomeSummary};
 
 // ── Private helpers ──────────────────────────────────────────────────────
-
-/// Inline progress telemetry sink that prints per-node lifecycle events to
-/// stderr and delegates to the inner (StateHub) sink. This provides real-time
-/// feedback during Graph engine execution without requiring the full TUI.
-struct InlineProgressTelemetrySink {
-    inner: Arc<dyn roko_core::TelemetryEventSink>,
-    show_progress: bool,
-}
-
-#[async_trait::async_trait]
-impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
-    async fn emit(
-        &self,
-        event: &roko_core::ObservableEvent,
-        ancestry: &[roko_core::LensScope],
-    ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
-        if self.show_progress {
-            match event {
-                roko_core::ObservableEvent::CellStarted { block, .. } => {
-                    eprintln!("    \u{25b8} executing node '{block}'...");
-                }
-                roko_core::ObservableEvent::CellCompleted {
-                    block,
-                    duration_ms,
-                    cost_usd,
-                    ..
-                } => {
-                    let secs = *duration_ms as f64 / 1000.0;
-                    if *cost_usd > 0.0 {
-                        eprintln!(
-                            "    \u{2713} node '{block}' completed ({secs:.1}s, ${cost_usd:.4})"
-                        );
-                    } else {
-                        eprintln!("    \u{2713} node '{block}' completed ({secs:.1}s)");
-                    }
-                }
-                roko_core::ObservableEvent::CellFailed { block, error, .. } => {
-                    eprintln!("    \u{2717} node '{block}' failed: {error}");
-                }
-                _ => {}
-            }
-        }
-        self.inner.emit(event, ancestry).await
-    }
-}
 
 fn join_approval_tui_thread<T>(handle: Option<std::thread::JoinHandle<anyhow::Result<T>>>) {
     let Some(handle) = handle else {
@@ -1057,19 +1013,16 @@ pub async fn run_graph_plan_in_run(
 /// [`run_graph_plan_in_run`] without a `log_file`, whose `status.json` and
 /// workspace event log name the run `observed_run_id`. A run no caller named
 /// (`run_id` is `None`: the terminal's `roko plan run`, and a `--log-file`
-/// run) takes that id for its records, its batch and its knowledge batch too,
-/// and says it at its start: a single plan's fresh checkpoint used to mint a
-/// `graph-<plan>-<uuid>` of its own, so the run's attempt records and its
-/// events, which serve's summary reads, had two unrelated ids, and the run
-/// printed neither (bug-c872f6).
+/// run) takes that id for its records, its batch and its knowledge batch too:
+/// a single plan's fresh checkpoint used to mint a `graph-<plan>-<uuid>` of
+/// its own, so the run's attempt records and its events, which serve's
+/// summary reads, had two unrelated ids (bug-c872f6). `--json` reports the
+/// id; the terminal names the run by its plan (gap-2c87f0).
 pub(crate) async fn run_graph_plan_observed(
     params: GraphPlanRunParams,
     run_id: Option<String>,
     observed_run_id: String,
 ) -> anyhow::Result<i32> {
-    if run_id.is_none() && !params.quiet && !params.json {
-        eprintln!("Run {observed_run_id}");
-    }
     let run_id = run_id.or_else(|| Some(observed_run_id.clone()));
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
@@ -1351,6 +1304,28 @@ async fn run_graph_plan_body(
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
     super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
+    // On a terminal the run shows its live view; the dashboard TUI takes the
+    // terminal instead when asked for (`--tui`), and for a plan that holds
+    // its tasks for approval, which it answers (gap-2c87f0).
+    let launch_tui =
+        (!no_tui || !held_plans.is_empty()) && !quiet && !json && std::io::stdout().is_terminal();
+    // The run view starts before the ladder probes and the spec gate, whose
+    // checks on the base can take minutes: a header, then one line per task,
+    // redrawn in place on a terminal or appended in a pipe. Under the TUI it
+    // only keeps count, for the summary.
+    let mut run_view = state_hub.as_ref().filter(|_| !quiet && !json).map(|hub| {
+        let style = crate::term_style::Style::stderr();
+        let cap = budget_override.unwrap_or_else(|| f64::from(roko_config.budget.max_plan_usd));
+        let header = super::run_view::RunHeader::for_plans(
+            &plans,
+            plans_dir,
+            workdir,
+            max_tasks,
+            Some(cap),
+            style,
+        );
+        super::run_view::RunView::start(hub, header, style, launch_tui)
+    });
     // The rung probes run before the spec gate, whose red-on-base pre-check
     // can build and run every task's steps on the base for minutes: a run
     // whose ladder can't serve any of its tasks stops here, in the probes'
@@ -1621,14 +1596,6 @@ async fn run_graph_plan_body(
     // Its runs' manifests name the θ M1 dispatches with (8123).
     run_manifests.set_params_digest(homeostasis.as_ref().map(|sink| sink.params_digest()));
 
-    // ── TUI vs inline progress decision ──────────────────────────────
-    //
-    // Auto-enable the interactive TUI dashboard when stdout is an
-    // interactive terminal, unless the user explicitly opted out with
-    // --no-tui, --quiet, or --json. This mirrors the runner-v2 approval
-    // TUI logic (line ~470).
-    let launch_tui = !no_tui && !quiet && !json && std::io::stdout().is_terminal();
-
     // P21 (gap-6ff99a): a knowledge batch an earlier run left unproposed, as a
     // run that crashed leaves it, goes through the guard now instead of staying
     // hidden; this process holds the runner lock, so no other run owns one.
@@ -1667,16 +1634,9 @@ async fn run_graph_plan_body(
         crate::runner::graph_tui_bridge::StateHubTelemetrySink::new(state_hub_sender.clone()),
     );
 
-    // Inline progress display: print per-node start/complete/fail to stderr
-    // so the user can see what the Graph engine is doing in real time.
-    // Disabled when the TUI is active — events flow through the dashboard
-    // instead of being printed inline.
-    let show_progress = !quiet && !json && !launch_tui;
-    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> =
-        Arc::new(InlineProgressTelemetrySink {
-            inner: state_hub_sink,
-            show_progress,
-        });
+    // What the run shows on the terminal is the run view's, from the hub's
+    // events (gap-2c87f0).
+    let graph_telemetry = state_hub_sink;
 
     // Wire graph engine execution into the TUI dashboard event stream.
     // Create separate TUI bridges for the task dispatcher (agent output
@@ -2647,6 +2607,11 @@ async fn run_graph_plan_body(
     if let Some(mut tui) = tui_session.take() {
         tui.stop();
     }
+    // The view leaves its table as the run ended (gap-2c87f0).
+    let view = match run_view.take() {
+        Some(view) => view.finish().await,
+        None => None,
+    };
 
     // gap-3217a0: how each rung did, from the runs' own records.
     let rungs = {
@@ -2681,6 +2646,21 @@ async fn run_graph_plan_body(
                 .map(|plan_run| (plan.id.clone(), plan_run))
         })
         .collect();
+    // An unverified plan is not a failure: the run ends unverified when every
+    // plan succeeded or ended unverified (bug-db89d4).
+    let outcomes = plan_execution_order
+        .iter()
+        .map(|plan_id| scheduler.outcome(plan_id))
+        .collect::<Vec<_>>();
+    let unverified = stopped_by.is_none()
+        && !all_succeeded
+        && outcomes.contains(&Some(PlanOutcome::Unverified))
+        && outcomes.iter().all(|outcome| {
+            matches!(
+                outcome,
+                Some(PlanOutcome::Succeeded | PlanOutcome::Unverified)
+            )
+        });
     if json {
         println!(
             "{}",
@@ -2744,165 +2724,182 @@ async fn run_graph_plan_body(
             .unwrap_or_default()
         );
     } else if !quiet {
-        // Always print a human-readable summary to stdout so `--no-tui` and
-        // piped invocations produce visible output.  When the TUI was active
-        // the user already saw interactive progress, but one final summary
-        // line is still useful (and harmless) after the terminal is restored.
-        if let Some(reason) = stopped_by {
-            println!(
-                "Graph Engine stopped by {}: {}/{} plan(s) attempted, {} task(s), ${:.2}; \
-                 resume with --resume-plan",
-                reason.cause(),
-                plan_outcomes.len(),
-                plan_count,
-                total_tasks,
-                total_cost_usd,
-            );
-        } else {
-            println!(
-                "Graph Engine complete: {} plan(s), {} task(s), ${:.2}",
-                plan_count, total_tasks, total_cost_usd,
-            );
-        }
-        // The run's id, which `roko diagnose`, serve's summary and the
-        // records take, and each plan's run kept apart from it (bug-c872f6).
-        if let Some(run_id) = &run_id {
-            println!("Run {run_id}");
-        }
-        for (plan_id, plan_run) in &plan_runs {
-            if run_id.as_ref() != Some(plan_run) {
-                println!("Plan {plan_id}: run {plan_run}");
-            }
-        }
-        // Name the plans that did not succeed, such as one whose delivery
-        // into the batch branch failed its regression check (spec-f830c4),
-        // with how each ended (bug-db89d4).
-        let failed_plans = plan_outcomes
+        // The run's summary (gap-2c87f0), in the run view's words: how it
+        // ended, its tasks, checks, time and spend, where the work is, and the
+        // one thing to do next, as a command to paste.
+        use super::run_view::{Outcome, RunModel, Summary, TaskRow};
+        let label = |plan_id: &str, task_id: &str| {
+            view.as_ref()
+                .and_then(|view| {
+                    view.tasks
+                        .iter()
+                        .find(|task| task.plan_id == plan_id && task.id == task_id)
+                })
+                .map_or_else(|| task_id.to_string(), TaskRow::label)
+        };
+        let failed_plans: Vec<(&str, &'static str)> = plan_execution_order
             .iter()
-            .filter(|(_, succeeded)| !**succeeded)
-            .map(|(plan_id, _)| {
-                let label = scheduler
-                    .outcome(plan_id)
-                    .map_or("not started", PlanOutcome::label);
-                format!("{plan_id} ({label})")
+            .filter(|plan_id| plan_outcomes.get(*plan_id) == Some(&false))
+            .map(|plan_id| {
+                (
+                    plan_id.as_str(),
+                    scheduler
+                        .outcome(plan_id)
+                        .map_or("not started", PlanOutcome::label),
+                )
             })
-            .collect::<Vec<_>>();
-        if !failed_plans.is_empty() {
-            println!("Plans that did not succeed: {}", failed_plans.join(", "));
-        }
-        // How each rung did, and whether a higher one beat a lower one
-        // (gap-3217a0); then the rungs the probes skipped, and why
-        // (gap-20301d).
-        for line in rungs.lines() {
-            println!("{line}");
-        }
-        for rung in &skipped_rungs {
-            println!("Rung {}", rung.line());
-        }
+            .collect();
+        let outcome = match stopped_by {
+            Some(reason) => Outcome::Stopped(stop_sentence(reason).to_string()),
+            None if all_succeeded => Outcome::Done,
+            None if unverified => Outcome::NotChecked,
+            None => Outcome::Failed,
+        };
+        let mut notes = Vec::new();
+        let mut next = None;
         // Work no check ran on is never delivered: say where it is
         // (bug-db89d4).
         for (plan_id, work) in &plan_unverified_work {
-            println!(
-                "Plan {plan_id}: no check ran on the work of {}, so it was not delivered. \
-                 It is on {} at {}; to see it:\n  {}",
-                work.tasks.join(", "),
-                work.branch,
-                short_oid(&work.commit),
-                work.review_command()
-            );
+            let tasks: Vec<String> = work.tasks.iter().map(|task| label(plan_id, task)).collect();
+            notes.push(format!(
+                "No check ran on the work of {}, so it was not delivered; it is on {}.",
+                tasks.join(", "),
+                work.branch
+            ));
+            next.get_or_insert_with(|| work.review_command());
         }
-        // Tasks the gaming screen left unverified, with why (gap-0af587).
+        // Tasks the gaming screen left unchecked (gap-0af587), and checks that
+        // changed the person's checkout, not their own worktree (bug-b7d9ad).
         for plan in &plans {
-            let note = gaming_flagged_note(&graph_task_dispatcher.gaming_flags(&plan.id));
-            if !note.is_empty() {
-                println!("Plan {}{note}", plan.id);
+            for (task, why) in graph_task_dispatcher.gaming_flags(&plan.id) {
+                notes.push(format!("{} was not checked: {why}", label(&plan.id, &task)));
+            }
+            let written =
+                checkout_written_note(workdir, &graph_task_dispatcher.checkout_writes(&plan.id));
+            if !written.is_empty() {
+                notes.push(written.trim_start_matches(". ").to_string());
             }
         }
-        // Checks that changed the person's checkout, not their own worktree
-        // (bug-b7d9ad).
-        for plan in &plans {
-            let note =
-                checkout_written_note(&workdir, &graph_task_dispatcher.checkout_writes(&plan.id));
-            if !note.is_empty() {
-                println!("Plan {}{note}", plan.id);
-            }
+        // A set names the plans that did not pass, and how each ended
+        // (spec-f830c4, bug-db89d4).
+        if plans.len() > 1 && !failed_plans.is_empty() {
+            let named: Vec<String> = failed_plans
+                .iter()
+                .map(|(plan_id, how)| format!("{plan_id} ({how})"))
+                .collect();
+            notes.push(format!("Plans that did not pass: {}", named.join(", ")));
         }
-        // Where each delivered plan's work landed (gap-415c54).
+        // Rungs the probes skipped, and a ladder whose higher rung did better
+        // (gap-20301d, gap-3217a0).
+        notes.extend(skipped_rungs.iter().map(|rung| rung.line()));
+        if let Some(misorder) = &rungs.misordered {
+            notes.push(misorder.line.clone());
+        }
+        // Where the work went (gap-415c54).
+        let mut delivered = None;
         if let Some(batch) = batch.as_ref() {
-            for receipt in batch.receipts() {
-                if receipt.state.is_success()
-                    && let Some(merge) = &receipt.merge_commit
-                {
-                    // A plan that did not finish delivered its verified
-                    // tasks only (bug-74164c).
-                    let partial = receipt
-                        .extensions
-                        .get(super::batch::PARTIAL_EXTENSION)
-                        .and_then(|partial| partial["tasks"].as_array())
-                        .map(|tasks| {
-                            let tasks = tasks
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .collect::<Vec<_>>();
-                            format!(
-                                " (partial: the plan did not finish; only its verified task(s) {})",
-                                tasks.join(", ")
-                            )
-                        })
-                        .unwrap_or_default();
-                    println!(
-                        "Plan {} delivered into {} at {merge}{partial}",
+            let receipts: Vec<_> = batch
+                .receipts()
+                .into_iter()
+                .filter(|receipt| receipt.state.is_success() && receipt.merge_commit.is_some())
+                .collect();
+            if !receipts.is_empty() {
+                let changes = batch
+                    .changes()
+                    .await
+                    .map(|changes| format!(": {changes}"))
+                    .unwrap_or_default();
+                delivered = Some(format!("The work is on its own branch{changes}."));
+            }
+            // A plan that did not finish delivered its verified tasks only
+            // (bug-74164c).
+            for receipt in &receipts {
+                let partial = receipt
+                    .extensions
+                    .get(super::batch::PARTIAL_EXTENSION)
+                    .and_then(|partial| partial["tasks"].as_array())
+                    .map(|tasks| {
+                        tasks
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(|task| label(&receipt.request.plan_id, task))
+                            .collect::<Vec<_>>()
+                    });
+                if let Some(tasks) = partial {
+                    notes.push(format!(
+                        "{} did not finish: only the work of {} was delivered.",
                         receipt.request.plan_id,
-                        batch.branch()
-                    );
-                    let kept = receipt
-                        .extensions
-                        .get(super::batch::ATTEMPT_CLEANUP_EXTENSION)
-                        .and_then(|cleanup| cleanup["kept_branches"].as_array())
-                        .map(|branches| {
-                            branches
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    if !kept.is_empty() {
-                        println!(
-                            "  {} attempt branch(es) kept: {}",
-                            kept.len(),
-                            kept.join(", ")
-                        );
-                    }
+                        tasks.join(", ")
+                    ));
                 }
             }
             if let Some(promotion) = &promotion {
-                println!("{}", promotion.summary);
+                notes.push(promotion.summary.clone());
             }
-            if let Some(command) = &merge_command {
-                println!(
-                    "The work is on branch {}; your checkout was not changed. To take it:\n  \
-                     {command}",
-                    batch.branch()
-                );
+        }
+        if next.is_none() {
+            next = match &outcome {
+                Outcome::Done | Outcome::NotChecked => merge_command.clone(),
+                Outcome::Failed => failed_plans
+                    .first()
+                    .map(|(plan_id, _)| format!("roko diagnose {plan_id}")),
+                Outcome::Stopped(_) => Some(format!(
+                    "roko run {} --resume-plan",
+                    shown_path(workdir, plans_dir)
+                )),
+            };
+        }
+        let reason = match &outcome {
+            Outcome::Done => None,
+            Outcome::Stopped(cause) => Some(format!("{cause}; what passed is kept")),
+            Outcome::NotChecked => Some("some of the work had no check run on it".to_string()),
+            Outcome::Failed => view.as_ref().and_then(RunModel::first_failure).or_else(|| {
+                failed_plans
+                    .first()
+                    .map(|(plan_id, how)| format!("{plan_id} {how}"))
+            }),
+        };
+        let tasks = view.as_ref().map_or_else(
+            || {
+                let passed = plan_task_verdicts
+                    .values()
+                    .map(|counts| counts.passed + counts.already_satisfied)
+                    .sum();
+                (passed, total_tasks)
+            },
+            RunModel::progress,
+        );
+        let cap_usd = match plans.as_slice() {
+            [plan] => {
+                graph_task_dispatcher
+                    .plan_budget_snapshot(&plan.id)
+                    .ceiling_usd
             }
+            _ => None,
+        };
+        let summary = Summary {
+            outcome,
+            reason,
+            tasks,
+            checks: view.as_ref().map_or((0, 0), RunModel::checks),
+            elapsed: run_start.elapsed(),
+            spent_usd: total_cost_usd,
+            cap_usd,
+            delivered,
+            notes,
+            next,
+        };
+        let style = crate::term_style::Style::stdout();
+        let mut out = std::io::stdout().lock();
+        // A blank line between the run's table and its summary.
+        if view.is_some() {
+            let _ = writeln!(out);
+        }
+        for line in super::run_view::summary_lines(&summary, style) {
+            let _ = writeln!(out, "{line}");
         }
     }
 
-    // An unverified plan is not a failure: the run ends unverified when every
-    // plan succeeded or ended unverified (bug-db89d4).
-    let outcomes = plan_execution_order
-        .iter()
-        .map(|plan_id| scheduler.outcome(plan_id))
-        .collect::<Vec<_>>();
-    let unverified = stopped_by.is_none()
-        && !all_succeeded
-        && outcomes.contains(&Some(PlanOutcome::Unverified))
-        && outcomes.iter().all(|outcome| {
-            matches!(
-                outcome,
-                Some(PlanOutcome::Succeeded | PlanOutcome::Unverified)
-            )
-        });
     Ok(RunExit {
         code: match stopped_by {
             Some(reason) => reason.exit_code(),
@@ -3562,6 +3559,28 @@ impl UnverifiedWork {
     fn review_command(&self) -> String {
         format!("git diff {}..{}", short_oid(&self.base), self.branch)
     }
+}
+
+/// Why a stopped run stopped, as the run's summary says it (gap-2c87f0).
+const fn stop_sentence(reason: PlanRunInterrupt) -> &'static str {
+    match reason {
+        PlanRunInterrupt::Interrupt => "you pressed Ctrl-C",
+        PlanRunInterrupt::Terminate => "it was asked to stop (SIGTERM)",
+        PlanRunInterrupt::Hangup => "its terminal closed",
+        PlanRunInterrupt::Deadline => "the FAST deadline passed",
+        PlanRunInterrupt::Conductor => "a watcher stopped it",
+        PlanRunInterrupt::Cancel => "someone stopped it",
+        PlanRunInterrupt::TuiClosed => "you closed the dashboard",
+        PlanRunInterrupt::TimeLimit => "it reached its time limit",
+    }
+}
+
+/// `path` as a person types it in `workdir`: relative when it is inside.
+fn shown_path(workdir: &Path, path: &Path) -> String {
+    path.strip_prefix(workdir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 /// The first 12 characters of an object id, as a person types it.

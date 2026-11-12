@@ -613,6 +613,10 @@ Examples:
         /// spend nothing (decision 7103).
         #[arg(long)]
         no_audit: bool,
+        /// With a plan directory: open the full-screen dashboard on a
+        /// terminal instead of the live view, as `roko plan run --tui` does.
+        #[arg(long)]
+        tui: bool,
     },
     /// (Removed) Use `roko run "<prompt>"`, or `roko run --plan "<prompt>"`.
     ///
@@ -1950,6 +1954,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             resume_plan,
             no_holdout,
             no_audit,
+            tui,
         } => {
             // Resolve typed overrides before any side effects (#262).
             let _resolved = ResolvedExecutionOverrides::for_run(
@@ -1986,6 +1991,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     resume_plan,
                     no_holdout,
                     no_audit,
+                    tui,
                 },
             )
             .await

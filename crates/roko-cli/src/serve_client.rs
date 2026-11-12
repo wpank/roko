@@ -634,10 +634,13 @@ pub async fn run_plan_via_server(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    println!(
-        "submitted to roko serve at {} as run {}",
-        endpoint.url, submitted.id
-    );
+    // The run view names the server in its header instead (gap-2c87f0).
+    if json || (!no_tui && std::io::stdout().is_terminal()) {
+        println!(
+            "submitted to roko serve at {} as run {}",
+            endpoint.url, submitted.id
+        );
+    }
 
     let run_id = submitted.id.clone();
     let server_url = endpoint.url.clone();
@@ -647,8 +650,10 @@ pub async fn run_plan_via_server(
     // ── 4. Follow the run ─────────────────────────────────────────────────
     let final_outcome = if !no_tui && std::io::stdout().is_terminal() {
         follow_run_tui(wd, &mirror, &run_id, &order_set, &serve_client).await?
+    } else if json {
+        follow_run_text(true, &mirror, &run_id, &order_set, &serve_client).await?
     } else {
-        follow_run_text(json, &mirror, &run_id, &order_set, &serve_client).await?
+        follow_run_view(wd, plans_dir, &mirror, &run_id, &order_set, &serve_client).await?
     };
 
     // ── JSON summary ──────────────────────────────────────────────────────
@@ -801,8 +806,97 @@ async fn follow_run_tui(
 
 /// Follow a server-managed plan run in text mode (no TUI), printing one line
 /// per notable event and exiting when the run completes or is cancelled.
+/// Follow a server-managed run with the run view (gap-2c87f0): a header and
+/// a line per task on a terminal, or a line per event in a pipe, then the
+/// run's summary on stdout, as a local run ends.
+async fn follow_run_view(
+    wd: &Path,
+    plans_dir: &Path,
+    mirror: &crate::state_hub::SharedStateHub,
+    run_id: &str,
+    order_set: &std::collections::HashSet<String>,
+    serve_client: &WorkspaceServerClient,
+) -> anyhow::Result<String> {
+    use crate::graph_execution::run_view::{Outcome, RunHeader, RunModel, RunView, Summary};
+    use std::io::Write as _;
+
+    let style = crate::term_style::Style::stderr();
+    let plans: Vec<_> = crate::runner::plan_loader::load_plans(plans_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|plan| order_set.contains(&plan.id))
+        .collect();
+    let mut header = RunHeader::for_plans(&plans, plans_dir, wd, 0, None, style);
+    header.note = Some("on roko serve".to_string());
+    let started = std::time::Instant::now();
+    let view = RunView::start_replaying(mirror, header, style);
+    let outcome = follow_run_text(true, mirror, run_id, order_set, serve_client).await?;
+    let model = view.finish().await;
+
+    let shown = plans_dir
+        .strip_prefix(wd)
+        .unwrap_or(plans_dir)
+        .display()
+        .to_string();
+    let failed_plan = model.as_ref().and_then(|model| {
+        model
+            .tasks
+            .iter()
+            .find(|task| task.state == crate::graph_execution::run_view::TaskState::Failed)
+            .map(|task| task.plan_id.clone())
+    });
+    let (run_outcome, next) = match outcome.as_str() {
+        "succeeded" => (Outcome::Done, Some(format!("roko plan status {shown}"))),
+        "unverified" => (
+            Outcome::NotChecked,
+            Some(format!("roko plan status {shown}")),
+        ),
+        "cancelled" | "interrupted" => (
+            Outcome::Stopped("it was stopped".to_string()),
+            Some(format!("roko run {shown} --resume-plan")),
+        ),
+        _ => (
+            Outcome::Failed,
+            Some(format!(
+                "roko diagnose {}",
+                failed_plan
+                    .unwrap_or_else(|| plans.first().map_or(shown.clone(), |plan| plan.id.clone()))
+            )),
+        ),
+    };
+    let reason = match &run_outcome {
+        Outcome::Done => None,
+        Outcome::Stopped(cause) => Some(format!("{cause}; what passed is kept")),
+        Outcome::NotChecked => Some("some of the work had no check run on it".to_string()),
+        Outcome::Failed => model.as_ref().and_then(RunModel::first_failure),
+    };
+    let summary = Summary {
+        outcome: run_outcome,
+        reason,
+        tasks: model.as_ref().map_or((0, 0), RunModel::progress),
+        checks: model.as_ref().map_or((0, 0), RunModel::checks),
+        elapsed: started.elapsed(),
+        spent_usd: model.as_ref().map_or(0.0, RunModel::spent),
+        cap_usd: None,
+        delivered: None,
+        notes: Vec::new(),
+        next,
+    };
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out);
+    for line in crate::graph_execution::run_view::summary_lines(
+        &summary,
+        crate::term_style::Style::stdout(),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
+    Ok(outcome)
+}
+
+/// Follow a server-managed run in plain lines, one per notable event;
+/// `quiet` prints none (the run view or `--json` speaks instead).
 async fn follow_run_text(
-    json: bool,
+    quiet: bool,
     mirror: &crate::state_hub::SharedStateHub,
     run_id: &str,
     order_set: &std::collections::HashSet<String>,
@@ -827,7 +921,7 @@ async fn follow_run_text(
             msg = sub.live.recv() => {
                 match msg {
                     Ok(envelope) => {
-                        let print_line = !json;
+                        let print_line = !quiet;
                         match &envelope.payload {
                             roko_core::DashboardEvent::PlanSetLoaded { plans } => {
                                 if plans.iter().any(|p| order_set.contains(&p.plan_id)) {

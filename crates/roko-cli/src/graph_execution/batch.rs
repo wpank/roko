@@ -60,6 +60,32 @@ pub struct Promotion {
     pub summary: String,
 }
 
+/// What a batch changed since the run began: files, lines added, lines
+/// removed (gap-2c87f0).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchChanges {
+    /// Files changed.
+    pub files: usize,
+    /// Lines added.
+    pub added: usize,
+    /// Lines removed.
+    pub removed: usize,
+}
+
+impl std::fmt::Display for BatchChanges {
+    /// `+120 −14 in 5 files`, as roko's design system writes changes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "+{} \u{2212}{} in {} {}",
+            self.added,
+            self.removed,
+            self.files,
+            if self.files == 1 { "file" } else { "files" }
+        )
+    }
+}
+
 /// The batch branch of one plan run, and the deliveries into it.
 #[derive(Debug)]
 pub struct BatchIntegration {
@@ -193,6 +219,31 @@ impl BatchIntegration {
     /// the run never changes (gap-4ec59f); see [`merge_command`].
     pub async fn merge_command(&self) -> Option<String> {
         merge_command(&self.repo, &self.branch).await
+    }
+
+    /// What the batch changed since the run began, as `git diff --numstat`
+    /// counts it: files, lines added and lines removed, for the run's summary
+    /// (gap-2c87f0). `None` when git cannot say.
+    pub async fn changes(&self) -> Option<BatchChanges> {
+        let tip = format!("refs/heads/{}", self.branch);
+        let numstat = git_output(&self.repo, &["diff", "--numstat", &self.base_oid, &tip])
+            .await
+            .ok()?;
+        let mut changes = BatchChanges::default();
+        for line in numstat.lines().filter(|line| !line.trim().is_empty()) {
+            let mut fields = line.split('\t');
+            changes.files += 1;
+            // A binary file counts "-" lines.
+            changes.added += fields
+                .next()
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(0);
+            changes.removed += fields
+                .next()
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(0);
+        }
+        Some(changes)
     }
 
     /// The deliveries' receipts, shared by every service that delivers into

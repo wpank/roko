@@ -1,0 +1,14 @@
+---
+source: crates/roko-cli/src/graph_execution/run_view.rs
+expression: "text.join(\"\\n\")"
+---
+  ✓ task 1  Write the greeting module         1 try       5.3s  $0.10
+  ✓ task 2  Add the command-line entry point  1 try       4.9s  $0.10
+  ✓ task 3  Document how to run it            2 tries      10s  $0.23
+            try 1: check usage failed, so roko tried again
+  ✓ plan check  python3 cli.py world                      0.1s
+
+  ✓ Done  3/3 tasks · 7 checks passed · 16s · $0.44 of $3.00
+  The work is on its own branch: +9 −1 in 3 files. Your checkout is unchanged.
+
+  Next  git merge --ff-only roko/batch/graph-9a438141

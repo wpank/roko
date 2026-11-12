@@ -19,6 +19,14 @@ export function planSetActive(run: RunState): boolean {
   });
 }
 
+/**
+ * The live state a plan's detail (`GET /api/plans/{id}`: its last run, and the run a resume would continue) goes
+ * with: when the plan and its run last ended. A plan's detail is read again once either changes.
+ */
+export function detailStamp(run: RunState, planId: string): string {
+  return `${run.plans[planId]?.finishedAtMs ?? 0}:${run.run.outcome ?? ''}`;
+}
+
 /** How long a run may take to say it ended after its last plan did, before the portal stops waiting for it. */
 export const FINISHING_MS = 15_000;
 

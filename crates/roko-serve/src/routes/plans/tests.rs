@@ -828,6 +828,106 @@ impl CliRuntime for ResumableRuntime {
     }
 }
 
+/// A runtime whose plan `demo` has `checkpoint` as its last run.
+struct CheckpointedRuntime {
+    checkpoint: Option<crate::runtime::CheckpointRun>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for CheckpointedRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        Ok(RunResult {
+            success: true,
+            output_text: None,
+            usage: None,
+            gate_results: Vec::new(),
+        })
+    }
+
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        ResumableRuntime {
+            skippable: Vec::new(),
+        }
+        .load_plan_summary(workdir, plan_id)
+        .await
+    }
+
+    async fn checkpoint_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+    ) -> anyhow::Result<Option<crate::runtime::CheckpointRun>> {
+        Ok(self.checkpoint.clone())
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// gap-6d2dd2: `GET /api/plans/{id}` names the plan's last run whatever
+/// became of it, so the portal can find where a passed run's work went after
+/// a reload; `resumable_run` still names it only while a resume would
+/// continue it, and a plan with no checkpoint says null for both.
+#[tokio::test]
+async fn plan_detail_names_its_last_run() {
+    let run = |status: &str, passed: &[&str], left: &[&str]| crate::runtime::CheckpointRun {
+        run_id: "6988f0b8-4199-4abf-9cfc-67713bc60e34".to_string(),
+        status: status.to_string(),
+        passed_tasks: passed.iter().map(ToString::to_string).collect(),
+        tasks_left: left.iter().map(ToString::to_string).collect(),
+        resumable: !left.is_empty() && !passed.is_empty(),
+        delivery_pending: false,
+        continues: true,
+        reason: None,
+        spent_usd: None,
+    };
+    let detail = |checkpoint: Option<crate::runtime::CheckpointRun>| async move {
+        let (_dir, state) = test_state_with_runtime(Arc::new(CheckpointedRuntime { checkpoint }));
+        let Json(body) = get_plan(State(state), Path("demo".into()))
+            .await
+            .expect("the plan's detail");
+        body
+    };
+
+    let passed = run("succeeded", &["T1", "T2"], &[]);
+    let body = detail(Some(passed.clone())).await;
+    assert_eq!(body["last_run"], json!(passed), "{body}");
+    assert_eq!(body["last_run"]["status"], "succeeded", "{body}");
+    assert!(body["resumable_run"].is_null(), "{body}");
+
+    let failed = run("failed", &["T1"], &["T2"]);
+    let body = detail(Some(failed.clone())).await;
+    assert_eq!(body["last_run"], json!(failed), "{body}");
+    assert_eq!(body["resumable_run"], json!(failed), "{body}");
+
+    let body = detail(None).await;
+    assert!(body["last_run"].is_null(), "{body}");
+    assert!(body.get("last_run").is_some(), "always said: {body}");
+    assert!(body["resumable_run"].is_null(), "{body}");
+}
+
 /// gap-b07969: `POST /api/plans/{id}/execute` with `{ "resume": true }`
 /// says in its 202 which tasks the resume replays instead of running, and
 /// a fresh run replays none.

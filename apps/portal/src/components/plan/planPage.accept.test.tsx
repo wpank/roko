@@ -152,7 +152,7 @@ describe('after a run', () => {
     );
     expect(textOf(plan().querySelector('.rk-pill'))).toBe('failed');
     expect(textOf(document.querySelector('[data-region="run-summary"]'))).toBe(
-      'Task 1 failed after 2 tries: the build check failed. Resume runs it again; what passed stays.',
+      'Task 1 failed after 2 tries: the build check failed.',
     );
     expect(orange().map((k) => k.getAttribute('data-action'))).toEqual(['retry']);
     expect(textOf(orange()[0]!)).toContain('resume');

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 /**
  * Notice — an inline informational callout.
  *
- * Renders a `role="note"` box with a ⓘ glyph. Used wherever the server
+ * Renders a `role="note"` box with a ⓘ glyph (✗ for an error). Used wherever the server
  * cannot fulfil a request (kind='unsupported'), to surface a failed request
  * (kind='error'; T01 draws its rule and glyph in the failed red), or for any
  * other non-alert informational message (kind='info').
@@ -28,7 +28,7 @@ export function Notice({
   return (
     <div data-notice={kind} role="note" className="rd-notice">
       <span className="rd-notice__glyph" aria-hidden="true">
-        ⓘ
+        {kind === 'error' ? '✗' : 'ⓘ'}
       </span>
       <span className="rd-notice__text">{children}</span>
       {onClose && (

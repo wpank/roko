@@ -104,9 +104,11 @@ describe('Esc', () => {
     press('n');
     fireEvent.change(prompt()!, { target: { value: 'a rust app that prints hello world' } });
     fireEvent.click(document.querySelector('[data-action="submit-prompt"]')!);
-    expect((prompt() as HTMLTextAreaElement).disabled).toBe(true);
+    // While roko writes, the box shows the request and the time in place of the field (gap-6c4d24).
+    const writing = () => document.querySelector('[data-region="writing"]');
+    expect(writing()).not.toBeNull();
     press('Escape');
-    expect(prompt()).not.toBeNull();
+    expect(writing()).not.toBeNull();
   });
 });
 

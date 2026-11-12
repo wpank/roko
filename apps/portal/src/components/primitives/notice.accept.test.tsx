@@ -20,7 +20,6 @@ const INPUT: AlertInput = {
   run: initialRunState(),
   connection: 'connected',
   selectedPlanId: null,
-  validationErrors: 0,
   requestError: null,
   dismissedKey: null,
 };

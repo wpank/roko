@@ -164,21 +164,26 @@ describe('validationCounts', () => {
 });
 
 describe('an invalid plan', () => {
-  it('disables Run, with the reason', async () => {
+  it('says it can’t run, with its problem in words, and offers edit plan in place of run', async () => {
     stubFetch([{ method: 'POST', path: VALIDATE, body: INVALID }]);
     renderWithClient(
       <PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
       { seed: [[queryKeys.planTasks('live-b'), TASKS]] },
     );
     await waitFor(() =>
-      expect(textOf(document.querySelector('[data-region="status-line"]'))).toContain('can’t run yet: 1 problem'),
+      expect(textOf(document.querySelector('[data-region="run-summary"]'))).toBe(
+        'This plan can’t run yet. Fix the problem below by editing the plan, or ask roko to revise it.',
+      ),
     );
-    const run = document.querySelector('[data-action="run"]') as HTMLButtonElement;
-    expect(run.disabled).toBe(true);
-    expect(textOf(document.querySelector('[data-reason]'))).toBe('Fix 1 validation error first');
+    expect(textOf(document.querySelector('[data-region="problems"] [data-problem-line]'))).toContain(
+      'Task 1 waits for a task the plan doesn’t have (T99).',
+    );
+    expect(document.querySelector('[data-action="run"]')).toBeNull();
+    const orange = [...document.querySelectorAll('[data-region="status-line"] [data-you]')].map((k) => k.getAttribute('data-action'));
+    expect(orange).toEqual(['edit-plan']);
   });
 
-  it('raises the validation alert with its error count', () => {
+  it('keeps the plan’s problems out of the notice band: its page says them', () => {
     window.history.replaceState(null, '', '/?plan=live-b');
     stubFetch([]);
     renderWithClient(<Workspace />, {
@@ -189,7 +194,7 @@ describe('an invalid plan', () => {
         [queryKeys.validation('live-b'), INVALID],
       ],
     });
-    expect(textOf(document.querySelector('[data-region="alert"]'))).toContain('1 validation error');
-    expect(textOf(document.querySelector('[data-region="alert"]'))).not.toContain('1 validation errors');
+    expect(document.querySelector('[data-region="alert"]')).toBeNull();
+    expect(textOf(document.querySelector('[data-region="problems"]'))).toContain('Task 1 waits for a task the plan doesn’t have');
   });
 });

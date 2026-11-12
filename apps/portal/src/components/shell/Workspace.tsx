@@ -10,14 +10,12 @@ import { SignIn } from '@/components/shell/SignIn';
 import { TopBar } from '@/components/shell/TopBar';
 import { Stage } from '@/components/stage/Stage';
 import { usePrimaryAction } from '@/components/plan/usePrimaryAction';
-import { validationCounts } from '@/components/stage/ValidationBadge';
 import {
   usePlans,
   usePlanTasks,
   useRunPlan,
   useRunPlans,
   useWorkspace,
-  useValidation,
 } from '@/api/queries';
 import { confirmDiscard, useDashboardStore } from '@/stores/dashboard';
 import { useSelection } from '@/lib/useSelection';
@@ -150,15 +148,11 @@ export function Workspace() {
     [plans],
   );
 
-  // ── Validation of the selected plan (the badge's query) for the alert ─────────
-  const { data: validation } = useValidation(resolved.plan ?? undefined);
-
   // ── Alert ─────────────────────────────────────────────────────────────────────
   const alert = pickAlert({
     run,
     connection,
     selectedPlanId: resolved.plan,
-    validationErrors: validationCounts(validation).errors,
     requestError,
     requestNotice,
     planTitles,

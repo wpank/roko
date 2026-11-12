@@ -575,7 +575,7 @@ impl ServerBuilder {
         let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
         let _workspace_gc = start_workspace_gc(Arc::clone(&state));
         let _handle_gc = start_handle_gc(Arc::clone(&state));
-        let _demurrage = start_demurrage_timer(Arc::clone(&state));
+        let _demurrage = start_knowledge_decay(&state);
         let _block_watcher = start_block_watcher(Arc::clone(&state));
 
         // Load persisted deployments from disk.
@@ -2850,8 +2850,28 @@ fn start_handle_gc(state: Arc<AppState>) -> JoinHandle<()> {
     })
 }
 
+/// Start the knowledge-demurrage timer when the `knowledge-decay` feature is
+/// on, and nothing otherwise (gap-8752ce): a default `roko serve` leaves
+/// every lesson's confidence where the runs left it.
+fn start_knowledge_decay(state: &Arc<AppState>) -> Option<JoinHandle<()>> {
+    #[cfg(feature = "knowledge-decay")]
+    {
+        Some(start_demurrage_timer(Arc::clone(state)))
+    }
+    #[cfg(not(feature = "knowledge-decay"))]
+    {
+        let _ = state;
+        None
+    }
+}
+
 /// Periodic knowledge demurrage: applies confidence/balance decay to knowledge
 /// entries that have not been re-validated since the last pass.
+///
+/// Parked behind the `knowledge-decay` feature, off by default (backlog 9231,
+/// gap-8752ce): it treats every entry as never validated, so a long-running
+/// serve decays every lesson's confidence to 0, and retrieval drops it
+/// (bug-dd5dca, held).
 ///
 /// The `DemurrageConsumer` drives the loop. Each heartbeat tick (40s) advances
 /// the consumer's iteration counter. When `validation_interval` iterations
@@ -2860,6 +2880,7 @@ fn start_handle_gc(state: Arc<AppState>) -> JoinHandle<()> {
 /// threshold are flagged for cold storage.
 ///
 /// Failures are logged at debug level but never crash the server.
+#[cfg(feature = "knowledge-decay")]
 fn start_demurrage_timer(state: Arc<AppState>) -> JoinHandle<()> {
     use roko_runtime::demurrage_consumer::{
         DemurrageConsumer, DemurrageConsumerConfig, DemurrageEntry,
@@ -4829,6 +4850,32 @@ mod tests {
             error_chain.contains("ambiguous model slug"),
             "unexpected error chain: {error_chain}"
         );
+    }
+
+    /// gap-8752ce (Will's decision 12, backlog 9231): a default `roko serve`
+    /// starts no knowledge-demurrage timer, which lowered every lesson's
+    /// confidence every ~2.8 h until retrieval dropped it (bug-dd5dca). The
+    /// `knowledge-decay` feature brings the timer back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serve_starts_no_demurrage_timer_by_default() {
+        let dir = tempdir().expect("tempdir");
+        let state = Arc::new(
+            build_app_state(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                None,
+                None,
+                None,
+            )
+            .expect("build state"),
+        );
+        let timer = super::start_knowledge_decay(&state);
+        let started = timer.is_some();
+        if let Some(timer) = timer {
+            timer.abort();
+        }
+        assert_eq!(started, cfg!(feature = "knowledge-decay"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

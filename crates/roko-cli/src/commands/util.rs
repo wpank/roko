@@ -1496,10 +1496,9 @@ pub(crate) async fn cmd_doctor(
     let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
         Some(roko_cli::workspace_lock::acquire_workspace_lock(&roko_dir)?)
     } else {
-        match roko_cli::workspace_lock::acquire_workspace_lock_shared(&roko_dir) {
-            Ok(lock) => Some(lock),
-            Err(error) => {
-                let serve = roko_cli::doctor::serve_holding_workspace(&workdir).ok_or(error)?;
+        match roko_cli::workspace_lock::acquire_read_lock(&workdir)? {
+            roko_cli::workspace_lock::ReadLock::Shared(lock) => Some(lock),
+            roko_cli::workspace_lock::ReadLock::BesideServe(serve) => {
                 beside_serve = Some(serve);
                 None
             }

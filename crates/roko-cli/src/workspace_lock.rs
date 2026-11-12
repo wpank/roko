@@ -225,6 +225,36 @@ pub fn acquire_workspace_lock_shared(roko_dir: &Path) -> Result<WorkspaceLockGua
     }
 }
 
+/// How a command that only reads holds the workspace (bug-1f5406,
+/// bug-808700).
+pub enum ReadLock {
+    /// Under the shared workspace lock.
+    Shared(WorkspaceLockGuard),
+    /// Without it, beside the workspace's own roko serve, which holds the lock
+    /// exclusively for its whole life.
+    BesideServe(crate::doctor::ServeHolder),
+}
+
+/// Take the shared workspace lock for a command that only reads `workdir`, or
+/// read beside the workspace's own roko serve, which holds the lock
+/// exclusively while it runs (bug-1f5406, bug-808700).
+///
+/// Hermes keeps serve up, so a reader that waited for the lock would never
+/// run. Beside serve a reader can catch a file mid-write: it reads, and writes
+/// nothing.
+///
+/// # Errors
+///
+/// The shared lock's refusal, when no serve of `workdir` holds the lock.
+pub fn acquire_read_lock(workdir: &Path) -> Result<ReadLock> {
+    match acquire_workspace_lock_shared(&workdir.join(".roko")) {
+        Ok(lock) => Ok(ReadLock::Shared(lock)),
+        Err(error) => crate::doctor::serve_holding_workspace(workdir)
+            .map(ReadLock::BesideServe)
+            .ok_or(error),
+    }
+}
+
 /// RAII guard that releases the file lock on drop.
 #[must_use = "lock is released when the guard is dropped"]
 pub struct WorkspaceLockGuard {
@@ -606,5 +636,41 @@ mod tests {
         );
         drop(guard);
         assert_eq!(fs::read_to_string(runner_path).unwrap(), "");
+    }
+
+    /// bug-808700: a command that only reads, as `roko learn`'s views do,
+    /// reads beside the roko serve that holds the workspace, without the lock.
+    /// Beside any other holder it is refused, as before, and once serve stops
+    /// it takes the shared lock again.
+    #[test]
+    fn learn_reads_beside_the_serve_that_holds_the_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let serve_lock = acquire_workspace_lock(&workspace.join(".roko")).expect("serve's lock");
+        assert!(
+            acquire_read_lock(&workspace).is_err(),
+            "a holder that is no serve of this workspace keeps the workspace"
+        );
+
+        let health = crate::serve_lifecycle::test_support::FakeHealth::answering("learn-serve");
+        let endpoint = roko_serve::endpoint::ServeEndpoint {
+            pid: std::process::id(),
+            url: health.url(),
+            workdir: workspace.clone(),
+            started_at: "2026-11-12T10:00:00Z".to_string(),
+            instance_id: "learn-serve".to_string(),
+            ..Default::default()
+        };
+        roko_serve::endpoint::write_endpoint(&workspace, &endpoint).expect("serve.json");
+        match acquire_read_lock(&workspace).expect("read beside serve") {
+            ReadLock::BesideServe(serve) => assert_eq!(serve.pid, std::process::id()),
+            ReadLock::Shared(_) => panic!("serve holds the workspace exclusively"),
+        }
+
+        drop(serve_lock);
+        assert!(matches!(
+            acquire_read_lock(&workspace),
+            Ok(ReadLock::Shared(_))
+        ));
     }
 }

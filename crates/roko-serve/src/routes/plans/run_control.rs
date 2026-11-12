@@ -75,7 +75,7 @@ pub(super) fn active_run_for(
 
 /// Returns the map key of the newest entry `id` names whose run has ended,
 /// kept so its status route can report how it ended (G43).
-fn finished_run_for(
+pub(super) fn finished_run_for(
     active: &std::collections::HashMap<String, PlanHandle>,
     id: &str,
 ) -> Option<String> {
@@ -975,6 +975,7 @@ fn launch_single_plan_run(
         status: PlanRunStatus::running(),
         handle,
         cancel,
+        max_usd: spec.max_usd,
     };
     active.insert(spec.key, plan_handle);
 }
@@ -1065,6 +1066,7 @@ fn launch_plan_set_run(
         status: PlanRunStatus::running(),
         handle,
         cancel,
+        max_usd: spec.max_usd,
     };
     active.insert(spec.key, plan_handle);
 }
@@ -1471,6 +1473,7 @@ fn cancel_queued_run(
         status: PlanRunStatus::ended(RunState::Cancelled, None),
         handle: tokio::spawn(async {}),
         cancel: CancelToken::new(),
+        max_usd: spec.max_usd,
     };
     active.insert(spec.run_id.clone(), plan_handle);
     // The run never started, so nothing else will say it ended.

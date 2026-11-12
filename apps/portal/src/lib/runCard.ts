@@ -346,15 +346,20 @@ export function buildCard(input: CardInput): Card {
 
   const spent = live?.costUsd ?? 0;
   const share = capUsd && capUsd > 0 ? spent / capUsd : 0;
+  // An unknown cap isn't no cap (gap-acfe4b): without one the reading is the spend alone, with no meter.
   const spentReading: Reading = {
     text: money(spent),
     label: capUsd ? `${money(spent)} of ${money(capUsd)}` : `${money(spent)} spent`,
     tone: ran ? 'on' : 'dim',
-    note: capUsd ? `of ${money(capUsd)}` : 'no cap set',
-    meter: {
-      lit: Math.min(20, Math.ceil(share * 20 - 1e-9)),
-      tone: share >= 0.8 ? 'you' : state === 'passed' ? 'pass' : 'live',
-    },
+    note: capUsd ? `of ${money(capUsd)}` : '',
+    ...(capUsd
+      ? {
+          meter: {
+            lit: Math.min(20, Math.ceil(share * 20 - 1e-9)),
+            tone: share >= 0.8 ? 'you' : state === 'passed' ? 'pass' : 'live',
+          },
+        }
+      : {}),
   };
 
   const checkStates: Signal[] = rows.flatMap((r) => checkSignals(r, liveTask(r.id)?.checks ?? [], rungs));

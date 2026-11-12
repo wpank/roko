@@ -406,6 +406,11 @@ export interface WireCheckpointRun {
   reason?: string;
   /** What the run spent before it stopped, in USD, when its cost ledger can be read. */
   spent_usd?: number;
+  /**
+   * What the run may spend, in USD: the cap its request set (a chat host's `max_usd`), while serve holds the run
+   * (gap-acfe4b); absent when it set none, and on older servers.
+   */
+  max_usd?: number;
 }
 
 /** Response body from GET /api/plans/{id}: the plan's summary, with its last run and the run a resume would continue. */

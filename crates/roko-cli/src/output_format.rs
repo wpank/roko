@@ -13,32 +13,47 @@ const FG_CYAN: &str = "\x1b[36m";
 const FG_MAGENTA: &str = "\x1b[35m";
 const FG_GRAY: &str = "\x1b[90m";
 
+/// Whether stdout gets colour: roko's terminal style decides, once per
+/// process (gap-cf3940). A pipe, `NO_COLOR` or `--color never` gets none.
+fn colour() -> bool {
+    static COLOUR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *COLOUR.get_or_init(|| crate::term_style::Style::stdout().colour())
+}
+
+fn paint(codes: &[&str], s: &str) -> String {
+    if colour() {
+        format!("{}{s}{RESET}", codes.concat())
+    } else {
+        s.to_string()
+    }
+}
+
 pub fn bold(s: &str) -> String {
-    format!("{BOLD}{s}{RESET}")
+    paint(&[BOLD], s)
 }
 
 pub fn dim(s: &str) -> String {
-    format!("{DIM}{FG_GRAY}{s}{RESET}")
+    paint(&[DIM, FG_GRAY], s)
 }
 
 pub fn green(s: &str) -> String {
-    format!("{FG_GREEN}{s}{RESET}")
+    paint(&[FG_GREEN], s)
 }
 
 pub fn red(s: &str) -> String {
-    format!("{FG_RED}{s}{RESET}")
+    paint(&[FG_RED], s)
 }
 
 pub fn yellow(s: &str) -> String {
-    format!("{FG_YELLOW}{s}{RESET}")
+    paint(&[FG_YELLOW], s)
 }
 
 pub fn cyan(s: &str) -> String {
-    format!("{FG_CYAN}{s}{RESET}")
+    paint(&[FG_CYAN], s)
 }
 
 pub fn magenta(s: &str) -> String {
-    format!("{FG_MAGENTA}{s}{RESET}")
+    paint(&[FG_MAGENTA], s)
 }
 
 /// Format a token count with thin-space thousands grouping.
@@ -55,11 +70,9 @@ fn fmt_tokens(n: u64) -> String {
     out.chars().rev().collect()
 }
 
-/// Returns `true` if stdout is connected to a terminal.
-///
-/// When false, color helpers should be skipped. However, the current
-/// implementation always emits ANSI codes — the caller can check `is_tty()`
-/// and choose a plain-text path if needed.
+/// Returns `true` if stdout is connected to a terminal. The colour helpers
+/// above decide through [`crate::term_style`], which also reads `--color`,
+/// `NO_COLOR`, `CLICOLOR` and `TERM`.
 pub fn is_tty() -> bool {
     use std::io::IsTerminal;
 

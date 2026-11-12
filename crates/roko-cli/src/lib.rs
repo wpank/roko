@@ -235,6 +235,7 @@ pub mod surface_inventory;
 pub mod task_accept;
 pub mod task_helpers;
 pub mod task_parser;
+pub mod term_style;
 pub mod transcript;
 pub mod tui;
 pub mod unified;

@@ -214,32 +214,25 @@ pub enum ColorMode {
 }
 
 impl ColorMode {
-    /// Resolve the effective color decision, consulting env vars when `Auto`.
-    ///
-    /// Precedence (highest first):
-    /// 1. `--color always|never` (not Auto)
-    /// 2. `NO_COLOR` set and non-empty  -> off
-    /// 3. `CLICOLOR_FORCE` set and != "0" -> on
-    /// 4. `CLICOLOR=0`                   -> off
-    /// 5. stdout is a TTY               -> on
-    /// 6. otherwise                      -> off
-    fn should_color(self) -> bool {
+    /// The same choice, as roko's terminal style takes it.
+    const fn choice(self) -> roko_cli::term_style::ColorChoice {
         match self {
-            Self::Always => true,
-            Self::Never => false,
-            Self::Auto => {
-                if env::var("NO_COLOR").map_or(false, |v| !v.is_empty()) {
-                    return false;
-                }
-                if env::var("CLICOLOR_FORCE").map_or(false, |v| v != "0") {
-                    return true;
-                }
-                if env::var("CLICOLOR").map_or(false, |v| v == "0") {
-                    return false;
-                }
-                std::io::stdout().is_terminal()
-            }
+            Self::Auto => roko_cli::term_style::ColorChoice::Auto,
+            Self::Always => roko_cli::term_style::ColorChoice::Always,
+            Self::Never => roko_cli::term_style::ColorChoice::Never,
         }
+    }
+
+    /// Resolve the effective color decision for stdout, as every command's
+    /// output does (`roko_cli::term_style::colour_for`): the flag, then
+    /// `NO_COLOR`, `CLICOLOR_FORCE`, `CLICOLOR=0` and `TERM=dumb`, then
+    /// whether stdout is a terminal.
+    fn should_color(self) -> bool {
+        roko_cli::term_style::colour_for(
+            self.choice(),
+            &roko_cli::term_style::TermEnv::from_process(),
+            std::io::stdout().is_terminal(),
+        )
     }
 }
 
@@ -1635,6 +1628,8 @@ fn main() {
 
     // ── Color mode ──────────────────────────────────────────────────
     let use_color = cli.color.should_color();
+    // Every command's output follows the same choice (gap-cf3940).
+    roko_cli::term_style::set_color_choice(cli.color.choice());
 
     // ── Timing mode ─────────────────────────────────────────────────
     let timing_enabled = cli.timing

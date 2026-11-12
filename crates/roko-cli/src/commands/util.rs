@@ -59,8 +59,8 @@ pub(crate) enum CompletionShell {
 /// Print a dim next-step hint to stderr, only when stdout is a TTY.
 pub(crate) fn print_next_step_hint(msg: &str) {
     if std::io::stdout().is_terminal() {
-        // \x1b[2m = dim, \x1b[0m = reset
-        eprintln!("\x1b[2m{msg}\x1b[0m");
+        let style = roko_cli::term_style::Style::stderr();
+        eprintln!("{}", style.paint(roko_cli::term_style::Role::Dim, msg));
     }
 }
 

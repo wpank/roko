@@ -1275,10 +1275,26 @@ pub(super) fn attach_runs(checks: &mut [SourceCheck], workdir: &Path, probe: &Pr
 }
 
 /// The one command `text` quotes in a code span (bug-3cdc58); `None` when no
-/// span is a command ([`is_command`]), or more than one is.
+/// span is a command ([`is_command`]), or more than one is. A table row's
+/// command cell, a cell that is one code span quoting a command, is its
+/// command when no other cell is one, whatever its prose quotes (bug-0a5417):
+/// `| P1.16 | `tools/spec.sh 1 plugin` | … `tools/install.sh --dest` installs
+/// those three |`.
 fn quoted_command(text: &str, workdir: &Path, probe: &Probe) -> Option<String> {
     static SPAN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"`([^`]+)`").expect("valid code span regex"));
+    let mut cells = text
+        .split(" | ")
+        .filter_map(|cell| {
+            let inner = cell.trim().strip_prefix('`')?.strip_suffix('`')?;
+            (!inner.contains('`')).then(|| inner.trim())
+        })
+        .filter(|span| is_command(span, workdir, probe));
+    if text.contains(" | ")
+        && let (Some(command), None) = (cells.next(), cells.next())
+    {
+        return Some(command.to_string());
+    }
     let mut commands = SPAN
         .captures_iter(text)
         .filter_map(|captures| captures.get(1))
@@ -2528,6 +2544,41 @@ mod tests {
         }
         let checks = source_checks("# Spec\n\n## Notes\n\nAs a final check, run `make lint`.\n");
         assert!(checks.is_empty(), "{checks:?}");
+    }
+
+    /// bug-0a5417: round v8's phase-1 row `| P1.16 | `tools/spec.sh 1 plugin`
+    /// | … and `tools/install.sh --dest` installs those three |` quotes two
+    /// commands, so it had none of its own, and the re-ask's T2, whose step
+    /// runs `tools/spec.sh 1 plugin`, did not keep it (op 541860eb). A row's
+    /// command cell is its command; the re-ask's plan keeps every check.
+    #[test]
+    fn a_rows_command_cell_is_its_command() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p1c_shared_command");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the spec");
+        let plan = TasksFile::parse(&fixture.join("tasks.toml")).expect("the re-ask's plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&request);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let p1_16 = checks
+            .iter()
+            .find(|check| check.text.starts_with("P1.16 | "))
+            .expect("P1.16");
+        assert_eq!(p1_16.run.as_deref(), Some("tools/spec.sh 1 plugin"));
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(coverage.unkept(), 0, "{:?}", coverage.detail_lines());
+
+        // A row with two command cells, or none and two commands in its
+        // prose, has no command roko can tell.
+        for row in [
+            "| P9.01 | `tools/a.sh 1` | `tools/b.sh 2` |",
+            "| P9.02 | the window | `tools/a.sh 1` then `tools/b.sh 2` |",
+        ] {
+            let mut checks = source_checks(&format!("# Spec\n\n## Acceptance checks\n\n{row}\n"));
+            attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+            assert_eq!(checks.len(), 1, "{row}");
+            assert_eq!(checks[0].run, None, "{row}");
+        }
     }
 
     /// bug-6ebc03: round v8's phase-1 spec lists its final check in its table

@@ -2,7 +2,7 @@
 id = "gap-2c87f0"
 kind = "gap"
 title = "roko run and roko plan run show no readable live progress or summary: a terminal gets the full-screen dashboard, a pipe gets 'executing node' lines and 'Graph Engine complete: 1 plan(s)', roko run prints two summaries, and no run ends with its time, checks and one next step"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-cli/run"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "0c4503198"
 source = "round v8 roko-recovery terminal captures (tmp/hermes-roko-v8/design/terminal/before, a0089c19c), the lead's approved proposal (tmp/hermes-roko-v8/design/terminal/README.md)"
 discovered_from = "agent:roko-recovery (round v8, a0089c19c)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-cli/src/graph_execution/plan_runner.rs::InlineProgressTelemetrySink", "crates/roko-cli/src/commands/run_cmd.rs", "crates/roko-cli/src/run.rs::print_workflow_run_report"]
@@ -18,6 +19,17 @@ links = { depends_on = ["gap-cf3940"], blocks = [], related = ["gap-0d6ae5", "bu
 
 [[verify]]
 command = "grep -rqw 'fn a_finished_run_ends_with_time_spend_checks_and_next' crates/roko-cli/src && cargo test -p roko-cli --lib run_view"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T13:01:00Z"
+commit = "0c4503198"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-11-12T11:17:11Z"
+forced = false
+evidence = "0c4503198 on work/gap-2c87f0: graph_execution::run_view shows a run in roko's design system, on a thread of its own: a header, one line per task redrawn in place on a terminal (only what changed, synchronized, cursor hidden) over a glass footer, one appended line per event in a pipe, CI or TERM=dumb, and a summary on stdout with Done/Failed/Stopped, tasks, checks, time, spend of the cap, where the work is (+added −removed in N files), notes and one Next command; the dashboard is opt-in (--tui); roko run prints one summary; serve-forwarded runs use the same view. Branch checks: nightly fmt; roko-cli lib 4119 passed (the run view's unit and insta snapshot tests, a_finished_run_ends_with_time_spend_checks_and_next among them), bin 481 passed (cli_parses_the_dashboard_flag), plan_branch_integration 5 of 5; workspace clippy -D warnings clean; the binary builds; Docs Lint's link check passes. $0 captures on that binary at 80x24, 100x32 and 120x40, NO_COLOR, pipe, CI, a failing plan, a one-task run and a run forwarded to roko serve: every exit code right, and no recorded frame wraps or tears (tmp/hermes-roko-v8/roko-recovery/runs/item3c/, checks.txt)."
 +++
 
 ## Problem

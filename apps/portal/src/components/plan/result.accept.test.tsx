@@ -32,12 +32,12 @@ const ran = (outcome: 'passed' | 'failed', output = ''): WireDashboardEvent[] =>
 ];
 
 const RESULT: WireRunResult = {
-  branch: `roko/batch/${RUN}`,
+  branch: 'roko/work/greeting',
   commit: '2f1d0c3',
   diffstat: { files: 3, insertions: 14, deletions: 0 },
   files_changed: ['README.md', 'cli.py', 'greeting.py'],
   merged: false,
-  merge_command: `git merge --ff-only roko/batch/${RUN}`,
+  merge_command: 'git merge --ff-only roko/work/greeting',
 };
 
 const README_PATCH = '@@ -0,0 +1,3 @@\n+# greeting\n+\n+Usage: python3 cli.py <name>\n';
@@ -58,7 +58,7 @@ const routes = (result: WireRunResult | null, lastRun = true): FetchRoute[] => [
     path: `/api/runs/${RUN}/diff`,
     body: {
       run_id: RUN,
-      branch: `roko/batch/${RUN}`,
+      branch: 'roko/work/greeting',
       files: [{ path: 'README.md', status: 'added', additions: 3, deletions: 0, binary: false, patch: README_PATCH }],
       totals: { files: 1, additions: 3, deletions: 0 },
       truncated: false,
@@ -91,7 +91,7 @@ describe('a passed run', () => {
     renderPlanPage(PLAN, TASKS, ran('passed'), { seed: [WORKSPACE] });
     await waitFor(() => expect(summaryText()).toContain('Ready to merge:'));
     expect(summaryText()).toBe('✓ Ready to merge: 3 files changed, +14 lines, on its own branch. Your checkout hasn’t changed.');
-    expect(textOf(document.querySelector('[data-merge-command]'))).toBe(`git merge --ff-only roko/batch/${RUN}`);
+    expect(textOf(document.querySelector('[data-merge-command]'))).toBe('git merge --ff-only roko/work/greeting');
     expect(document.querySelector('[data-action="copy-merge"]')).not.toBeNull();
     expect(orange()).toEqual(['review-run']);
     expect(document.querySelector('[data-action="run-again"]')).not.toBeNull();

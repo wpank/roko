@@ -329,9 +329,9 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// Each task dispatch creates a fresh worktree, runs the agent and
         /// verify steps inside it, and cleans it up on completion. Failed
         /// worktrees are retained for post-mortem. Finished plans are
-        /// delivered into the run's batch branch, `roko/batch/<run-id>`; your
-        /// checkout is never changed, and the run ends with the command that
-        /// takes the work into it. Without this flag, a workdir that is not
+        /// delivered into the run's batch branch, named from its plans
+        /// (`roko/work/<slug>`); your checkout is never changed, and the run
+        /// ends with the command that takes the work into it. Without this flag, a workdir that is not
         /// the top level of a git checkout with a commit runs its tasks in
         /// the shared working tree. Only applies to the Graph engine.
         #[arg(long)]
@@ -355,7 +355,7 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         rich_topology: bool,
         /// After every plan is delivered into the run's batch branch
-        /// (`roko/batch/<run-id>`), promote the batch into BRANCH and tag it
+        /// (`roko/work/<slug>`), promote the batch into BRANCH and tag it
         /// `roko/run/<run-id>`. Never pushes. A BRANCH checked out anywhere,
         /// such as your own checkout's, is not moved: the promotion is parked
         /// at `refs/roko/delivered/run-<run-id>` for you to fast-forward.

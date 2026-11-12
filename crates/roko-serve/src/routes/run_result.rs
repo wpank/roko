@@ -1,7 +1,8 @@
 //! Where a finished run's verified work is (gap-8409d0).
 //!
 //! roko never commits into the operator's checkout. A run whose tasks each ran
-//! in their own git worktree has a batch branch, `roko/batch/<run-id>`, started
+//! in their own git worktree has a batch branch, named from its plans as
+//! `roko/work/<slug>` (gap-b67fdd; `roko/batch/<run-id>` before), started
 //! at the operator's `HEAD`, which the run's manifest records as
 //! `workspace.base_commit`. Each plan whose tasks all passed is delivered into
 //! the batch, and the plan's checkpoint records that delivery under
@@ -25,7 +26,8 @@ use std::process::{Command, Stdio};
 use roko_fs::RokoLayout;
 use serde_json::{Value, json};
 
-/// roko-cli's `BATCH_BRANCH_PREFIX`.
+/// roko-cli's `BATCH_BRANCH_PREFIX`: a run's batch branch before gap-b67fdd,
+/// `roko/batch/<run-id>`, for a run whose batch records don't name it.
 const BATCH_BRANCH_PREFIX: &str = "roko/batch/";
 
 /// roko-cli's `RUN_TAG_PREFIX`.
@@ -71,7 +73,8 @@ pub(super) fn graph_plan_state_dir(workdir: &Path, plan_id: &str) -> PathBuf {
 /// and, when it can be told, the commit the batch started from. The summary's
 /// `result` and the run's diff both read it, so they agree (gap-0d6d21).
 pub(super) struct ResultRange {
-    /// `roko/batch/<run-id>`.
+    /// The batch branch its plans' batch records name: `roko/work/<slug>`,
+    /// or `roko/batch/<run-id>`.
     pub(super) branch: String,
     /// The branch's tip.
     pub(super) commit: String,
@@ -93,7 +96,12 @@ pub(super) fn result_range(
     if run_id.is_empty() {
         return None;
     }
-    let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
+    // The branch no longer names the run (gap-b67fdd): its plans' batch
+    // records do.
+    let branch = batch_records(workdir, run_id, plan_ids)
+        .into_iter()
+        .find_map(|(_, record)| record["branch"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{BATCH_BRANCH_PREFIX}{run_id}"));
     let commit = rev_parse(workdir, &format!("refs/heads/{branch}"))?;
     let head = rev_parse(workdir, "HEAD");
     let base = recorded_base(workdir, run_id, plan_ids, &commit).or_else(|| {

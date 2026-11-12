@@ -364,7 +364,7 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
         &[
             "for-each-ref",
             "--format=%(objectname)",
-            "refs/heads/roko/batch/",
+            "refs/heads/roko/work/",
         ],
     );
     assert_eq!(batch, base, "{log}");
@@ -545,7 +545,7 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
         &[
             "for-each-ref",
             "--format=%(refname:short)",
-            "refs/heads/roko/batch/",
+            "refs/heads/roko/work/",
         ],
     );
     assert_eq!(batch.lines().count(), 1, "one batch branch: {batch}\n{log}");
@@ -628,7 +628,7 @@ fn roko_run_follows_worktree_per_task() {
             &[
                 "for-each-ref",
                 "--format=%(refname:short)",
-                "refs/heads/roko/batch/",
+                "refs/heads/roko/work/",
             ],
         );
         if isolated {

@@ -2025,7 +2025,7 @@ mod tests {
             cap_usd: Some(3.0),
             delivered: Some("The work is on its own branch: +9 −1 in 3 files.".into()),
             notes: Vec::new(),
-            next: Some("git merge --ff-only roko/batch/graph-9a438141".into()),
+            next: Some("git merge --ff-only roko/work/greeting".into()),
         };
         let mut text = table;
         text.push(String::new());

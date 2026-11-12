@@ -3098,26 +3098,46 @@ fn write_manifest_atomic(path: &Path, manifest: &GraphCheckpointManifest) -> Res
         .with_context(|| format!("commit Graph checkpoint {}", path.display()))
 }
 
-/// The batch branch recorded in plan `plan_id`'s checkpoint under
-/// [`BATCH_EXTENSION`] (spec-f830c4), if any.
+/// The batch recorded in plan `plan_id`'s checkpoint under
+/// [`BATCH_EXTENSION`] (spec-f830c4), if any: its run, when the record names
+/// it, and its branch. The branch no longer names the run (gap-b67fdd).
 #[must_use]
-pub fn recorded_batch_branch(workdir: &Path, plan_id: &str) -> Option<String> {
+pub fn recorded_batch_run(workdir: &Path, plan_id: &str) -> Option<(Option<String>, String)> {
     let manifest = workdir
         .join(".roko/state/graph")
         .join(safe_plan_component(plan_id))
         .join("checkpoint.json");
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
-    manifest["extensions"][BATCH_EXTENSION]["value"]["branch"]
-        .as_str()
-        .map(ToOwned::to_owned)
+    let record = &manifest["extensions"][BATCH_EXTENSION]["value"];
+    let branch = record["branch"].as_str()?.to_string();
+    Some((record["run_id"].as_str().map(ToOwned::to_owned), branch))
+}
+
+/// Run `run_id`'s batch branch, as the checkpoint of one of its plans in
+/// `workdir` recorded it (gap-b67fdd: the name no longer says the run), or
+/// `None` when none names the run.
+#[must_use]
+pub fn recorded_run_batch_branch(workdir: &Path, run_id: &str) -> Option<String> {
+    let entries = std::fs::read_dir(workdir.join(".roko/state/graph")).ok()?;
+    entries.flatten().find_map(|entry| {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(entry.path().join("checkpoint.json")).ok()?)
+                .ok()?;
+        let record = &manifest["extensions"][BATCH_EXTENSION]["value"];
+        if record["run_id"].as_str() != Some(run_id) {
+            return None;
+        }
+        record["branch"].as_str().map(ToOwned::to_owned)
+    })
 }
 
 /// A plan's delivery into its run's batch branch, as its checkpoint recorded
 /// it (see [`recorded_batch_delivery`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedBatchDelivery {
-    /// The run's batch branch, `roko/batch/<run-id>`.
+    /// The run's batch branch: `roko/work/<slug>`, or `roko/batch/<run-id>`
+    /// before gap-b67fdd.
     pub branch: String,
     /// The batch commit that delivered the plan's work.
     pub merge_commit: String,

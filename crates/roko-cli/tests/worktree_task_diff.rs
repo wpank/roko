@@ -246,7 +246,7 @@ fn worktree_task_diff_is_gated_merged_and_cleaned() {
 
     // Merged: delivered into the batch branch, then promoted into `release`,
     // and the summary names the commits.
-    let batches = branches(&repo, "refs/heads/roko/batch/");
+    let batches = branches(&repo, "refs/heads/roko/work/");
     assert_eq!(batches.len(), 1, "{batches:?}");
     let batch = &batches[0];
     let batch_tip = git(&repo, &["rev-parse", batch]);
@@ -347,7 +347,7 @@ fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
         Vec::<String>::new()
     );
     assert_eq!(
-        branches(&repo, "refs/heads/roko/batch/"),
+        branches(&repo, "refs/heads/roko/work/"),
         Vec::<String>::new()
     );
     assert_eq!(report["batch"]["discarded"], true, "{report:#}");

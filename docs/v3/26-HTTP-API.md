@@ -562,8 +562,9 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/runs/{run_id}/bundle` | Evidence-bundle manifest (no download) |
 
 A run never commits into the operator's checkout. When its tasks ran in their
-own git worktrees, its verified work is on the batch branch
-`roko/batch/<run_id>`, started at the checkout's `HEAD`, and an ended run's
+own git worktrees, its verified work is on the batch branch its plans'
+`roko.batch@1` records name, `roko/work/<slug>` (`roko/batch/<run_id>` for a
+run recorded before gap-b67fdd), started at the checkout's `HEAD`, and an ended run's
 summary says so in `result` (gap-8409d0): the `branch`, its tip `commit`, the
 `base` it started from (the run manifest's `workspace.base_commit`, else a
 plan's `roko.batch@1` checkpoint record), `files_changed` (the first 50) and

@@ -2,7 +2,7 @@
 id = "gap-b67fdd"
 kind = "gap"
 title = "A run's batch branch is roko/batch/<run-uuid>, so every merge command roko prints (the terminal's ending, roko status, the portal's Ready to merge, the plugin's merge dialog) shows a UUID; name it from the run's plans, roko/work/<slug>, with -2 only on a clash"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-serve"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "44fd876c9"
 source = "round v8 lead's ask (terminal output overhaul, wave 2 item 1); round v8 roko-recovery captures (tmp/hermes-roko-v8/roko-recovery/runs/item5b/plan-status.*)"
 discovered_from = "agent:roko-recovery (round v8)"
 anchors = ["crates/roko-cli/src/graph_execution/batch.rs::BatchIntegration::open", "crates/roko-cli/src/graph_execution/batch.rs::resumed_batch_run", "crates/roko-serve/src/routes/run_result.rs::result_range"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-2c87f0", "gap-5043c6"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_batch_branch_is_named_from_its_plans' crates/roko-cli/src && grep -rqw 'fn a_run_result_names_the_recorded_batch_branch' crates/roko-serve/src && cargo test -p roko-cli --lib a_batch_branch_is_named_from_its_plans && cargo test -p roko-serve --lib a_run_result_names_the_recorded_batch_branch"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T19:06:00Z"
+commit = "44fd876c9"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-11-12T17:36:03Z"
+forced = false
+evidence = "44fd876c9 on work/gap-b67fdd: a new run's batch branch is named from its plans, roko/work/<slug> (one plan's id, the plans' directory, or a one-task run's request, cut at a dash to 40 characters), with -2 and on while the name is taken (creation fails on a taken name, so two runs starting together get two names), else roko/batch/<run-id>; roko/plan/<plan> stays the per-plan work branch (gap-3b5361). The run id stays the batch's identity everywhere else (receipts, the batch record's run_id, the roko/run/<run-id> tag, the parked delivery ref), and a resumed run continues the branch its batch record names with the record's run (old roko/batch/<run-id> records resume as before). roko serve's run result and the cloud worker read the recorded branch instead of building roko/batch/<run-id>. Branch checks: nightly fmt; roko-cli lib 4140 passed (8 ignored; a_batch_branch_is_named_from_its_plans and plan_runner's batch tests among them), bin 485 passed; roko-serve lib 1095 passed (a_run_result_names_the_recorded_batch_branch among them); plan_branch_integration 5 and worktree_task_diff 3 passed; workspace clippy -D warnings clean; the binary builds. $0 captures (roko-recovery/runs/item6a): the plan run ends 'Next  git merge --ff-only roko/work/greeting', the one-task run 'roko/work/give-greeting-py-a-farewell-name', and roko plan status names roko/work/greeting; no line reaches the last column."
 +++
 
 ## Problem

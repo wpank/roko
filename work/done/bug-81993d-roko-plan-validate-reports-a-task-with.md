@@ -2,7 +2,7 @@
 id = "bug-81993d"
 kind = "bug"
 title = "roko plan validate reports a task with no verify step twice: PLAN_035's schema error and PLAN_037"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_validate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "337914fb3"
 source = "round v8 roko-recovery terminal captures (tmp/hermes-roko-v8/design/terminal/before, a0089c19c), the lead's approved proposal (tmp/hermes-roko-v8/design/terminal/README.md)"
 discovered_from = "agent:roko-recovery (round v8, a0089c19c)"
 anchors = ["crates/roko-cli/src/plan_validate.rs"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_task_without_a_check_is_reported_once' crates/roko-cli/src && cargo test -p roko-cli --lib a_task_without_a_check_is_reported_once"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T17:13:29Z"
+commit = "337914fb3"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-12T14:39:06Z"
+forced = false
+evidence = "337914fb3 on work/gap-5043c6: plan_validate drops PLAN_035's \"missing 'verify'\" when PLAN_037's error reports the same task (drop_duplicate_missing_verify), in the text and the JSON; under [meta] allow_unverified it is PLAN_037's warning alone, as before. a_task_without_a_check_is_reported_once passes, and tests/plan_validation (40) and tests/plan_validate (27) pass. On round v8's story workspace roko plan validate plans/draft reports T2 once and says '1 error' (was '2 diagnostics')."
 +++
 
 ## Problem

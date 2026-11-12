@@ -1089,83 +1089,16 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 fresh,
                 ..Default::default()
             });
-            let exit = cmd_plan_validate(
+            // `--dag` prints the plans' DAG after the lint output, before Next.
+            cmd_plan_validate(
                 &plans_dir,
                 &workdir,
                 strict,
                 json || cli.json,
                 spec_quality,
                 dynamic,
-            )?;
-
-            if dag {
-                // Run DAG analysis on top of the lint output.
-                let dag_dir = if dir.is_absolute() {
-                    dir
-                } else {
-                    workdir.join(dir)
-                };
-                match roko_cli::runner::plan_loader::load_plans(&dag_dir) {
-                    Ok(loaded_plans) => {
-                        match roko_cli::runner::plan_dag::CrossPlanDag::compute(&loaded_plans) {
-                            Ok(plan_dag) => {
-                                let dag_summary = plan_dag.summary();
-                                if json || cli.json {
-                                    println!("{}", serde_json::to_string_pretty(&dag_summary)?);
-                                } else {
-                                    println!("\nDAG Analysis");
-                                    println!("============");
-                                    println!(
-                                        "Plans: {}   Tasks: {}   Edges: {}",
-                                        dag_summary.total_plans,
-                                        dag_summary.total_tasks,
-                                        dag_summary.total_edges,
-                                    );
-                                    println!();
-                                    for wave in &dag_summary.waves {
-                                        println!(
-                                            "Wave {} ({} plan{}, {} task{}):  {}",
-                                            wave.index,
-                                            wave.parallelism_width,
-                                            if wave.parallelism_width == 1 { "" } else { "s" },
-                                            wave.total_tasks,
-                                            if wave.total_tasks == 1 { "" } else { "s" },
-                                            wave.plan_ids.join(", "),
-                                        );
-                                    }
-                                    if !dag_summary.critical_path.is_empty() {
-                                        println!(
-                                            "\nCritical path: {} (est. {} min)",
-                                            dag_summary.critical_path.join(" -> "),
-                                            dag_summary.critical_path_minutes,
-                                        );
-                                    }
-                                    if !dag_summary.dangling_refs.is_empty()
-                                        || !dag_summary.crate_overlaps.is_empty()
-                                    {
-                                        println!("\nWarnings:");
-                                        for dangling in &dag_summary.dangling_refs {
-                                            println!("  - {dangling}");
-                                        }
-                                        for overlap in &dag_summary.crate_overlaps {
-                                            println!("  - {overlap}");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "DAG error");
-                                return Ok(EXIT_FAILURE);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to load plans for DAG analysis");
-                        return Ok(EXIT_FAILURE);
-                    }
-                }
-            }
-            Ok(exit)
+                dag,
+            )
         }
         PlanCmd::Index { check, workdir } => {
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -2165,66 +2098,20 @@ async fn cmd_plan_dir_status(
             }))?
         );
     } else {
-        println!("plan:            {plan_id}");
-        println!("directory:       {}", plan_dir.display());
-        println!("tasks:           {done_tasks}/{effective_total}");
-        println!("status:          {status_str}");
-        if let Some(failure) = &plan_check_failure {
-            println!("plan check:      {failure}");
-        }
-        if let Some(delivery) = &delivery {
-            println!(
-                "delivered:       {} at {}{}",
-                delivery.branch,
-                delivery.merge_commit,
-                if delivery.partial {
-                    " (partial: only the verified tasks of a plan that did not finish)"
-                } else {
-                    ""
-                }
-            );
-            if let Some(command) = &merge_command {
-                println!("take it with:    {command}");
-            }
-            if let Some(log) = &delivery.check_log {
-                println!("plan check log:  {log}");
-            }
-            if let Some(build_trees) = &delivery.build_trees {
-                println!("plan check from: {}", build_trees.started_from);
-            }
-        }
-        println!();
-        if tasks_file.tasks.is_empty() {
-            println!("  (no tasks)");
-        } else {
-            let id_width = tasks_file
-                .tasks
-                .iter()
-                .map(|t| t.id.len())
-                .max()
-                .unwrap_or(2)
-                .max(2);
-            for task in &tasks_file.tasks {
-                // For display, show "done" for all tasks when the graph
-                // checkpoint reports success but tasks.toml wasn't updated.
-                // When the graph checkpoint succeeded, promote any
-                // pre-execution task status to "done".  The graph engine
-                // does not write back to tasks.toml, so statuses like
-                // "ready", "pending", and "todo" all mean "not yet done
-                // according to the file" even though the run completed.
-                let is_pre_execution_status = task.status.is_empty()
-                    || task.status.eq_ignore_ascii_case("pending")
-                    || task.status.eq_ignore_ascii_case("todo")
-                    || task.status.eq_ignore_ascii_case("ready");
-                let display_status = if checkpoint_succeeded && is_pre_execution_status {
-                    "done"
-                } else {
-                    task.status.as_str()
-                };
-                let title = task.title.as_str();
-                println!("  {:<id_width$}  {:<10}  {title}", task.id, display_status);
-            }
-        }
+        // gap-5043c6, bug-5013e8: each task as the run left it, read from the
+        // run, in the run view's table.
+        let tasks = tasks_file
+            .tasks
+            .iter()
+            .map(|task| (task.id.clone(), task.title.clone()))
+            .collect();
+        let status =
+            roko_cli::plan_status_view::PlanStatus::collect(workdir, &plan_dir, plan_id, tasks)
+                .await;
+        let style = roko_cli::term_style::Style::stdout();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let lines = roko_cli::plan_status_view::lines(&status, style, now_ms);
+        println!("{}", lines.join("\n"));
     }
     Ok(EXIT_SUCCESS)
 }
@@ -2896,12 +2783,50 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> Op
     if blocking.is_empty() {
         spec_gate_before_run(plans_dir, workdir, no_holdout)
     } else {
-        let rendered = plan_validate::render_text(&report);
         // On stderr as well as in the log: without `--verbose` an operator
-        // sees no tracing output.
-        eprintln!("plan validation failed; fix these errors before running:\n{rendered}");
-        tracing::error!(report = %rendered, "plan validation failed — fix the errors above before running");
+        // sees no tracing output (gap-5043c6: in the run's own words).
+        let view = validate_view(&report, plans_dir, workdir, None, false);
+        let view = plan_validate::ValidateView {
+            before_run: true,
+            ..view
+        };
+        let style = roko_cli::term_style::Style::stderr();
+        let mut lines = plan_validate::view_lines(&report, &view, style);
+        if let Some(next) = plan_validate::next_command(&report, &view) {
+            lines.extend(roko_cli::term_style::next_lines(style, &next));
+        }
+        eprintln!("{}", lines.join("\n"));
+        tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
         Some(1)
+    }
+}
+
+/// How `plan validate` frames its report of the plans under `dir`
+/// (gap-5043c6): one plan by its id and directory, several by `dir`.
+fn validate_view<'a>(
+    report: &plan_validate::ValidationReport,
+    dir: &Path,
+    workdir: &'a Path,
+    rungs: Option<&'a plan_validate::WorkspaceRungs>,
+    strict: bool,
+) -> plan_validate::ValidateView<'a> {
+    let plan = (report.totals.plans_checked == 1)
+        .then(|| plan_validate::collect_tasks_files(dir).ok())
+        .flatten()
+        .and_then(|files| files.into_iter().next())
+        .map(|tasks| plan_validate::CheckedPlan::read(&tasks, workdir));
+    let shown = dir
+        .strip_prefix(workdir)
+        .unwrap_or(dir)
+        .display()
+        .to_string();
+    plan_validate::ValidateView {
+        shown: shown.trim_end_matches('/').to_string(),
+        plan,
+        rungs,
+        strict,
+        before_run: false,
+        workdir: Some(workdir),
     }
 }
 
@@ -3066,6 +2991,7 @@ pub(crate) fn cmd_plan_validate(
     json_output: bool,
     spec_quality: bool,
     dynamic: Option<roko_cli::spec_red_on_base::RedOnBaseOptions>,
+    dag: bool,
 ) -> Result<i32> {
     let config = workspace_roko_toml(workdir)?;
     let models = config
@@ -3153,35 +3079,115 @@ pub(crate) fn cmd_plan_validate(
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        let mut text = plan_validate::render_text(&report);
-        if let Some(rungs) = &rungs {
-            text.push_str("\n\n");
-            text.push_str(&plan_validate::render_rungs_text(rungs));
+        let style = roko_cli::term_style::Style::stdout();
+        let view = validate_view(&report, dir, workdir, rungs.as_ref(), strict);
+        let mut lines = plan_validate::view_lines(&report, &view, style);
+        for overlap in &overlaps {
+            lines.push(format!(
+                "  {} plans {} and {} both touch {}: they run one after the other",
+                style.paint(
+                    roko_cli::term_style::Role::You,
+                    style.glyph(roko_cli::term_style::Glyph::Warning)
+                ),
+                overlap.plan_a,
+                overlap.plan_b,
+                overlap.crates.join(", "),
+            ));
         }
-        if !overlaps.is_empty() {
-            text.push_str("\n\ncrate overlaps detected:\n");
-            for overlap in &overlaps {
-                text.push_str(&format!(
-                    "  warning: plans {} and {} both touch: {}\n",
-                    overlap.plan_a,
-                    overlap.plan_b,
-                    overlap.crates.join(", "),
-                ));
-            }
-        }
-        println!("{text}");
+        println!("{}", lines.join("\n"));
         if let Some(spec_quality) = &spec_report {
             println!("\n{}", roko_gate::spec_quality::render_text(spec_quality));
         }
         if let Some(red_on_base) = &red_on_base {
             println!("\n{}", red_on_base.render_text());
         }
+        if dag && let Some(exit) = print_dag_analysis(dir, false)? {
+            return Ok(exit);
+        }
+        if let Some(next) = plan_validate::next_command(&report, &view) {
+            println!(
+                "{}",
+                roko_cli::term_style::next_lines(style, &next).join("\n")
+            );
+        }
+    }
+    if json_output
+        && dag
+        && let Some(exit) = print_dag_analysis(dir, true)?
+    {
+        return Ok(exit);
     }
     // A hard fail fails the run only under --strict; a low score never does.
     let spec_exit = spec_report
         .as_ref()
         .map_or(0, |spec_quality| spec_quality.exit_code(strict));
     Ok(report.exit_code(strict).max(spec_exit))
+}
+
+/// `plan validate --dag`: the plans' DAG, waves and critical path, after
+/// the lint output, as text or JSON. `Some(exit)` when it cannot load or
+/// order the plans.
+fn print_dag_analysis(dag_dir: &Path, json: bool) -> Result<Option<i32>> {
+    match roko_cli::runner::plan_loader::load_plans(dag_dir) {
+        Ok(loaded_plans) => {
+            match roko_cli::runner::plan_dag::CrossPlanDag::compute(&loaded_plans) {
+                Ok(plan_dag) => {
+                    let dag_summary = plan_dag.summary();
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&dag_summary)?);
+                    } else {
+                        println!("\nDAG Analysis");
+                        println!("============");
+                        println!(
+                            "Plans: {}   Tasks: {}   Edges: {}",
+                            dag_summary.total_plans,
+                            dag_summary.total_tasks,
+                            dag_summary.total_edges,
+                        );
+                        println!();
+                        for wave in &dag_summary.waves {
+                            println!(
+                                "Wave {} ({} plan{}, {} task{}):  {}",
+                                wave.index,
+                                wave.parallelism_width,
+                                if wave.parallelism_width == 1 { "" } else { "s" },
+                                wave.total_tasks,
+                                if wave.total_tasks == 1 { "" } else { "s" },
+                                wave.plan_ids.join(", "),
+                            );
+                        }
+                        if !dag_summary.critical_path.is_empty() {
+                            println!(
+                                "\nCritical path: {} (est. {} min)",
+                                dag_summary.critical_path.join(" -> "),
+                                dag_summary.critical_path_minutes,
+                            );
+                        }
+                        if !dag_summary.dangling_refs.is_empty()
+                            || !dag_summary.crate_overlaps.is_empty()
+                        {
+                            println!("\nWarnings:");
+                            for dangling in &dag_summary.dangling_refs {
+                                println!("  - {dangling}");
+                            }
+                            for overlap in &dag_summary.crate_overlaps {
+                                println!("  - {overlap}");
+                            }
+                        }
+                    }
+                    Ok(None)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "DAG error");
+                    Ok(Some(EXIT_FAILURE))
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load plans for DAG analysis");
+            Ok(Some(EXIT_FAILURE))
+        }
+    }
 }
 
 pub(crate) fn read_executor_state(
@@ -3903,8 +3909,8 @@ verify = [{{ phase = "test", command = "cargo test -p demo --lib retry" }}]
         );
         let text = plan_validate::render_text(&report);
         assert!(
-            text.contains("\n                 - Is the limit per call or per task?\n"),
-            "the question is printed under the task: {text}"
+            text.contains("\n        - Is the limit per call or per task?  PLAN_045\n"),
+            "the question is printed under the message: {text}"
         );
         assert_eq!(
             validate_before_run(&plans, workspace.path(), false),

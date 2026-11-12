@@ -1,0 +1,24 @@
+---
+source: crates/roko-cli/src/commands/diagnose.rs
+expression: text
+---
+◆ roko  diagnose broken
+  plans/broken · failed 2 min ago · 0/1 task · $0.30
+
+  ✗ task 1  Parse the settings file   2 tries      10s  $0.30
+            check imports failed: SyntaxError: invalid syntax
+            check imports runs: python3 -c 'import settings'
+            try 1     5.1s   $0.13  glm-4.7  SyntaxError: unexpected EOF while parsing
+            try 2     5.8s   $0.17  glm-4.7  SyntaxError: invalid syntax
+
+            What check imports printed on try 2:
+            │ Traceback (most recent call last):
+            │   File "<string>", line 1, in <module>
+            │   File ".roko/worktrees/attempt-0b76/settings.py", line 2
+            │     pass
+            │     ^
+            │ SyntaxError: invalid syntax
+
+  Next  roko run plans/broken
+  It runs task 1 again.
+  If task 1's check would fail the same way again, change the task or its check in plans/broken/tasks.toml first.

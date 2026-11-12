@@ -426,19 +426,51 @@ roko doctor [disk|network|clean] [--workdir <path>] [--serve-url <url>]
 
 ### `roko diagnose`
 
-Diagnose why a plan failed. Prints a readable report: the plan's status, each task that did not complete with
-why (its last error, the verify step it failed and that step's command, its attempts with their cost), and the
-next steps, including the command that resumes the run. The global `--json` flag prints the full report as
-structured JSON instead.
+Diagnose why a plan failed. It prints, in the same style as the run view:
+- a header: the plan, how its last run ended and when, the tasks that passed, and what it spent;
+- the plan's tasks as the run's own table shows them;
+- under each task that did not pass:
+  - the check it failed and the command it runs;
+  - one line per try, with its time, spend, model and the check's error;
+  - what the check printed on the last failed try, shown once;
+- one **Next** line with the command that runs the plan again, a line on what that keeps and runs, and what to
+  change first.
+
+A task's tries are its own agent runs. The helper calls a try makes after a failed check count in the spend, not as
+tries. The global `--json` flag prints the full report as structured JSON instead.
+
+```text
+◆ roko  diagnose broken
+  plans/broken · failed just now · 0/1 task · $0.30
+
+  ✗ task 1  Parse the settings file   2 tries      11s  $0.30
+            check imports failed: SyntaxError: invalid syntax
+            check imports runs: python3 -c 'import settings'
+            try 1     5.3s   $0.13  glm-4.7  SyntaxError: unexpected EOF while parsing
+            try 2     5.9s   $0.17  glm-4.7  SyntaxError: invalid syntax
+
+            What check imports printed on try 2:
+            │ Traceback (most recent call last):
+            │   File "<string>", line 1, in <module>
+            │   File ".roko/worktrees/attempt-0b7625170474ceaad4fe/settings.py", line 2
+            │     pass
+            │     ^
+            │ SyntaxError: invalid syntax
+
+  Next  roko run plans/broken
+  It runs task 1 again.
+  If task 1's check would fail the same way again, change the task or its check in plans/broken/tasks.toml first.
+```
 
 ```
 roko diagnose <plan-id> [--verbose] [--workdir <path>] [--json]
 ```
 
 The report is built from the plan's Graph checkpoint under `.roko/state/graph/<plan-id>/`
-(status, completed tasks, spend), the plan's `tasks.toml`, and the run's rows in
-`.roko/learn/costs.jsonl` (attempts), `.roko/learn/gate-failures.jsonl` (failed verify steps)
-and `.roko/episodes.jsonl` (failure reasons). It lists every task as `completed`, `failed`,
+(status, completed tasks, spend), the plan's `tasks.toml`, the run's verdicts in `.roko/runs/<run>/attempts.jsonl`
+(one per try), and the run's rows in `.roko/learn/costs.jsonl` (provider calls),
+`.roko/learn/gate-failures.jsonl` (failed verify steps) and `.roko/episodes.jsonl` (failure reasons). Its JSON lists
+every task as `completed`, `failed`,
 `incomplete` or `never_ran` (with the failed dependencies that blocked it), and previews what
 `roko plan run <plan dir>` would resume. The Runner-v2 `.roko/state/state-snapshot.json` is
 read only for a plan without a Graph checkpoint.
@@ -446,7 +478,7 @@ read only for a plan without a Graph checkpoint.
 | Arg/Flag | Description |
 |---|---|
 | `<plan-id>` | Plan ID to diagnose. |
-| `--verbose` | Also list the tasks that completed, with their attempts, verify failures and episodes. |
+| `--verbose` | Also show the tries of the tasks that passed; the JSON lists their attempts, verify failures and episodes. |
 | `--json` | Print the report as structured JSON. |
 
 ---
@@ -636,6 +668,29 @@ roko plan create <plan-id> --title <title> [--description <text>] [--workdir <pa
 
 Lint every `tasks.toml` under a plans directory without executing. Run this before
 `roko plan run` to catch schema errors and missing dependency references.
+
+It prints:
+- a header naming the plan and what it holds;
+- each problem once, under its task, with `✗` for an error or `!` for a warning and the rule id last;
+- a result line: `✓ Ready to run`, or what stops the plan;
+- the workspace checks every task also runs;
+- **Next**: `roko run <plan>` for a plan that is ready, or the command that checks it again once it is fixed.
+
+On a terminal, a long message wraps under itself. In a pipe, each problem stays on one line. `plan run` refuses a plan
+with an error the same way, before any agent starts.
+
+```text
+◆ roko  validate draft
+  plans/draft/tasks.toml · 2 tasks · 1 check
+
+  T2  Mention farewell in the README
+    ✗ task 'T2' has no verify steps: it can only end unverified, and then its plan does not succeed; give it a verify step, or set [meta] allow_unverified = true  PLAN_037
+
+  ✗ 1 error  fix it in plans/draft/tasks.toml, then check again
+  Every task also runs the workspace check: compile (python3 -m compileall -q .)
+
+  Next  roko plan validate plans/draft
+```
 
 ```
 roko plan validate [<dir>] [--strict] [--json] [--dag]
@@ -881,9 +936,32 @@ roko plan budget raise <plan-id> --to <usd> [--workdir <path>]
 
 #### `roko plan status`
 
-Show lightweight runner status from `.roko/state/status.json`. With a plan directory, show that plan's tasks and
-status, why its whole-plan check failed if it did, and, for a plan delivered into its run's batch branch, the branch,
-the commit, and the command that takes the work into your checkout.
+Show lightweight runner status from `.roko/state/status.json`. With a plan directory, it shows that plan in the
+run view's style:
+- how its last run ended, when, the tasks that passed, and what it spent;
+- each task as the run left it, read from the run rather than from `tasks.toml`: its tries, time and spend, and
+  the check a failed task failed;
+- the plan check;
+- where the work went;
+- **Next**: `roko diagnose <plan>` after a failure, `roko run <plan-dir> --resume-plan` after a stop, the merge
+  command for delivered work, or `roko run <plan-dir>` for a plan that never ran.
+
+`--json` prints the plan's status, its delivery and its tasks as before.
+
+```text
+◆ roko  plan greeting
+  plans/greeting · done just now · 3/3 tasks · $0.44
+
+  ✓ task 1  Write the greeting module         1 try       4.5s  $0.10
+  ✓ task 2  Add the command-line entry point  1 try       4.3s  $0.10
+  ✓ task 3  Document how to run it            2 tries     9.0s  $0.23
+            try 1: check usage failed, so roko tried again
+  ✓ plan check  python3 cli.py world | grep -qx 'hel…     0.0s
+
+  The work is on its own branch, not merged yet.
+
+  Next  git merge --ff-only roko/batch/graph-787c2048-ff7a-406e-b9ef-3436fb0dc9f2
+```
 
 ```
 roko plan status [<plan-dir>] [--workdir <path>]

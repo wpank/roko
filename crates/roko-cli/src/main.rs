@@ -826,14 +826,15 @@ Examples:
     /// Diagnose why a plan failed: a readable report, or structured JSON with `--json`.
     #[command(after_help = "\
 Examples:
-  roko diagnose my-plan             Show failure report for a plan
-  roko diagnose my-plan --verbose   Also list the tasks that completed, with their attempts
+  roko diagnose my-plan             Show why a plan's last run failed, and what to do
+  roko diagnose my-plan --verbose   Also show the tries of the tasks that passed
   roko diagnose my-plan --json      Print the full report as JSON")]
     Diagnose {
         /// Plan ID to diagnose.
         plan_id: String,
-        /// Also list the tasks that completed, with their attempts, verify
-        /// failures and episodes (always listed for tasks that did not).
+        /// Also show the tries of the tasks that passed; `--json` then lists
+        /// their attempts, verify failures and episodes too (always listed
+        /// for tasks that did not pass).
         #[arg(long)]
         verbose: bool,
         /// Working directory (default: cwd / --repo).

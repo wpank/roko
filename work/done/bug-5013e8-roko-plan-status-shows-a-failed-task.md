@@ -2,7 +2,7 @@
 id = "bug-5013e8"
 kind = "bug"
 title = "roko plan status shows a failed task as 'ready': its task rows read tasks.toml's authored status and take the run's view only when the checkpoint succeeded"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,13 +11,25 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "337914fb3"
 source = "round v8 roko-recovery terminal captures (tmp/hermes-roko-v8/design/terminal/before, a0089c19c), the lead's approved proposal (tmp/hermes-roko-v8/design/terminal/README.md)"
 discovered_from = "agent:roko-recovery (round v8, a0089c19c)"
 anchors = ["crates/roko-cli/src/commands/plan.rs::cmd_plan_dir_status"]
 links = { depends_on = [], blocks = [], related = ["gap-082a14"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn plan_status_rows_say_what_the_run_did' crates/roko-cli/src && cargo test -p roko-cli --bin roko -- plan_status_rows_say_what_the_run_did"
+command = "grep -rqw 'fn plan_status_rows_say_what_the_run_did' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_view::tests::plan_status_rows_say_what_the_run_did"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T17:13:38Z"
+commit = "337914fb3"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-12T14:38:51Z"
+forced = false
+evidence = "337914fb3 on work/gap-5043c6: roko plan status reads each task's row from the run (roko_cli::plan_status_view, through diagnose's report and the run view's table), not tasks.toml's authored status. plan_status_rows_say_what_the_run_did passes: a failed run reads task 1 passed, task 2 failed after 2 tries (check runs failed), task 3 did not run, Next roko diagnose demo; an interrupted run reads task 1 passed, task 2 stopped, task 3 waiting, Next roko run plans/demo --resume-plan; a plan that never ran waits, Next roko run plans/demo. The verify names the lib test, since the rows are built in the lib (under --bin roko the filter matched nothing). On round v8's story workspace roko plan status plans/broken reads task 1 failed, 2 tries, check imports failed (a0089c19c: T1 ready)."
 +++
 
 ## Problem
@@ -51,6 +63,10 @@ run's `attempts.jsonl` verdicts.
 
 Derive each row from the checkpoint inspection: passed, failed, blocked, or not run. Fall back to tasks.toml only
 when the plan has no checkpoint. Fixed with round v8's plan status redesign.
+
+The rows come from `roko_cli::plan_status_view`, in the lib, so the test is a lib test: it builds its run with the
+lib's checkpoint fixtures (`start_plan_checkpoint` is test-only there). The verify first named `--bin roko`, where
+the filter would match nothing and pass.
 
 ## Done when
 

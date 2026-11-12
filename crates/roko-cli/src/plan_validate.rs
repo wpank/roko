@@ -29,15 +29,6 @@ pub enum Severity {
     Warning,
 }
 
-impl Severity {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warning => "warn",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
@@ -54,6 +45,10 @@ pub struct PlanDiagnostics {
     pub plan_id: String,
     pub path: String,
     pub diagnostics: Vec<Diagnostic>,
+    /// The plan's tasks, id and title, in plan order: the text lists each
+    /// task's problems under them (gap-5043c6). Not in `--json`.
+    #[serde(skip)]
+    pub tasks: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
@@ -470,49 +465,415 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
-/// A line break in a diagnostic's message, indented to where `render_text`
-/// starts the message.
-const MESSAGE_INDENT: &str = "\n                 ";
+/// The plan `plan validate` checked, when it checked one (gap-5043c6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedPlan {
+    /// Its id: what runs and `roko diagnose` name it.
+    pub plan_id: String,
+    /// Its directory, as the person types it: what `roko run` takes.
+    pub dir: String,
+    /// Its tasks, its checks (`[[task.verify]]` steps) and whether it has a
+    /// plan check (`[meta] verify`); `None` when its tasks.toml does not
+    /// parse.
+    pub shape: Option<(usize, usize, bool)>,
+}
 
+impl CheckedPlan {
+    /// The plan of `tasks_path`, its directory shown relative to `workdir`.
+    #[must_use]
+    pub fn read(tasks_path: &Path, workdir: &Path) -> Self {
+        let dir = tasks_path.parent().unwrap_or(tasks_path);
+        let tasks = TasksFile::parse(tasks_path).ok();
+        let plan_id = tasks
+            .as_ref()
+            .map(|tasks| tasks.meta.plan.trim())
+            .filter(|plan| !plan.is_empty())
+            .map_or_else(
+                || {
+                    dir.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                },
+                str::to_string,
+            );
+        Self {
+            plan_id,
+            dir: shown_path(Some(workdir), dir),
+            shape: tasks.map(|tasks| {
+                (
+                    tasks.tasks.len(),
+                    tasks.tasks.iter().map(|task| task.verify.len()).sum(),
+                    !tasks.meta.verify.is_empty(),
+                )
+            }),
+        }
+    }
+}
+
+/// What `plan validate` says around a report (gap-5043c6).
+#[derive(Debug, Clone, Default)]
+pub struct ValidateView<'a> {
+    /// The directory it checked, as the person types it: `plans`.
+    pub shown: String,
+    /// The plan it checked, when it checked one.
+    pub plan: Option<CheckedPlan>,
+    /// The workspace checks every task also runs.
+    pub rungs: Option<&'a WorkspaceRungs>,
+    /// `--strict`: a warning stops a plan too.
+    pub strict: bool,
+    /// `plan run` refuses the plans: the words are about running them.
+    pub before_run: bool,
+    /// The workspace, which paths are shown relative to.
+    pub workdir: Option<&'a Path>,
+}
+
+/// The report as plain text: each plan's problems by task, then the line
+/// they add up to. `plan import` prints it after its own report.
 pub fn render_text(report: &ValidationReport) -> String {
-    let mut out = String::new();
-    let mut printed_plan = false;
+    let style = roko_cli::term_style::Style::plain();
+    let view = ValidateView::default();
+    let mut lines = problem_lines(report, true, None, style);
+    lines.push(result_line(report, &view, style));
+    lines.join("\n")
+}
 
+/// What `plan validate` prints before Next ([`next_command`]), in `style`:
+/// the header, each plan's problems by task, the line they add up to, and
+/// the workspace checks every task also runs.
+#[must_use]
+pub fn view_lines(
+    report: &ValidationReport,
+    view: &ValidateView<'_>,
+    style: roko_cli::term_style::Style,
+) -> Vec<String> {
+    use roko_cli::term_style::{self, Glyph, Role};
+    let dot = format!(" {} ", style.glyph(Glyph::Dot));
+    let verb = if view.before_run { "run" } else { "validate" };
+    let (title, context) = match &view.plan {
+        Some(plan) => {
+            let mut facts = vec![format!("{}/tasks.toml", plan.dir)];
+            if let Some((tasks, checks, plan_check)) = plan.shape {
+                facts.push(term_style::plural(tasks, "task", "tasks"));
+                facts.push(term_style::plural(checks, "check", "checks"));
+                if plan_check {
+                    facts.push("a plan check".to_string());
+                }
+            }
+            (
+                format!("{verb} {}", style.bold(&plan.plan_id)),
+                facts.join(&dot),
+            )
+        }
+        None => (
+            format!("{verb} {}", style.bold(&view.shown)),
+            term_style::plural(report.totals.plans_checked, "plan", "plans"),
+        ),
+    };
+    let mut out = term_style::header(style, &title, &context);
+    out.extend(problem_lines(
+        report,
+        view.plan.is_none(),
+        view.workdir,
+        style,
+    ));
+    out.push(result_line(report, view, style));
+    if view.before_run {
+        out.push(format!(
+            "  {}",
+            style.paint(Role::Dim, "Nothing ran; your checkout is unchanged.")
+        ));
+    } else if let Some(rungs) = view.rungs {
+        out.extend(rung_lines(rungs, view.workdir, style));
+    }
+    out
+}
+
+/// The command `plan validate` ends with: run a plan that is ready, or
+/// check again once its problems are fixed.
+#[must_use]
+pub fn next_command(report: &ValidationReport, view: &ValidateView<'_>) -> Option<String> {
+    let stops = report.exit_code(view.strict) != 0;
+    let strict = if view.strict { " --strict" } else { "" };
+    let dir = view
+        .plan
+        .as_ref()
+        .map_or(view.shown.as_str(), |plan| plan.dir.as_str());
+    match (stops, view.before_run, &view.plan) {
+        (false, _, Some(_)) | (true, true, _) => Some(format!("roko run {dir}")),
+        (true, false, _) => Some(format!("roko plan validate {dir}{strict}")),
+        (false, _, None) => None,
+    }
+}
+
+/// Each plan's problems: the plan's own first, then each task's under its
+/// id and title, in plan order. With `several` plans, each plan's path
+/// heads its problems.
+fn problem_lines(
+    report: &ValidationReport,
+    several: bool,
+    workdir: Option<&Path>,
+    style: roko_cli::term_style::Style,
+) -> Vec<String> {
+    let mut out = Vec::new();
     for plan in report
         .plans
         .iter()
         .filter(|plan| !plan.diagnostics.is_empty())
     {
-        if printed_plan {
-            out.push('\n');
-        }
-        printed_plan = true;
-
-        let _ = writeln!(out, "{}", plan.path);
+        let base = if several {
+            let path = shown_path(workdir, Path::new(&plan.path));
+            out.push(format!("  {}", style.bold(path)));
+            4
+        } else {
+            2
+        };
+        // The plan's own problems, then its tasks', each task once.
+        let mut groups: Vec<Option<&str>> = vec![None];
+        groups.extend(plan.tasks.iter().map(|(id, _)| Some(id.as_str())));
         for diagnostic in &plan.diagnostics {
-            // A message's later lines (PLAN_045's questions) sit under its first.
-            let message = diagnostic.message.replace('\n', MESSAGE_INDENT);
-            let _ = writeln!(
-                out,
-                "  {:<5} {:<8} {message}",
-                diagnostic.severity.label(),
-                diagnostic.rule_id
-            );
+            let task = diagnostic.task_id.as_deref();
+            if !groups.contains(&task) {
+                groups.push(task);
+            }
+        }
+        for task in groups {
+            let problems: Vec<&Diagnostic> = plan
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.task_id.as_deref() == task)
+                .collect();
+            if problems.is_empty() {
+                continue;
+            }
+            let indent = match task {
+                Some(task_id) => {
+                    let title = plan
+                        .tasks
+                        .iter()
+                        .find(|(id, _)| id == task_id)
+                        .map_or("", |(_, title)| title.as_str());
+                    let line = format!("{}{}  {title}", " ".repeat(base), style.bold(task_id));
+                    out.push(line.trim_end().to_string());
+                    base + 2
+                }
+                None => base,
+            };
+            for diagnostic in problems {
+                out.extend(diagnostic_lines(diagnostic, indent, style));
+            }
+        }
+        out.push(String::new());
+    }
+    out
+}
+
+/// One problem: its glyph, its message, its rule id faint at the end. On a
+/// terminal the message wraps under itself; elsewhere it keeps one line
+/// (its own line breaks aside), so a search finds it whole.
+fn diagnostic_lines(
+    diagnostic: &Diagnostic,
+    indent: usize,
+    style: roko_cli::term_style::Style,
+) -> Vec<String> {
+    use roko_cli::term_style::{self, Glyph, Role};
+    let glyph = match diagnostic.severity {
+        Severity::Error => style.paint(Role::Fail, style.glyph(Glyph::Fail)),
+        Severity::Warning => style.paint(Role::You, style.glyph(Glyph::Warning)),
+    };
+    // Message lines start after the glyph: indent, glyph, space.
+    let room = style.width().saturating_sub(indent + 2 + 1).max(20);
+    let lines: Vec<String> = if style.live() {
+        term_style::wrap(&diagnostic.message, room)
+    } else {
+        diagnostic.message.split('\n').map(str::to_string).collect()
+    };
+    let rule = &diagnostic.rule_id;
+    let last = lines
+        .last()
+        .map_or(0, |line| term_style::visible_width(line));
+    let rule_on_its_own = style.live() && last + 2 + rule.len() > room;
+    let mut out = Vec::new();
+    let hang = " ".repeat(indent + 2);
+    let count = lines.len();
+    for (index, line) in lines.into_iter().enumerate() {
+        let lead = if index == 0 {
+            format!("{}{glyph} ", " ".repeat(indent))
+        } else {
+            hang.clone()
+        };
+        let tail = if index + 1 == count && !rule_on_its_own {
+            format!("  {}", style.paint(Role::Dim, rule))
+        } else {
+            String::new()
+        };
+        out.push(format!("{lead}{line}{tail}"));
+    }
+    if rule_on_its_own {
+        out.push(format!("{hang}{}", style.paint(Role::Dim, rule)));
+    }
+    out
+}
+
+/// The line the problems add up to: ready to run, or what stops it.
+fn result_line(
+    report: &ValidationReport,
+    view: &ValidateView<'_>,
+    style: roko_cli::term_style::Style,
+) -> String {
+    use roko_cli::term_style::{self, Glyph, Role};
+    let (errors, warnings) = (report.totals.errors, report.totals.warnings);
+    let problems = match (errors, warnings) {
+        (0, warnings) => term_style::plural(warnings, "warning", "warnings"),
+        (errors, 0) => term_style::plural(errors, "error", "errors"),
+        (errors, warnings) => format!(
+            "{} and {}",
+            term_style::plural(errors, "error", "errors"),
+            term_style::plural(warnings, "warning", "warnings")
+        ),
+    };
+    let plans = term_style::plural(report.totals.plans_checked, "plan", "plans");
+    let pass = style.paint(Role::Pass, style.glyph(Glyph::Pass));
+    let fail = style.paint(Role::Fail, style.glyph(Glyph::Fail));
+    let dim = |text: String| style.paint(Role::Dim, text);
+    if report.exit_code(view.strict) == 0 {
+        let ready = style.paint_bold(Role::Pass, "Ready to run");
+        return match (&view.plan, errors + warnings) {
+            (Some(_), 0) => format!("  {pass} {ready}"),
+            (Some(_), _) => format!("  {pass} {ready}  {}", dim(format!("with {problems}"))),
+            (None, 0) => format!("  {pass} {}", style.bold(format!("No problems in {plans}"))),
+            (None, _) => format!(
+                "  {} {}  {}",
+                style.paint(Role::You, style.glyph(Glyph::Warning)),
+                style.bold(format!("{problems} in {plans}")),
+                dim("a warning stops no plan".to_string())
+            ),
+        };
+    }
+    let it = if errors + warnings == 1 { "it" } else { "them" };
+    let why = if errors == 0 { " (--strict)" } else { "" };
+    match &view.plan {
+        Some(plan) => {
+            let then = if view.before_run {
+                "run it again"
+            } else {
+                "check again"
+            };
+            format!(
+                "  {fail} {}  {}",
+                style.paint_bold(Role::Fail, format!("{problems}{why}")),
+                dim(format!("fix {it} in {}/tasks.toml, then {then}", plan.dir))
+            )
+        }
+        None => {
+            let stopped = report
+                .plans
+                .iter()
+                .filter(|plan| {
+                    plan.diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.severity == Severity::Error || view.strict)
+                })
+                .count();
+            let which = if stopped == report.totals.plans_checked {
+                plans
+            } else {
+                format!("{stopped} of {plans}")
+            };
+            let then = if view.before_run {
+                format!("fix {it}, then run them again")
+            } else {
+                format!("fix {it}, then check again")
+            };
+            format!(
+                "  {fail} {}  {}",
+                style.paint_bold(Role::Fail, format!("{problems}{why} in {which}")),
+                dim(then)
+            )
         }
     }
+}
 
-    let diagnostic_count = report.totals.errors + report.totals.warnings;
-    let plan_word = if report.totals.plans_checked == 1 {
-        "plan"
-    } else {
-        "plans"
+/// The workspace checks every task runs after its own, faint: those that
+/// run (one per line under the sentence when they don't fit beside it on a
+/// terminal, so a command is never broken), those that don't, and the plans
+/// that opt out.
+fn rung_lines(
+    rungs: &WorkspaceRungs,
+    workdir: Option<&Path>,
+    style: roko_cli::term_style::Style,
+) -> Vec<String> {
+    use roko_cli::term_style::{self, Role};
+    let room = style.width().saturating_sub(3);
+    let mut lines = Vec::new();
+    let running: Vec<&RungSummary> = rungs.rungs.iter().filter(|rung| rung.runs).collect();
+    if !running.is_empty() {
+        let lead = if running.len() == 1 {
+            "Every task also runs the workspace check:"
+        } else {
+            "Every task also runs the workspace checks:"
+        };
+        let named: Vec<String> = running
+            .iter()
+            .map(|rung| format!("{} ({})", rung.name, rung.command))
+            .collect();
+        let line = format!("{lead} {}", named.join(", "));
+        if !style.live() || term_style::visible_width(&line) <= room {
+            lines.push(line);
+        } else {
+            lines.push(lead.to_string());
+            for rung in running {
+                let line = format!("  {}: {}", rung.name, rung.command);
+                lines.push(term_style::truncate(&line, room));
+            }
+        }
+    }
+    let wrapped = |sentence: String| {
+        if style.live() {
+            term_style::wrap(&sentence, room)
+        } else {
+            vec![sentence]
+        }
     };
-    let _ = write!(
-        out,
-        "{diagnostic_count} diagnostics in {} {plan_word}",
-        report.totals.plans_checked
-    );
-    out
+    let idle: Vec<String> = rungs
+        .rungs
+        .iter()
+        .filter(|rung| !rung.runs)
+        .map(|rung| {
+            let why = if rung.required {
+                "it has no command"
+            } else {
+                "it is optional"
+            };
+            format!("{} ({why})", rung.name)
+        })
+        .collect();
+    if !idle.is_empty() {
+        lines.extend(wrapped(format!("Not run: {}", idle.join(", "))));
+    }
+    if !rungs.opted_out.is_empty() {
+        let plans: Vec<String> = rungs
+            .opted_out
+            .iter()
+            .map(|path| shown_path(workdir, Path::new(path)))
+            .collect();
+        lines.extend(wrapped(format!(
+            "Opted out with [meta] workspace_rungs = false: {}",
+            plans.join(", ")
+        )));
+    }
+    lines
+        .into_iter()
+        .map(|line| format!("  {}", style.paint(Role::Dim, line)))
+        .collect()
+}
+
+/// `path` as the person types it: relative to `workdir` when inside it.
+fn shown_path(workdir: Option<&Path>, path: &Path) -> String {
+    workdir
+        .and_then(|workdir| path.strip_prefix(workdir).ok())
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 /// The `[routing.ladder]` of the workspace at `workdir`, whose rungs task
@@ -733,30 +1094,6 @@ pub fn workspace_rungs(dir: &Path, gates: &GatesConfig) -> Result<WorkspaceRungs
         .map(|path| path.display().to_string())
         .collect();
     Ok(WorkspaceRungs { rungs, opted_out })
-}
-
-/// `rungs` as `plan validate` prints them; empty when the workspace
-/// declares none.
-pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
-    if rungs.rungs.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("workspace rungs, run after each task's own verify steps:");
-    for rung in &rungs.rungs {
-        let note = match (rung.runs, rung.required) {
-            (true, _) => "",
-            (false, false) => " (optional: does not run)",
-            (false, true) => " (no command: does not run)",
-        };
-        let _ = write!(out, "\n  {:<12} {}{note}", rung.name, rung.command);
-    }
-    if !rungs.opted_out.is_empty() {
-        out.push_str("\nplans that opt out with [meta] workspace_rungs = false:");
-        for path in &rungs.opted_out {
-            let _ = write!(out, "\n  {path}");
-        }
-    }
-    out
 }
 
 /// Whether `command` negates a `grep` (`! grep -q TODO src/lib.rs`): such a
@@ -1146,6 +1483,7 @@ fn validate_tasks_file(
                     task_id: None,
                     message: format!("failed to parse TOML: {error}"),
                 }],
+                tasks: Vec::new(),
             });
         }
     };
@@ -1632,6 +1970,7 @@ fn validate_tasks_file(
         }
     }
 
+    drop_duplicate_missing_verify(&mut diagnostics);
     diagnostics.sort_by(|left, right| {
         left.severity
             .cmp(&right.severity)
@@ -1640,11 +1979,51 @@ fn validate_tasks_file(
             .then_with(|| left.message.cmp(&right.message))
     });
 
+    let tasks = parsed
+        .get("task")
+        .and_then(Value::as_array)
+        .map(|tasks| {
+            tasks
+                .iter()
+                .filter_map(|task| {
+                    let id = task.get("id")?.as_str()?.to_string();
+                    let title = task
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some((id, title.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(PlanDiagnostics {
         plan_id,
         path,
         diagnostics,
+        tasks,
     })
+}
+
+/// A task with no verify step is one problem, not two (bug-81993d): the
+/// schema check's "missing 'verify'" (PLAN_035) goes when PLAN_037's error
+/// reports the same task, since PLAN_037 says why it matters and how to fix
+/// it.
+fn drop_duplicate_missing_verify(diagnostics: &mut Vec<Diagnostic>) {
+    let unchecked: Vec<String> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.rule_id == "PLAN_037" && diagnostic.severity == Severity::Error
+        })
+        .filter_map(|diagnostic| diagnostic.task_id.clone())
+        .collect();
+    diagnostics.retain(|diagnostic| {
+        diagnostic.rule_id != "PLAN_035"
+            || !unchecked.iter().any(|task| {
+                diagnostic.message.starts_with(&format!(
+                    "schema validation failed: {task}: missing 'verify'"
+                ))
+            })
+    });
 }
 
 fn snapshot_task(ordinal: usize, task: &Value) -> TaskSnapshot {
@@ -3629,13 +4008,190 @@ title = "One task"
             rungs.opted_out
         );
 
-        let text = render_rungs_text(&rungs);
-        assert!(text.contains("cargo clippy\n"), "{text}");
-        assert!(
-            text.contains("cargo bench (optional: does not run)"),
-            "{text}"
+        let style = roko_cli::term_style::Style::plain();
+        let text = rung_lines(&rungs, Some(temp.path()), style).join("\n");
+        assert_eq!(
+            text,
+            "  Every task also runs the workspace check: lint (cargo clippy)\n  \
+             Not run: bench (it is optional)\n  \
+             Opted out with [meta] workspace_rungs = false: opted-out/tasks.toml",
         );
-        assert!(text.contains("opted-out/tasks.toml"), "{text}");
-        assert_eq!(render_rungs_text(&WorkspaceRungs::default()), "");
+        assert!(rung_lines(&WorkspaceRungs::default(), None, style).is_empty());
+    }
+
+    /// The draft plan of round v8's captures: T2 has no check.
+    const DRAFT: &str = r#"
+[meta]
+plan = "draft"
+
+[[task]]
+id = "T1"
+title = "Write the greeting"
+role = "implementer"
+files = ["greeting.py"]
+depends_on = []
+verify = [{ phase = "imports", command = "python3 -c 'import greeting'" }]
+
+[[task]]
+id = "T2"
+title = "Mention farewell in the README"
+role = "implementer"
+files = ["README.md"]
+depends_on = ["T1"]
+"#;
+
+    /// bug-81993d: a task with no verify step is one problem, PLAN_037's
+    /// error, not that and the schema's "missing 'verify'" too. Under `[meta]
+    /// allow_unverified` it is PLAN_037's warning alone.
+    #[test]
+    fn a_task_without_a_check_is_reported_once() {
+        let temp = TempDir::new().unwrap();
+        let plan = temp.path().join("plans/draft");
+        fs::create_dir_all(&plan).unwrap();
+        fs::write(plan.join("tasks.toml"), DRAFT).unwrap();
+
+        let report = validate_plans_dir(&temp.path().join("plans"), None).unwrap();
+        let about_t2: Vec<(&str, Severity)> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diagnostic| diagnostic.message.contains("T2"))
+            .map(|diagnostic| (diagnostic.rule_id.as_str(), diagnostic.severity))
+            .collect();
+        assert_eq!(about_t2, [("PLAN_037", Severity::Error)], "{report:#?}");
+        assert_eq!(report.totals.errors, 1, "{report:#?}");
+        let json = render_json(&report).unwrap();
+        assert!(!json.contains("missing 'verify'"), "{json}");
+
+        let allowed = DRAFT.replace(
+            "plan = \"draft\"\n",
+            "plan = \"draft\"\nallow_unverified = true\n",
+        );
+        fs::write(plan.join("tasks.toml"), allowed).unwrap();
+        let report = validate_plans_dir(&temp.path().join("plans"), None).unwrap();
+        let rules: Vec<(&str, Severity)> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diagnostic| diagnostic.message.contains("T2"))
+            .map(|diagnostic| (diagnostic.rule_id.as_str(), diagnostic.severity))
+            .collect();
+        assert_eq!(rules, [("PLAN_037", Severity::Warning)], "{report:#?}");
+    }
+
+    /// gap-5043c6: `plan validate` names the plan and what it holds, lists
+    /// each task's problems once under the task, the rule id last, says what
+    /// they add up to and which workspace check every task also runs, and
+    /// ends with the command to run: on a terminal wrapped to its width, in a
+    /// pipe one line per problem. A clean plan is ready to run.
+    #[test]
+    fn validate_reads_as_one_list_per_task() {
+        use roko_cli::term_style::Style;
+
+        let temp = TempDir::new().unwrap();
+        let plan = temp.path().join("plans/draft");
+        fs::create_dir_all(&plan).unwrap();
+        fs::write(plan.join("tasks.toml"), DRAFT).unwrap();
+        let report = validate_plans_dir(&temp.path().join("plans"), None).unwrap();
+        let rungs = WorkspaceRungs {
+            rungs: vec![RungSummary {
+                name: "compile".to_string(),
+                command: "python3 -m compileall -q .".to_string(),
+                required: true,
+                runs: true,
+            }],
+            opted_out: Vec::new(),
+        };
+        let view = ValidateView {
+            shown: "plans".to_string(),
+            plan: Some(CheckedPlan::read(&plan.join("tasks.toml"), temp.path())),
+            rungs: Some(&rungs),
+            strict: false,
+            before_run: false,
+            workdir: Some(temp.path()),
+        };
+        let text = |style: Style| {
+            let mut lines = view_lines(&report, &view, style);
+            if let Some(next) = next_command(&report, &view) {
+                lines.extend(roko_cli::term_style::next_lines(style, &next));
+            }
+            lines.join("\n")
+        };
+
+        let piped = text(Style::plain());
+        assert_eq!(
+            piped.matches("T2  Mention farewell in the README").count(),
+            1,
+            "{piped}"
+        );
+        // Exact text: tests/plan_validation.rs includes this file, so no
+        // snapshot file, whose name would follow the module path.
+        assert_eq!(
+            piped,
+            "\
+◆ roko  validate draft
+  plans/draft/tasks.toml · 2 tasks · 1 check
+
+  T2  Mention farewell in the README
+    ✗ task 'T2' has no verify steps: it can only end unverified, and then its plan does not succeed; give \
+             it a verify step, or set [meta] allow_unverified = true  PLAN_037
+
+  ✗ 1 error  fix it in plans/draft/tasks.toml, then check again
+  Every task also runs the workspace check: compile (python3 -m compileall -q .)
+
+  Next  roko plan validate plans/draft"
+        );
+        let terminal = text(Style::plain().with_live(true).with_width(80));
+        assert!(
+            terminal
+                .lines()
+                .all(|line| roko_cli::term_style::visible_width(line) < 80),
+            "{terminal}"
+        );
+        assert_eq!(
+            terminal,
+            "\
+◆ roko  validate draft
+  plans/draft/tasks.toml · 2 tasks · 1 check
+
+  T2  Mention farewell in the README
+    ✗ task 'T2' has no verify steps: it can only end unverified, and then its
+      plan does not succeed; give it a verify step, or set [meta]
+      allow_unverified = true  PLAN_037
+
+  ✗ 1 error  fix it in plans/draft/tasks.toml, then check again
+  Every task also runs the workspace check:
+    compile: python3 -m compileall -q .
+
+  Next  roko plan validate plans/draft"
+        );
+
+        // Given its check, T2 is ready, and so is the plan.
+        let fixed = DRAFT.replace(
+            "depends_on = [\"T1\"]\n",
+            "depends_on = [\"T1\"]\nverify = [{ phase = \"usage\", command = \"grep -q farewell README.md\" }]\n",
+        );
+        fs::write(plan.join("tasks.toml"), fixed).unwrap();
+        let report = validate_plans_dir(&temp.path().join("plans"), None).unwrap();
+        let view = ValidateView {
+            plan: Some(CheckedPlan::read(&plan.join("tasks.toml"), temp.path())),
+            ..view
+        };
+        let mut lines = view_lines(&report, &view, Style::plain());
+        lines.extend(roko_cli::term_style::next_lines(
+            Style::plain(),
+            &next_command(&report, &view).expect("a next step"),
+        ));
+        assert_eq!(
+            lines.join("\n"),
+            "\
+◆ roko  validate draft
+  plans/draft/tasks.toml · 2 tasks · 2 checks
+
+  ✓ Ready to run
+  Every task also runs the workspace check: compile (python3 -m compileall -q .)
+
+  Next  roko run plans/draft"
+        );
     }
 }

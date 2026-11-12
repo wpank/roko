@@ -281,12 +281,6 @@ pub fn lines(status: &WorkspaceStatus, style: Style, now_ms: i64) -> Vec<String>
         return out;
     }
     let shown_runs: Vec<&RunEntry> = status.runs.iter().take(SHOWN_RUNS).collect();
-    let name_w = shown_runs
-        .iter()
-        .map(|run| term_style::visible_width(&run.name))
-        .max()
-        .unwrap_or(8)
-        .clamp(8, 28);
     let rows: Vec<(String, String, String, &RunEntry)> = shown_runs
         .iter()
         .map(|run| {
@@ -325,6 +319,21 @@ pub fn lines(status: &WorkspaceStatus, style: Style, now_ms: i64) -> Vec<String>
         .map(|(_, when, _, _)| when.len())
         .max()
         .unwrap_or(10);
+    // The name takes what the other columns leave, at most 28 columns, and
+    // a row never reaches the terminal's last column: "  G " + name + "  " +
+    // when + "  " + tasks (9) + "  " + money (6) + "  " + "not merged" (10).
+    let name_w = shown_runs
+        .iter()
+        .map(|run| term_style::visible_width(&run.name))
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 28)
+        .min(
+            style
+                .width()
+                .saturating_sub(4 + 2 + when_w + 2 + 9 + 2 + 6 + 2 + 10 + 1),
+        )
+        .max(8);
     for (glyph, when, tasks, run) in &rows {
         let note = if run.merge_command.is_some() {
             style.paint(Role::Dim, "not merged")
@@ -350,14 +359,7 @@ pub fn lines(status: &WorkspaceStatus, style: Style, now_ms: i64) -> Vec<String>
         ));
     }
     if let Some(next) = next_step(status) {
-        out.push(String::new());
-        let word = style.paint_bold(Role::You, "Next");
-        if "Next  ".len() + term_style::visible_width(&next) <= style.width().saturating_sub(3) {
-            out.push(format!("  {word}  {next}"));
-        } else {
-            out.push(format!("  {word}"));
-            out.push(format!("  {next}"));
-        }
+        out.extend(term_style::next_lines(style, &next));
     }
     out
 }
@@ -408,6 +410,14 @@ mod tests {
         let text = lines(&status, Style::plain(), NOW).join("\n");
         insta::assert_snapshot!("status", text);
         assert_eq!(next_step(&status).as_deref(), Some("roko diagnose broken"));
+        // At 80 columns the names give way: no row reaches the last column.
+        let narrow = lines(&status, Style::plain().with_live(true).with_width(80), NOW);
+        assert!(
+            narrow
+                .iter()
+                .all(|line| term_style::visible_width(line) < 80),
+            "{narrow:#?}"
+        );
     }
 
     #[test]

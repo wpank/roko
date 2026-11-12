@@ -228,6 +228,8 @@ pub enum Glyph {
     Interrupted,
     /// Finished, but no check ran.
     NotChecked,
+    /// Something to look at that stops nothing: a warning.
+    Warning,
     /// Not needed, or not run.
     Skipped,
     /// Next.
@@ -443,6 +445,7 @@ impl Style {
             (Glyph::Interrupted, true) => "‖",
             (Glyph::Interrupted, false) => "||",
             (Glyph::NotChecked, _) => "?",
+            (Glyph::Warning, _) => "!",
             (Glyph::Skipped, true) => "⊘",
             (Glyph::Skipped, false) => "-",
             (Glyph::Next, true) => "→",
@@ -581,6 +584,64 @@ pub fn pad(text: &str, width: usize) -> String {
 pub fn pad_left(text: &str, width: usize) -> String {
     let gap = width.saturating_sub(visible_width(text));
     format!("{}{text}", " ".repeat(gap))
+}
+
+/// `text` broken at spaces into lines of at most `width` columns; a word
+/// wider than that keeps a line of its own, and `text`'s own line breaks
+/// stay. Plain text only: wrap before styling.
+#[must_use]
+pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && visible_width(&line) + 1 + visible_width(word) > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// A report's opening lines (gap-5043c6): `◆ roko  <title>`, `context` faint
+/// under it, then a blank line. On a terminal the context is cut to the
+/// width; elsewhere nothing is cut.
+#[must_use]
+pub fn header(style: Style, title: &str, context: &str) -> Vec<String> {
+    let context = if style.live() {
+        truncate(context, style.width().saturating_sub(3))
+    } else {
+        context.to_string()
+    };
+    vec![
+        format!(
+            "{} {}  {title}",
+            style.paint(Role::Mark, style.glyph(Glyph::Mark)),
+            style.bold("roko")
+        ),
+        format!("  {}", style.paint(Role::Dim, context)),
+        String::new(),
+    ]
+}
+
+/// The Next block: a blank line, then `Next  <command>`. A command is never
+/// cut: it goes on a line of its own when it doesn't fit beside the word.
+#[must_use]
+pub fn next_lines(style: Style, command: &str) -> Vec<String> {
+    let word = style.paint_bold(Role::You, "Next");
+    let mut lines = vec![String::new()];
+    if "Next  ".len() + visible_width(command) <= style.width().saturating_sub(3) {
+        lines.push(format!("  {word}  {command}"));
+    } else {
+        lines.push(format!("  {word}"));
+        lines.push(format!("  {command}"));
+    }
+    lines
 }
 
 #[cfg(test)]

@@ -104,7 +104,7 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stdout.contains("0 diagnostics in 1 plan"),
+        stdout.contains("\n  ✓ Ready to run\n"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -132,7 +132,7 @@ verify = [{ phase = "structural", command = "test -f docs/generated.md" }]
     let assert = run_validate(&temp, &["plans", "--strict"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stdout.contains("0 diagnostics in 1 plan"),
+        stdout.contains("\n  ✓ Ready to run\n"),
         "missing outputs should be accepted: {stdout}"
     );
 }
@@ -204,7 +204,7 @@ read_files = [{ path = "generated/shared.md", why = "T1 output" }]
     let assert = run_validate(&temp, &["plans", "--strict"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stdout.contains("0 diagnostics in 1 plan"),
+        stdout.contains("\n  ✓ Ready to run\n"),
         "dependency-created prerequisite should pass: {stdout}"
     );
 }
@@ -290,7 +290,7 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
     // routing ladder (on by default) however it is spelled; the full name
     // clears only the first.
     assert!(
-        stdout.contains("6 diagnostics in 1 plan"),
+        stdout.contains("\n  ✓ Ready to run  with 6 warnings\n"),
         "unexpected stdout: {stdout}"
     );
     assert_eq!(stdout.matches("PLAN_012").count(), 3, "{stdout}");
@@ -347,7 +347,7 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
     // PLAN_009 for the unknown model, and PLAN_041 because the hint still
     // pins the task's model past the routing ladder (on by default).
     assert!(
-        stdout.contains("2 diagnostics in 1 plan"),
+        stdout.contains("\n  ✓ Ready to run  with 2 warnings\n"),
         "unexpected stdout: {stdout}"
     );
     assert!(stdout.contains("PLAN_009"), "missing PLAN_009: {stdout}");
@@ -509,7 +509,10 @@ verfy = [{ phase = "structural", command = "grep -q slugify docs/slug.md" }]
         ),
         "{stdout}"
     );
-    assert!(stdout.contains("2 diagnostics in 1 plan"), "{stdout}");
+    assert!(
+        stdout.contains("\n  ✓ Ready to run  with 2 warnings\n"),
+        "{stdout}"
+    );
 
     let strict = run_validate(&temp, &["plans", "--strict"]).failure();
     assert_eq!(strict.get_output().status.code(), Some(1));
@@ -553,7 +556,7 @@ fn tss_v1_example_passes_strict_validation() {
     let assert = run_validate(&temp, &["plans", "--strict"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(!stdout.contains("PLAN_043"), "{stdout}");
-    assert!(stdout.contains("0 diagnostics in 1 plan"), "{stdout}");
+    assert!(stdout.contains("\n  ✓ Ready to run\n"), "{stdout}");
 }
 
 /// 3212: a task of any role without a verify step can only end unverified,
@@ -582,7 +585,7 @@ depends_on = []
     assert_eq!(assert.get_output().status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stdout.contains("error PLAN_037 task 'T1' has no verify steps"),
+        stdout.contains("✗ task 'T1' has no verify steps"),
         "{stdout}"
     );
 
@@ -590,7 +593,7 @@ depends_on = []
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stdout.contains("warn  PLAN_037 task 'T1' has no verify steps"),
+        stdout.contains("! task 'T1' has no verify steps"),
         "{stdout}"
     );
 }
@@ -650,7 +653,7 @@ evidence_ref = "crates/roko-gate/src/acceptance_contract.rs"
     // The contract is accepted: its one finding is the PLAN_046 warning
     // that contracts are not enforced at run time (3230).
     assert!(
-        stdout.contains("1 diagnostics in 1 plan") && stdout.contains("PLAN_046"),
+        stdout.contains("\n  ✓ Ready to run  with 1 warning\n") && stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -757,7 +760,7 @@ evidence_ref = "crates/roko-core/src/config/schema.rs"
     // Checked acceptance satisfies PLAN_024, and beside it the contract
     // (kept for its parity rows) draws no PLAN_046 warning (bug-ac2a51).
     assert!(
-        stdout.contains("0 diagnostics in 1 plan") && !stdout.contains("PLAN_046"),
+        stdout.contains("\n  ✓ Ready to run\n") && !stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -972,7 +975,7 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
     // output. The contract sits beside checked acceptance, so it draws no
     // PLAN_046 warning (bug-ac2a51).
     assert!(
-        stdout.contains("0 diagnostics in 2 plans") && !stdout.contains("PLAN_046"),
+        stdout.contains("\n  ✓ No problems in 2 plans\n") && !stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -1039,7 +1042,7 @@ verify = [{ phase = "test", command = "cargo test -p roko-gate acceptance", cove
     for rule in ["PLAN_024", "PLAN_046"] {
         assert!(!stdout.contains(rule), "unexpected {rule}: {stdout}");
     }
-    assert!(stdout.contains("0 diagnostics in 1 plan"), "{stdout}");
+    assert!(stdout.contains("\n  ✓ Ready to run\n"), "{stdout}");
 
     write_plan(
         temp.path(),
@@ -1093,7 +1096,7 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     let plain = run_validate(&temp, &["plans", "--strict"]).success();
     let plain_stdout = String::from_utf8_lossy(&plain.get_output().stdout).into_owned();
     assert!(
-        plain_stdout.contains("0 diagnostics in 1 plan"),
+        plain_stdout.contains("\n  ✓ Ready to run\n"),
         "{plain_stdout}"
     );
     assert!(!plain_stdout.contains("spec quality"), "{plain_stdout}");
@@ -1105,7 +1108,12 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     // With it, the text gains a section: per task the score, band, rules and hard fails.
     let scored = run_validate(&temp, &["plans", "--spec-quality"]).success();
     let stdout = String::from_utf8_lossy(&scored.get_output().stdout);
-    assert!(stdout.starts_with(&plain_stdout), "{stdout}");
+    // The section goes before Next, which ends both.
+    let (body, next) = plain_stdout
+        .rsplit_once("\n\n  Next  ")
+        .expect("validate ends with Next");
+    assert!(stdout.starts_with(body), "{stdout}");
+    assert!(stdout.ends_with(&format!("\n\n  Next  {next}")), "{stdout}");
     assert!(
         stdout.contains("spec quality (sq-3, static: HF3 and SQ06 not evaluated)\n"),
         "{stdout}"

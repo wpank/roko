@@ -108,13 +108,49 @@ pub fn named_files_of_plan(plan: &TasksFile, workdir: &Path) -> NamedFiles {
     named_files(&texts, workdir)
 }
 
+/// The files `task` deletes (bug-4e89b8): each of its `files` that a
+/// sentence of the documents of `plan`'s `[meta] sources`, read from
+/// `workdir`, tells a task to delete, as [`named_files`] reads them, whether
+/// or not the file is still there: a try may have deleted it. Its gate checks
+/// they are gone.
+#[must_use]
+pub fn files_task_deletes(plan: &TasksFile, task: &TaskDef, workdir: &Path) -> Vec<String> {
+    let mut deleted = BTreeSet::new();
+    for source in &plan.meta.sources {
+        let Ok(text) = std::fs::read_to_string(workdir.join(source)) else {
+            continue;
+        };
+        for sentence in sentences(&text) {
+            deleted.extend(
+                instruction(&sentence)
+                    .into_iter()
+                    .filter(|(change, path)| *change == Change::Delete && plain_relative(path))
+                    .map(|(_, path)| path),
+            );
+        }
+    }
+    task.files
+        .iter()
+        .map(|file| file.trim_start_matches("./"))
+        .filter(|file| deleted.contains(*file))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Whether `path` names a file of the workspace at `workdir` that git does
-/// not ignore: a relative path inside it, never one that climbs out.
+/// not ignore ([`plain_relative`]).
 fn workspace_file(workdir: &Path, path: &str) -> bool {
-    let inside = !path.starts_with(['/', '~'])
+    plain_relative(path)
+        && workdir.join(path).is_file()
+        && !super::runnable::git_ignores(workdir, path)
+}
+
+/// Whether `path` is a plain path inside a workspace: relative, with no glob,
+/// and never one that climbs out.
+fn plain_relative(path: &str) -> bool {
+    !path.starts_with(['/', '~'])
         && !path.contains(['*', '?', '[', ':', '\\'])
-        && path.split('/').all(|part| !part.is_empty() && part != "..");
-    inside && workdir.join(path).is_file() && !super::runnable::git_ignores(workdir, path)
+        && path.split('/').all(|part| !part.is_empty() && part != "..")
 }
 
 /// The sentences of `source` outside its code blocks, each with its code
@@ -746,6 +782,39 @@ mod tests {
                 .any(|issue| issue.message.contains("20 files (limit 8)")),
             "deletions counted"
         );
+    }
+
+    /// bug-4e89b8: the files each task of phase 1's repaired plan deletes,
+    /// which its gate checks are gone: T1's twelve core files and T2's nine
+    /// window files, its edits not among them, and still after a try deleted
+    /// them.
+    #[test]
+    fn the_files_a_task_deletes_come_from_its_spec() {
+        let temp = undertow();
+        let root = temp.path();
+        std::fs::copy(
+            fixture("request.md"),
+            root.join("docs/specs/phase-1-foundation.md"),
+        )
+        .expect("the spec");
+        let mut plan = TasksFile::parse(&fixture("tasks.toml")).expect("the plan as written");
+        let named = named_files_of_plan(&plan, root);
+        repair_named_files(&mut plan, &named);
+        let deletes = |index: usize| -> BTreeSet<String> {
+            files_task_deletes(&plan, &plan.tasks[index], root)
+                .into_iter()
+                .collect()
+        };
+        assert_eq!(deletes(0), strings(&CORE_DELETED));
+        assert_eq!(deletes(1), strings(&UI_DELETED));
+        for path in CORE_DELETED.iter().chain(&UI_DELETED) {
+            std::fs::remove_file(root.join(path)).expect("a try deletes it");
+        }
+        assert_eq!(deletes(0).len(), 12);
+        assert_eq!(deletes(1).len(), 9);
+        // A plan with no sources deletes nothing.
+        plan.meta.sources.clear();
+        assert!(files_task_deletes(&plan, &plan.tasks[0], root).is_empty());
     }
 
     /// bug-aa93e9: `plan validate` warns once about phase 1's plan as

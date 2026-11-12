@@ -241,6 +241,9 @@ run_flow_check() {
             sse positive run_completed duration_ms outcome=succeeded
         check "sse: at least 2 plan_started events (two runs: generate + run-again)" \
             sse count plan_started "plan_id=$SLUG" --ge 2
+        # gap-f8c57a: the write the browser stopped ended cancelled, and wrote no plan.
+        check "sse: the stopped plan write ended cancelled" \
+            sse has event_log_entry event_type=plan_generate.cancelled
     fi
 
     stop_capture

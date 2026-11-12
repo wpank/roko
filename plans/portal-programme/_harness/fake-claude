@@ -7,7 +7,8 @@ it prints. The checks point `[providers.claude_cli] command` at this file so a
 real plan run completes in seconds at no cost.
 
   * PRD plan-generation prompts get a canned one-task tasks.toml whose verify
-    step compiles and runs a hello-world Rust program.
+    step compiles and runs a hello-world Rust program; a request that says
+    `SLOW <n>` holds the write n seconds first, so a check can stop it.
   * Old-format plan regeneration prompts get a valid modern plan, so a check
     can tell whether generation rewrote plans it was not asked to touch.
   * Revision prompts ("Revise the plan below", with the current plan in a
@@ -153,6 +154,10 @@ if "Generate an implementation plan" in prompt:
     match = re.search(r"Plan slug \(use exactly in meta\.plan\): (\S+)", prompt)
     slug = match.group(1) if match else "generated-plan"
     log("generate", slug)
+    # A request that says `SLOW <n>` holds the write n seconds, so a check can stop it (gap-f8c57a).
+    hold = re.search(r"SLOW (\d+)", prompt)
+    if hold:
+        time.sleep(int(hold.group(1)))
     plan = f'''[meta]
 plan = "{slug}"
 total = 1

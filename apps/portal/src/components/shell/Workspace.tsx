@@ -9,6 +9,7 @@ import { AlertBand } from '@/components/shell/AlertBand';
 import { SignIn } from '@/components/shell/SignIn';
 import { TopBar } from '@/components/shell/TopBar';
 import { Stage } from '@/components/stage/Stage';
+import type { PromptSeed } from '@/components/stage/Stage';
 import { usePrimaryAction } from '@/components/plan/usePrimaryAction';
 import {
   usePlans,
@@ -27,6 +28,7 @@ import { describeEmpty } from '@/lib/emptyState';
 import { useNow } from '@/lib/useNow';
 import { planSetActive } from '@/lib/planSet';
 import { planWords } from '@/lib/planWords';
+import { splitWrites } from '@/lib/writing';
 import type { SeenFailures } from '@/lib/statusChip';
 import { describeRequestError, isMissingRoute } from '@/lib/apiErrors';
 import type { AlertAction } from '@/lib/alerts';
@@ -46,6 +48,8 @@ export function Workspace() {
   // ── Local state ──────────────────────────────────────────────────────────────
   const [filter, setFilter] = useState('');
   const [promptOpen, setPromptOpen] = useState(false);
+  // What the request box opens with, when a write stopped from its own view gave its request back (gap-f8c57a).
+  const [promptSeed, setPromptSeed] = useState<PromptSeed | null>(null);
   const [dismissedAlertKey, setDismissedAlertKey] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [requestNotice, setRequestNotice] = useState<string | null>(null);
@@ -72,7 +76,9 @@ export function Workspace() {
   const filterInputRef = useRef<HTMLInputElement | null>(null);
 
   // ── Global data ──────────────────────────────────────────────────────────────
-  const { data: plans, isLoading: plansLoading, error: plansError } = usePlans();
+  const { data: listed, isLoading: plansLoading, error: plansError } = usePlans();
+  // The plans on disk, and the plans being written, which have their own rows (gap-f8c57a).
+  const { plans, writes } = splitWrites(listed);
   const { data: workspace } = useWorkspace();
   const run = useDashboardStore((s) => s.run);
   const connection = useDashboardStore((s) => s.connection);
@@ -90,9 +96,12 @@ export function Workspace() {
   // plan on load (plan list and run snapshot both in), the first running plan
   // is selected; the selection never jumps on its own afterwards.
   const loaded = !plansLoading && plans !== undefined;
-  const planIds = (plans ?? []).map((p) => p.id);
+  // A plan being written can be selected too: its row opens its writing view. It has no tasks, detail or
+  // validation to read until it is written.
+  const diskIds = (plans ?? []).map((p) => p.id);
+  const planIds = [...diskIds, ...writes.map((w) => w.id)];
   const { data: selectedTasks } = usePlanTasks(
-    selectedPlanId !== null && planIds.includes(selectedPlanId) ? selectedPlanId : undefined,
+    selectedPlanId !== null && diskIds.includes(selectedPlanId) ? selectedPlanId : undefined,
   );
   const ready = loaded && connection === 'connected';
   const [settled, setSettled] = useState(false);
@@ -138,7 +147,7 @@ export function Workspace() {
   const runPlansMutation = useRunPlans();
 
   // ── Primary action for the selected plan (used by `r` key binding) ───────────
-  const primaryAction = usePrimaryAction(resolved.plan, {
+  const primaryAction = usePrimaryAction(resolved.plan !== null && diskIds.includes(resolved.plan) ? resolved.plan : null, {
     onError: setRequestError,
   });
 
@@ -287,6 +296,7 @@ export function Workspace() {
           <ErrorBoundary name="rail">
             <PlanList
               result={rows}
+              writes={writes}
               costs={costs}
               selectedPlanId={resolved.plan}
               filter={filter}
@@ -323,12 +333,21 @@ export function Workspace() {
             <ErrorBoundary name="stage">
               <Stage
                 plans={plans}
+                writes={writes}
                 loaded={loaded}
                 selection={resolved}
                 promptOpen={promptOpen}
+                promptSeed={promptSeed}
                 workspace={workspaceName}
                 onSelect={select}
-                onClosePrompt={() => setPromptOpen(false)}
+                onClosePrompt={() => {
+                  setPromptOpen(false);
+                  setPromptSeed(null);
+                }}
+                onReopenPrompt={(seed) => {
+                  setPromptSeed(seed);
+                  setPromptOpen(true);
+                }}
                 onRequestError={setRequestError}
               />
             </ErrorBoundary>

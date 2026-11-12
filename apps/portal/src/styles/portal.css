@@ -428,7 +428,8 @@
 
 /* ---- writing and fixing a plan (gap-6c4d24) ---------------------------------------------------------- */
 
-.pt-writing-glass { max-width: 360px; grid-template-columns: minmax(0, 1fr); }
+.pt-writing-glass { max-width: 440px; }
+.pt-writing-glass[data-cells="1"] { max-width: 220px; }
 .pt-request { margin: 0; padding: 12px 16px; font-size: 15px; color: var(--rk-ink-2); background: var(--rk-module-2); border-radius: var(--rk-r-1); }
 .pt-raw {
   margin: 4px 0 0;

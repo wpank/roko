@@ -315,7 +315,7 @@ impl GitHubStatusReport {
 
         let _ = writeln!(
             output,
-            "\nRoko plan PRs ({})",
+            "\nRoko PRs: plans and runs ({})",
             self.plan_pull_requests.items.len()
         );
         if let Some(error) = &self.plan_pull_requests.error {
@@ -443,6 +443,11 @@ fn collect_status(
     report
 }
 
+/// The head branches of roko's pull requests: a plan's branch, a run's
+/// batch branch, and a run's batch branch as runs named it before
+/// gap-b67fdd.
+const ROKO_PR_HEADS: [&str; 3] = ["roko/plan/", "roko/work/", "roko/batch/"];
+
 struct RawPlanPr {
     number: u64,
     title: String,
@@ -460,7 +465,12 @@ fn parse_plan_prs(value: &Value) -> std::result::Result<Vec<RawPlanPr>, String> 
         let Some(branch) = entry.pointer("/head/ref").and_then(Value::as_str) else {
             continue;
         };
-        if !branch.starts_with("roko/plan/") {
+        // A plan's branch, or a run's: `roko/work/<slug>` (gap-b67fdd), or
+        // `roko/batch/<run-id>` for a run from before it (gap-80617f).
+        if !ROKO_PR_HEADS
+            .iter()
+            .any(|prefix| branch.starts_with(prefix))
+        {
             continue;
         }
         let number = entry
@@ -638,6 +648,49 @@ mod tests {
                 "ci:octo/roko:abc",
                 "issues:octo/roko:roko/task-failure"
             ]
+        );
+    }
+
+    /// gap-80617f: a pull request from a run's batch branch is roko's too,
+    /// whether the run named it `roko/work/<slug>` (gap-b67fdd) or, before
+    /// that, `roko/batch/<run-id>`; a person's own branch is not.
+    #[test]
+    fn status_lists_pull_requests_from_run_branches() {
+        let client = MockClient {
+            user: Ok(serde_json::json!({"login": "octocat"})),
+            prs: Ok(serde_json::json!([
+                {"number": 7, "title": "Plan work", "head": {"ref": "roko/plan/E46", "sha": "a1"}},
+                {"number": 8, "title": "Greeting", "head": {"ref": "roko/work/greeting", "sha": "b2"}},
+                {"number": 9, "title": "An old run", "head": {"ref": "roko/batch/0b7c2f9e-61a4", "sha": "c3"}},
+                {"number": 10, "title": "Human PR", "head": {"ref": "feature/manual", "sha": "d4"}}
+            ])),
+            ci: Ok(serde_json::json!({"state": "success"})),
+            issues: Ok(serde_json::json!([])),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let report = collect_status(&config(), TokenState::Present, &client);
+
+        let heads: Vec<&str> = report
+            .plan_pull_requests
+            .items
+            .iter()
+            .map(|pr| pr.branch.as_str())
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                "roko/plan/E46",
+                "roko/work/greeting",
+                "roko/batch/0b7c2f9e-61a4"
+            ]
+        );
+        assert!(
+            report
+                .render_human()
+                .contains("Roko PRs: plans and runs (3)"),
+            "{}",
+            report.render_human()
         );
     }
 

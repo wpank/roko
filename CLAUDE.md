@@ -173,7 +173,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
 | `roko diagnose <plan-id>` | Diagnose why a plan failed, in the run view's style: each task as the run left it; for one that failed, its check, a line per try and what the check printed, once; then Next, the command that runs it again (`--json` for JSON, `--verbose` adds the tries of the tasks that passed) |
 | `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
-| `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
+| `roko github status` | Inspect GitHub config, authentication, the PR/CI state of plan and run branches, and failure issues |
 | `roko think "<question>"` | Research a question without executing agents or changing files |
 | `roko note "<text>"` | Capture a quick note (no LLM, instant, with optional tags) |
 | `roko login [url]` | Authenticate with a roko-serve instance (browser or API key) |

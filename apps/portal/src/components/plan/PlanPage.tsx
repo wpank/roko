@@ -30,7 +30,7 @@ import { RevisionDiff } from '@/components/stage/RevisionDiff';
 import { RunChoice } from '@/components/stage/RunChoice';
 import { SourceEditor } from '@/components/stage/SourceEditor';
 import { ValidationBadge, validationCounts } from '@/components/stage/ValidationBadge';
-import { waitReason } from '@/lib/planSet';
+import { runFinishing, waitReason } from '@/lib/planSet';
 import { AWAITING_APPROVAL, becauseOf, buildCard } from '@/lib/runCard';
 import type { Card, NowLine } from '@/lib/runCard';
 import type { RunState } from '@/lib/runState';
@@ -66,7 +66,9 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   const problems = validationCounts(validation);
 
   const running = run.plans[plan.id]?.phase === 'running';
-  const nowMs = useNow(running);
+  // The plan ended but its run hasn't: revise and run again wait for it, and the clock ticks so they come back.
+  const finishing = runFinishing(run, plan.id, Date.now());
+  const nowMs = useNow(running || finishing);
   const card = useMemo(
     () =>
       buildCard({
@@ -110,8 +112,14 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
     <Key
       data-action="revise"
       aria-pressed={revising}
-      disabled={running}
-      title={running ? 'Cannot revise while the plan is running' : 'Ask roko to change the plan, in words'}
+      disabled={running || finishing}
+      title={
+        running
+          ? 'Cannot revise while the plan is running'
+          : finishing
+            ? 'roko is finishing the run'
+            : 'Ask roko to change the plan, in words'
+      }
       onClick={() => {
         if (!confirmDiscard(dirty)) return;
         setRevising((r) => !r);

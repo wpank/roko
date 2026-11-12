@@ -9,7 +9,7 @@ import { useCallback, useMemo, useRef } from 'react';
 import { fetchPlanDetail, useCancelPlan, useValidation } from '@/api/queries';
 import { useStartRun } from '@/components/stage/RunChoice';
 import { describeRequestError } from '@/lib/apiErrors';
-import { planSetActive, queuePosition, waitReason } from '@/lib/planSet';
+import { planSetActive, queuePosition, runFinishing, waitReason } from '@/lib/planSet';
 import { useDashboardStore } from '@/stores/dashboard';
 
 // ── usePrimaryAction ───────────────────────────────────────────────────────────
@@ -40,6 +40,7 @@ export interface PrimaryAction {
  *   • the plan's editor holds unsaved text ("Save or discard your edits first")
  *   • validation reports errors ("Fix N validation errors first")
  *   • a plan-set run is active and this plan is not running in it
+ *   • the plan has ended but the run that holds it is still finishing ("roko is finishing the run")
  *
  * The header button and the `r` key each call this hook; both read the unsaved
  * text from the store, so neither runs a plan other than the one on screen.
@@ -112,6 +113,10 @@ export function usePrimaryAction(
         } else {
           reason = 'Another run is already in progress';
         }
+      } else if (runFinishing(run, planId, Date.now())) {
+        // The server refuses to run the plan again until the run that holds it ends.
+        disabled = true;
+        reason = 'roko is finishing the run';
       }
     }
   }

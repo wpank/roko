@@ -99,15 +99,12 @@ struct Sized {
     lines: u32,
 }
 
-/// The list items of `source` that state a size ("about 200 lines") and name
-/// files in code spans. An item is a line that starts with a list marker
-/// (`2.` or `-`), with the more indented lines under it.
-fn sized_items(source: &str) -> Vec<Sized> {
+/// The list items of `source`, each with the indent of its marker. An item
+/// is a line that starts with a list marker (`2.` or `-`), with the more
+/// indented lines under it that start none.
+fn list_items(source: &str) -> Vec<(usize, String)> {
     static MARKER: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(\s*)(?:\d+\.|[-*])\s+").expect("valid list marker regex"));
-    static SIZE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(?:about|around|roughly|~)\s*(\d+)\s+lines\b").expect("valid size regex")
-    });
     let mut items: Vec<(usize, String)> = Vec::new();
     for line in source.lines() {
         let indent = line.len() - line.trim_start().len();
@@ -124,7 +121,17 @@ fn sized_items(source: &str) -> Vec<Sized> {
             items.push((usize::MAX, String::new()));
         }
     }
+    items.retain(|(_, text)| !text.is_empty());
     items
+}
+
+/// The list items of `source` ([`list_items`]) that state a size ("about 200
+/// lines") and name files in code spans.
+fn sized_items(source: &str) -> Vec<Sized> {
+    static SIZE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(?:about|around|roughly|~)\s*(\d+)\s+lines\b").expect("valid size regex")
+    });
+    list_items(source)
         .into_iter()
         .filter_map(|(_, text)| {
             let lines = SIZE.captures(&text)?[1].parse().ok()?;
@@ -339,9 +346,73 @@ impl TierOverSize {
 }
 
 /// Each task the notes for the planner of `sources` give a tier whose line
-/// budget its stated size is over (gap-29c1e8).
-fn tiers_under_sizes(_sources: &[&str]) -> Vec<TierOverSize> {
-    Vec::new()
+/// budget its stated size is over (gap-29c1e8), read one list item
+/// ([`list_items`]) at a time, the tier word before the size ("3. **The
+/// presets.** … Focused: about 90 lines.", round v8's notes) or after it
+/// ("About 200 lines, so architectural.", round v7's). A tier whose budget
+/// covers the size, as in "Integrative: about 50 lines", is no mismatch: a
+/// tier bounds a task's lines, it does not fill them.
+fn tiers_under_sizes(sources: &[&str]) -> Vec<TierOverSize> {
+    static STATED: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+        let tiers = TaskTier::ALL.map(TaskTier::label).join("|");
+        let size = r"(?:about|around|roughly|~)\s*(?P<lines>\d{1,3}(?:,\d{3})+|\d+)\s+lines\b";
+        [
+            Regex::new(&format!(r"(?i)\b(?P<tier>{tiers})\b\**\s*[:,]\s*{size}")),
+            Regex::new(&format!(r"(?i)\b{size}[^.;:]*?\bso\s+(?P<tier>{tiers})\b")),
+        ]
+        .map(|pattern| pattern.expect("valid tier and size regex"))
+    });
+    let mut found = Vec::new();
+    for notes in sources.iter().flat_map(|source| planner_notes(source)) {
+        let items = list_items(&notes);
+        for (index, (indent, text)) in items.iter().enumerate() {
+            for captures in STATED
+                .iter()
+                .flat_map(|pattern| pattern.captures_iter(text))
+            {
+                let (Some(tier), Ok(lines)) = (
+                    TaskTier::parse(&captures["tier"]),
+                    captures["lines"].replace(',', "").parse::<u32>(),
+                ) else {
+                    continue;
+                };
+                if lines <= tier.max_loc() {
+                    continue;
+                }
+                // A statement in an item that names no task is the task's
+                // of the item it is under.
+                let task = item_task(text)
+                    .or_else(|| {
+                        items[..index]
+                            .iter()
+                            .rev()
+                            .filter(|(outer, _)| outer < indent)
+                            .find_map(|(_, outer)| item_task(outer))
+                    })
+                    .unwrap_or_else(|| format!("\"{}\"", &captures[0]));
+                found.push(TierOverSize { task, tier, lines });
+            }
+        }
+    }
+    found
+}
+
+/// The task a list item names: `task 3 (The presets)` for "3. **The
+/// presets.** …", `task 3` for an item with no bold title, the title alone
+/// for one with no number; `None` when it names neither.
+fn item_task(item: &str) -> Option<String> {
+    static ITEM: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s*(?:(?P<number>\d+)[.)]|[-*+])\s+(?:\*\*(?P<title>[^*]+?)\.?\*\*)?")
+            .expect("valid list item regex")
+    });
+    let captures = ITEM.captures(item)?;
+    let title = captures.name("title").map(|title| title.as_str().trim());
+    match (captures.name("number"), title) {
+        (Some(number), Some(title)) => Some(format!("task {} ({title})", number.as_str())),
+        (Some(number), None) => Some(format!("task {}", number.as_str())),
+        (None, Some(title)) => Some(title.to_string()),
+        (None, None) => None,
+    }
 }
 
 /// The PLAN_064 warning for `plan` (gap-29c1e8): the tasks its sources, read
@@ -661,7 +732,9 @@ mod tests {
         .expect("round v7's phase-2 spec");
         assert_eq!(found(&v7), Vec::<String>::new());
         assert_eq!(
-            found("## Notes for the planner\n\n1. **The rumble.** About 200 lines, so integrative.\n"),
+            found(
+                "## Notes for the planner\n\n1. **The rumble.** About 200 lines, so integrative.\n"
+            ),
             ["task 1 (The rumble): integrative at 200 lines needs architectural"]
         );
         assert_eq!(

@@ -880,6 +880,25 @@ mod tests {
         assert_eq!(found("PLAN_TIER_SIZE"), Vec::<String>::new());
     }
 
+    /// bug-1bbe2b: a deletion sentence whose code span comes before its verb
+    /// panicked on an inverted range. A span before the verb names the file
+    /// the sentence is about, which is changed; the spans after it are
+    /// deleted.
+    #[test]
+    fn a_span_before_the_verb_of_deletion_is_changed_not_deleted() {
+        assert_eq!(
+            instruction("`plugin/ui/`: delete `plugin/ui/Look.h` and `plugin/ui/Look.cpp`."),
+            [
+                (Change::Delete, "plugin/ui/Look.h".to_string()),
+                (Change::Delete, "plugin/ui/Look.cpp".to_string()),
+            ]
+        );
+        assert_eq!(
+            instruction("`core/src/engine.cpp`: remove the old clock."),
+            [(Change::Edit, "core/src/engine.cpp".to_string())]
+        );
+    }
+
     /// The sentences that name files for change, and the ones that do not: a
     /// file a sentence keeps, a history, a note, what a colon after a span
     /// explains, a context line and a code block name none. A line removed

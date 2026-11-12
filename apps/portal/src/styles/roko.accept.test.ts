@@ -235,6 +235,31 @@ describe('theme colours', () => {
   });
 });
 
+describe('the run card’s pads (bug-173a60)', () => {
+  const kit = parse(read('roko-kit.css'));
+  const portal = parse(read('portal.css'));
+  const all = [...kit, ...portal];
+
+  it('leave a passed pad its plain outline, as the design system’s §4.7 does', () => {
+    const coloured = all.filter(
+      (r) => /\.rk-pad\[data-state="pass"\]/.test(r.selector) && /(^|;)\s*(border|border-color|outline)\s*:/.test(r.body),
+    );
+    expect(coloured.map((r) => r.selector)).toEqual([]);
+  });
+
+  it('cap a pad at the kit’s 240px, so two steps on a wide page stay pads', () => {
+    const width = (rules: Rule[], selector: string) =>
+      rules
+        .find((r) => r.selector === selector)
+        ?.body.split(';')
+        .map((d) => d.split(':'))
+        .find(([p]) => p?.trim() === 'grid-auto-columns')?.[1]
+        ?.trim();
+    expect(width(kit, '.rk-seq-grid')).toBe('minmax(152px, 240px)');
+    expect(width(portal, '.pt-seq .rk-seq-grid')).toMatch(/240px\)$/);
+  });
+});
+
 describe('fonts', () => {
   it('self-hosts Archivo and Martian Mono, each with its licence', () => {
     const faces = read('fonts.css');

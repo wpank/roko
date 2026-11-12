@@ -205,7 +205,8 @@
 /* ---- the sequencer: a plan's tasks as pads, steps as columns ------------------------------------------------ */
 
 .rk-seq { position: relative; overflow-x: auto; padding: 2px 2px 6px; }
-.rk-seq-grid { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(152px, 1fr); column-gap: 28px; min-width: min-content; }
+/* A pad is 152–240px wide (the plugin's sequencer does the same): two steps on a wide page stay pads, not bars. */
+.rk-seq-grid { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(152px, 240px); justify-content: start; column-gap: 28px; min-width: min-content; }
 .rk-seq-col { display: grid; gap: 10px; align-content: start; position: relative; z-index: 1; }
 .rk-seq-head { display: flex; align-items: center; gap: 8px; height: 18px; }
 .rk-step {

@@ -3056,4 +3056,55 @@ mod tests {
         assert_eq!(again["state"], "cancelled", "{body}");
         assert_eq!(again["already_ended"], true, "{body}");
     }
+
+    /// gap-acfe4b: `GET /api/plans/{id}` says what the plan's run may spend,
+    /// as `last_run.max_usd`: the cap a chat host's `plan_run` set, while the
+    /// run goes and once it has ended. A host shows SPENT against it, as
+    /// Hermes does; nothing else records it.
+    #[tokio::test]
+    async fn plan_detail_names_its_runs_cap() {
+        let passed = checkpoint_of(LATER_RUN, "succeeded", &["T1", "T2", "T3"], &[]);
+        let runtime = Arc::new(HeldPlans::with_checkpoints(passed, Vec::new()));
+        let (_dir, state, router) = state_and_router(runtime.clone(), open_config());
+        let plan = || {
+            let router = router.clone();
+            async move {
+                let request = Request::builder()
+                    .uri("/api/plans/alpha")
+                    .body(Body::empty())
+                    .expect("a request");
+                let response = router.oneshot(request).await.expect("a response");
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("a body");
+                serde_json::from_slice::<Value>(&bytes).expect("JSON")
+            }
+        };
+        let body = plan().await;
+        assert!(body["last_run"].get("max_usd").is_none(), "no run set a cap: {body}");
+
+        let run = call(1, "plan_run", json!({ "plan_id": "alpha", "max_usd": 2.5 }));
+        let (_, answer) = post_mcp(&router, &run, &[]).await;
+        assert_eq!(answer["result"]["isError"], false, "{answer}");
+        plan_runs_started(&runtime, 1).await;
+        let body = plan().await;
+        assert_eq!(body["last_run"]["max_usd"], 2.5, "while the run goes: {body}");
+
+        runtime.gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state
+                .active_plans
+                .read()
+                .await
+                .values()
+                .any(crate::state::PlanHandle::is_live)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run ends");
+        let body = plan().await;
+        assert_eq!(body["last_run"]["max_usd"], 2.5, "once the run has ended: {body}");
+    }
 }

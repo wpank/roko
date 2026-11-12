@@ -578,6 +578,249 @@ pub(super) fn sized<R>(
     result
 }
 
+/// The texts of the documents of `plan`'s `[meta] sources`, read from
+/// `workdir`; a document that cannot be read is left out.
+fn source_texts(plan: &TasksFile, workdir: &Path) -> Vec<String> {
+    plan.meta
+        .sources
+        .iter()
+        .filter_map(|source| std::fs::read_to_string(workdir.join(source)).ok())
+        .collect()
+}
+
+/// Each shorthand of `sources` that names files together (gap-708931), with
+/// the files it names: `plugin/PluginEditor.h/.cpp` names
+/// `plugin/PluginEditor.h` and `plugin/PluginEditor.cpp`, and
+/// `engine.h/.cpp` the two files of those names. Each once.
+fn shorthand_pairs(sources: &[&str]) -> Vec<(String, Vec<String>)> {
+    static SHORTHAND: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`[^`\s]*[^`\s/]/\.[^`\s]+`").expect("valid shorthand regex"));
+    let mut pairs: Vec<(String, Vec<String>)> = Vec::new();
+    for found in sources
+        .iter()
+        .flat_map(|source| SHORTHAND.find_iter(source))
+    {
+        let files: Vec<String> = code_span_files(found.as_str())
+            .into_iter()
+            .map(|file| file.trim_start_matches("./").to_string())
+            .collect();
+        if files.len() > 1 && !pairs.iter().any(|(_, pair)| *pair == files) {
+            pairs.push((found.as_str().trim_matches('`').to_string(), files));
+        }
+    }
+    pairs
+}
+
+/// The files the writing tasks of `plan` must own too, for each shorthand of
+/// `sources` they own one file of and no task owns the others (gap-708931):
+/// `(task index, path, shorthand)`. A member named by its path is that file;
+/// one named bare is the file of that name beside the task's own file of the
+/// shorthand, else the workspace's one file of that name. A member with no
+/// such file in `workdir` is none.
+fn shorthand_partners(
+    plan: &TasksFile,
+    sources: &[&str],
+    workdir: &Path,
+) -> Vec<(usize, String, String)> {
+    let member_of = |file: &str, member: &str| {
+        let file = file.trim_start_matches("./");
+        if member.contains('/') {
+            file == member
+        } else {
+            Path::new(file).file_name().and_then(|name| name.to_str()) == Some(member)
+        }
+    };
+    let mut by_name = None;
+    let mut partners: Vec<(usize, String, String)> = Vec::new();
+    for (shorthand, members) in shorthand_pairs(sources) {
+        for (index, task) in plan.tasks.iter().enumerate() {
+            if task.files.is_empty() || !writes(task) {
+                continue;
+            }
+            let Some(owned) = task.files.iter().find(|file| {
+                members
+                    .iter()
+                    .any(|member| member_of(file.as_str(), member.as_str()))
+            }) else {
+                continue;
+            };
+            for member in &members {
+                if task
+                    .files
+                    .iter()
+                    .any(|file| member_of(file.as_str(), member.as_str()))
+                {
+                    continue;
+                }
+                let beside = Path::new(owned.trim_start_matches("./"))
+                    .with_file_name(member)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let path = if member.contains('/') {
+                    Some(member.clone())
+                } else if workdir.join(&beside).is_file() {
+                    Some(beside)
+                } else {
+                    let by_name =
+                        by_name.get_or_insert_with(|| super::file_paths::workspace_files(workdir));
+                    match by_name.get(member.as_str()).map(Vec::as_slice) {
+                        Some([only]) => Some(only.clone()),
+                        _ => None,
+                    }
+                };
+                let Some(path) = path.filter(|path| {
+                    plain_relative(path) && workdir.join(path).is_file() && !listed(plan, path)
+                }) else {
+                    continue;
+                };
+                if !partners.iter().any(|(_, known, _)| *known == path) {
+                    partners.push((index, path, shorthand.clone()));
+                }
+            }
+        }
+    }
+    partners
+}
+
+/// Give each task of `plan` the files a shorthand of `sources` names beside
+/// one it owns ([`shorthand_partners`], gap-708931): round v8's phase-1 plan
+/// listed `plugin/PluginEditor.cpp` but not the header of the spec's
+/// `plugin/PluginEditor.h/.cpp`. Returns one line per file added.
+pub(super) fn repair_shorthand_pairs(
+    plan: &mut TasksFile,
+    sources: &[&str],
+    workdir: &Path,
+) -> Vec<String> {
+    shorthand_partners(plan, sources, workdir)
+        .into_iter()
+        .map(|(index, path, shorthand)| {
+            let task = &mut plan.tasks[index];
+            task.files.push(path.clone());
+            format!(
+                "{}: `files` gains `{path}`: the source names it with a file of the task in \
+                 `{shorthand}`",
+                task.id
+            )
+        })
+        .collect()
+}
+
+/// The files the shorthands of `plan`'s sources, read from `workdir`, name
+/// beside a file a task owns, that no task lists (gap-708931, PLAN_062).
+#[must_use]
+pub fn shorthand_partners_of_plan(plan: &TasksFile, workdir: &Path) -> Vec<String> {
+    let texts = source_texts(plan, workdir);
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    shorthand_partners(plan, &texts, workdir)
+        .into_iter()
+        .map(|(_, path, _)| path)
+        .collect()
+}
+
+/// Whether `name` ends in an extension a source, build or document file has
+/// (`Look.cpp`, `notes.md`), not a method's or a field's (`handle.wake`).
+fn source_file_name(name: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        "c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx", "m", "mm", "rs", "py", "ts", "tsx", "js",
+        "jsx", "mjs", "go", "java", "kt", "swift", "rb", "cs", "sh", "md", "txt", "toml", "json",
+        "yaml", "yml", "cmake", "html", "css", "sql", "proto", "xml",
+    ];
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+/// What the sentences of `sources` that say files are deleted without naming
+/// one by its path say, around their words of deletion (gap-708931): "the
+/// retired files" within one clause, or a sentence led by "Delete" or
+/// "Remove" whose files are named only by name, with an extension a source
+/// or document file has (`Displays.h/.cpp`). Round v8's first phase-1 spec
+/// said "and the twelve retired files deleted" and "Delete the rest:
+/// `Displays.h/.cpp`, …", and named its 21 deletions by path nowhere. A
+/// sentence of what code does ("a file … that it deletes once read", "the
+/// file was deleted") is no deletion a task makes.
+fn vague_deletions(sources: &[&str]) -> Vec<String> {
+    static IN_WORDS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\bretired\b[^.;:]*\bfiles?\b|\bfiles?\b[^.;:]*\bretired\b")
+            .expect("valid deletion-in-words regex")
+    });
+    static SPAN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`[^`]*`").expect("valid code span regex"));
+    let mut found = Vec::new();
+    for sentence in sources.iter().flat_map(|source| sentences(source)) {
+        let named = instruction(&sentence);
+        if named
+            .iter()
+            .any(|(change, path)| *change == Change::Delete && path.contains('/'))
+        {
+            continue;
+        }
+        // The prose: each code span blanked, the same length.
+        let mut prose = sentence.clone();
+        for span in SPAN.find_iter(&sentence) {
+            prose.replace_range(span.range(), &" ".repeat(span.len()));
+        }
+        let (from, to) = match IN_WORDS.find(&prose) {
+            Some(words) => (words.start(), words.end()),
+            None if named
+                .iter()
+                .any(|(change, path)| *change == Change::Delete && source_file_name(path)) =>
+            {
+                (0, 0)
+            }
+            None => continue,
+        };
+        let start = sentence.floor_char_boundary(from.saturating_sub(40));
+        let end = sentence.ceil_char_boundary((to + 40).min(sentence.len()));
+        found.push(format!(
+            "{}{}{}",
+            if start > 0 { "…" } else { "" },
+            sentence[start..end].trim(),
+            if end < sentence.len() { "…" } else { "" }
+        ));
+    }
+    found
+}
+
+/// The PLAN_063 warning for `plan` (gap-708931): its sources, read from
+/// `workdir`, say files are deleted ([`vague_deletions`]) and name no
+/// deletion by its path anywhere, so roko can neither give the files to a
+/// task nor check they are gone. `None` otherwise.
+#[must_use]
+pub fn vague_deletions_line(plan: &TasksFile, workdir: &Path) -> Option<String> {
+    let texts = source_texts(plan, workdir);
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    // A bare name (`Displays.h`) is no path: phase 1's "Delete the rest:
+    // `Displays.h/.cpp`, …" named its files only so.
+    let named_by_path = texts
+        .iter()
+        .flat_map(|text| sentences(text))
+        .any(|sentence| {
+            instruction(&sentence).iter().any(|(change, path)| {
+                *change == Change::Delete && path.contains('/') && plain_relative(path)
+            })
+        });
+    let vague = vague_deletions(&texts);
+    if named_by_path || vague.is_empty() {
+        return None;
+    }
+    let quoted: Vec<String> = vague
+        .iter()
+        .take(3)
+        .map(|said| format!("\"{said}\""))
+        .collect();
+    let more = match vague.len().saturating_sub(3) {
+        0 => String::new(),
+        n => format!(", and {n} more"),
+    };
+    Some(format!(
+        "the documents this plan is written from ([meta] sources) say files are deleted but name \
+         none of them by path ({}{more}): write each one in a sentence that deletes it, as \
+         \"Deletes: `core/src/lfo.cpp`, …\", so that roko gives it to the task that deletes it \
+         and checks it is gone",
+        quoted.join("; ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,6 +1065,118 @@ mod tests {
         // A plan with no sources deletes nothing.
         plan.meta.sources.clear();
         assert!(files_task_deletes(&plan, &plan.tasks[0], root).is_empty());
+    }
+
+    fn vague_fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/p1_vague")
+            .join(name)
+    }
+
+    /// gap-708931: round v8's first phase-1 spec (Undertow 19943c9) named its
+    /// file pairs in shorthand, and its plan as written listed
+    /// `plugin/PluginEditor.cpp` but not the header of `PluginEditor.h/.cpp`.
+    /// T2 gains it, beside the file it lists; a pair a task owns whole stays;
+    /// a member named bare whose file sits in another directory is the
+    /// workspace's one file of that name.
+    #[test]
+    fn a_shorthand_pair_stays_in_one_task() {
+        let temp = undertow();
+        let root = temp.path();
+        let spec = std::fs::read_to_string(vague_fixture("request.md")).expect("the spec");
+        let mut plan = TasksFile::parse(&vague_fixture("tasks.toml")).expect("the plan as written");
+        assert_eq!(
+            repair_shorthand_pairs(&mut plan, &[spec.as_str()], root),
+            [
+                "T2: `files` gains `plugin/PluginEditor.h`: the source names it with a file of \
+                 the task in `PluginEditor.h/.cpp`"
+            ]
+        );
+        assert!(
+            plan.tasks[1]
+                .files
+                .contains(&"plugin/PluginEditor.h".to_string())
+        );
+        assert!(
+            repair_shorthand_pairs(&mut plan, &[spec.as_str()], root).is_empty(),
+            "once"
+        );
+
+        plan.tasks[0]
+            .files
+            .retain(|file| file != "core/include/undertow/engine.h");
+        assert_eq!(
+            repair_shorthand_pairs(&mut plan, &[spec.as_str()], root),
+            [
+                "T1: `files` gains `core/include/undertow/engine.h`: the source names it with a \
+                 file of the task in `engine.h/.cpp`"
+            ]
+        );
+    }
+
+    /// gap-708931: round v8's first phase-1 spec said its files were deleted
+    /// only in words ("and the retired files removed", "(delete them)"), and
+    /// its plan as written listed none of them: `plan validate` warns
+    /// (PLAN_063), quoting what it said, and PLAN_062 names the header its
+    /// shorthand pairs with T2's editor. The fixed spec, which names every
+    /// deletion by path, gets no PLAN_063.
+    #[test]
+    fn a_spec_that_deletes_files_in_words_is_warned_about() {
+        let temp = undertow();
+        let root = temp.path();
+        let plan_dir = root.join("plans/p1-the-foundation");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::copy(vague_fixture("tasks.toml"), plan_dir.join("tasks.toml")).expect("the plan");
+        let found = |rule: &str| {
+            crate::plan_validate::validate_plans_dir_with_workdir(&plan_dir, None, Some(root))
+                .expect("validate")
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diagnostic| diagnostic.rule_id == rule)
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect::<Vec<_>>()
+        };
+        std::fs::copy(
+            vague_fixture("request.md"),
+            root.join("docs/specs/phase-1-foundation.md"),
+        )
+        .expect("the first spec");
+        let warned = found("PLAN_063");
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        for said in [
+            "and the retired files removed",
+            "and the retired window files removed",
+            "The retired core files** (delete them)",
+        ] {
+            assert!(warned[0].contains(said), "{said}: {warned:?}");
+        }
+        assert!(warned[0].contains("more): write each one"), "{warned:?}");
+        let changed = found("PLAN_062");
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert!(
+            changed[0].contains("`plugin/PluginEditor.h`"),
+            "{changed:?}"
+        );
+
+        std::fs::copy(
+            fixture("request.md"),
+            root.join("docs/specs/phase-1-foundation.md"),
+        )
+        .expect("the fixed spec");
+        assert_eq!(found("PLAN_063"), Vec::<String>::new());
+
+        // What code does to files is no deletion a task makes (round v8's
+        // probe of roko's work items found these).
+        assert_eq!(
+            vague_deletions(&[
+                "It removes `serve.json`, `serve.token` and the serve's entry on shutdown.",
+                "It reads it from a private file with a random name that it deletes once read.",
+                "The size in the checkout (or null when the file was deleted).",
+                "Remove the direct `handle.wake` from the loop.",
+            ]),
+            Vec::<String>::new()
+        );
     }
 
     /// bug-aa93e9: `plan validate` warns once about phase 1's plan as

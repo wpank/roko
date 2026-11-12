@@ -1,0 +1,208 @@
+[meta]
+plan = "p1-the-foundation"
+title = "P1 · The foundation"
+iteration = 0
+total = 2
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+sources = ["docs/specs/phase-1-foundation.md"]
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Rewrite the core table, engine, output stage, and presets"
+description = "Assumption: the existing core source glob keeps picking up the rewritten .cpp files, so this task only rewrites the listed core sources and deletes the retired ones. Implement the exact 49-row phase-1 parameter table, exact id lookup, the stripped-down Engine skeleton and clock/meters, the mono OutputStage, and the single Init factory preset."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/params.h",
+    "core/src/params.cpp",
+    "core/include/undertow/engine.h",
+    "core/src/engine.cpp",
+    "core/include/undertow/output_stage.h",
+    "core/src/output_stage.cpp",
+    "core/include/undertow/presets.h",
+    "core/src/presets.cpp",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 params` passes, proving the 49-row table and exact id lookup/enumerator mapping.",
+    "AC2: `tools/spec.sh 1 engine` passes, proving the new engine skeleton, clock, allocation rules, and retired core files are gone.",
+    "AC3: `tools/spec.sh 1 output` passes, proving the mono output stage, DC blocker, master gain smoothing, and soft clipper.",
+    "AC4: `tools/spec.sh 1 rumble` passes, proving the kept rumble still works through the new engine.",
+]
+sequence = 0
+goal = "The core library passes the phase-1 checks with the new parameter table, engine skeleton, mono output stage, and Init preset."
+non_goals = [
+    "Do not edit the plugin or tools trees in this task.",
+    "Do not add later-phase DSP, UI, or sequencer logic.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-1-foundation.md"
+why = "The phase-1 API, behavior, and check list that define the core rewrite."
+
+[[task.context.read_files]]
+path = "core/src/params.cpp"
+why = "The current parameter table implementation to replace with the 49-row phase-1 table."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-240"
+why = "The current engine logic to strip down to the phase-1 skeleton, clock, meters, and mono flow."
+
+[[task.context.read_files]]
+path = "core/include/undertow/params.h"
+why = "the header of `core/src/params.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+why = "the header of `core/src/engine.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/params_test.cpp"
+why = "the test its check `tools/spec.sh 1 params` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/engine_test.cpp"
+why = "the test its check `tools/spec.sh 1 engine` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/output_test.cpp"
+why = "the test its check `tools/spec.sh 1 output` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/rumble_test.cpp"
+why = "the test its check `tools/spec.sh 1 rumble` runs: what this task's work must pass"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 params"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 output"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 rumble"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Re-key the plugin and renderer to Undertow 2"
+description = "Assumption: the placeholder editor reuses the existing shared theme tokens; this task rewires the plugin wrapper/editor sources and the renderer/scripts to the new table and identity without adding any later-phase UI. Remove the old pattern plumbing from the plugin wrapper, build the APVTS from the 49-row table, make the editor a fixed dark placeholder, update the renderer preset loading, and switch the bundle names to Metakosmia Undertow 2."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/CMakeLists.txt",
+    "plugin/PluginProcessor.h",
+    "plugin/PluginProcessor.cpp",
+    "plugin/PluginEditor.cpp",
+    "tools/render/main.cpp",
+    "tools/render-demos.sh",
+    "tools/install.sh",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 plugin` passes, proving the Undertow 2 plugin identity, APVTS table, state/program handling, and placeholder window.",
+    "AC2: `tools/spec.sh 1 render` passes, proving the renderer loads presets through the new preset API and emits the requested 24-bit stereo render.",
+    "AC3: `tools/pluginval.sh 5` passes, proving the VST3 still clears pluginval.",
+    "AC4: SC16: P1.16 | `tools/spec.sh 1 plugin` | The build makes VST3, AU and Standalone bundles named Metakosmia Undertow 2, bundle id audio.metakosmia.undertow2, AU aumu MkU2 Mtks, version 2.0.0, and `tools/install.sh --dest` installs those three",
+]
+sequence = 1
+goal = "The plugin wrapper, editor placeholder, renderer, and install/demo scripts use the Undertow 2 identity, and the plugin still passes pluginval."
+non_goals = [
+    "Do not add later-phase DSP or the full UI.",
+    "Do not change the core DSP behavior delivered by T1.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-1-foundation.md"
+why = "The plugin, renderer, and script requirements plus the exact bundle identity and preset API."
+
+[[task.context.read_files]]
+path = "plugin/PluginProcessor.cpp"
+why = "The current wrapper, state, and program implementation to simplify for phase 1."
+
+[[task.context.read_files]]
+path = "tools/render/main.cpp"
+lines = "1-240"
+why = "The renderer's current argument parsing and preset loading to adapt to the new factory-preset API."
+
+[[task.context.read_files]]
+path = "plugin/PluginProcessor.h"
+why = "the header of `plugin/PluginProcessor.cpp`, which this task changes: the declarations its code must match"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/plugin_test.cpp"
+why = "the test its check `tools/spec.sh 1 plugin` runs: what this task's work must pass"
+
+[[task.context.read_files]]
+path = "tests/spec/p1/render_test.cpp"
+why = "the test its check `tools/spec.sh 1 render` runs: what this task's work must pass"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 plugin"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC4",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 render"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/pluginval.sh 5"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"

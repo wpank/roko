@@ -2072,6 +2072,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 // files a task deletes count toward none of its size limits,
                 // here and below.
                 repairs.extend(named_files::repair_named_files(&mut parsed, &named));
+                // gap-708931: a task that owns one file of a shorthand pair
+                // (`plugin/PluginEditor.h/.cpp`) owns the other too.
+                repairs.extend(named_files::repair_shorthand_pairs(
+                    &mut parsed,
+                    &size_sources,
+                    workdir_ref,
+                ));
                 // gap-9e212c: a task whose size its source states gets the
                 // smallest tier that covers it.
                 repairs.extend(named_files::sized(&mut parsed, &named.deleted, |plan| {

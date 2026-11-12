@@ -262,7 +262,7 @@ The one entry point for work. `roko run` takes a prompt or an existing plan dire
 | Form | What it does |
 |---|---|
 | `roko run "<prompt>"` | Size the prompt. A small change runs as one checked task; a larger one gets a plan written first (`plans/<slug>/tasks.toml`), which then runs. |
-| `roko run --plan "<prompt>"` | Always write a plan first. On a terminal Roko shows the plan and asks before running it; `--yes` skips the question. |
+| `roko run --plan "<prompt>"` | Always write a plan first. Roko shows the plan being written, then its tasks, and on a terminal asks before running it; `--yes` skips the question. |
 | `roko run --plan --dry-run "<prompt>"` | Write the plan and stop. Review or edit `plans/<slug>/`, then run it with `roko run plans/<slug>`. |
 | `roko run --dry-run "<prompt>"` | Show how the prompt would run (size, route, gates). Runs nothing. |
 | `roko run plans/<slug>` | Run an existing plan directory; the same run as `roko plan run plans/<slug>`. |
@@ -306,6 +306,35 @@ The global flags (`--model`, `--role`, `--json`, `--effort`, `--quiet`) apply as
 the full set of plan-run options (budgets, worktrees, topology, the dashboard), use
 [`roko plan run`](#roko-plan-run). What a run prints, the live view and its summary, is
 described there under [What a run shows](#what-a-run-shows).
+
+##### Writing a plan
+
+While `roko run` writes a plan, with `--plan` or for a prompt sized for one, it shows the writing the way the run
+view shows a run:
+- a header quoting the request, with the planner's model and the cap;
+- on a terminal, one live line that says what the writer is doing (asking the model, fixing the plan, saving it),
+  over its time and spend on glass;
+- in a pipe or CI, one line each time it moves on;
+- then the plan written: its directory, tasks, checks, time and spend, its tasks as the run will show them, and
+  what roko notices about it, in plain words.
+
+On a terminal it then asks `Run it now? [Y/n]`, and the run follows with its own view. `--dry-run` ends with
+`Next  roko run plans/<slug>`, and so does a plan you keep. A write that fails says why in one sentence, with a
+command to paste. `--quiet` and `--json` show none of it.
+
+```text
+◆ roko  run “Add a farewell command”
+  writing a plan first · glm-4.7 · cap $2.00
+
+  ✓ Plan written  plans/add-a-farewell-command · 2 tasks · 2 checks · a plan check · 0.3s · <$0.01
+
+  ○ task 1  Add farewell to the greeting module
+  ○ task 2  Say goodbye from the command line    after task 1
+
+  Task 1 and task 2 name no files to read first, so their agents start without that context.
+
+  Next  roko run plans/add-a-farewell-command
+```
 
 `roko run` does not classify intent: a question is not routed to research. Ask questions
 with `roko think "<question>"` or `roko research topic "<topic>"`.

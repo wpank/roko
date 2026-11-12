@@ -739,9 +739,9 @@ pub async fn resumed_batch(repo: &Path, plan_ids: &[&str]) -> Option<(String, St
 }
 
 /// The slug a run's batch branch is named from (gap-b67fdd): a one-task
-/// run's request, one plan's id, or the directory of several plans,
-/// lowercased, each run of other characters one `-`, and cut at a `-` to at
-/// most [`SLUG_MAX`] characters; `run` when nothing is left. `plans_dir` is
+/// run's request, one plan's id, or the directory of several plans, as the
+/// plan generator slugs a request, cut at a `-` to at most [`SLUG_MAX`]
+/// characters; `run` when nothing is left. `plans_dir` is
 /// the directory the run was given, under `workdir`.
 #[must_use]
 pub fn batch_slug(
@@ -766,28 +766,25 @@ pub fn batch_slug(
     slug(&named)
 }
 
-/// `text` as the last part of a branch name: see [`batch_slug`].
+/// `text` as the last part of a branch name: see [`batch_slug`]. The plan
+/// generator's [`slugify`](crate::plan_generate::slugify), cut at a `-` to at
+/// most [`SLUG_MAX`] characters.
 fn slug(text: &str) -> String {
-    let mut out = String::new();
-    for character in text.chars() {
-        if character.is_ascii_alphanumeric() {
-            out.push(character.to_ascii_lowercase());
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
+    let slug = crate::plan_generate::slugify(text);
+    let slug = if slug.chars().count() > SLUG_MAX {
+        let head: String = slug.chars().take(SLUG_MAX).collect();
+        match head.rfind('-') {
+            Some(at) if at >= head.len() / 2 => head[..at].to_string(),
+            _ => head,
         }
-    }
-    if out.len() > SLUG_MAX {
-        let cut = out[..SLUG_MAX]
-            .rfind('-')
-            .filter(|at| *at >= SLUG_MAX / 2)
-            .unwrap_or(SLUG_MAX);
-        out.truncate(cut);
-    }
-    let out = out.trim_end_matches('-');
-    if out.is_empty() {
+    } else {
+        slug
+    };
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
         "run".to_string()
     } else {
-        out.to_string()
+        slug.to_string()
     }
 }
 

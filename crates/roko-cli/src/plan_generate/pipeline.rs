@@ -301,6 +301,10 @@ pub struct PlanRequest<'a> {
     /// through `spec_path` or `--from-file` (bug-60ad88). Every task reads
     /// it.
     pub source_path: Option<&'a Path>,
+    /// The caller shows the generation itself, through `progress`
+    /// (gap-3436e7): the generator and its planner calls print no lines of
+    /// their own.
+    pub quiet: bool,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -323,6 +327,7 @@ impl<'a> PlanRequest<'a> {
             progress: None,
             max_usd: None,
             source_path: None,
+            quiet: false,
         }
     }
 }
@@ -1403,13 +1408,30 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         progress,
         max_usd,
         source_path,
+        quiet,
     } = request;
+    // A caller that shows the generation (`roko run --plan`, gap-3436e7) gets
+    // none of these lines.
+    macro_rules! say {
+        ($($line:tt)*) => {
+            if !quiet {
+                eprintln!($($line)*);
+            }
+        };
+    }
+    macro_rules! say_out {
+        ($($line:tt)*) => {
+            if !quiet {
+                println!($($line)*);
+            }
+        };
+    }
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
         _ => None,
     });
     let workdir = workdir.to_path_buf();
-    async {
+    let generation = async {
         let t_total = Instant::now();
         // gap-61c95c: where the generation's time goes, in its progress.
         let clock = PlanClock::new(t_total);
@@ -1417,7 +1439,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let source = ReadSource::read(source)?;
         let template_kind = source.template;
         let template_guidance = crate::plan_generate::render_plan_template_guidance(template_kind);
-        println!("📋 Generating a plan from the {}: {slug}", source.kind);
+        say_out!("📋 Generating a plan from the {}: {slug}", source.kind);
 
         let dry_run_workdir = if dry_run {
             Some(dry_run_fs::DryRunWorkspace::new(&workdir)?)
@@ -1481,7 +1503,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // An improvement the cap leaves out is said, and skipped.
         let skip_for_cap = |improvement: &str| match cap_reached() {
             Some(reached) => {
-                eprintln!("  {reached}, so the planner is not asked to {improvement}");
+                say!("  {reached}, so the planner is not asked to {improvement}");
                 true
             }
             None => false,
@@ -1607,7 +1629,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             match crate::repo_context::build_repo_context(workdir_ref, &keyword_refs).await {
                 Ok(repo_context) => {
                     if !repo_context.context_root_verified {
-                        eprintln!(
+                        say!(
                             "warning: repository context not verified for keywords {:?}; \
                              generated plan may reference nonexistent code.",
                             feature_keywords
@@ -1616,7 +1638,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     Some(repo_context.to_prompt_section())
                 }
                 Err(err) => {
-                    eprintln!(
+                    say!(
                         "warning: repository context unavailable for keywords {:?}: {err}",
                         feature_keywords
                     );
@@ -1674,7 +1696,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 .iter()
                 .map(|document| format!("`{}`", document.path))
                 .collect();
-            println!(
+            say_out!(
                 "📋 The {} states no checks itself; planning with the {} checks of {}",
                 source.kind,
                 checks.len(),
@@ -1736,7 +1758,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // The plan-authoring episode starts here (bug-41e2de).
         let plan_started_at = chrono::Utc::now();
         let plan_started = Instant::now();
-        eprintln!("  Generating plan: {slug}");
+        say!("  Generating plan: {slug}");
         // Every planner call is the strategist with read-only tools under the
         // planner's own turn cap (bug-09cc5f); the calls after this one change
         // its prompt, and a validation retry its model.
@@ -1768,9 +1790,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let agent_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
         if exit_code == 0 {
-            eprintln!("  ✓ Plan generated for: {slug}");
+            say!("  ✓ Plan generated for: {slug}");
         } else {
-            eprintln!("  ✗ Plan generation failed");
+            say!("  ✗ Plan generation failed");
         }
         tracing::info!(
             exit_code,
@@ -1877,7 +1899,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 );
                 // Exponential back-off: 1 s, 2 s, 4 s …
                 let backoff_secs = 1u64 << (attempt - 1).min(3);
-                eprintln!(
+                say!(
                     "  plan generation agent {} (attempt {}/{}) \u{2014} \
                      waiting {backoff_secs}s then retrying\u{2026}",
                     retry_class.recovery_hint(),
@@ -1901,7 +1923,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 last_exit_code = retry.exit_code;
                 last_output = retry.output;
                 if last_exit_code == 0 {
-                    eprintln!("  \u{2713} Retry {attempt} succeeded");
+                    say!("  \u{2713} Retry {attempt} succeeded");
                     break;
                 }
             }
@@ -2167,7 +2189,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     validated
                 } else {
                     for repair in &repairs {
-                        eprintln!("  Repaired the draft: {repair}");
+                        say!("  Repaired the draft: {repair}");
                     }
                     tracing::info!(?repairs, "plan generate: repaired the draft");
                     toml::to_string_pretty(&parsed)
@@ -2442,7 +2464,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             if let Some(path) =
                 keep_rejected_draft(workdir_ref, slug, rejected_drafts, reply, error)
             {
-                eprintln!("  Kept the rejected draft in {}", path.display());
+                say!("  Kept the rejected draft in {}", path.display());
             }
         };
         if let Err(error) = &validated_toml {
@@ -2461,7 +2483,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
                 if let Some(reached) = cap_reached() {
-                    eprintln!("  {reached}; not asking the planner again");
+                    say!("  {reached}; not asking the planner again");
                     stopped_at_cap = Some(reached);
                     break;
                 }
@@ -2483,7 +2505,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                             attempt,
                             "plan generate: escalating model tier on validation failure"
                         );
-                        eprintln!(
+                        say!(
                             "⬆️  Escalating model: {} → {next}",
                             current_model.unwrap_or("<default>"),
                         );
@@ -2499,7 +2521,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     err = validated_toml.as_ref().unwrap_err().as_str(),
                     "plan generate: TOML extraction/validation failed, retrying"
                 );
-                eprintln!(
+                say!(
                     "⚠️  The planner's reply held no plan that validates (attempt {}/{}); asking \
                      again with its errors…",
                     attempt,
@@ -2547,7 +2569,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                                     retry_ms = t_retry.elapsed().as_millis() as u64,
                                     "plan generate: retry succeeded"
                                 );
-                                eprintln!("✅ Retry {attempt} succeeded");
+                                say!("✅ Retry {attempt} succeeded");
                                 break;
                             }
                             Err(error) => keep_draft(&retry_output, error),
@@ -2566,7 +2588,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                             "plan generation reached its spend cap: {}",
                             retry_output.trim()
                         );
-                        eprintln!("  {reached}; not asking the planner again");
+                        say!("  {reached}; not asking the planner again");
                         stopped_at_cap = Some(reached);
                         break;
                     }
@@ -2602,7 +2624,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         if let Ok(candidate) = &validated_toml {
             let hidden = hidden_output_lines(candidate);
             if !hidden.is_empty() && !skip_for_cap("rewrite the checks that hide their output") {
-                eprintln!(
+                say!(
                     "  {} check(s) hide their test runner's output; asking the planner once more",
                     hidden.len()
                 );
@@ -2682,7 +2704,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 ));
             }
             let why = parts.join(", and ");
-            eprintln!("  {why}; asking the planner once more");
+            say!("  {why}; asking the planner once more");
             report("regenerating", (1, 1), Some(why), planner_model.as_str());
             let prompt = source_checks::regeneration_prompt(
                 &task_prompt,
@@ -2747,7 +2769,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             match better {
                 Ok(better) => validated_toml = Ok(better),
                 Err(why) => {
-                    eprintln!("  The plan written again is not kept, so the first stands: {why}");
+                    say!("  The plan written again is not kept, so the first stands: {why}");
                     tracing::warn!(slug, %why, "plan generate: regeneration not kept");
                 }
             }
@@ -2765,10 +2787,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             let mut kept = (candidate.clone(), scores);
             let weak = kept.1.is_weak(&spec_config);
             if weak && !skip_for_cap("raise the plan's spec quality") {
-                eprintln!(
+                say!(
                     "  Spec quality is low (mean {:.1}, lowest task {:.1}); asking the planner \
                      once more",
-                    kept.1.mean, kept.1.min
+                    kept.1.mean,
+                    kept.1.min
                 );
                 report(
                     "regenerating",
@@ -2803,7 +2826,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     kept = (better, better_scores);
                 }
             }
-            println!("📋 {}", kept.1.summary_line());
+            say_out!("📋 {}", kept.1.summary_line());
             spec_quality = Some(kept.1.record(weak));
             validated_toml = Ok(kept.0);
         }
@@ -2814,13 +2837,15 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let assessed = validated_toml.as_ref().ok().and_then(|plan| assess(plan));
         if let Some((_, unrunnable, unchecked)) = &assessed {
             for step in unrunnable {
-                eprintln!(
+                say!(
                     "warning: {} step {} cannot pass as written: {}",
-                    step.task, step.step, step.why
+                    step.task,
+                    step.step,
+                    step.why
                 );
             }
             for task in unchecked {
-                eprintln!(
+                say!(
                     "warning: no check of {} can see its work: {}",
                     task.task,
                     runnable::only_reads(&task.reads)
@@ -2831,9 +2856,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             .map(|(coverage, _, _)| coverage)
             .filter(|_| !checks.is_empty());
         if let Some(coverage) = &source_coverage {
-            println!("📋 {}", coverage.summary_line());
+            say_out!("📋 {}", coverage.summary_line());
             for line in coverage.detail_lines() {
-                println!("   {line}");
+                say_out!("   {line}");
             }
             // bug-72dc0d: a plan that keeps fewer than half of the checks
             // its source states, after the planner was asked once more, is not
@@ -2884,7 +2909,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 "the plan has {drafted} task(s) where the source's notes for the planner state \
                  {stated}{asked}: check the split before it runs"
             );
-            eprintln!("warning: {line}");
+            say!("warning: {line}");
             repairs.push(line);
         }
         if let Ok(validated_toml) = validated_toml {
@@ -2913,7 +2938,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     .with_context(|| format!("create plan dir {}", plan_dir.display()))?;
                 atomic_write_str(&plan_dir.join("tasks.toml"), &validated_toml)
                     .with_context(|| format!("write tasks.toml to {}", plan_dir.display()))?;
-                println!(
+                say_out!(
                     "📋 Wrote tasks.toml ({} bytes) to {}",
                     validated_toml.len(),
                     plan_dir.display()
@@ -2922,7 +2947,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     .ok()
                     .and_then(|tasks| shared_registration_note(&tasks))
                 {
-                    println!("📋 {note}");
+                    say_out!("📋 {note}");
                 }
                 let plan_md_content = extract_fenced_block(&output, "plan.md")
                     .or_else(|| extract_fenced_block(&output, "markdown"))
@@ -2931,7 +2956,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     let plan_md = with_repairs(plan_md.to_string(), &repairs);
                     atomic_write_str(&plan_dir.join("plan.md"), &plan_md)
                         .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
-                    println!(
+                    say_out!(
                         "📋 Wrote plan.md ({} bytes) to {}",
                         plan_md.len(),
                         plan_dir.display()
@@ -2959,7 +2984,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             accept_blocks::write(&plan_dir, &accept)
                 .with_context(|| format!("write the accept tests to {}", plan_dir.display()))?;
             for question in &folded {
-                println!("📋 Decided while planning, with nobody to ask: {question}");
+                say_out!("📋 Decided while planning, with nobody to ask: {question}");
             }
         } else {
             // All attempts (initial + retries) failed to produce valid TOML.
@@ -3012,9 +3037,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 distiller,
             )
             .await;
-            eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
-            eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
-            eprintln!("--- End raw model output ---");
+            say!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
+            say!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
+            say!("--- End raw model output ---");
             // A dry run's drafts went with its scratch copy of the workspace.
             let drafts = if rejected_drafts > 0 && !dry_run {
                 format!(
@@ -3062,20 +3087,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             if changed.is_empty() {
                 artifact_valid = false;
                 invalid.push("no tasks.toml was written".to_string());
-                eprintln!("warning: dry-run plan generation did not produce any tasks.toml files");
+                say!("warning: dry-run plan generation did not produce any tasks.toml files");
             } else {
                 for path in &changed {
                     if let Err(err) = dry_run_fs::validate_and_print_preview(path) {
                         artifact_valid = false;
                         invalid.push(format!("{}: {err:#}", path.display()));
-                        eprintln!(
+                        say!(
                             "warning: dry-run validation failed for {}: {err:#}",
                             path.display()
                         );
                     }
                 }
             }
-        } else {
+        } else if !quiet {
             dry_run_fs::warn_on_new_or_updated_tasks(&plans_root, &tasks_before);
         }
 
@@ -3083,7 +3108,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let max_tasks =
             crate::plan_policy::effective_generated_task_limit(template_kind.max_task_count());
         if task_count > max_tasks {
-            eprintln!(
+            say!(
                 "⚠️  Generated {task_count} tasks, which exceeds the `{}` template budget of {}",
                 template_kind.label(),
                 max_tasks
@@ -3100,9 +3125,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             Ok(report) => {
                 if report.totals.errors > 0 {
                     artifact_valid = false;
-                    eprintln!(
+                    say!(
                         "warning: artifact validation found {} error(s) and {} warning(s) for {}",
-                        report.totals.errors, report.totals.warnings, slug
+                        report.totals.errors,
+                        report.totals.warnings,
+                        slug
                     );
                 }
                 invalid.extend(
@@ -3126,7 +3153,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     .flat_map(|plan| &plan.diagnostics)
                     .filter(|diagnostic| diagnostic.rule_id == "PLAN_050")
                 {
-                    eprintln!("warning: PLAN_050 {}", diagnostic.message);
+                    say!("warning: PLAN_050 {}", diagnostic.message);
                 }
                 validation_report = serde_json::to_value(&report).ok();
                 if validation_report.is_none() {
@@ -3137,7 +3164,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             Err(err) => {
                 artifact_valid = false;
                 invalid.push(format!("it could not be validated: {err:#}"));
-                eprintln!(
+                say!(
                     "warning: artifact validation could not be completed for {}: {err:#}",
                     slug
                 );
@@ -3208,8 +3235,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             requested_plans_root.map_or_else(|| workspace_plans_dir(&workdir), Path::to_path_buf),
             outcome,
         ))
+    };
+    if quiet {
+        crate::agent_exec::without_progress_lines(generation).await
+    } else {
+        generation.await
     }
-    .await
 }
 
 pub(crate) fn augment_generator_system_prompt(

@@ -209,6 +209,7 @@ pub mod plan_import;
 pub mod plan_policy;
 pub mod plan_status_view;
 pub mod plan_validate;
+pub mod plan_write_view;
 pub mod projection;
 pub mod prompting;
 pub mod repl;

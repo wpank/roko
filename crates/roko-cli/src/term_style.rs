@@ -586,6 +586,16 @@ pub fn pad_left(text: &str, width: usize) -> String {
     format!("{}{text}", " ".repeat(gap))
 }
 
+/// `a`, `a and b`, `a, b and c`: items as a sentence lists them.
+#[must_use]
+pub fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// `text` broken at spaces into lines of at most `width` columns; a word
 /// wider than that keeps a line of its own, and `text`'s own line breaks
 /// stay. Plain text only: wrap before styling.

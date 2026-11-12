@@ -39,7 +39,7 @@ pub use named_files::{
 pub use source_reads::unread_sources;
 
 pub use pipeline::{
-    ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanProgress,
+    ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanPhases, PlanProgress,
     PlanProgressSink, PlanRequest, PlanSource, generate_plan, plan_dir_slug, plan_source_document,
     slugify,
 };

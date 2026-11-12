@@ -6,9 +6,12 @@
  * Generate mode: POST /api/plans/generate → waitForOperation → onDone(slug)
  * Revise mode:   POST /api/plans/{id}/revise → waitForOperation → onDone(slug)
  *
+ * While roko writes, the request stays on screen, quoted, with the time on glass (gap-6c4d24).
+ *
  * Error handling:
  *   404/405 → feature not supported by this roko-serve build
  *   409 on revise → plan is running or already being revised
+ *   A failed write → one sentence for what failed (writeFailure), roko serve's message folded under it
  *   Everything else → message shown inline; the typed sentence is preserved.
  */
 
@@ -19,15 +22,17 @@ import React, {
   useEffect,
   KeyboardEvent,
 } from 'react';
-import { useGeneratePlan, useRevisePlan, planExists, fetchOperation } from '@/api/queries';
+import { useGeneratePlan, useRevisePlan, useWorkspace, planExists, fetchOperation } from '@/api/queries';
 import { ApiError } from '@/api/client';
 import type { WirePlanDiff } from '@/api/contracts';
 import { waitForOperation } from '@/lib/operation';
+import { DotMatrix } from '@/components/kit/DotMatrix';
+import { Fold } from '@/components/kit/Fold';
 import { Key } from '@/components/kit/Key';
-import { Led } from '@/components/kit/Led';
 import { Notice } from '@/components/primitives/Notice';
 import { isMissingRoute, unsupportedMessage, describeRequestError } from '@/lib/apiErrors';
-import { clock } from '@/lib/words';
+import { clock, clockLabel } from '@/lib/words';
+import { writeFailure } from '@/lib/writeFailure';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +102,9 @@ export function PromptPanel({
 }: PromptPanelProps) {
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // What roko serve said when a write failed, folded under the error's one sentence.
+  const [errorRaw, setErrorRaw] = useState<string | null>(null);
+  const { data: workspaceInfo } = useWorkspace();
   const [noticeError, setNoticeError] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
@@ -113,13 +121,16 @@ export function PromptPanel({
 
   // Esc closes the prompt, as it closes the editor — but not while a request
   // is in flight, when Cancel is disabled too.
+  // It listens before the rest of the page (capture), so Esc closes this box and nothing else (gap-6c4d24).
   useEffect(() => {
     if (!onCancel || waiting) return;
     const handler = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel();
+      if (e.key !== 'Escape') return;
+      e.stopImmediatePropagation();
+      onCancel();
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, [onCancel, waiting]);
 
   const handleSubmit = useCallback(async () => {
@@ -127,6 +138,7 @@ export function PromptPanel({
     if (!text || waiting) return;
 
     setError(null);
+    setErrorRaw(null);
     setNoticeError(null);
     setWaiting(true);
     setElapsedMs(0);
@@ -174,12 +186,18 @@ export function PromptPanel({
       } else if (err instanceof ApiError && err.status === 409 && mode === 'revise') {
         setError(toRevise409Error(err));
         setNoticeError(null);
+      } else if (!(err instanceof ApiError) && err instanceof Error) {
+        // The request was taken, and the write itself failed: say what failed, and fold what roko serve said.
+        const failure = writeFailure(err.message, mode, workspaceInfo?.path);
+        setError(failure.sentence);
+        setErrorRaw(failure.raw);
+        setNoticeError(null);
       } else {
         setError(describeRequestError(err, action));
         setNoticeError(null);
       }
     }
-  }, [prompt, waiting, mode, planId, generateMutation, reviseMutation, onDone]);
+  }, [prompt, waiting, mode, planId, generateMutation, reviseMutation, onDone, workspaceInfo?.path]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -209,35 +227,64 @@ export function PromptPanel({
         : 'roko writes a plan first: small tasks, each with a check. Nothing runs until you say so.';
 
   return (
-    <section className="rk-module pt-ask">
+    <section className="rk-module pt-ask" data-region={waiting ? 'writing' : 'ask'}>
       <label className="rk-label" htmlFor={`prompt-${mode}`}>
         {question}
       </label>
 
-      <textarea
-        id={`prompt-${mode}`}
-        ref={textareaRef}
-        data-prompt
-        rows={4}
-        placeholder={placeholder}
-        value={prompt}
-        disabled={waiting}
-        onChange={(e) => {
-          setPrompt(e.target.value);
-          if (error) setError(null);
-          if (noticeError) setNoticeError(null);
-        }}
-        onKeyDown={handleKeyDown}
-      />
+      {waiting ? (
+        <>
+          <div className="rk-glass rk-cells pt-writing-glass" role="group" aria-label="Readings">
+            <div className="rk-cell" data-reading="time">
+              <span className="rk-cell-label">time</span>
+              <DotMatrix
+                text={clock(elapsedMs ?? 0)}
+                label={`time: ${clockLabel(elapsedMs ?? 0)}`}
+                size="L"
+                tone="live"
+              />
+              <span className="rk-cell-note">usually under a minute</span>
+            </div>
+          </div>
+          <p className="pt-sentence" data-waiting>
+            {mode === 'generate'
+              ? `roko is reading ${workspace} and splitting your request into tasks, each with a check. You’ll see the plan here before anything runs.`
+              : `roko is rewriting ${workspace}’s tasks. You’ll see what changed before anything runs.`}
+          </p>
+          <blockquote className="pt-request" data-request>
+            “{prompt.trim()}”
+          </blockquote>
+        </>
+      ) : (
+        <>
+          <textarea
+            id={`prompt-${mode}`}
+            ref={textareaRef}
+            data-prompt
+            rows={4}
+            placeholder={placeholder}
+            value={prompt}
+            onChange={(e) => {
+              setPrompt(e.target.value);
+              if (error) {
+                setError(null);
+                setErrorRaw(null);
+              }
+              if (noticeError) setNoticeError(null);
+            }}
+            onKeyDown={handleKeyDown}
+          />
 
-      {mode === 'generate' && !waiting && (
-        <div className="pt-examples">
-          {GENERATE_EXAMPLES.map((example) => (
-            <button key={example} type="button" className="pt-example" onClick={() => handleChipClick(example)}>
-              {example}
-            </button>
-          ))}
-        </div>
+          {mode === 'generate' && (
+            <div className="pt-examples">
+              {GENERATE_EXAMPLES.map((example) => (
+                <button key={example} type="button" className="pt-example" onClick={() => handleChipClick(example)}>
+                  {example}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {noticeError && (
@@ -245,36 +292,33 @@ export function PromptPanel({
       )}
 
       {error && (
-        <Notice kind="error" onClose={() => setError(null)}><span data-error>{error}</span></Notice>
+        <Notice
+          kind="error"
+          onClose={() => {
+            setError(null);
+            setErrorRaw(null);
+          }}
+        >
+          <span data-error>{error}</span>
+          {errorRaw && (
+            <Fold summary="what roko said" data-fold="write-error">
+              <pre className="pt-raw">{errorRaw}</pre>
+            </Fold>
+          )}
+        </Notice>
       )}
 
-      <div className="pt-line">
-        {waiting ? (
-          <p className="pt-waiting" data-waiting>
-            <Led signal="live" />
-            {mode === 'generate' ? 'Writing the plan' : 'Revising the plan'}
-            {elapsedMs !== null && elapsedMs > 0 && <span className="rk-data">{clock(elapsedMs)}</span>}
-          </p>
-        ) : (
+      {!waiting && (
+        <div className="pt-line">
           <p className="pt-hint">{hint}</p>
-        )}
-        <div className="rk-keys">
-          {onCancel && (
-            <Key disabled={waiting} onClick={onCancel}>
-              cancel
+          <div className="rk-keys">
+            {onCancel && <Key onClick={onCancel}>cancel</Key>}
+            <Key you kbd="⌘↵" data-action="submit-prompt" disabled={!prompt.trim()} onClick={() => void handleSubmit()}>
+              {mode === 'generate' ? 'write plan' : 'revise plan'}
             </Key>
-          )}
-          <Key
-            you
-            kbd="⌘↵"
-            data-action="submit-prompt"
-            disabled={waiting || !prompt.trim()}
-            onClick={() => void handleSubmit()}
-          >
-            {mode === 'generate' ? 'write plan' : 'revise plan'}
-          </Key>
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }

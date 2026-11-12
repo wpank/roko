@@ -158,13 +158,16 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
     if (confirmDiscard(dirty)) onClose();
   }, [dirty, onClose]);
 
-  // Esc closes (with discard prompt when dirty).
+  // Esc closes (with discard prompt when dirty). It listens before the rest of the page (capture), so Esc
+  // closes the editor and nothing else, such as the notice band (gap-6c4d24).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') confirmClose();
+      if (e.key !== 'Escape') return;
+      e.stopImmediatePropagation();
+      confirmClose();
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, [confirmClose]);
 
   // ------------------------------------------------------------------

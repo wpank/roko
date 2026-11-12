@@ -55,7 +55,6 @@ const input = (over: Partial<AlertInput> = {}): AlertInput => ({
   run: foldEvents(FAILED_RUN),
   connection: 'connected',
   selectedPlanId: 'broken',
-  validationErrors: 0,
   requestError: null,
   planTitles: { broken: 'Broken on purpose' },
   dismissedKey: null,

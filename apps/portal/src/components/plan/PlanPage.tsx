@@ -32,6 +32,7 @@ import { Fold } from '@/components/kit/Fold';
 import { Key } from '@/components/kit/Key';
 import { Pill } from '@/components/kit/Pill';
 import { Readout } from '@/components/plan/Readout';
+import { Problems } from '@/components/plan/Problems';
 import { MergeRow, ResultSentence, RunChanges, hasWorkToTake } from '@/components/plan/Result';
 import { Sequencer } from '@/components/plan/Sequencer';
 import { TaskDetail } from '@/components/plan/TaskDetail';
@@ -43,6 +44,7 @@ import { SourceEditor } from '@/components/stage/SourceEditor';
 import { ValidationBadge, validationCounts } from '@/components/stage/ValidationBadge';
 import { digestOutput } from '@/lib/checks';
 import { detailStamp, runFinishing, waitReason } from '@/lib/planSet';
+import { planProblems } from '@/lib/planProblems';
 import { failureReason } from '@/lib/reason';
 import { AWAITING_APPROVAL, becauseOf, buildCard, checkWord } from '@/lib/runCard';
 import type { Card, NowLine } from '@/lib/runCard';
@@ -79,6 +81,11 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   const { data: capUsd } = usePlanCap(plan.id);
   const { data: validation } = useValidation(plan.id);
   const problems = validationCounts(validation);
+  // The plan's problems in words, one line each (gap-6c4d24).
+  const problemLines = useMemo(
+    () => planProblems(validation?.diagnostics ?? [], (tasksData?.tasks ?? []).map((t) => t.id)),
+    [validation, tasksData],
+  );
 
   const running = run.plans[plan.id]?.phase === 'running';
   // The plan ended but its run hasn't: revise and run again wait for it, and the clock ticks so they come back.
@@ -93,9 +100,11 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
         rungs: rungs ?? [],
         capUsd: capUsd ?? null,
         nowMs,
+        problems: problemLines,
       }),
-    [plan, tasksData, run, rungs, capUsd, nowMs],
+    [plan, tasksData, run, rungs, capUsd, nowMs, problemLines],
   );
+  const cantRun = card.state === 'cant-run';
   const primary = usePrimaryAction(plan.id, { onError: onRequestError });
 
   // Where the last run's work went: the plan's detail names its last run, read again whenever the plan or its run
@@ -167,7 +176,7 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
       <div className="pt-head">
         <Pill signal={card.pill.signal} word={card.pill.word} />
         <h1>{plan.title || plan.id}</h1>
-        {(problems.errors > 0 || problems.warnings > 0) && (
+        {!cantRun && (problems.errors > 0 || problems.warnings > 0) && (
           <ValidationBadge planId={plan.id} onSelectTask={(id) => onSelectTask(id)} />
         )}
         <span className="rk-card-when">{whenText(run, plan.id)}</span>
@@ -189,7 +198,16 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
         />
       ) : (
         <>
-          <Readout readings={card.readings} />
+          {cantRun ? (
+            <div className="pt-cant-run">
+              <p className="pt-sentence" data-region="run-summary">
+                {sentence(card, run, plan.id, problemLines.filter((p) => p.severity === 'error').length, workspace?.path ?? null)}
+              </p>
+              <Problems problems={problemLines} onShow={(id) => onSelectTask(id)} />
+            </div>
+          ) : (
+            <Readout readings={card.readings} />
+          )}
           {card.steps.length > 0 && (
             <Sequencer steps={card.steps} edges={card.edges} selectedId={selectedTaskId} onSelect={toggleTask} />
           )}
@@ -212,6 +230,8 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
       <div className="pt-line" data-region="status-line">
         {card.state === 'running' && card.now.length > 0 ? (
           <NowLines now={card.now} />
+        ) : cantRun ? (
+          <span className="pt-spacer" />
         ) : (
           <p className="pt-sentence" data-region="run-summary">
             {result && (card.state === 'passed' || lastPassed) ? (
@@ -225,12 +245,27 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
           </p>
         )}
         <div className="rk-keys">
-          {primary.disabled && primary.reason !== null && (
+          {!cantRun && primary.disabled && primary.reason !== null && (
             <span data-reason className="pt-reason">
               {primary.reason}
             </span>
           )}
-          {card.state === 'needs-you' && heldIds.length > 0 ? (
+          {cantRun ? (
+            <>
+              {reviseKey}
+              <Key
+                you
+                data-action="edit-plan"
+                onClick={() => {
+                  if (!confirmDiscard(dirty)) return;
+                  setEditing(true);
+                  setRevising(false);
+                }}
+              >
+                edit plan
+              </Key>
+            </>
+          ) : card.state === 'needs-you' && heldIds.length > 0 ? (
             <Key you data-action="review" onClick={() => onSelectTask(heldIds[0]!)}>
               review
             </Key>
@@ -333,9 +368,9 @@ function sentence(card: Card, run: RunState, planId: string, errors: number, roo
   const passed = card.rows.filter((r) => ['passed', 'already_satisfied', 'passed_with_preexisting_failures'].includes(r.status)).length;
   switch (card.state) {
     case 'ready':
-      return errors > 0
-        ? `This plan can’t run yet: ${count(errors, 'problem')} to fix first.`
-        : 'Each task has a check your project runs. roko works on its own branch, so your files change only when you merge.';
+      return 'Each task has a check your project runs. roko works on its own branch, so your files change only when you merge.';
+    case 'cant-run':
+      return `This plan can’t run yet. Fix ${errors === 1 ? 'the problem' : 'the problems'} below by editing the plan, or ask roko to revise it.`;
     case 'queued': {
       const reason = waitReason(run, planId);
       if (reason?.startsWith('after ')) return `Queued: it starts ${reason}.`;

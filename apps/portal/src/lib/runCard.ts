@@ -7,6 +7,7 @@ import type { WirePlanSummary, WirePlanTask } from '@/api/contracts';
 import type { Signal } from '@/components/kit/Led';
 import type { Tone } from '@/components/kit/DotMatrix';
 import type { GlyphState } from '@/lib/glyphs';
+import type { Problem } from '@/lib/planProblems';
 import { queuePosition } from '@/lib/planSet';
 import type { CheckRun, PlanRun, RunState, TaskRun, TryRun } from '@/lib/runState';
 import { taskKey } from '@/lib/runState';
@@ -20,6 +21,7 @@ import { clock, clockLabel, count, duration, money } from '@/lib/words';
 /** Where a plan stands, in the design system's words. */
 export type CardState =
   | 'ready'
+  | 'cant-run'
   | 'queued'
   | 'running'
   | 'passed'
@@ -42,6 +44,8 @@ export interface Pad {
   tries: Signal[];
   /** The pad's foot: its time, its try, or why it waits. */
   foot: string;
+  /** What keeps the task from running (`no check`), from the plan's validation; null when nothing does. */
+  problem: string | null;
   /** Why a task the run skipped never ran, in a sentence; null when it wasn't skipped for that. */
   waits: string | null;
 }
@@ -108,6 +112,8 @@ export interface CardInput {
   /** The plan's spending cap in USD, or null when it has none or it is unknown. */
   capUsd: number | null;
   nowMs: number;
+  /** The plan's problems in words (lib/planProblems.ts); any error keeps a plan that hasn't run from running. */
+  problems?: readonly Problem[];
 }
 
 // ── Words ──────────────────────────────────────────────────────────────────────
@@ -117,6 +123,7 @@ export const AWAITING_APPROVAL = 'awaiting_approval';
 
 const PILLS: Record<CardState, { signal: Signal; word: string }> = {
   ready: { signal: 'waiting', word: 'ready' },
+  'cant-run': { signal: 'you', word: 'needs you' },
   queued: { signal: 'waiting', word: 'queued' },
   running: { signal: 'live', word: 'running' },
   passed: { signal: 'pass', word: 'passed' },
@@ -243,7 +250,7 @@ function progressTone(state: CardState): Tone {
   if (state === 'running') return 'live';
   if (state === 'passed') return 'pass';
   if (state === 'failed') return 'fail';
-  if (state === 'ready' || state === 'queued') return 'dim';
+  if (state === 'ready' || state === 'cant-run' || state === 'queued') return 'dim';
   return 'on';
 }
 
@@ -259,7 +266,11 @@ export function buildCard(input: CardInput): Card {
   const { rows, waves } = tasks.length > 0 ? buildTaskRows([...tasks], run, plan.id, nowMs) : { rows: [], waves: { waves: [], diagnostics: [] } };
   const liveTask = (id: string) => run.tasks[taskKey(plan.id, id)];
   const heldIds = new Set(rows.filter((r) => liveTask(r.id)?.phase === AWAITING_APPROVAL).map((r) => r.id));
-  const state = stateOf(live, rows, heldIds.size > 0 && live?.phase === 'running', queuePosition(run, plan.id) !== null);
+  const problems = input.problems ?? [];
+  const settled = stateOf(live, rows, heldIds.size > 0 && live?.phase === 'running', queuePosition(run, plan.id) !== null);
+  // A plan that hasn't run, and has an error, can't run: it needs its person first.
+  const state: CardState = settled === 'ready' && problems.some((p) => p.severity === 'error') ? 'cant-run' : settled;
+  const problemOf = (id: string) => problems.find((p) => p.taskId === id && p.severity === 'error')?.short ?? null;
   const order = new Map(tasks.map((t, i) => [t.id, i]));
 
   // ── Pads and steps
@@ -273,7 +284,8 @@ export function buildCard(input: CardInput): Card {
       title: row.title || row.id,
       state: padState,
       tries: tryPips(liveTask(row.id), padState),
-      foot: padFoot(row, liveTask(row.id), padState, held, ran),
+      foot: (!ran && problemOf(row.id)) || padFoot(row, liveTask(row.id), padState, held, ran),
+      problem: ran ? null : problemOf(row.id),
       waits: row.blocked === null ? null : waitsFor(liveTask(row.id)?.blockedBy, order),
     });
   }

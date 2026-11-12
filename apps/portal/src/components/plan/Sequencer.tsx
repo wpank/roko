@@ -105,6 +105,7 @@ function PadKey({ pad, selected, onSelect }: { pad: Pad; selected: boolean; onSe
       data-pad={pad.id}
       data-task-row={pad.id}
       data-state={pad.state}
+      data-problem={pad.problem ?? undefined}
       data-selected={selected ? '' : undefined}
       aria-pressed={selected}
       aria-label={`Task ${pad.n.replace(/^0/, '')}: ${pad.title}, ${pad.foot}`}

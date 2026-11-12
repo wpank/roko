@@ -2,7 +2,7 @@
 id = "bug-0a5417"
 kind = "bug"
 title = "A spec table row whose prose quotes a second command gets no command of its own, so the step that runs its command keeps it no more than its acceptance text does: phase 1's P1.16 (tools/spec.sh 1 plugin, which T2 runs, and tools/install.sh --dest in its text) read as missing and paid for a regeneration"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "daf36c3ab"
+last_verified_rev = "d2c5e1f21"
 source = "round-v8 hermes-pilot-v8, phase 1 re-ask op 541860eb (Undertow 62155c4, roko ba5866664), tmp/hermes-roko-v8/pilot/evidence/p1c-*"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::quoted_command", "crates/roko-cli/src/plan_generate/source_checks.rs::attach_runs"]
@@ -20,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-3cdc58", "bug-6ebc03"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_rows_command_cell_is_its_command' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_rows_command_cell_is_its_command"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T17:29:46Z"
+commit = "d2c5e1f21"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "S"
+forced = false
+evidence = "quoted_command gives a table row the command of its command cell, a cell that is one code span quoting a command, when no other cell is one, whatever its prose quotes; otherwise a check still needs exactly one command span. Red first (ea134deac on main 0777b00a3): a_rows_command_cell_is_its_command found P1.16's run None. Green at d2c5e1f21 on the trial 08b5b30f0 (main e2dfc4e6c + this branch): P1.16's run is `tools/spec.sh 1 plugin`, the re-ask's plan (op 541860eb, Undertow 62155c4) keeps every check, and a row with two command cells or two commands in its prose still has none; all 24 source_checks tests pass, roko-cli lib 4140 passed 0 failed, nightly fmt --check clean, cargo clippy --workspace --no-deps -D warnings clean."
 +++
 
 ## Problem

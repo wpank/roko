@@ -49,7 +49,7 @@ pub mod views;
 pub mod widgets;
 pub mod ws_client;
 
-pub use app::App;
+pub use app::{App, TuiExit};
 pub use approval_ipc::{ApprovalChannel, ApprovalRequest};
 pub use atmosphere::Atmosphere;
 pub use dashboard::{DashboardData, DashboardScaffold, DashboardSummary};

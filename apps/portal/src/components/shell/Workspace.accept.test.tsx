@@ -109,17 +109,17 @@ describe('Workspace', () => {
     expect(again.disabled).toBe(false);
   });
 
-  it('keeps the rail clock of a running plan moving between events', () => {
+  it('keeps the plan list’s clock of a running plan moving between events', () => {
     vi.useFakeTimers();
     vi.setSystemTime(T0);
     stubFetch([]);
     setStore(foldEvents(HELLO_RUNNING, T0 - 5_000, 0));
     renderWithClient(<Workspace />, { seed: SEED });
-    const time = () => textOf(rail()!.querySelector('[data-plan-row="hello"] [data-time]'));
-    expect(time()).toBe('5s');
+    const line = () => textOf(rail()!.querySelector('[data-plan-row="hello"] .pt-plan-line'));
+    expect(line()).toBe('running · 0 of 2 · 0:05');
     act(() => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(time()).toBe('8s');
+    expect(line()).toBe('running · 0 of 2 · 0:08');
   });
 });

@@ -1,0 +1,146 @@
+/*
+ * roko's design tokens, shared with roko's pages in Hermes (hermes-plugin-roko) and its guides: one look for
+ * every surface. They come from round v8's design kit; change the kit and copy it here, not this copy alone.
+ */
+/*
+ * roko's design tokens (round v8). The source of truth for every surface: the plugin's pages in Hermes, the portal,
+ * the guides, and (through its role table) the terminal. Read roko-design-system.md for what each one is for.
+ *
+ * Three materials:
+ *   the panel  aluminium by day, graphite by night: everything that stays still (words, names, labels, keys);
+ *   the glass  black in both themes: every reading that changes (time, spend, counts), in dot-matrix;
+ *   signals    four colours, one meaning each: live (roko is working), pass, you (your turn), fail.
+ *
+ * Night follows the system unless the page sets data-theme. Contrast is checked by
+ * tmp/hermes-roko-v8/plugin-wow-v8/tools/contrast.py: every text pair meets 4.5:1 or better.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* The panel: aluminium. */
+  --rk-body: #e3e4e1;      /* the page */
+  --rk-module: #f1f1ee;    /* a module on the page: a card, a panel */
+  --rk-module-2: #e9eae6;  /* a sunk area inside a module: a table head, a code line, folded detail */
+  --rk-ink: #111213;       /* words that matter: titles, values on the panel */
+  --rk-ink-2: #45484a;     /* the rest of the words */
+  --rk-ink-3: #606366;     /* labels, hints, times, anything waiting */
+  --rk-line: #c9cac6;      /* hairlines */
+  --rk-line-2: #a5a7a3;    /* edges you can see: pads, inputs, a waiting pad's dashes */
+  --rk-key: #f8f8f5;       /* a key's cap */
+  --rk-key-edge: #9a9c98;  /* a key's side: its travel */
+  --rk-key-ink: #111213;
+  --rk-shadow: rgba(17, 18, 19, 0.42);
+  --rk-sheen: rgba(255, 255, 255, 0.5); /* the top edge of a module catching the light */
+
+  /* Signals on the panel. -text variants are for orange used as words; the plain ones are fills and marks. */
+  --rk-live: #2252e8;      /* roko is working */
+  --rk-pass: #0a7038;      /* passed its checks */
+  --rk-you: #ff5f1f;       /* your turn: the one key to press, a decision waiting */
+  --rk-you-edge: #b8410f;
+  --rk-you-ink: #1a0b04;   /* words on an orange key */
+  --rk-you-text: #b23a08;  /* orange as words on the panel */
+  --rk-fail: #bb2622;      /* failed */
+
+  /* The glass: the same in both themes. */
+  --rk-glass: #0b0c0d;
+  --rk-glass-2: #151618;   /* a cell picked or hovered on the glass */
+  --rk-glass-line: rgba(255, 255, 255, 0.06); /* the rule between cells */
+  --rk-px-on: #f2f0e9;     /* a lit dot, and words on the glass */
+  --rk-px-dim: #a29f97;    /* notes under a reading */
+  --rk-px-faint: #86837c;  /* a cell's label */
+  --rk-px-off: #1d1e1f;    /* an unlit dot: px-on at 8 % */
+  --rk-px-live: #7aa6ff;
+  --rk-px-pass: #4be092;
+  --rk-px-you: #ff7a3d;
+  --rk-px-fail: #ff5c52;
+
+  /* Type. Archivo and Martian Mono where a surface can load them (Google Fonts, or self-hosted woff2). */
+  --rk-sans: "Archivo", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --rk-mono: "Martian Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --rk-term: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace; /* terminal captures */
+
+  /* Space: a 4 px grid. */
+  --rk-1: 4px;
+  --rk-2: 8px;
+  --rk-3: 12px;
+  --rk-4: 16px;
+  --rk-5: 24px;
+  --rk-6: 32px;
+  --rk-7: 48px;
+  --rk-8: 64px;
+
+  /* Corners. */
+  --rk-r-1: 2px;  /* pills, tags, labels */
+  --rk-r-2: 3px;  /* keys, a small glass */
+  --rk-r-3: 4px;  /* glass, modules */
+  --rk-r-4: 8px;  /* the device: a page's outer frame */
+
+  /* Motion. Things move only when something changed. */
+  --rk-t-blip: 80ms;      /* a key going down */
+  --rk-t-quick: 140ms;    /* hover, a switch, a digit rolling in */
+  --rk-t-gesture: 240ms;  /* a fold opening, a panel moving */
+  --rk-t-passage: 600ms;  /* a section arriving */
+  --rk-t-pulse: 1.2s;     /* a live LED's breath */
+  --rk-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --rk-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The panel: graphite. Glass and its phosphors don't change. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --rk-body: #141516;
+    --rk-module: #1c1d1f;
+    --rk-module-2: #232427;
+    --rk-ink: #ecebe6;
+    --rk-ink-2: #a9aba7;
+    --rk-ink-3: #8a8c8b;
+    --rk-line: #2c2e31;
+    --rk-line-2: #3e4043;
+    --rk-key: #2a2b2e;
+    --rk-key-edge: #050606;
+    --rk-key-ink: #ecebe6;
+    --rk-shadow: rgba(0, 0, 0, 0.75);
+    --rk-sheen: rgba(255, 255, 255, 0.04);
+    --rk-live: #6b95ff;
+    --rk-pass: #3fcf7f;
+    --rk-you: #ff6a2b;
+    --rk-you-edge: #a63a0c;
+    --rk-you-ink: #1a0b04;
+    --rk-you-text: #ff7f45;
+    --rk-fail: #ff5a50;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --rk-body: #141516;
+  --rk-module: #1c1d1f;
+  --rk-module-2: #232427;
+  --rk-ink: #ecebe6;
+  --rk-ink-2: #a9aba7;
+  --rk-ink-3: #8a8c8b;
+  --rk-line: #2c2e31;
+  --rk-line-2: #3e4043;
+  --rk-key: #2a2b2e;
+  --rk-key-edge: #050606;
+  --rk-key-ink: #ecebe6;
+  --rk-shadow: rgba(0, 0, 0, 0.75);
+  --rk-sheen: rgba(255, 255, 255, 0.04);
+  --rk-live: #6b95ff;
+  --rk-pass: #3fcf7f;
+  --rk-you: #ff6a2b;
+  --rk-you-edge: #a63a0c;
+  --rk-you-ink: #1a0b04;
+  --rk-you-text: #ff7f45;
+  --rk-fail: #ff5a50;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --rk-t-blip: 0ms;
+    --rk-t-quick: 0ms;
+    --rk-t-gesture: 0ms;
+    --rk-t-passage: 0ms;
+  }
+}

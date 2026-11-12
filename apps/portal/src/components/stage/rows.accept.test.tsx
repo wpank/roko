@@ -8,10 +8,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanSummary, WirePlanTask } from '@/api/contracts';
-import { PlanRow } from '@/components/rail/PlanRow';
 import { TaskList } from '@/components/stage/TaskList';
 import { WaveStrip } from '@/components/stage/WaveStrip';
-import { buildPlanRows } from '@/lib/planRows';
 import { initialRunState } from '@/lib/runState';
 import { buildTaskRows } from '@/lib/taskRows';
 import { foldEvents, textOf } from '@/test/dom';
@@ -81,35 +79,5 @@ describe('task rows', () => {
     const label = [...document.querySelectorAll('[data-wave] span')].find((e) => textOf(e).startsWith('W1'));
     expect(label?.className).toContain('rd-meta');
     expect(label?.className).not.toMatch(/text-\[(9|10|11)px\]/);
-  });
-});
-
-describe('rail rows', () => {
-  const plan = (extra: Partial<WirePlanSummary>): WirePlanSummary => ({
-    id: 'p',
-    title: 'Plan',
-    task_count: 2,
-    tasks_done: 0,
-    tasks_failed: 0,
-    completed: false,
-    status: 'pending',
-    old_format: false,
-    ...extra,
-  });
-  const railRow = (p: WirePlanSummary) => buildPlanRows([p], initialRunState(), { filter: '', nowMs: 0 }).groups[0]!.rows[0]!;
-
-  it('leave the time empty when it is unknown — no placeholder dot', () => {
-    render(<PlanRow row={railRow(plan({}))} selected={false} onSelect={() => {}} />);
-    expect(textOf(document.querySelector('[data-time]'))).toBe('');
-  });
-
-  it('use the same formatter as the task rows for estimates', () => {
-    render(<PlanRow row={railRow(plan({ estimated_minutes: 65 }))} selected={false} onSelect={() => {}} />);
-    expect(textOf(document.querySelector('[data-time]'))).toBe('~1h05m');
-  });
-
-  it('fit the name in 20 characters', () => {
-    render(<PlanRow row={railRow(plan({ title: 'Backend plan execution and run control' }))} selected={false} onSelect={() => {}} />);
-    expect(textOf(document.querySelector('[data-name]')).length).toBeLessThanOrEqual(20);
   });
 });

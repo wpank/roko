@@ -26,7 +26,7 @@ const INPUT: AlertInput = {
 };
 
 const band = () => document.querySelector('[data-region="alert"]');
-const glyph = () => textOf(band()?.querySelector('.rd-alert__glyph') ?? null);
+const light = () => band()?.querySelector('.rk-led')?.getAttribute('data-state') ?? null;
 
 describe('Notice', () => {
   it('renders the unsupported notice with its glyph and text', () => {
@@ -58,7 +58,7 @@ describe('info alerts', () => {
     expect(pickAlert({ ...INPUT, requestError: 'plan hello is already running' })?.severity).toBe('error');
   });
 
-  it('draws the info alert with the notice glyph', () => {
+  it('draws the info alert with a plain grey light', () => {
     render(
       <AlertBand
         alert={{ key: 'k', severity: 'info', text: 'This roko serve does not support running all plans yet.', actions: [] }}
@@ -67,13 +67,14 @@ describe('info alerts', () => {
       />,
     );
     expect(band()?.getAttribute('data-severity')).toBe('info');
-    expect(glyph()).toBe('ⓘ');
+    expect(light()).toBe('still');
   });
 
-  it('never draws a severity glyph that looks like the close button', () => {
-    for (const severity of ['error', 'warning', 'info'] as const) {
+  it('marks each severity with a light, never a mark that looks like the close key', () => {
+    for (const [severity, signal] of [['error', 'fail'], ['warning', 'you'], ['info', 'still']] as const) {
       render(<AlertBand alert={{ key: 'k', severity, text: 't', actions: [] }} onAction={() => {}} onDismiss={() => {}} />);
-      expect(['✗', '×', 'x', 'X']).not.toContain(glyph());
+      expect(light()).toBe(signal);
+      expect(textOf(band()!.firstElementChild)).toBe('');
       cleanup();
     }
   });

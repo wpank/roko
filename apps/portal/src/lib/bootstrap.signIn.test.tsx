@@ -11,7 +11,7 @@ import { ApiError } from '@/api/client';
 import type { WireDashboardEvent, WirePlanSummary, WireStateHubSnapshotResponse } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { Workspace } from '@/components/shell/Workspace';
-import { SIGN_IN_HINT, startLiveState, type ConnectionStatus } from '@/lib/bootstrap';
+import { startLiveState, type ConnectionStatus } from '@/lib/bootstrap';
 import { initialRunState } from '@/lib/runState';
 import { useDashboardStore } from '@/stores/dashboard';
 import { foldEvents, renderWithClient, setStore, stubFetch, textOf } from '@/test/dom';
@@ -106,9 +106,10 @@ afterEach(() => {
 });
 
 const alert = () => document.querySelector('[data-region="alert"]');
-const alertText = () => textOf(alert()?.querySelector('.rd-alert__text') ?? null);
-const actions = () => [...(alert()?.querySelectorAll('.rd-alert__action') ?? [])].map((b) => textOf(b));
-const dot = () => document.querySelector('[data-slot="connection"]') as HTMLElement;
+const alertText = () => textOf(alert()?.querySelector('.pt-notice-text') ?? null);
+const actions = () => [...(alert()?.querySelectorAll('[data-alert-action]') ?? [])].map((b) => textOf(b));
+const chip = () => document.querySelector('[data-region="header"] .rk-chip') as HTMLElement;
+const signIn = () => document.querySelector('[data-region="sign-in"]');
 
 describe('after roko serve restarts', () => {
   it('asks for the new sign-in link once the stream is refused and the probe answers 401', async () => {
@@ -120,17 +121,20 @@ describe('after roko serve restarts', () => {
 
     await stream('disconnected');
     expect(probe).toHaveBeenCalledTimes(1);
-    expect(alertText()).toBe(SIGN_IN_HINT);
-    expect(actions()).toEqual([]);
-    expect(dot().getAttribute('data-connection')).toBe('unauthorized');
-    expect(dot().title).toBe('Not signed in');
+    // The sign-in page takes the whole screen; nothing else pretends to work.
+    expect(textOf(signIn())).toContain('Open roko with its sign-in link');
+    expect(alert()).toBeNull();
+    expect(document.querySelector('[data-region="rail"]')).toBeNull();
+    expect(chip().dataset.signal).toBe('off');
+    expect(textOf(chip())).toBe('signed out');
 
-    // A retry keeps asking, rather than flickering to another alert.
+    // A retry keeps asking, rather than flickering to another page.
     await stream('connecting');
-    expect(alertText()).toBe(SIGN_IN_HINT);
+    expect(signIn()).not.toBeNull();
 
     // The new link was opened in another tab: the next stream opens.
     await stream('connected');
+    expect(signIn()).toBeNull();
     expect(alertText()).toBe('Hello world: T01 failed');
   });
 
@@ -147,11 +151,10 @@ describe('after roko serve restarts', () => {
         throw new ApiError(401, 'Unauthorized', null);
       },
     });
-    expect(alertText()).toBe(SIGN_IN_HINT);
-    // The rail and the stage say so too, rather than "no plans" or a lost server.
-    await waitFor(() => expect(textOf(document.querySelector('[data-region="rail"]'))).toContain(SIGN_IN_HINT));
-    expect(textOf(document.querySelector('[data-region="stage"]'))).toContain(SIGN_IN_HINT);
-    expect(textOf(document.body)).not.toMatch(/Lost the server|No plans in/);
+    // The sign-in page says how to get in, rather than "no plans" or a lost server.
+    await waitFor(() => expect(signIn()).not.toBeNull());
+    expect(textOf(signIn())).toContain('#token=…');
+    expect(textOf(document.body)).not.toMatch(/Lost the server|No plans/);
   });
 
   it('still says it lost the server while the server is down', async () => {
@@ -160,6 +163,6 @@ describe('after roko serve restarts', () => {
     const stream = await live({ probe: async () => 0 });
     await stream('disconnected');
     expect(alertText()).toBe('Lost the server; reconnecting.');
-    expect(actions()).toEqual(['Reconnect']);
+    expect(actions()).toEqual(['reconnect']);
   });
 });

@@ -23,12 +23,11 @@ import { useGeneratePlan, useRevisePlan, planExists, fetchOperation } from '@/ap
 import { ApiError } from '@/api/client';
 import type { WirePlanDiff } from '@/api/contracts';
 import { waitForOperation } from '@/lib/operation';
-import { compactDuration } from '@/lib/formatters';
-import { Button } from '@/components/atoms/Button';
+import { Key } from '@/components/kit/Key';
+import { Led } from '@/components/kit/Led';
 import { Notice } from '@/components/primitives/Notice';
-import { Spinner } from '@/components/atoms/Spinner';
 import { isMissingRoute, unsupportedMessage, describeRequestError } from '@/lib/apiErrors';
-import { cn } from '@/lib/cn';
+import { clock } from '@/lib/words';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +36,7 @@ import { cn } from '@/lib/cn';
 export interface PromptPanelProps {
   mode: 'generate' | 'revise';
   planId?: string;
+  /** The project's name, or (revising) the plan's title, said in the question. */
   workspace: string;
   firstRun: boolean;
   /** `diff` is a revision's plan diff, when the server sent one (3229). */
@@ -48,11 +48,11 @@ export interface PromptPanelProps {
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Requests that suit most projects; a click puts one in the box to edit. */
 const GENERATE_EXAMPLES = [
-  'a rust app that prints hello world',
-  'a CLI tool that watches a directory and reports changes',
-  'a REST API with authentication and a SQLite database',
-  'a web scraper that extracts structured data from a URL',
+  'Add a --version flag',
+  'Write tests for the main module',
+  'Document how to install and run it',
 ];
 
 // ---------------------------------------------------------------------------
@@ -196,35 +196,28 @@ export function PromptPanel({
     textareaRef.current?.focus();
   }, []);
 
+  const question =
+    mode === 'generate' ? `What should roko do in ${workspace}?` : `What should change in ${workspace}?`;
   const placeholder =
-    mode === 'generate' ? 'Describe what you want to build' : 'What should change?';
-
-  const waitingLabel =
-    mode === 'generate' ? 'Generating plan…' : 'Revising plan…';
+    mode === 'generate' ? 'Describe a change, as you would to a colleague' : 'Say what to change, in plain words';
+  const hint =
+    mode === 'revise'
+      ? 'roko rewrites the plan’s tasks. Nothing runs until you say so.'
+      : firstRun
+        ? 'Nothing runs until you’ve seen the plan.'
+        : 'roko writes a plan first: small tasks, each with a check. Nothing runs until you say so.';
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* First-run heading */}
-      {firstRun && mode === 'generate' && (
-        <p className="text-sm font-mono text-text-muted">
-          No plans in <span className="text-text-strong">{workspace}</span> yet.{' '}
-          Describe what you want to build.
-        </p>
-      )}
+    <section className="rk-module pt-ask">
+      <label className="rk-label" htmlFor={`prompt-${mode}`}>
+        {question}
+      </label>
 
-      {/* Textarea */}
       <textarea
+        id={`prompt-${mode}`}
         ref={textareaRef}
         data-prompt
         rows={4}
-        className={cn(
-          'w-full resize-none rounded',
-          'border border-border-default bg-bg-highlight',
-          'px-3 py-2 font-mono text-sm text-text-strong',
-          'placeholder:text-text-ghost',
-          'focus:outline-none focus:border-border-hover',
-          'disabled:cursor-not-allowed disabled:opacity-50',
-        )}
         placeholder={placeholder}
         value={prompt}
         disabled={waiting}
@@ -236,73 +229,51 @@ export function PromptPanel({
         onKeyDown={handleKeyDown}
       />
 
-      {/* Example chips — generate mode only */}
       {mode === 'generate' && !waiting && (
-        <div className="flex flex-wrap gap-2">
+        <div className="pt-examples">
           {GENERATE_EXAMPLES.map((example) => (
-            <button
-              key={example}
-              type="button"
-              onClick={() => handleChipClick(example)}
-              className={cn(
-                'rounded font-mono text-xs px-2 py-1',
-                'border border-border-default text-text-muted',
-                'hover:border-border-hover hover:text-text-strong',
-                'transition-[border-color,color] duration-[80ms]',
-              )}
-            >
+            <button key={example} type="button" className="pt-example" onClick={() => handleChipClick(example)}>
               {example}
             </button>
           ))}
         </div>
       )}
 
-      {/* Status row: waiting indicator */}
-      {waiting && (
-        <div className="flex items-center gap-2 text-sm font-mono text-text-muted">
-          <Spinner size="sm" />
-          <span>{waitingLabel}</span>
-          {elapsedMs !== null && elapsedMs > 0 && (
-            <span className="tabular-nums">{compactDuration(elapsedMs)}</span>
-          )}
-        </div>
-      )}
-
-      {/* Missing-route notice */}
       {noticeError && (
         <Notice kind="unsupported" onClose={() => setNoticeError(null)}>{noticeError}</Notice>
       )}
 
-      {/* Inline error (409, outdated server, network, etc.) */}
       {error && (
         <Notice kind="error" onClose={() => setError(null)}><span data-error>{error}</span></Notice>
       )}
 
-      {/* Action row */}
-      <div className="flex items-center gap-2">
-        <Button
-          data-action="submit-prompt"
-          variant="primary"
-          disabled={waiting || !prompt.trim()}
-          onClick={() => void handleSubmit()}
-        >
-          {mode === 'generate' ? 'Generate plan' : 'Revise plan'}
-        </Button>
-
-        {onCancel && (
-          <Button
-            variant="ghost"
-            disabled={waiting}
-            onClick={onCancel}
-          >
-            Cancel
-          </Button>
+      <div className="pt-line">
+        {waiting ? (
+          <p className="pt-waiting" data-waiting>
+            <Led signal="live" />
+            {mode === 'generate' ? 'Writing the plan' : 'Revising the plan'}
+            {elapsedMs !== null && elapsedMs > 0 && <span className="rk-data">{clock(elapsedMs)}</span>}
+          </p>
+        ) : (
+          <p className="pt-hint">{hint}</p>
         )}
-
-        <span className="ml-auto text-xs font-mono text-text-ghost select-none hidden sm:inline">
-          ⌘↵ to submit
-        </span>
+        <div className="rk-keys">
+          {onCancel && (
+            <Key disabled={waiting} onClick={onCancel}>
+              cancel
+            </Key>
+          )}
+          <Key
+            you
+            kbd="⌘↵"
+            data-action="submit-prompt"
+            disabled={waiting || !prompt.trim()}
+            onClick={() => void handleSubmit()}
+          >
+            {mode === 'generate' ? 'write plan' : 'revise plan'}
+          </Key>
+        </div>
       </div>
-    </div>
+    </section>
   );
 }

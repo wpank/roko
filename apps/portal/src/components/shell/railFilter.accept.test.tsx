@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 /**
- * Acceptance: the rail filter (`/`) is a view (design §3). It narrows the rows
- * the rail shows and nothing else: a group ▶ and Run all run, and confirm,
- * every plan they cover; the header reports and cancels a run the filter
- * hides; and the selection stays on a plan the filter hides (§9).
+ * Acceptance: the plan list's filter (`/`, shown past eight plans) is a view (design §3). It narrows the rows the
+ * list shows and nothing else: a group's run and run all run, and confirm, every plan they cover; the status chip
+ * still reports, and opens, a run the filter hides; and the selection stays on a plan the filter hides (§9).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
@@ -50,6 +49,8 @@ const PLANS = [
   plan('pp-01', 'Backend plans', 'portal-programme'),
   plan('pp-02', 'Frontend plans', 'portal-programme'),
   plan('pp-03', 'Acceptance', 'portal-programme'),
+  // Enough plans that the list offers its filter.
+  ...['one', 'two', 'three', 'four', 'five'].map((n) => plan(`extra-${n}`, `Extra ${n}`)),
 ];
 
 const tasksOf = (id: string): WirePlanTasks => ({
@@ -128,30 +129,25 @@ describe('the rail filter', () => {
     renderWithClient(<Workspace />, { seed: SEED });
     filterTo('front');
     expect(shownRows()).toEqual(['pp-02']);
-    expect(textOf(document.querySelector('[data-region="rail"]'))).toContain('PLANS 4');
+    expect(textOf(document.querySelector('[data-region="rail"]'))).toContain('plans · 9');
 
     fireEvent.click(document.querySelector('[data-action="run-all"]')!);
-    expect(window.confirm).toHaveBeenCalledWith('Run all 4 plans in dependency order?');
+    expect(window.confirm).toHaveBeenCalledWith('Run all 9 plans in dependency order?');
     await waitFor(() => expect(posted(fetchMock, '/api/plans/execute')).toEqual([{}]));
   });
 
-  it('the filter does not change the header’s running summary or its ■', async () => {
-    const fetchMock = serve({ method: 'POST', path: '/api/plans/hello/cancel', body: {} });
+  it('the filter does not change the status chip, which still opens the run it hides', () => {
+    serve();
     window.history.replaceState(null, '', '/?plan=pp-02');
     setStore(foldEvents(running('hello', 'Hello world')));
     renderWithClient(<Workspace />, { seed: SEED });
     filterTo('front');
     expect(shownRows()).toEqual(['pp-02']);
 
-    const run = document.querySelector('[data-slot="run"]');
-    expect(textOf(run)).toContain('Hello world 0/2');
+    const chip = document.querySelector('[data-region="header"] [data-slot="run"]') as HTMLButtonElement;
+    expect(textOf(chip)).toBe('1 running');
     expect(document.querySelector('[data-region="run-band"]')).not.toBeNull();
-    fireEvent.click(run!.querySelector('[data-action="cancel-run"]')!);
-    expect(window.confirm).toHaveBeenCalledWith('Stop the running plan "hello"?');
-    await waitFor(() => expect(posted(fetchMock, '/api/plans/hello/cancel')).toHaveLength(1));
-
-    // The running part still steps to the running plan the filter hides.
-    fireEvent.click(run!.querySelector('[data-action="next-running"]')!);
+    fireEvent.click(chip);
     expect(selectedPlan()).toBe('hello');
   });
 

@@ -1,0 +1,12 @@
+---
+source: crates/roko-cli/src/status_view.rs
+expression: text
+---
+◆ roko  status greeting-app
+  3 plans · $0.84 today · $0.84 this month
+
+  ✗ broken                        failed 2 min ago  0/1 task    $0.30
+  ✓ greeting                      done 3 min ago    3/3 tasks   $0.44  not merged
+  ✓ “Give greeting.py a farewel…  done 4 min ago    1/1 task    $0.10
+
+  Next  roko diagnose broken

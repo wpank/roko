@@ -372,18 +372,19 @@ fn status_works_offline_with_filesystem() {
     );
 }
 
-/// `roko status` in `workdir`, as JSON with `json`: its stdout.
-fn roko_status(workdir: &std::path::Path, json: bool) -> String {
+/// `roko status` in `workdir`, as JSON with `json`, with roko's internals
+/// with `details`: its stdout.
+fn roko_status(workdir: &std::path::Path, json: bool, details: bool) -> String {
     let mut command = Command::cargo_bin("roko").expect("roko binary");
     command.isolated().current_dir(workdir);
     if json {
         command.arg("--json");
     }
-    let assert = command
-        .args(["status", "--workdir"])
-        .arg(workdir)
-        .assert()
-        .success();
+    command.arg("status");
+    if details {
+        command.arg("--details");
+    }
+    let assert = command.arg("--workdir").arg(workdir).assert().success();
     String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
 }
 
@@ -422,7 +423,7 @@ fn status_json_reports_unpriced_call_count() {
         row.to_string() + "\n"
     };
     let status_json = || -> serde_json::Value {
-        let stdout = roko_status(tmp.path(), true);
+        let stdout = roko_status(tmp.path(), true, false);
         serde_json::from_str(stdout.trim())
             .unwrap_or_else(|err| panic!("status --json is not JSON: {err}\n{stdout}"))
     };
@@ -432,9 +433,10 @@ fn status_json_reports_unpriced_call_count() {
     let parsed = status_json();
     assert_eq!(parsed["unpriced_calls"], 0, "{parsed}");
     assert_eq!(parsed["total_cost_usd"], 0.25, "{parsed}");
-    let text = roko_status(tmp.path(), false);
+    let text = roko_status(tmp.path(), false, true);
     assert!(text.contains("  Total:    $0.2500\n"), "{text}");
     assert!(!text.contains("Unpriced"), "{text}");
+    assert!(!roko_status(tmp.path(), false, false).contains("no known price"));
 
     // A call roko could not price, and an older row with $0 for its tokens.
     let unpriced = [row(0.0, Some(false)), row(0.0, None)].concat();
@@ -442,9 +444,15 @@ fn status_json_reports_unpriced_call_count() {
     let parsed = status_json();
     assert_eq!(parsed["unpriced_calls"], 2, "{parsed}");
     assert_eq!(parsed["total_cost_usd"], 0.25, "{parsed}");
-    let text = roko_status(tmp.path(), false);
+    let text = roko_status(tmp.path(), false, true);
     let line = "  Unpriced: 2 calls, whose cost is unknown and not in the total\n";
     assert!(text.contains(line), "{text}");
+    // The default status says so too (gap-7a3f11).
+    let text = roko_status(tmp.path(), false, false);
+    assert!(
+        text.contains("2 calls have no known price; the spend leaves them out."),
+        "{text}"
+    );
 }
 
 #[test]

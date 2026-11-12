@@ -2,7 +2,7 @@
 id = "gap-708931"
 kind = "gap"
 title = "A spec that names its deletions in words (\"the twelve retired files deleted\") or its files in shorthand (PluginEditor.h/.cpp) gets no repair and no warning: bug-aa93e9 reads only full paths in sentences of change, so phase 1's first spec passed plan validate --strict with every deletion missing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "daf36c3ab"
+last_verified_rev = "5bdac29ab"
 source = "round v8: the lead's and undertow-spec-v8's narrower diagnosis of bug-aa93e9 (Undertow 19943c9's phase 1 spec)"
 discovered_from = "agent:team-lead (round v8)"
 anchors = ["crates/roko-cli/src/plan_generate/named_files.rs::named_files", "crates/roko-cli/src/plan_generate/named_files.rs::unlisted_named_files_line", "crates/roko-cli/src/plan_validate.rs::validate_plans_dir_impl"]
@@ -23,6 +23,17 @@ command = "grep -rqw 'fn a_spec_that_deletes_files_in_words_is_warned_about' cra
 
 [[verify]]
 command = "grep -rqw 'fn a_shorthand_pair_stays_in_one_task' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_shorthand_pair_stays_in_one_task"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T18:10:14Z"
+commit = "c1f506b8f"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "M"
+forced = false
+evidence = "A writing task that owns one file of a shorthand pair (X.h/.cpp, by path or bare name) gains the other at generation, beside its file or the workspace's one of that name, and plan validate names a missing partner in PLAN_062; PLAN_063 warns when the sources say files are deleted in words ('retired ... files' within a clause, or a Delete/Remove-led sentence naming source files only bare) and name no deletion by path. Red first (919a202b9 unwired): no PLAN_063 (0, want 1). Green at c1f506b8f on the trial 99ebe01bd (main 395d58380 + bug-1bbe2b + this branch): a_spec_that_deletes_files_in_words_is_warned_about (the 19943c9 spec: PLAN_063 quotes 'and the retired files removed' and 5 more, PLAN_062 names plugin/PluginEditor.h; e7131fb: no PLAN_063) and a_shorthand_pair_stays_in_one_task pass; roko-cli lib 4145 passed 0 failed, plan_validate 27/27, plan_validation 40/40, clippy and fmt clean. $0 scans with the built binary: of Undertow v1's 16 specs and phase 1's three, PLAN_063 fires only on 19943c9; of 289 roko work items, on 2, both real (gap-708931 itself, gap-c332f6's 'Delete `holdout.rs` ...'), after two tightenings removed the 4 false hits of runtime prose."
 +++
 
 ## Problem

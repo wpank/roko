@@ -469,11 +469,31 @@ fn cmd_learn_probes(workdir: &Path, cmd: ProbesCmd, json: bool) -> Result<i32> {
     }
 }
 
+/// Whether `cmd` only reads the workspace, so it may run beside the roko serve
+/// that holds it (bug-808700). A rollback, `probes clear`, `loops canary`,
+/// `fault` and `clear`, and `experiments create` and `conclude` write.
+fn learn_only_reads(cmd: &LearnCmd) -> bool {
+    !matches!(
+        cmd,
+        LearnCmd::Rollback { .. }
+            | LearnCmd::Loops { cmd: Some(_), .. }
+            | LearnCmd::Probes {
+                cmd: Some(ProbesCmd::Clear { .. }),
+                ..
+            }
+            | LearnCmd::Experiments {
+                cmd: Some(ExperimentsSubCmd::Create { .. } | ExperimentsSubCmd::Conclude { .. }),
+                ..
+            }
+    )
+}
+
 pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
     let json = cli.json;
 
-    // All learn subcommands are read-only inspections of `.roko/learn/`
-    // files, so acquire a shared lock that can coexist with other readers.
+    // The views read `.roko/learn/` under a shared lock that coexists with
+    // other readers, and beside the roko serve that holds the workspace (see
+    // below).
     let wd_for_lock = match &cmd {
         LearnCmd::All { workdir }
         | LearnCmd::Route { workdir }
@@ -520,8 +540,28 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         }
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
-    let _lock =
-        roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd_for_lock.join(".roko"))?;
+    // A view runs beside the roko serve that holds the workspace, as doctor
+    // does (bug-808700): Hermes keeps serve up. A subcommand that writes keeps
+    // the shared lock, and is refused beside serve.
+    let _lock = if learn_only_reads(&cmd) {
+        match roko_cli::workspace_lock::acquire_read_lock(&wd_for_lock)? {
+            roko_cli::workspace_lock::ReadLock::Shared(lock) => Some(lock),
+            roko_cli::workspace_lock::ReadLock::BesideServe(serve) => {
+                if !json {
+                    eprintln!(
+                        "note: roko serve (PID {}, {}) holds this workspace, so roko learn read it \
+                         without the workspace lock",
+                        serve.pid, serve.url
+                    );
+                }
+                None
+            }
+        }
+    } else {
+        Some(roko_cli::workspace_lock::acquire_workspace_lock_shared(
+            &wd_for_lock.join(".roko"),
+        )?)
+    };
 
     match cmd {
         LearnCmd::All { workdir } => {
@@ -3717,6 +3757,40 @@ mod tests {
     }
 
     /// S03 T15: `roko learn loops --census --json` parses.
+    /// bug-808700: the learn views read beside the roko serve that holds the
+    /// workspace; the subcommands that write keep the lock.
+    #[test]
+    fn learn_writers_keep_the_workspace_lock() {
+        use clap::Parser as _;
+
+        let reads = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).expect("parse");
+            let Some(Command::Learn { cmd }) = cli.command else {
+                panic!("a learn command: {args:?}");
+            };
+            learn_only_reads(&cmd)
+        };
+        for args in [
+            &["roko", "learn", "all"][..],
+            &["roko", "learn", "loops"],
+            &["roko", "learn", "probes"],
+            &["roko", "learn", "probes", "list"],
+            &["roko", "learn", "commits"],
+            &["roko", "learn", "self-model", "fit", "--offline"],
+            &["roko", "learn", "experiments", "list"],
+        ] {
+            assert!(reads(args), "{args:?} only reads");
+        }
+        for args in [
+            &["roko", "learn", "probes", "clear", "--all"][..],
+            &["roko", "learn", "loops", "clear", "--reason", "fixed"],
+            &["roko", "learn", "rollback", "knowledge", "--to", "1"],
+            &["roko", "learn", "experiments", "conclude", "exp-1"],
+        ] {
+            assert!(!reads(args), "{args:?} writes");
+        }
+    }
+
     #[test]
     fn learn_loops_parses() {
         use clap::Parser as _;

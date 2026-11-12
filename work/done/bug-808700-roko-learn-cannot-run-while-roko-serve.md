@@ -2,16 +2,16 @@
 id = "bug-808700"
 kind = "bug"
 title = "roko learn cannot run while roko serve runs: serve holds the workspace lock exclusively and learn's read-only subcommands exit 2, as doctor did before bug-1f5406"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-17
-updated = 2026-10-27
-last_verified = 2026-10-27
-last_verified_rev = "15335e2f9"
+updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "99db58d80"
 source = "round-v6-dogfood-will#R3-8"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
 anchors = ["crates/roko-cli/src/commands/learn.rs::dispatch_learn", "crates/roko-cli/src/doctor.rs::serve_holding_workspace"]
@@ -20,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-1f5406"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn learn_reads_beside_the_serve_that_holds_the_workspace' crates/roko-cli/ && cargo test -p roko-cli learn_reads_beside_the_serve_that_holds_the_workspace"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T10:49:49Z"
+commit = "99db58d80"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-11-12T10:08:22Z"
+forced = false
+evidence = "99db58d80. crates/roko-cli: workspace_lock::acquire_read_lock takes the shared lock for a command that only reads, or reads beside the workspace's own roko serve (doctor::serve_holding_workspace), as bug-1f5406 did inline for doctor, which now uses it too; dispatch_learn uses it for every view and prints one stderr note beside serve, while the writers (rollback, probes clear, loops canary/fault/clear, experiments create/conclude; learn_only_reads) keep the shared lock and stay refused. Red first on 0f7ef44ea (the read lock refusing beside serve): learn_reads_beside_the_serve_that_holds_the_workspace failed; green: it, learn_writers_keep_the_workspace_lock and doctor_beside_serve_says_so_and_leaves_lock_files_alone pass; roko-cli lib 4100/0, bins 10/0 and 480/0, roko-serve lib 1091/0; clippy -D warnings and nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/808700-chain.log). Live, $0 (bin/808700-live.sh, a real roko serve of 99db58d80 on port 6690 over a scratch copy of Undertow's workspace, scratch HOME): roko learn loops and roko learn all exit 0 beside it with the note, roko learn probes clear --all is refused (exit 2), and after serve stop roko learn loops runs without the note."
 +++
 
 ## Problem

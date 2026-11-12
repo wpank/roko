@@ -540,7 +540,9 @@ roko note --tag bug --tag urgent "login is broken"
 
 ### `roko github status`
 
-Inspect GitHub config, authentication, plan PR/CI state, and failure issues.
+Inspect GitHub config, authentication, the CI state of roko's pull requests, and failure issues. roko's pull
+requests are those whose head is a plan branch (`roko/plan/<plan>`) or a run's batch branch (`roko/work/<slug>`, or
+`roko/batch/<run-id>` for a run before gap-b67fdd).
 
 ```
 roko [--json] github status [--workdir <path>]

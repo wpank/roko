@@ -2913,4 +2913,135 @@ mod tests {
         assert_eq!(summary["result"]["answer"], 42, "{summary}");
         assert!(operation_state(&state, "op-2").await.is_none());
     }
+
+    /// A runtime whose plan write reports its first planner call settled,
+    /// then waits on the next until a cancel drops it, which `dropped` records:
+    /// a CLI planner's child is killed when its future is (bug-36ce72).
+    struct HeldWrite {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    /// Sets its flag when it is dropped.
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for HeldWrite {
+        async fn generate_plan_reporting(
+            &self,
+            _workdir: &std::path::Path,
+            _slug: &str,
+            _prompt: &str,
+            _for_chat_host: bool,
+            _options: crate::runtime::PlanGenerationOptions,
+            progress: crate::runtime::ProgressReporter,
+        ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+            let _call = DropFlag(Arc::clone(&self.dropped));
+            progress(json!({
+                "stage": "planning",
+                "attempt": 1,
+                "attempts": 1,
+                "model": "planner",
+                "calls": 1,
+                "cost_usd": 0.0375,
+                "max_usd": 2.0,
+            }));
+            std::future::pending::<()>().await;
+            anyhow::bail!("a held write never ends on its own")
+        }
+
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            anyhow::bail!("HeldWrite only writes plans")
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// bug-36ce72: `run_cancel` on the run id `plan_generate` answered stops
+    /// the plan write. The planner call is dropped, and the answer says
+    /// `cancelled`, the plan's id and what the write's settled calls cost.
+    /// `run_status` and the kept record say `cancelled` too, and no plan
+    /// directory is left. A second cancel answers the same, as already ended.
+    #[tokio::test]
+    async fn run_cancel_stops_a_plan_write() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = Arc::new(HeldWrite {
+            dropped: Arc::clone(&dropped),
+        });
+        let (dir, state, open) = state_and_router(runtime, open_config());
+        let asked = call(1, "plan_generate", json!({ "prompt": "Add a flag." }));
+        let (_, body) = post_mcp(&open, &asked, &[]).await;
+        let answer = &body["result"]["structuredContent"];
+        let run_id = answer["run_id"].as_str().expect("a run id").to_string();
+        let plan_id = answer["plan_id"].as_str().expect("a plan id").to_string();
+        let status = call(2, "run_status", json!({ "run_id": run_id }));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (_, body) = post_mcp(&open, &status, &[]).await;
+                if body["result"]["structuredContent"]["progress"]["calls"] == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the write reports its first call");
+
+        let cancel = call(3, "run_cancel", json!({ "run_id": run_id }));
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let cancelled = &body["result"]["structuredContent"];
+        assert_eq!(cancelled["state"], "cancelled", "{body}");
+        assert_eq!(cancelled["run_id"], run_id.as_str(), "{body}");
+        assert_eq!(cancelled["plan_id"], plan_id.as_str(), "{body}");
+        assert_eq!(cancelled["cost_usd"], 0.0375, "{body}");
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "the planner call is stopped"
+        );
+
+        let (_, body) = post_mcp(&open, &status, &[]).await;
+        let summary = &body["result"]["structuredContent"];
+        assert_eq!(summary["state"], "cancelled", "{body}");
+        assert_eq!(summary["active"], false, "{body}");
+        assert_eq!(summary["progress"]["cost_usd"], 0.0375, "{body}");
+        assert!(!dir.path().join("plans").join(&plan_id).exists());
+        let kept = std::fs::read_to_string(state.layout.state_dir().join("operations.jsonl"))
+            .expect("the kept record");
+        assert!(
+            kept.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|row| row["id"] == run_id.as_str() && row["status"]["state"] == "cancelled"),
+            "{kept}"
+        );
+
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        let again = &body["result"]["structuredContent"];
+        assert_eq!(again["state"], "cancelled", "{body}");
+        assert_eq!(again["already_ended"], true, "{body}");
+    }
 }

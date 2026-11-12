@@ -2,14 +2,16 @@
 id = "gap-6d2dd2"
 kind = "gap"
 title = "After a run the portal never says where the work went: a passed run sits on its own branch with main untouched, and the portal shows no branch, no changes and no merge command, and offers Run again; a failed row shows the traceback's first line; GET /api/plans/{id} names the plan's last run only while it can be resumed, so the portal can't find it after a reload"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "visibility"
 size = "M"
 subsystem = ["roko-serve/plans"]
 created = 2026-11-12
 updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "a60b70588"
 source = "round v8 portal-v8 audit (tmp/hermes-roko-v8/design/portal/before, main bd93521ee), the lead's approved proposal (tmp/hermes-roko-v8/design/portal/README.md, 2026-11-12)"
 discovered_from = "agent:portal-v8 (round v8, bd93521ee)"
 anchors = ["crates/roko-serve/src/routes/plans/reads.rs::get_plan", "crates/roko-serve/src/routes/run_result.rs::run_result", "apps/portal/src/api/contracts.ts::WirePlanDetail", "apps/portal/src/lib/checks.ts::digestHeadline"]
@@ -17,6 +19,19 @@ links = { depends_on = ["gap-60f6b6"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn plan_detail_names_its_last_run' crates/roko-serve/src && grep -rqF 'a passed run says where its work is' apps/portal/src && cargo test -p roko-serve --lib plan_detail_names_its_last_run && (cd apps/portal && npx vitest run src/components/plan/result.accept.test.tsx)"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T16:55:00Z"
+commit = "a60b70588"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "M"
+claimed_at = "2026-11-12T14:52:00Z"
+forced = false
+evidence = "roko serve: GET /api/plans/{id} returns last_run beside resumable_run. Rust in roko-work-gap-6d2dd2 (heavy.sh cargo, CARGO_INCREMENTAL=0): cargo test -p roko-serve --lib for routes::plans::tests, plan_detail_names_its_last_run and a_plan_says_whether_it_has_a_run_a_resume_would_continue, 71 passed; clippy -p roko-serve clean; nightly fmt. Portal: the plan's detail and the run's summary give 'Ready to merge: 3 files changed, +14 lines, on its own branch...', the merge command with copy, review (orange) opening the run's diff, 'Merged into main.', a failed check's command and real error line (lib/reason.ts), and a passed task's changes. At a60b70588's tree: tsc clean, vitest 720/720 (result.accept 7 cases, reason.test 7), orphans none, build:export OK, roko plan validate over every portal plan without errors, and the CI browser check PASS 37 of 37 against this tree's own roko build. A run nobody watched, then the page: this build says 'Ready to merge' with the merge command; roko-main-bd93521ee (no last_run) says only 'All 3 tasks passed their checks.'. Shots: tmp/hermes-roko-v8/design/portal/item3/."
 +++
 
 ## Problem

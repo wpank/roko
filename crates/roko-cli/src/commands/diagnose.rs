@@ -14,11 +14,11 @@
 //! plan without a Graph checkpoint.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fmt::Write as _;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -29,7 +29,7 @@ use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_learn::GamingAlert;
 use roko_learn::costs_db::CostRecord;
 use roko_learn::episode_logger::Episode;
-use roko_learn::telemetry::{CostSource, ToolPolicyRecord};
+use roko_learn::telemetry::{AttemptOutcome, AttemptVerdictRecord, CostSource, ToolPolicyRecord};
 use roko_runtime::{
     DurableRunnerProjection, STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection,
 };
@@ -41,8 +41,12 @@ use crate::graph_checkpoint::{
     CheckpointInspection, GraphCheckpointStatus, InvalidatedActivity, ResumeAction, ResumeOptions,
     ResumePreview, inspect_canonical_checkpoint, preview_plan_resume,
 };
+use crate::graph_execution::run_view::{
+    self, PlanCheckRow, PlanTasks, RunHeader, RunModel, TaskState as RowState,
+};
 use crate::runner::plan_loader::Plan;
 use crate::task_parser::{TaskDef, TasksFile};
+use crate::term_style::{self, Glyph, Role, Style};
 
 /// Canonical Graph checkpoint root, relative to the workspace.
 const GRAPH_STATE_DIR: &str = ".roko/state/graph";
@@ -54,6 +58,19 @@ const EPISODE_MATCH_WINDOW_MS: i64 = 5_000;
 /// Episode ids kept on [`FailedTaskInfo`].
 const FAILED_TASK_EPISODE_IDS: usize = 5;
 
+/// The cost-row roles of the calls a try makes beside its agent run: helper
+/// calls after a failed check, audit checks, and calls provider failover
+/// refused (`graph_task_dispatch::helper_calls`). They are the try's spend,
+/// not tries of their own (bug-649557).
+const SIDE_CALL_ROLES: [&str; 3] = [
+    "helper",
+    "audit",
+    roko_core::dashboard_snapshot::FAILOVER_REFUSED_SIDE_CALL,
+];
+
+/// The most lines of a check's output the text shows.
+const OUTPUT_LINES: usize = 30;
+
 /// Run the diagnose command, printing the report to stdout as text, or as JSON
 /// with `json`.
 pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool, json: bool) -> Result<i32> {
@@ -62,7 +79,11 @@ pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool, json: bool) ->
         let json = serde_json::to_string_pretty(&report).context("serializing diagnose report")?;
         println!("{json}");
     } else {
-        print!("{}", render_text(&report, verbose));
+        let now_ms = Utc::now().timestamp_millis();
+        println!(
+            "{}",
+            render_lines(&report, verbose, Style::stdout(), now_ms).join("\n")
+        );
     }
     Ok(0)
 }
@@ -114,6 +135,10 @@ pub struct DiagnoseReport {
     /// `graph_run.spent_usd`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
+    /// Why the plan's whole-plan check failed, when it did: the text shows
+    /// it as the run's table does (gap-5043c6). Not in `--json`.
+    #[serde(skip)]
+    pub plan_check_failure: Option<String>,
 }
 
 /// Where a report's run state came from.
@@ -304,6 +329,39 @@ pub struct TaskDiagnosis {
     /// a task completed `unverified` only; always listed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gaming_flagged: Option<String>,
+    /// Its tries, oldest first: what the text shows of it (gap-5043c6). Not
+    /// in `--json`, whose `attempts` are its provider calls.
+    #[serde(skip)]
+    pub tries: Vec<TryInfo>,
+}
+
+/// One try at a task (gap-5043c6, bug-649557): its settled verdict in the
+/// run's `attempts.jsonl` (for a run without verdicts, its provider call in
+/// `costs.jsonl`), with the check failure recorded in its time.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TryInfo {
+    /// Its number, from 1.
+    pub number: u32,
+    /// Whether its checks passed.
+    pub passed: bool,
+    /// How it ended, in a few words: `passed`, `ran out of time`.
+    pub ended: String,
+    /// From its start to its verdict.
+    pub elapsed: Option<Duration>,
+    /// What it spent, its helper calls included.
+    pub spent_usd: f64,
+    /// The model that ran it.
+    pub model: Option<String>,
+    /// The check it failed: `imports`.
+    pub failed_check: Option<String>,
+    /// The line that says why it failed: its check's error, or what stopped
+    /// it.
+    pub error: Option<String>,
+    /// What its failed check printed, paths in the workspace shown relative
+    /// to it.
+    pub output: Option<String>,
+    /// Whether it ran out of time.
+    pub timed_out: bool,
 }
 
 /// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
@@ -466,6 +524,9 @@ struct RunRecords {
     /// Why the gaming screen left each task whose last try it flagged
     /// `unverified`, by task, from the run's `attempts.jsonl` (find-2ba86d).
     gaming_flagged: BTreeMap<String, String>,
+    /// The plan's settled verdicts in the run's `attempts.jsonl`, one per
+    /// try (gap-5043c6).
+    verdicts: Vec<AttemptVerdictRecord>,
 }
 
 impl RunRecords {
@@ -499,10 +560,17 @@ impl RunRecords {
             tool_policies: recorded_tool_policies(&run, plan_id),
             checkout_written: recorded_checkout_writes(&run, plan_id),
             gaming_flagged: recorded_gaming_flags(&run, plan_id),
+            verdicts: run
+                .verdicts
+                .iter()
+                .map(|verdict| &verdict.record)
+                .filter(|record| record.identity.plan_id == plan_id)
+                .cloned()
+                .collect(),
         }
     }
 
-    /// Every task id the records mention.
+    /// Every task id the records mention, the run's verdicts included.
     fn task_ids(&self) -> impl Iterator<Item = &str> {
         self.attempts
             .iter()
@@ -513,6 +581,11 @@ impl RunRecords {
                     .map(|record| record.task_id.as_str()),
             )
             .chain(self.episodes.iter().map(|episode| episode.task_id.as_str()))
+            .chain(
+                self.verdicts
+                    .iter()
+                    .map(|record| record.identity.task_id.as_str()),
+            )
             .filter(|task_id| !task_id.is_empty())
     }
 }
@@ -630,7 +703,7 @@ fn build_graph_report(
     let run_id = &checkpoint.manifest.run_id;
     let gate_gaming_alerts = run_gaming_alerts(workdir, plan_id, run_id, &records, since_ms);
     let definition = load_plan_definition(workdir, plan_id, &mut notes);
-    let tasks = diagnose_tasks(checkpoint, definition.as_ref(), &records, verbose);
+    let tasks = diagnose_tasks(workdir, checkpoint, definition.as_ref(), &records, verbose);
     let resume = definition
         .as_ref()
         .and_then(|definition| resume_info(workdir, plan_id, definition, &mut notes));
@@ -753,6 +826,7 @@ fn build_graph_report(
         suggested_recovery,
         notes,
         total_cost_usd: collect_total_cost_usd(workdir, plan_id),
+        plan_check_failure: crate::graph_checkpoint::recorded_plan_check_failure(workdir, plan_id),
     }
 }
 
@@ -816,6 +890,7 @@ fn resume_info(
 /// Every task of the plan, then the tasks the run recorded that the plan no
 /// longer defines, as the run left them.
 fn diagnose_tasks(
+    workdir: &Path,
     checkpoint: &CheckpointInspection,
     definition: Option<&PlanDefinition>,
     records: &RunRecords,
@@ -859,6 +934,7 @@ fn diagnose_tasks(
             let task = defined.get(task_id).copied();
             let state = states[task_id];
             let attempts = task_attempts(records, task_id);
+            let tries = task_tries(workdir, records, task_id, &attempts);
             let gate_failures: Vec<GateFailureInfo> = records
                 .gate_failures
                 .iter()
@@ -924,6 +1000,7 @@ fn diagnose_tasks(
                     .map(|paths| paths.iter().cloned().collect())
                     .unwrap_or_default(),
                 gaming_flagged,
+                tries,
             };
             diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
             diagnosis
@@ -952,7 +1029,9 @@ fn task_attempts(records: &RunRecords, task_id: &str) -> Vec<AttemptInfo> {
     records
         .attempts
         .iter()
-        .filter(|record| record.task_id == task_id)
+        .filter(|record| {
+            record.task_id == task_id && !SIDE_CALL_ROLES.contains(&record.role.as_str())
+        })
         .map(|record| {
             let ended_ms = rfc3339_ms(&record.timestamp);
             let episode = ended_ms.and_then(|ended_ms| {
@@ -995,6 +1074,223 @@ fn take_step_timeout(step_timeouts: &mut Vec<i64>, ended_ms: i64) -> Option<i64>
         .iter()
         .position(|&at_ms| at_ms <= ended_ms && ended_ms - at_ms <= EPISODE_MATCH_WINDOW_MS)?;
     Some(step_timeouts.remove(index))
+}
+
+/// `task_id`'s tries, oldest first (gap-5043c6): one per settled verdict in
+/// the run's `attempts.jsonl`, or, for a run that wrote none, one per
+/// provider call (`attempts`). A failed try carries the check failure
+/// recorded in its time, else the reason its episode gives.
+fn task_tries(
+    workdir: &Path,
+    records: &RunRecords,
+    task_id: &str,
+    attempts: &[AttemptInfo],
+) -> Vec<TryInfo> {
+    let failures: Vec<&GateFailureRecord> = records
+        .gate_failures
+        .iter()
+        .filter(|record| record.task_id == task_id)
+        .collect();
+    let failure_in = |from_ms: Option<i64>, to_ms: Option<i64>| {
+        let to_ms = to_ms?;
+        failures
+            .iter()
+            .rfind(|record| {
+                let at = record.timestamp.timestamp_millis();
+                at <= to_ms + 1_000 && from_ms.is_none_or(|from| at >= from - 1_000)
+            })
+            .copied()
+    };
+    let reason_in = |from_ms: Option<i64>, to_ms: Option<i64>| {
+        let to_ms = to_ms?;
+        records
+            .episodes
+            .iter()
+            .filter(|episode| episode.task_id == task_id && !episode.success)
+            .filter(|episode| {
+                let at = episode.timestamp.timestamp_millis();
+                at <= to_ms + EPISODE_MATCH_WINDOW_MS && from_ms.is_none_or(|from| at >= from)
+            })
+            .filter_map(|episode| episode.failure_reason.as_deref())
+            .filter_map(|reason| reason.lines().map(str::trim).find(|line| !line.is_empty()))
+            .next_back()
+            .map(str::to_string)
+    };
+    let mut verdicts: Vec<&AttemptVerdictRecord> = records
+        .verdicts
+        .iter()
+        .filter(|record| record.identity.task_id == task_id)
+        .collect();
+    verdicts.sort_by_key(|record| record.identity.attempt);
+    if !verdicts.is_empty() {
+        return verdicts
+            .iter()
+            .map(|record| {
+                let (from, to) = (record.timing.attempt_started_at, record.timing.settled_at);
+                let passed = matches!(
+                    record.outcome,
+                    AttemptOutcome::Passed | AttemptOutcome::AlreadySatisfied
+                );
+                let mut entry = TryInfo {
+                    number: record.identity.attempt,
+                    passed,
+                    ended: outcome_words(record.outcome).to_string(),
+                    elapsed: from
+                        .zip(to)
+                        .and_then(|(from, to)| u64::try_from(to - from).ok())
+                        .map(Duration::from_millis),
+                    spent_usd: record.cost.billed_usd.unwrap_or(0.0)
+                        + record
+                            .helpers
+                            .as_ref()
+                            .map_or(0.0, |helpers| helpers.cost_usd),
+                    model: record
+                        .executed
+                        .model_reported
+                        .clone()
+                        .or_else(|| record.executed.model_dispatched.clone()),
+                    failed_check: record
+                        .steps
+                        .iter()
+                        .find(|step| step.passed == Some(false))
+                        .map(|step| step_check_name(&step.rung)),
+                    error: None,
+                    output: None,
+                    timed_out: record.outcome == AttemptOutcome::Timeout
+                        || record.steps.iter().any(|step| step.timed_out),
+                };
+                if !passed {
+                    match failure_in(from, to) {
+                        Some(failure) => entry.take_failure(failure, workdir),
+                        None => entry.error = reason_in(from, to),
+                    }
+                }
+                entry
+            })
+            .collect();
+    }
+    attempts
+        .iter()
+        .enumerate()
+        .map(|(index, attempt)| {
+            let to = rfc3339_ms(&attempt.timestamp);
+            let from = to.map(|to| to - i64::try_from(attempt.duration_ms).unwrap_or(0));
+            let mut entry = TryInfo {
+                number: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                passed: attempt.success,
+                ended: match (attempt.success, attempt.timed_out) {
+                    (true, _) => "passed",
+                    (false, true) => "ran out of time",
+                    (false, false) => "failed",
+                }
+                .to_string(),
+                elapsed: Some(Duration::from_millis(attempt.duration_ms)),
+                spent_usd: attempt.cost_usd,
+                model: Some(attempt.model.clone()),
+                failed_check: None,
+                error: None,
+                output: None,
+                timed_out: attempt.timed_out,
+            };
+            if !attempt.success {
+                match failure_in(from, to) {
+                    Some(failure) => entry.take_failure(failure, workdir),
+                    None => {
+                        entry.error = attempt
+                            .failure_reason
+                            .as_deref()
+                            .and_then(|reason| {
+                                reason.lines().map(str::trim).find(|line| !line.is_empty())
+                            })
+                            .map(str::to_string);
+                    }
+                }
+            }
+            entry
+        })
+        .collect()
+}
+
+impl TryInfo {
+    /// Take the check failure `record` as why this try failed: the check's
+    /// name, its error line, and what it printed.
+    fn take_failure(&mut self, record: &GateFailureRecord, workdir: &Path) {
+        let (check, message, output) = split_failure(&record.summary);
+        let prefix = format!("{}/", workdir.display());
+        let output = output.map(|output| output.replace(&prefix, ""));
+        if self.failed_check.is_none() {
+            self.failed_check = check;
+        }
+        self.error = output
+            .as_deref()
+            .and_then(run_view::error_line)
+            .or_else(|| (!message.is_empty()).then_some(message));
+        self.output = output;
+        if record.failure_kind == GateFailureKind::Timeout {
+            self.timed_out = true;
+        }
+    }
+}
+
+/// How a try ended, in the design system's words.
+const fn outcome_words(outcome: AttemptOutcome) -> &'static str {
+    match outcome {
+        AttemptOutcome::Passed => "passed",
+        AttemptOutcome::AlreadySatisfied => "passed: its work was already done",
+        AttemptOutcome::Unverified => "not checked",
+        AttemptOutcome::ForcedAccept => "accepted with a failed check",
+        AttemptOutcome::GateFailed => "a check failed",
+        AttemptOutcome::TurnCap => "ran out of turns",
+        AttemptOutcome::Timeout => "ran out of time",
+        AttemptOutcome::ProviderError => "its provider failed",
+        AttemptOutcome::ProviderExhausted => "every provider failed",
+        AttemptOutcome::Cancelled => "stopped",
+        AttemptOutcome::BudgetExhausted => "the budget ran out",
+        AttemptOutcome::WorkspaceError => "its worktree failed",
+        AttemptOutcome::PromiseTerminated => "the run ended it",
+        AttemptOutcome::HarnessError => "roko failed around it",
+        AttemptOutcome::AllRungsSkipped => "no model could take it",
+        AttemptOutcome::Abandoned => "did not finish",
+    }
+}
+
+/// A verdict step's check: `custom:imports` reads `imports`,
+/// `verify:1/compile` reads `compile`.
+fn step_check_name(rung: &str) -> String {
+    let name = rung.rsplit(':').next().unwrap_or(rung);
+    name.rsplit('/').next().unwrap_or(name).to_string()
+}
+
+/// A recorded check failure (`verify[0:imports]: exit code: 1`, then
+/// `---stderr---` and what the check printed) as its check's name, its
+/// failure line, and its output without the stream markers.
+fn split_failure(summary: &str) -> (Option<String>, String, Option<String>) {
+    let (headline, rest) = summary.split_once('\n').unwrap_or((summary, ""));
+    let headline = headline.trim();
+    let named = headline.starts_with("verify[") || headline.starts_with("rung[");
+    let check = named.then(|| run_view::check_name(headline));
+    let message = if !named {
+        headline
+    } else if headline.contains(" (`") {
+        headline
+            .split_once("`): ")
+            .map_or("", |(_, message)| message)
+    } else {
+        headline
+            .split_once("]: ")
+            .map_or("", |(_, message)| message)
+    };
+    let output: Vec<&str> = rest
+        .lines()
+        .filter(|line| !matches!(line.trim(), "---stdout---" | "---stderr---"))
+        .collect();
+    let output = output.join("\n");
+    let output = output.trim_matches('\n');
+    (
+        check,
+        message.trim().to_string(),
+        (!output.trim().is_empty()).then(|| output.to_string()),
+    )
 }
 
 /// `task_id`'s most recent failure. A verify step failure is preferred over
@@ -1545,6 +1841,7 @@ fn build_legacy_report(
         suggested_recovery,
         notes: Vec::new(),
         total_cost_usd,
+        plan_check_failure: None,
     })
 }
 
@@ -1927,165 +2224,374 @@ fn collect_total_cost_usd(workdir: &Path, plan_id: &str) -> Option<f64> {
 // Text output
 // ---------------------------------------------------------------------------
 
-/// The report for a person: the status, then each task that did not complete
-/// or completed `unverified` (every task with `verbose`) with why, the verify
-/// step it failed and its attempts, then what to do next. `--json` prints the
-/// report itself.
+/// The report for a person, without colour: [`render_lines`] in
+/// [`Style::plain`]. `--json` prints the report itself.
 pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
-    let mut out = String::new();
-    let (plan_id, status) = (&report.plan_id, &report.status);
-    let _ = writeln!(out, "Plan {plan_id}: {status}");
-    if let Some(run) = &report.graph_run {
-        let (run_id, checkpoint) = (&run.run_id, &run.checkpoint);
-        let updated = run.updated_at.as_deref().unwrap_or("unknown");
-        let _ = writeln!(out, "  run {run_id}");
-        let _ = writeln!(out, "  checkpoint {checkpoint}, updated {updated}");
-        if let Some(spent) = run.spent_usd {
-            let _ = writeln!(out, "  spent ${spent:.2}");
+    let now_ms = Utc::now().timestamp_millis();
+    let mut out = render_lines(report, verbose, Style::plain(), now_ms).join("\n");
+    out.push('\n');
+    out
+}
+
+/// What `roko diagnose` prints (gap-5043c6), in roko's design system: the
+/// plan, how its run ended, when, and what it spent; its tasks as the run's
+/// own table shows them, each that did not pass (with `verbose`, each that
+/// ran) followed by its check, a line per try and what the check printed,
+/// once; then the one thing to do next, as a command to paste.
+#[must_use]
+pub fn render_lines(
+    report: &DiagnoseReport,
+    verbose: bool,
+    style: Style,
+    now_ms: i64,
+) -> Vec<String> {
+    let Some(run) = &report.graph_run else {
+        return snapshot_lines(report, style);
+    };
+    let dot = format!(" {} ", style.glyph(Glyph::Dot));
+    let state = state_words(run.checkpoint_status);
+    let mut facts: Vec<String> = report.plan_dir.iter().cloned().collect();
+    facts.push(match run.updated_at.as_deref().and_then(rfc3339_ms) {
+        Some(at) if run.checkpoint_status != GraphCheckpointStatus::Running => {
+            format!("{state} {}", crate::status_view::ago(at, now_ms))
         }
-    } else {
-        let phase = report.phase.as_deref().unwrap_or("unknown");
-        let _ = writeln!(out, "  from the Runner-v2 snapshot, phase {phase}");
-    }
-    if let Some(plan_dir) = &report.plan_dir {
-        let _ = writeln!(out, "  plan {plan_dir}");
-    }
+        _ => state.to_string(),
+    });
     if let Some(run_state) = &report.run_state {
-        let (completed, total) = (run_state.tasks_completed, run_state.tasks_total);
-        let failed = run_state.tasks_failed;
-        let _ = writeln!(
-            out,
-            "  {completed} of {total} tasks completed, {failed} failed"
-        );
-        // Calls whose cost is unknown, which the spend leaves out
-        // (gap-2bec05).
+        let (done, all) = (run_state.tasks_completed, run_state.tasks_total);
+        facts.push(format!(
+            "{done}/{all} {}",
+            if all == 1 { "task" } else { "tasks" }
+        ));
+    }
+    if let Some(spent) = run.spent_usd {
+        facts.push(term_style::money(spent));
+    }
+    let title = format!("diagnose {}", style.bold(&report.plan_id));
+    let mut out = term_style::header(style, &title, &facts.join(&dot));
+    // Calls whose cost is unknown, which the spend leaves out (gap-2bec05).
+    if let Some(run_state) = report
+        .run_state
+        .as_ref()
+        .filter(|run| run.unpriced_calls > 0)
+    {
         let unpriced = run_state.unpriced_calls;
-        if unpriced > 0 {
-            let calls = run_state.total_agent_calls.max(unpriced);
-            let suffix = plural(calls);
-            let _ = writeln!(
-                out,
-                "  {unpriced} of {calls} agent call{suffix} unpriced: cost unknown, not in the spend"
-            );
-        }
+        let calls = run_state.total_agent_calls.max(unpriced);
+        let (has, it) = if unpriced == 1 {
+            ("has", "it")
+        } else {
+            ("have", "them")
+        };
+        let line =
+            format!("{unpriced} of {calls} calls {has} no known price; the spend leaves {it} out.");
+        out.insert(2, format!("  {}", style.paint(Role::Dim, line)));
     }
 
-    // A task completed unverified is shown: it is why its plan is, and the
-    // line says why it is (gap-0af587).
-    let shown: Vec<&TaskDiagnosis> = report
-        .tasks
-        .iter()
-        .filter(|task| {
-            verbose
-                || task.state != TaskState::Completed
-                || task.gate_verdict == Some(TaskGateVerdict::Unverified)
+    let now = Instant::now();
+    let model = run_model(report, now);
+    let indent = " ".repeat(run_view::detail_indent(&model, style));
+    for (index, task) in report.tasks.iter().enumerate() {
+        out.extend(run_view::task_block(&model, index, style, now));
+        out.extend(task_details(task, verbose, style, &indent));
+    }
+    out.extend(run_view::plan_check_block(
+        &model,
+        &report.plan_id,
+        style,
+        now,
+    ));
+
+    let mut notes = Vec::new();
+    for alert in &report.gate_gaming_alerts {
+        let at = alert.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+        notes.push(format!(
+            "  {} {at} {}",
+            style.paint(Role::You, style.glyph(Glyph::Warning)),
+            alert.summary()
+        ));
+    }
+    if report
+        .git_state
+        .as_ref()
+        .is_some_and(|git| git.has_uncommitted_changes)
+    {
+        notes.push(format!(
+            "  {}",
+            style.paint(
+                Role::Dim,
+                "Your checkout has uncommitted changes: a run starts from your last commit."
+            )
+        ));
+    }
+    for note in &report.notes {
+        notes.push(format!("  {}", style.paint(Role::Dim, note)));
+    }
+    if !notes.is_empty() {
+        out.push(String::new());
+        out.extend(notes);
+    }
+    out.extend(next_block(report, style));
+    out
+}
+
+/// A Graph checkpoint's status, in the design system's words.
+const fn state_words(status: GraphCheckpointStatus) -> &'static str {
+    match status {
+        GraphCheckpointStatus::Running => "running",
+        GraphCheckpointStatus::Succeeded => "done",
+        GraphCheckpointStatus::Unverified => "not checked",
+        GraphCheckpointStatus::Failed => "failed",
+        GraphCheckpointStatus::Cancelled => "stopped",
+        GraphCheckpointStatus::Interrupted => "interrupted",
+    }
+}
+
+/// The report's tasks as the run's own table shows them (gap-5043c6): each
+/// task's state, tries, time and spend; for one that failed, the check its
+/// last try failed and the check's error; for one that passed on a later
+/// try, the failure before; for one that did not run, the task it waited
+/// on; and the plan check, when it failed. `roko plan status` shows the
+/// same table.
+#[must_use]
+pub fn run_model(report: &DiagnoseReport, now: Instant) -> RunModel {
+    let header = RunHeader {
+        plans: vec![PlanTasks {
+            plan_id: report.plan_id.clone(),
+            tasks: report
+                .tasks
+                .iter()
+                .map(|task| {
+                    let title = task.title.as_deref().unwrap_or("(not in tasks.toml)");
+                    (task.task_id.clone(), title.to_string())
+                })
+                .collect(),
+        }],
+        parallel: 1,
+        ..RunHeader::default()
+    };
+    let mut model = RunModel::new(header, now);
+    let running = report
+        .graph_run
+        .as_ref()
+        .is_some_and(|run| run.checkpoint_status == GraphCheckpointStatus::Running);
+    let label = |task_id: &str| {
+        report
+            .tasks
+            .iter()
+            .position(|task| task.task_id == task_id)
+            .map_or_else(
+                || task_id.to_string(),
+                |index| format!("task {}", index + 1),
+            )
+    };
+    let blocked_by_failure = |task: &TaskDiagnosis| {
+        task.blocked_by.iter().all(|blocker| {
+            report
+                .tasks
+                .iter()
+                .any(|other| other.task_id == *blocker && other.state == TaskState::Failed)
         })
-        .collect();
-    for task in &shown {
-        out.push('\n');
-        render_task(&mut out, task);
+    };
+    for (row, task) in model.tasks.iter_mut().zip(&report.tasks) {
+        let state = match task.state {
+            TaskState::Completed if task.gate_verdict == Some(TaskGateVerdict::Unverified) => {
+                RowState::NotChecked
+            }
+            TaskState::Completed => RowState::Passed,
+            TaskState::Failed => RowState::Failed,
+            TaskState::Incomplete if running => RowState::Running,
+            TaskState::Incomplete => RowState::Stopped,
+            // It did not run because a task it needs failed; one that waits
+            // on a task the run stopped in is waiting still.
+            TaskState::NeverRan if !task.blocked_by.is_empty() && blocked_by_failure(task) => {
+                RowState::Skipped
+            }
+            TaskState::NeverRan => RowState::Waiting,
+        };
+        let tries = &task.tries;
+        let spent = tries.iter().map(|entry| entry.spent_usd).sum();
+        let elapsed = tries
+            .iter()
+            .filter_map(|entry| entry.elapsed)
+            .sum::<Duration>();
+        let elapsed = (!tries.is_empty()).then_some(elapsed);
+        let count = u32::try_from(tries.len()).unwrap_or(u32::MAX);
+        row.set_recorded(state, count, elapsed, spent, now);
+        let first_failed = tries.iter().find(|entry| !entry.passed);
+        let last_failed = tries.iter().rev().find(|entry| !entry.passed);
+        match state {
+            RowState::Failed => {
+                // The check and its error; a try that failed no check says
+                // what stopped it.
+                row.failed_check = last_failed.and_then(|entry| entry.failed_check.clone());
+                row.failure = last_failed.and_then(|entry| {
+                    entry
+                        .error
+                        .clone()
+                        .or_else(|| entry.failed_check.is_none().then(|| entry.ended.clone()))
+                });
+            }
+            RowState::Passed if tries.len() > 1 => {
+                row.retry_note = first_failed.map(|entry| match &entry.failed_check {
+                    Some(check) => format!("try {}: check {check} failed", entry.number),
+                    None => format!("try {}: {}", entry.number, entry.ended),
+                });
+            }
+            RowState::Skipped => {
+                let by: Vec<String> = task.blocked_by.iter().map(|id| label(id)).collect();
+                row.failure = Some(format!("{} did not pass, so it did not run", words(&by)));
+            }
+            RowState::Running => row.activity = Some("running".to_string()),
+            _ => {}
+        }
     }
-    let hidden = report.tasks.len() - shown.len();
-    if hidden > 0 {
-        let suffix = plural(hidden);
-        let _ = writeln!(
-            out,
-            "\n{hidden} completed task{suffix} not shown; --verbose lists them."
+    if let Some(reason) = &report.plan_check_failure {
+        model.plan_checks.push(PlanCheckRow::recorded(
+            &report.plan_id,
+            "plan check",
+            "",
+            RowState::Failed,
+            Some(reason.clone()),
+            None,
+        ));
+    }
+    model
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn words(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What the table's line of `task` leaves out: for a task that did not pass
+/// (with `verbose`, each that ran) its check and the command it runs, a line
+/// per try, and what the check printed on its last failed try; why it was
+/// not checked; what it changed in the person's checkout; and its tries'
+/// tool policies.
+fn task_details(task: &TaskDiagnosis, verbose: bool, style: Style, indent: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let room = style.width().saturating_sub(indent.len() + 1);
+    let cut = |text: &str| {
+        if style.live() {
+            term_style::truncate(text, room)
+        } else {
+            text.to_string()
+        }
+    };
+    let dim = |text: &str| format!("{indent}{}", style.paint(Role::Dim, cut(text)));
+    let unverified = task.gate_verdict == Some(TaskGateVerdict::Unverified);
+    if unverified {
+        out.push(dim(&task.gaming_flagged.as_deref().map_or_else(
+            || "nothing checked its work: it has no check".to_string(),
+            |reason| format!("not checked: {reason}"),
+        )));
+    }
+    // The person's checkout changed while it ran, not its own tree: through
+    // its checks or a command its agent ran (bug-b7d9ad, reg-d2deba).
+    if !task.checkout_written.is_empty() {
+        out.push(dim(&format!(
+            "your checkout changed while it ran, not its own worktree: {}",
+            task.checkout_written.join(", ")
+        )));
+    }
+    let unfinished = matches!(task.state, TaskState::Failed | TaskState::Incomplete);
+    if task.tries.is_empty() || !(verbose || unfinished || unverified) {
+        return out;
+    }
+    let last_failed = task.tries.iter().rev().find(|entry| !entry.passed);
+    let command = task
+        .gate_failures
+        .last()
+        .and_then(|failure| failure.verify_step.as_ref())
+        .and_then(|step| step.command.as_deref());
+    if let (Some(check), Some(command)) = (
+        last_failed.and_then(|entry| entry.failed_check.as_deref()),
+        command,
+    ) {
+        out.push(dim(&format!("check {check} runs: {command}")));
+    }
+    let number_w = task
+        .tries
+        .iter()
+        .map(|entry| entry.number.to_string().len())
+        .max()
+        .unwrap_or(1);
+    let model_w = task
+        .tries
+        .iter()
+        .map(|entry| entry.model.as_deref().map_or(0, str::len))
+        .max()
+        .unwrap_or(0);
+    let headline = last_failed.and_then(|entry| entry.failed_check.as_deref());
+    for entry in &task.tries {
+        let said = match (&entry.error, entry.failed_check.as_deref()) {
+            _ if entry.passed => entry.ended.clone(),
+            _ if entry.timed_out => "ran out of time".to_string(),
+            (Some(error), Some(check)) if Some(check) != headline => {
+                format!("check {check}: {error}")
+            }
+            (Some(error), _) => error.clone(),
+            (None, Some(check)) => format!("check {check} failed"),
+            (None, None) => entry.ended.clone(),
+        };
+        let line = format!(
+            "try {:<number_w$}  {}  {}  {}  {said}",
+            entry.number,
+            term_style::pad_left(
+                &entry.elapsed.map(term_style::duration).unwrap_or_default(),
+                7
+            ),
+            term_style::pad_left(&term_style::money(entry.spent_usd), 6),
+            term_style::pad(entry.model.as_deref().unwrap_or_default(), model_w),
         );
+        out.push(format!("{indent}{}", cut(&line)));
     }
-
-    // A Runner-v2 snapshot names the failed task and the plan's gate results.
-    if report.tasks.is_empty() {
-        if let Some(failed) = &report.failed_task {
-            let task_id = &failed.task_id;
-            let _ = writeln!(out, "\nfailed task {task_id}");
-            if let Some(error) = &failed.last_error {
-                let _ = writeln!(out, "    last error: {error}");
-            }
+    if let Some(entry) = last_failed.filter(|entry| entry.output.is_some()) {
+        let output = entry.output.as_deref().unwrap_or_default();
+        let lines: Vec<&str> = output.lines().collect();
+        let skip = lines.len().saturating_sub(OUTPUT_LINES);
+        let check = entry
+            .failed_check
+            .as_deref()
+            .map_or_else(|| "the check".to_string(), |check| format!("check {check}"));
+        out.push(String::new());
+        out.push(format!(
+            "{indent}What {check} printed on try {}:",
+            entry.number
+        ));
+        if skip > 0 {
+            out.push(dim(&format!("({skip} earlier lines left out)")));
         }
-        for gate in report.gate_results.iter().filter(|gate| !gate.passed) {
-            let (name, summary) = (&gate.gate_name, &gate.summary);
-            let _ = writeln!(out, "    gate {name} failed: {summary}");
+        let bar = style.paint(Role::Dim, "│");
+        let room = room.saturating_sub(2);
+        for line in &lines[skip..] {
+            let line = if style.live() {
+                term_style::truncate(line, room)
+            } else {
+                (*line).to_string()
+            };
+            out.push(format!("{indent}{bar} {line}").trim_end().to_string());
         }
     }
-
-    if !report.gate_gaming_alerts.is_empty() {
-        let _ = writeln!(out, "\nGate-gaming alerts:");
-        for alert in &report.gate_gaming_alerts {
-            let at = alert.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
-            let _ = writeln!(out, "  - {at} {}", alert.summary());
-        }
-    }
-
-    for (heading, lines) in [
-        ("Next steps", &report.suggested_recovery),
-        ("Notes", &report.notes),
-    ] {
-        if !lines.is_empty() {
-            let _ = writeln!(out, "\n{heading}:");
-            for line in lines {
-                let _ = writeln!(out, "  - {line}");
-            }
-        }
+    for policy in &task.tool_policies {
+        out.extend(tool_policy_lines(policy, style, indent));
     }
     out
 }
 
-/// One task: its state and title, why it is in that state, the verify step it
-/// failed last, and its attempts.
-fn render_task(out: &mut String, task: &TaskDiagnosis) {
-    let task_id = &task.task_id;
-    let state = if task.blocked_by.is_empty() {
-        enum_label(&task.state).replace('_', " ")
-    } else {
-        "blocked".to_string()
-    };
-    let title = task.title.as_deref().unwrap_or("(not in tasks.toml)");
-    let reason = &task.reason;
-    let _ = writeln!(out, "{task_id} [{state}] {title}");
-    let _ = writeln!(out, "    {reason}");
-    let step = task
-        .gate_failures
-        .last()
-        .and_then(|failure| failure.verify_step.as_ref());
-    if let Some(step) = step {
-        let label = step.label();
-        let command = step.command.as_deref().unwrap_or("(not in tasks.toml)");
-        let _ = writeln!(out, "    failing verify step {label}: {command}");
-    }
-    for (index, attempt) in task.attempts.iter().enumerate() {
-        let number = index + 1;
-        let outcome = match (attempt.success, attempt.timed_out) {
-            (true, _) => "succeeded",
-            (false, true) => "timed out",
-            (false, false) => "failed",
-        };
-        let seconds = attempt.duration_ms as f64 / 1000.0;
-        let (cost, model) = (attempt.cost_usd, &attempt.model);
-        let _ = write!(
-            out,
-            "    attempt {number}: {outcome} after {seconds:.1} s, ${cost:.2}, {model}"
-        );
-        if let Some(reason) = &attempt.failure_reason {
-            let _ = write!(out, ": {reason}");
-        }
-        out.push('\n');
-    }
-    for policy in &task.tool_policies {
-        render_tool_policy(out, policy);
-    }
-}
-
-/// One attempt's tool policy: what its contract asked for, what its provider
+/// One try's tool policy: what its contract asked for, what its provider
 /// enforced, and the operation it was stopped at.
-fn render_tool_policy(out: &mut String, policy: &AttemptToolPolicy) {
+fn tool_policy_lines(policy: &AttemptToolPolicy, style: Style, indent: &str) -> Vec<String> {
     let (attempt, record) = (policy.attempt, &policy.policy);
     let model = policy.model.as_deref().unwrap_or("an unrecorded model");
     let enforcement = &record.enforcement;
-    let _ = writeln!(
-        out,
-        "    attempt {attempt} on {model}: tool policy enforced by {enforcement}"
-    );
+    let mut out = vec![format!(
+        "{indent}try {attempt} on {model}: tool policy enforced by {enforcement}"
+    )];
     let mut asked = Vec::new();
     if let Some(allowed) = &record.allowed_tools {
         asked.push(format!("allow only [{}]", allowed.join(", ")));
@@ -2102,12 +2608,181 @@ fn render_tool_policy(out: &mut String, policy: &AttemptToolPolicy) {
     }
     for (label, parts) in [("asked", asked), ("enforced", enforced)] {
         if !parts.is_empty() {
-            let _ = writeln!(out, "      {label}: {}", parts.join("; "));
+            let line = format!("{label}: {}", parts.join("; "));
+            out.push(format!("{indent}  {}", style.paint(Role::Dim, line)));
         }
     }
     if let Some(denial) = &record.denial {
-        let _ = writeln!(out, "      stopped at: {denial}");
+        let line = format!("stopped at: {denial}");
+        out.push(format!("{indent}  {}", style.paint(Role::Dim, line)));
     }
+    out
+}
+
+/// What to do next: the command that runs the plan again, what it keeps and
+/// runs, and, for a task that failed, what to change first.
+fn next_block(report: &DiagnoseReport, style: Style) -> Vec<String> {
+    let status = report.graph_run.as_ref().map(|run| run.checkpoint_status);
+    let Some(dir) = report.plan_dir.as_deref() else {
+        return Vec::new();
+    };
+    let label = |task_id: &str| {
+        report
+            .tasks
+            .iter()
+            .position(|task| task.task_id == task_id)
+            .map_or_else(
+                || task_id.to_string(),
+                |index| format!("task {}", index + 1),
+            )
+    };
+    let labels = |ids: &[String]| words(&ids.iter().map(|id| label(id)).collect::<Vec<_>>());
+    let (command, does) = match status {
+        Some(GraphCheckpointStatus::Succeeded) => {
+            let line = "Nothing failed in this run.";
+            return vec![String::new(), format!("  {}", style.paint(Role::Dim, line))];
+        }
+        None => return Vec::new(),
+        Some(GraphCheckpointStatus::Running) => ("roko dashboard".to_string(), None),
+        _ => match report
+            .resume
+            .as_ref()
+            .map(|resume| (resume.preview.action, &resume.preview))
+        {
+            Some((ResumeAction::Refuse, preview)) => (
+                format!("roko run {dir} --fresh"),
+                Some(format!(
+                    "It starts over: the run can't carry on ({}).",
+                    preview
+                        .reason
+                        .as_deref()
+                        .unwrap_or("its checkpoint does not match the plan")
+                )),
+            ),
+            Some((ResumeAction::Archive, preview)) => (
+                format!("roko run {dir}"),
+                Some(format!(
+                    "It starts over: {}.",
+                    preview.reason.as_deref().unwrap_or("the plan changed")
+                )),
+            ),
+            Some((ResumeAction::Resume, preview)) => {
+                let runs = labels(&preview.tasks_to_run);
+                let does = if preview.restored_tasks.is_empty() {
+                    format!("It runs {runs} again.")
+                } else {
+                    format!(
+                        "It keeps {} and runs {runs}.",
+                        labels(&preview.restored_tasks)
+                    )
+                };
+                (format!("roko run {dir}"), Some(does))
+            }
+            Some((ResumeAction::Start, _)) | None => (format!("roko run {dir}"), None),
+        },
+    };
+    let mut sentences: Vec<String> = does.into_iter().collect();
+    if let Some(task) = report
+        .tasks
+        .iter()
+        .find(|task| task.state == TaskState::Failed)
+    {
+        let name = label(&task.task_id);
+        let step_timed_out = task
+            .gate_failures
+            .iter()
+            .any(|failure| failure.failure_kind == GateFailureKind::Timeout);
+        let advice = if task.timed_out_attempts > 0
+            || task.tries.iter().any(|entry| entry.timed_out)
+        {
+            let limit = if step_timed_out {
+                "its check's timeout_ms or its timeout_secs"
+            } else {
+                "its timeout_secs"
+            };
+            format!(
+                "Its tries ran out of time: raise {name}'s {limit} in {dir}/tasks.toml, or split it."
+            )
+        } else {
+            match task
+                .gate_failures
+                .last()
+                .map(|failure| &failure.recommended_action)
+            {
+                Some(GateFailureAction::Blocked) => format!(
+                    "{name}'s check can't pass here ({}): fix that first.",
+                    task.gate_failures
+                        .last()
+                        .map(|failure| enum_label(&failure.primary_class).replace('_', " "))
+                        .unwrap_or_default()
+                ),
+                Some(GateFailureAction::NeedsReplan) => {
+                    format!(
+                        "{name}'s failure needs a change to the plan: edit it in {dir}/tasks.toml."
+                    )
+                }
+                Some(GateFailureAction::NeedsHuman) => {
+                    format!("{name} needs your input before it runs again.")
+                }
+                Some(GateFailureAction::Retry) | None => format!(
+                    "If {name}'s check would fail the same way again, change the task or its check in {dir}/tasks.toml first."
+                ),
+            }
+        };
+        sentences.push(advice);
+    } else if status == Some(GraphCheckpointStatus::Failed) && report.plan_check_failure.is_none() {
+        sentences.push(
+            "No task failed, so the plan failed outside its tasks: the run's own output says why."
+                .to_string(),
+        );
+    }
+    let mut out = term_style::next_lines(style, &command);
+    let room = style.width().saturating_sub(3);
+    for sentence in sentences {
+        let lines = if style.live() {
+            term_style::wrap(&sentence, room)
+        } else {
+            vec![sentence]
+        };
+        for line in lines {
+            out.push(format!("  {}", style.paint(Role::Dim, line)));
+        }
+    }
+    out
+}
+
+/// The report of a plan that last ran under the removed Runner-v2 engine,
+/// from its state snapshot: the failed task and its checks, and what to do.
+fn snapshot_lines(report: &DiagnoseReport, style: Style) -> Vec<String> {
+    let phase = report.phase.as_deref().unwrap_or("unknown");
+    let title = format!("diagnose {}", style.bold(&report.plan_id));
+    let context = format!(
+        "{} {} from an old run's state snapshot, phase {phase}",
+        report.status,
+        style.glyph(Glyph::Dot)
+    );
+    let mut out = term_style::header(style, &title, &context);
+    if let Some(failed) = &report.failed_task {
+        out.push(format!(
+            "  {} {}",
+            style.paint(Role::Fail, style.glyph(Glyph::Fail)),
+            failed.task_id
+        ));
+        if let Some(error) = &failed.last_error {
+            out.push(format!("    {}", style.paint(Role::Dim, error)));
+        }
+    }
+    for gate in report.gate_results.iter().filter(|gate| !gate.passed) {
+        let line = format!("check {} failed: {}", gate.gate_name, gate.summary);
+        out.push(format!("    {}", style.paint(Role::Dim, line)));
+    }
+    if !report.suggested_recovery.is_empty() {
+        out.push(String::new());
+        for line in &report.suggested_recovery {
+            out.push(format!("  {}", style.paint(Role::Dim, line)));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -2470,6 +3145,7 @@ warning: unused variable: `x`";
             suggested_recovery: vec![],
             notes: Vec::new(),
             total_cost_usd: None,
+            plan_check_failure: None,
         }
     }
 
@@ -2808,8 +3484,7 @@ title = "Tidy the changelog"
             .collect();
         assert_eq!(listed, [("claude-sonnet-4-6", at("2026-09-29T07:25:00Z"))]);
         let text = render_text(&report, false);
-        assert!(text.contains("\nGate-gaming alerts:\n"), "{text}");
-        let line = "  - 2026-09-29T07:25:00Z gate gaming detected for model `claude-sonnet-4-6`";
+        let line = "  ! 2026-09-29T07:25:00Z gate gaming detected for model `claude-sonnet-4-6`";
         assert!(text.contains(line), "{text}");
         assert!(!text.contains("other-model"), "{text}");
         let json = serde_json::to_value(&report).expect("serialize the report");
@@ -3008,23 +3683,38 @@ title = "Tidy the changelog"
         let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
         let text = render_text(&report, false);
 
-        assert!(text.starts_with("Plan demo: failed\n"), "{text}");
+        assert!(
+            text.starts_with("◆ roko  diagnose demo\n  plans/programme/demo · failed "),
+            "{text}"
+        );
         assert!(serde_json::from_str::<Value>(&text).is_err(), "{text}");
-        assert!(text.contains("T2 [failed] Wire the parser"), "{text}");
-        assert!(text.contains("last error: verify[1:test]"), "{text}");
-        assert!(text.contains("verify step 1 (test): cargo test"), "{text}");
-        let second_attempt = "attempt 2: failed after 600.5 s, $1.00";
-        assert!(text.contains(second_attempt), "{text}");
-        assert!(text.contains("T3 [blocked] Document the parser"), "{text}");
-        assert!(text.contains("never ran: dependency T2 failed"), "{text}");
-        let resume = "Resume with `roko plan run plans/programme/demo`";
-        assert!(text.contains(resume), "{text}");
-        assert!(!text.contains("T1 [completed]"), "{text}");
-        assert!(text.contains("1 completed task not shown"), "{text}");
+        assert!(text.contains("\n  ✗ task 2  Wire the parser"), "{text}");
+        assert!(text.contains("check test failed\n"), "{text}");
+        assert!(
+            text.contains("check test runs: cargo test -p demo"),
+            "{text}"
+        );
+        assert!(
+            text.contains("try 1  10m 00s   $0.00  claude-sonnet-4-6  ran out of time"),
+            "{text}"
+        );
+        assert!(
+            text.contains("try 2  10m 00s   $1.00  claude-sonnet-4-6  check test failed"),
+            "{text}"
+        );
+        assert!(text.contains("\n  ⊘ task 3  Document the parser"), "{text}");
+        assert!(
+            text.contains("task 2 did not pass, so it did not run"),
+            "{text}"
+        );
+        let next = "\n  Next  roko run plans/programme/demo\n  It keeps task 1 and runs task 2, task 3 and task 4.\n";
+        assert!(text.contains(next), "{text}");
+        // A task that passed shows its line; its tries need --verbose.
+        assert!(text.contains("\n  ✓ task 1  Write the parser"), "{text}");
+        assert_eq!(text.matches("try 1 ").count(), 1, "{text}");
 
         let verbose = render_text(&report, true);
-        let completed = "T1 [completed] Write the parser";
-        assert!(verbose.contains(completed), "{verbose}");
+        assert_eq!(verbose.matches("try 1 ").count(), 2, "{verbose}");
     }
 
     /// gap-2bec05: the report counts the run's agent calls whose cost is
@@ -3049,7 +3739,7 @@ title = "Tidy the changelog"
         let json = serde_json::to_value(&report).expect("serialize the report");
         assert_eq!(json["run_state"]["unpriced_calls"], 1);
         let text = render_text(&report, false);
-        let line = "\n  1 of 3 agent calls unpriced: cost unknown, not in the spend\n";
+        let line = "\n  1 of 3 calls has no known price; the spend leaves it out.\n";
         assert!(text.contains(line), "{text}");
 
         let free = CostRecord {
@@ -3139,7 +3829,7 @@ title = "Tidy the changelog"
 
         let text = render_text(&report, false);
         for line in [
-            "attempt 2 on gpt-5-codex: tool policy enforced by broker",
+            "try 2 on gpt-5-codex: tool policy enforced by broker",
             "asked: forbid web_fetch, web_search",
             "enforced: deny web_search; network off",
             "stopped at: web_search denied by policy: parser docs",
@@ -3367,17 +4057,16 @@ title = "Tidy the changelog"
         }
 
         let text = render_text(&report, false);
-        assert!(text.contains("T2 [completed] Wire the parser"), "{text}");
-        let why = format!("\n    completed; unverified: {REASON}\n");
+        assert!(text.contains("\n  ? task 2  Wire the parser"), "{text}");
+        let why = format!("not checked: {REASON}\n");
         assert!(text.contains(&why), "{text}");
-        assert!(text.contains("T1 [completed] Write the parser"), "{text}");
+        assert!(text.contains("\n  ? task 1  Write the parser"), "{text}");
         assert!(
-            text.contains("\n    completed; it has no verify steps\n"),
+            text.contains("nothing checked its work: it has no check\n"),
             "{text}"
         );
-        assert!(!text.contains("T3 [completed]"), "{text}");
-        assert!(!text.contains("T4 [completed]"), "{text}");
-        assert!(text.contains("2 completed tasks not shown"), "{text}");
+        assert!(text.contains("\n  ✓ task 3  Document the parser"), "{text}");
+        assert!(text.contains("\n  ✓ task 4  Tidy the changelog"), "{text}");
     }
 
     #[test]
@@ -3748,6 +4437,259 @@ title = "Tidy the changelog"
         assert!(
             error.contains("Plans with a Graph checkpoint: other-plan."),
             "{error}"
+        );
+    }
+
+    // ── Round v8's broken plan (gap-5043c6, bug-649557) ─────────────────
+
+    /// The `broken` plan of round v8's captures: one task, whose check fails.
+    const BROKEN_TOML: &str = r#"
+[meta]
+plan = "broken"
+
+[[task]]
+id = "T1"
+title = "Parse the settings file"
+role = "implementer"
+files = ["settings.py"]
+depends_on = []
+verify = [{ phase = "imports", command = "python3 -c 'import settings'" }]
+"#;
+
+    /// What the check printed on a try that left `line` broken.
+    fn traceback(root: &Path, line: &str, error: &str) -> String {
+        format!(
+            "verify[0:imports]: exit code: 1\n---stderr---\nTraceback (most recent call last):\n  \
+             File \"<string>\", line 1, in <module>\n  File \"{}/.roko/worktrees/attempt-0b76/settings.py\", \
+             line 2\n    {line}\n    ^\n{error}",
+            root.display()
+        )
+    }
+
+    /// A failed run of `broken`, as round v8's capture recorded it: two
+    /// tries that fail check `imports`, each with a helper call in the cost
+    /// log, a verdict in the run's `attempts.jsonl`, a gate failure and an
+    /// episode.
+    fn broken_run() -> tempfile::TempDir {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig, VerifyStepVerdict,
+        };
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let root = workspace.path();
+        let dir = root.join("plans/broken");
+        std::fs::create_dir_all(&dir).expect("plan dir");
+        std::fs::write(dir.join("tasks.toml"), BROKEN_TOML).expect("tasks.toml");
+        std::fs::create_dir_all(root.join(".roko/learn")).expect("learn dir");
+        let plan = Plan {
+            id: "broken".to_string(),
+            tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
+            dir,
+        };
+        let mut checkpoint = start_plan_checkpoint(root, &plan).expect("checkpoint");
+        checkpoint
+            .take_cost_ledger()
+            .persist(300_000, 0, Vec::new())
+            .expect("cost ledger");
+        let run_id = checkpoint.run_id().to_string();
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish");
+
+        let call =
+            |role: &str, model: &str, at: &str, ms: u64, cost: f64, success: bool| CostRecord {
+                role: role.into(),
+                model: model.into(),
+                plan_id: "broken".into(),
+                duration_ms: ms,
+                priced: Some(true),
+                ..attempt("T1", at, success, cost)
+            };
+        write_jsonl(
+            &root.join(".roko/learn/costs.jsonl"),
+            &[
+                call(
+                    "helper",
+                    "helper-model",
+                    "2026-11-12T09:33:54.966+00:00",
+                    8,
+                    0.0,
+                    true,
+                ),
+                call(
+                    "implementer",
+                    "glm-4.7",
+                    "2026-11-12T09:33:54.986+00:00",
+                    4622,
+                    0.13,
+                    false,
+                ),
+                call(
+                    "helper",
+                    "helper-model",
+                    "2026-11-12T09:34:00.896+00:00",
+                    8,
+                    0.0,
+                    true,
+                ),
+                call(
+                    "implementer",
+                    "glm-4.7",
+                    "2026-11-12T09:34:00.913+00:00",
+                    5352,
+                    0.17,
+                    false,
+                ),
+            ],
+        );
+        let failure = |at: &str, summary: String| GateFailureRecord {
+            plan_id: "broken".into(),
+            failure_kind: GateFailureKind::Permanent,
+            primary_class: FailureClass::Unknown,
+            recommended_action: GateFailureAction::Retry,
+            ..gate_failure("T1", at, &summary)
+        };
+        write_jsonl(
+            &root.join(".roko/learn/gate-failures.jsonl"),
+            &[
+                failure(
+                    "2026-11-12T09:33:54.939Z",
+                    traceback(
+                        root,
+                        "return dict(",
+                        "SyntaxError: unexpected EOF while parsing",
+                    ),
+                ),
+                failure(
+                    "2026-11-12T09:34:00.877Z",
+                    traceback(root, "pass", "SyntaxError: invalid syntax"),
+                ),
+            ],
+        );
+        let reason = "verify: 1/2 verify step(s) failed for task `Parse the settings file`";
+        write_jsonl(
+            &root.join(".roko/episodes.jsonl"),
+            &[
+                episode(
+                    "ep-1",
+                    "broken",
+                    "T1",
+                    "2026-11-12T09:33:54.967Z",
+                    Some(reason),
+                ),
+                episode(
+                    "ep-2",
+                    "broken",
+                    "T1",
+                    "2026-11-12T09:34:00.896Z",
+                    Some(reason),
+                ),
+            ],
+        );
+        let verdict = |attempt: u32, started: i64, settled: i64, cost: f64| {
+            let key = AttemptKey::new(run_id.as_str(), "broken", "T1", attempt);
+            let mut verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::GateFailed,
+                true,
+            );
+            verdict.executed.model_dispatched = Some("glm-4.7".to_string());
+            verdict.timing.attempt_started_at = Some(started);
+            verdict.timing.settled_at = Some(settled);
+            verdict.cost.billed_usd = Some(cost);
+            verdict.steps = vec![
+                VerifyStepVerdict {
+                    rung: "custom:imports".to_string(),
+                    passed: Some(false),
+                    exit_code: Some(1),
+                    ..VerifyStepVerdict::default()
+                },
+                VerifyStepVerdict {
+                    rung: "verify:1/compile".to_string(),
+                    skipped: true,
+                    skip_reason: Some("fail_fast".to_string()),
+                    ..VerifyStepVerdict::default()
+                },
+            ];
+            verdict
+        };
+        let writer = TelemetryWriter::spawn(
+            &RokoLayout::for_project(root).run_dir(&run_id),
+            TelemetryWriterConfig::default(),
+        )
+        .expect("spawn writer");
+        assert!(writer.submit(verdict(1, 1_794_476_029_846, 1_794_476_034_967, 0.13)));
+        assert!(writer.submit(verdict(2, 1_794_476_035_082, 1_794_476_040_896, 0.17)));
+        assert_eq!(writer.close().written, 2);
+        workspace
+    }
+
+    /// bug-649557: a task's tries are its own calls. The helper calls each
+    /// try made after its failed check are spend, and count among the run's
+    /// calls, but they are not tries: two tries read two, in JSON and text.
+    #[test]
+    fn diagnose_counts_a_tasks_tries_without_helper_calls() {
+        let workspace = broken_run();
+        let report = build_report(workspace.path(), "broken", false).expect("report");
+
+        let t1 = task(&report, "T1");
+        assert_eq!(t1.attempt_count, 2, "{:#?}", t1.attempts);
+        assert_eq!(t1.failed_attempts, 2);
+        let models: Vec<&str> = t1
+            .attempts
+            .iter()
+            .map(|attempt| attempt.model.as_str())
+            .collect();
+        assert_eq!(models, ["glm-4.7", "glm-4.7"]);
+        assert!(
+            t1.reason.starts_with("failed after 2 attempts"),
+            "{}",
+            t1.reason
+        );
+        assert_eq!(t1.tries.len(), 2, "{:#?}", t1.tries);
+        let run_state = report.run_state.as_ref().expect("run state");
+        assert_eq!(run_state.total_agent_calls, 4);
+
+        let text = render_text(&report, false);
+        assert!(!text.contains("helper-model"), "{text}");
+        assert!(text.contains("2 tries"), "{text}");
+        assert!(!text.contains("try 3"), "{text}");
+    }
+
+    /// gap-5043c6: diagnose names the plan and how its run ended; shows the
+    /// task as the run's table does, with the check it failed and its
+    /// command, a line per try (time, spend, model, the check's error), and
+    /// what the check printed on the last try, once, with paths in the
+    /// workspace shown relative to it; then the command that runs it again,
+    /// what that does, and what to change first.
+    #[test]
+    fn diagnose_shows_each_try_and_the_check_output_once() {
+        let workspace = broken_run();
+        let report = build_report(workspace.path(), "broken", false).expect("report");
+        let updated = report
+            .graph_run
+            .as_ref()
+            .and_then(|run| run.updated_at.as_deref())
+            .and_then(rfc3339_ms)
+            .expect("updated_at");
+        let text = render_lines(&report, false, Style::plain(), updated + 120_000).join("\n");
+
+        assert_eq!(text.matches("line 1, in <module>").count(), 1, "{text}");
+        assert!(
+            !text.contains(&workspace.path().display().to_string()),
+            "{text}"
+        );
+        insta::assert_snapshot!("diagnose_broken", text);
+
+        // At 80 columns on a terminal nothing reaches the last column.
+        let style = Style::plain().with_live(true).with_width(80);
+        let narrow = render_lines(&report, false, style, updated + 120_000);
+        assert!(
+            narrow
+                .iter()
+                .all(|line| crate::term_style::visible_width(line) < 80),
+            "{narrow:#?}"
         );
     }
 }

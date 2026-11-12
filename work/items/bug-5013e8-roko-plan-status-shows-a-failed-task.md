@@ -17,7 +17,7 @@ anchors = ["crates/roko-cli/src/commands/plan.rs::cmd_plan_dir_status"]
 links = { depends_on = [], blocks = [], related = ["gap-082a14"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn plan_status_rows_say_what_the_run_did' crates/roko-cli/src && cargo test -p roko-cli --bin roko -- plan_status_rows_say_what_the_run_did"
+command = "grep -rqw 'fn plan_status_rows_say_what_the_run_did' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_view::tests::plan_status_rows_say_what_the_run_did"
 +++
 
 ## Problem
@@ -51,6 +51,10 @@ run's `attempts.jsonl` verdicts.
 
 Derive each row from the checkpoint inspection: passed, failed, blocked, or not run. Fall back to tasks.toml only
 when the plan has no checkpoint. Fixed with round v8's plan status redesign.
+
+The rows come from `roko_cli::plan_status_view`, in the lib, so the test is a lib test: it builds its run with the
+lib's checkpoint fixtures (`start_plan_checkpoint` is test-only there). The verify first named `--bin roko`, where
+the filter would match nothing and pass.
 
 ## Done when
 

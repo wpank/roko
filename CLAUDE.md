@@ -171,7 +171,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko status` | What is running, how the last runs ended, what they spent, and one Next command; `--details` adds signal counts, efficiency and thresholds |
 | `roko doctor` | Diagnose workspace bootstrap state |
 | `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
-| `roko diagnose <plan-id>` | Diagnose why a plan failed: a readable report (`--json` for JSON, `--verbose` adds the tasks that completed) |
+| `roko diagnose <plan-id>` | Diagnose why a plan failed, in the run view's style: each task as the run left it; for one that failed, its check, a line per try and what the check printed, once; then Next, the command that runs it again (`--json` for JSON, `--verbose` adds the tries of the tasks that passed) |
 | `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
 | `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
 | `roko think "<question>"` | Research a question without executing agents or changing files |
@@ -193,9 +193,9 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |
-| `roko plan status <dir>` | Show execution status for a plan |
+| `roko plan status <dir>` | Show a plan's last run in the run view's style: each task as the run left it, the plan check, where the work went, and Next |
 | `roko plan queue show/validate/init` | Queue manifest operations |
-| `roko plan validate <dir>` | Lint tasks.toml without executing |
+| `roko plan validate <dir>` | Lint tasks.toml without executing: each problem once under its task, then `Ready to run` or what stops it, and Next |
 | `roko backlog list/audit/mark-done` | List `tmp/backlog` items, reconcile plan status against Graph runs, record closure evidence (`roko plan generate --from-backlog <ids>` turns specs into plans) |
 
 ### Agents

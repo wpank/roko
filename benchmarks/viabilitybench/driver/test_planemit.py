@@ -263,7 +263,7 @@ def test_real_roko_validates_the_ladder_plan(tmp_path):
                               "--dag", str(task.workdir / "plans")], cwd=task.workdir, env=env, capture_output=True,
                              text=True, timeout=120, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert "0 diagnostics in 1 plan" in checked.stdout and "Tasks: 1" in checked.stdout
+    assert "✓ Ready to run" in checked.stdout and "Tasks: 1" in checked.stdout
 
 
 @real_roko

@@ -283,6 +283,27 @@ impl TaskRow {
     pub fn label(&self) -> String {
         format!("task {}", self.number)
     }
+
+    /// What a run recorded of this task, for the table of a run that is not
+    /// live (`roko plan status`, `roko diagnose`; gap-5043c6): where it
+    /// ended, its tries, how long they took from the first start to the last
+    /// verdict, and what they spent.
+    pub fn set_recorded(
+        &mut self,
+        state: TaskState,
+        tries: u32,
+        elapsed: Option<Duration>,
+        spent_usd: f64,
+        now: Instant,
+    ) {
+        self.state = state;
+        self.try_no = tries;
+        if let Some(elapsed) = elapsed {
+            self.started = Some(now.checked_sub(elapsed).unwrap_or(now));
+            self.ended = Some(now);
+        }
+        self.spend = BTreeMap::from([(tries.max(1), spent_usd)]);
+    }
 }
 
 /// A plan's whole-plan check.
@@ -300,6 +321,36 @@ pub struct PlanCheckRow {
     ended: Option<Instant>,
     /// Why it failed.
     pub reason: Option<String>,
+    /// Whether the line shows its time: a run's records keep none.
+    timed: bool,
+}
+
+impl PlanCheckRow {
+    /// A plan check as a run recorded it, with its time when the record
+    /// keeps one (gap-5043c6).
+    #[must_use]
+    pub fn recorded(
+        plan_id: &str,
+        name: &str,
+        command: &str,
+        state: TaskState,
+        reason: Option<String>,
+        elapsed: Option<Duration>,
+    ) -> Self {
+        let now = Instant::now();
+        Self {
+            plan_id: plan_id.to_string(),
+            name: name.to_string(),
+            command: command.to_string(),
+            state,
+            started: elapsed
+                .and_then(|elapsed| now.checked_sub(elapsed))
+                .unwrap_or(now),
+            ended: Some(now),
+            reason,
+            timed: elapsed.is_some(),
+        }
+    }
 }
 
 /// What happened, for appended output: one line each.
@@ -601,6 +652,7 @@ impl RunModel {
                         started: now,
                         ended: None,
                         reason: None,
+                        timed: true,
                     }),
                 }
                 vec![Note::PlanCheckStarted(plan_id.clone())]
@@ -754,7 +806,8 @@ pub fn check_name(raw: &str) -> String {
 
 /// The line of a check's output that says what went wrong: the last line that
 /// reads like an error, else the last line.
-fn error_line(output: &str) -> Option<String> {
+#[must_use]
+pub fn error_line(output: &str) -> Option<String> {
     let lines: Vec<&str> = output
         .lines()
         .map(str::trim)
@@ -1011,6 +1064,7 @@ fn plan_check_lines(
     let tail = match check.state {
         TaskState::Running => style.paint(Role::Live, "checking"),
         TaskState::Stopped => style.paint(Role::Dim, "stopped"),
+        _ if !check.timed => String::new(),
         _ => {
             let time = term_style::duration(
                 check
@@ -1159,6 +1213,42 @@ pub fn table_lines(
         lines.push(footer);
     }
     lines
+}
+
+/// Task `index`'s lines in the finished table: its line, and the line under
+/// it for a retry or a failure. `roko diagnose` puts each task's tries under
+/// them (gap-5043c6).
+#[must_use]
+pub fn task_block(model: &RunModel, index: usize, style: Style, now: Instant) -> Vec<String> {
+    task_lines(
+        &model.tasks[index],
+        &Columns::of(model, style),
+        style,
+        now,
+        0,
+    )
+}
+
+/// Plan `plan_id`'s check's lines in the finished table, once it ran.
+#[must_use]
+pub fn plan_check_block(
+    model: &RunModel,
+    plan_id: &str,
+    style: Style,
+    now: Instant,
+) -> Vec<String> {
+    model
+        .plan_checks
+        .iter()
+        .find(|check| check.plan_id == plan_id)
+        .map(|check| plan_check_lines(check, &Columns::of(model, style), style, now, 0))
+        .unwrap_or_default()
+}
+
+/// Where the lines under a task start in the table: under its title.
+#[must_use]
+pub fn detail_indent(model: &RunModel, style: Style) -> usize {
+    Columns::of(model, style).indent().len()
 }
 
 /// The line appended output prints for `note`.
@@ -1413,16 +1503,7 @@ pub fn summary_lines(summary: &Summary, style: Style) -> Vec<String> {
         lines.push(format!("  {}", style.paint(Role::Dim, note)));
     }
     if let Some(next) = &summary.next {
-        lines.push(String::new());
-        let word = style.paint_bold(Role::You, "Next");
-        // A command is never cut: it goes on a line of its own when it
-        // doesn't fit beside the word.
-        if "Next  ".len() + term_style::visible_width(next) <= room {
-            lines.push(format!("  {word}  {next}"));
-        } else {
-            lines.push(format!("  {word}"));
-            lines.push(format!("  {next}"));
-        }
+        lines.extend(term_style::next_lines(style, next));
     }
     lines
 }

@@ -47,7 +47,8 @@ pub(crate) enum SelfModelCmd {
     /// logs), and print the data audit, its prequential scores, and how the runs' shadow
     /// forecasts join their routed attempts and verdicts. Nothing is saved.
     Fit {
-        /// Read the logs and dispatch nothing: the one mode there is.
+        /// Read the logs and dispatch nothing, the one mode there is, so it is the default; the
+        /// flag stays accepted for scripts that pass it (gap-45f6bb).
         #[arg(long)]
         offline: bool,
         /// The `.roko` directory to read (default: the working directory's).
@@ -116,10 +117,7 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
     let snapshot = PriceSnapshot::for_workspace(&config.pricing, &workdir)
         .context("load the price snapshot")?;
     match cmd {
-        SelfModelCmd::Fit { offline, from, .. } => {
-            if !offline {
-                bail!("only `--offline` fits exist: the fit reads the logs and dispatches nothing");
-            }
+        SelfModelCmd::Fit { from, .. } => {
             let layout = from.map_or_else(|| RokoLayout::for_project(&workdir), RokoLayout::new);
             // The gate a plan run scores with: `[self_model] n_min` is its W (gap-4c531f).
             let gate = CalibrationGate::of(&config.self_model);
@@ -192,6 +190,8 @@ pub(crate) struct FitReport {
     pub(crate) gate: Option<GateReport>,
     /// How the runs' shadow forecasts join their routed attempts and verdicts (S04 §7.4).
     pub(crate) forecast_join: ForecastReport,
+    /// Those forecasts scored against what happened, as the runs made them (gap-45f6bb).
+    pub(crate) live_forecasts: ingest::LiveForecasts,
 }
 
 /// A fit's data audit: each source's counts, and the units left once the legacy logs' copies
@@ -275,6 +275,8 @@ pub(crate) fn fit_offline(
     let runs = ingest::read_runs(&layout.runs_dir()).context("read the S01 runs")?;
     let forecasts =
         ingest::read_forecast_join(&layout.runs_dir()).context("read the S01 runs' forecasts")?;
+    let live_forecasts = ingest::score_live_forecasts(&layout.runs_dir())
+        .context("score the S01 runs' forecasts")?;
     let logs = legacy::read_files(&layout.efficiency_path(), &layout.episodes_path())
         .context("read the legacy logs")?;
     let held: BTreeSet<(&str, &str)> = runs.units.iter().map(plan_task).collect();
@@ -349,6 +351,7 @@ pub(crate) fn fit_offline(
         calibration,
         gate: report,
         forecast_join: ForecastReport::of(forecasts),
+        live_forecasts,
     })
 }
 
@@ -380,8 +383,8 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
     );
     let _ = writeln!(
         out,
-        "prequential (n = {}): Brier {}, base rate {}, Brier skill {}, ECE {}, calibration in \
-         the large {}, AUROC {}",
+        "prequential, over all {} units: Brier {}, base rate {}, Brier skill {}, ECE {}, \
+         calibration in the large {}, AUROC {}",
         scores.n,
         number(scores.brier),
         number(scores.base_rate),
@@ -398,12 +401,21 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
                 report.calibration, scores.n, report.window
             );
         }
+        // The gate scores only its last W outcomes, a window of its own (gap-45f6bb).
         Some(gate) if gate.reasons.is_empty() => {
-            let _ = writeln!(out, "calibration: {}", report.calibration);
+            let _ = writeln!(
+                out,
+                "calibration, over the gate's last {} outcomes: {}",
+                gate.window, report.calibration
+            );
         }
         Some(gate) => {
             let reasons = gate.reasons.join("; ");
-            let _ = writeln!(out, "calibration: {} ({reasons})", report.calibration);
+            let _ = writeln!(
+                out,
+                "calibration, over the gate's last {} outcomes: {} ({reasons})",
+                gate.window, report.calibration
+            );
         }
     }
     let join = &report.forecast_join;
@@ -430,6 +442,20 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
             number(join.join_share),
             counts.no_verdict,
             counts.unlabelled
+        );
+    }
+    let live = &report.live_forecasts;
+    if live.n == 0 {
+        let _ = writeln!(out, "live forecasts: none scored against a verdict");
+    } else {
+        let _ = writeln!(
+            out,
+            "live forecasts, as the runs made them: {} scored against their verdicts, Brier {} \
+             against {} for always forecasting the pass rate (Brier skill {})",
+            live.n,
+            number(live.brier),
+            number(live.base_rate_brier),
+            number(live.brier_skill)
         );
     }
     out
@@ -1057,6 +1083,96 @@ mod tests {
         }
         let json = prices_json(&snapshot);
         assert_eq!(json["rows"].as_array().map(Vec::len), Some(rows));
+    }
+
+    /// gap-45f6bb: `roko learn self-model fit` runs without `--offline`: the fit reads the logs
+    /// and dispatches nothing, the one mode there is.
+    #[test]
+    fn self_model_fit_runs_offline_by_default() {
+        use clap::Parser as _;
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let workdir = workspace.path().to_string_lossy().into_owned();
+        let parse = || {
+            Cli::try_parse_from(["roko", "learn", "self-model", "fit", "--workdir", &workdir])
+                .expect("parse self-model fit")
+        };
+        let Some(Command::Learn {
+            cmd: LearnCmd::SelfModel { cmd },
+        }) = parse().command
+        else {
+            panic!("a self-model command");
+        };
+        assert_eq!(
+            cmd_self_model(&parse(), cmd, true).expect("a fit without --offline"),
+            0
+        );
+    }
+
+    /// gap-45f6bb: the fit says what each score covers. The prequential scores every unit, the
+    /// calibration gate its last W outcomes, and the live forecasts what the runs' shadow
+    /// forecasts said at the time, against what happened.
+    #[test]
+    fn the_fit_names_its_windows_and_scores_the_live_forecasts() {
+        use roko_learn::telemetry::records::{
+            AttemptPredictionRecord, PredictionCandidate, PredictionDecision, PredictionPredictor,
+        };
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+            TelemetryWriter, TelemetryWriterConfig,
+        };
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+
+        // One run: the self-model forecast 0.8 for the arm that ran, and the try passed.
+        let layout = RokoLayout::for_project(workspace.path());
+        let identity = || AttemptIdentity::new(&AttemptKey::new("run-l", "plan-l", "T1", 1));
+        let candidate: PredictionCandidate = serde_json::from_value(serde_json::json!({
+            "arm": "roko/cerebras/gpt-oss-120b@default#V0",
+            "p_gate": 0.8, "p_fg": 0.05, "p_vs": 0.76, "p_vs_lcb": 0.7,
+            "cost_q50": 0.01, "cost_q90": 0.02, "lat_q50_s": 30.0, "lat_q90_s": 60.0,
+        }))
+        .expect("a candidate");
+        let predictor = PredictionPredictor {
+            version: "m3-l1-00000000".to_string(),
+            class: "m3-l1".to_string(),
+            mode: "shadow".to_string(),
+            trained_on_n: 0,
+            features_schema: 1,
+            features_hash: "b3:0".to_string(),
+        };
+        let decision = PredictionDecision {
+            would_choose: None,
+            default: None,
+            action: "dispatch".to_string(),
+            start_rules: None,
+        };
+        let run_dir = layout.run_dir("run-l");
+        std::fs::create_dir_all(&run_dir).expect("the run's directory");
+        let writer =
+            TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default()).expect("a writer");
+        assert!(writer.submit(AttemptOpenRecord::new(identity(), 0)));
+        let forecast =
+            AttemptPredictionRecord::new(identity(), predictor, vec![candidate], decision);
+        assert!(writer.submit(forecast));
+        let mut verdict = AttemptVerdictRecord::settle(identity(), AttemptOutcome::Passed, true);
+        verdict.executed.provider = Some("cerebras".to_string());
+        verdict.executed.model_dispatched = Some("gpt-oss-120b".to_string());
+        assert!(writer.submit(verdict));
+        writer.close();
+
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
+        let live = report.live_forecasts;
+        assert_eq!((live.n, live.passes), (1, 1));
+        let brier = live.brier.expect("a Brier score");
+        assert!((brier - 0.04).abs() < 1e-9, "{brier}");
+        let text = render_fit(&report);
+        assert!(text.contains("prequential, over all "), "{text}");
+        assert!(
+            text.contains("live forecasts, as the runs made them: 1 scored against their verdicts"),
+            "{text}"
+        );
     }
 
     /// 6124: the three commands parse.

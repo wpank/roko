@@ -13,7 +13,8 @@
 //!
 //! [`read_forecast_join`] joins each run's shadow forecasts (`predictions.jsonl`, 6126) to its
 //! routed attempts and their verdicts by attempt key: the measure of S04 §7.4's shadow
-//! acceptance (gap-96547f).
+//! acceptance (gap-96547f). [`score_live_forecasts`] scores those forecasts against what
+//! happened, as the runs made them (gap-45f6bb).
 //!
 //! Read-only: nothing here writes under `.roko/`.
 
@@ -369,6 +370,85 @@ impl ForecastJoin {
             }
         }
     }
+}
+
+/// The runs' shadow forecasts scored against what happened (gap-45f6bb): each forecast whose
+/// attempt settled with a learning label, on the pass probability it gave the arm that ran. A fit
+/// scores today's predictor over the logs; this scores what the self-model said at the time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct LiveForecasts {
+    /// Forecasts scored.
+    pub n: usize,
+    /// Of those, the attempts that passed.
+    pub passes: usize,
+    /// Their Brier score.
+    pub brier: Option<f64>,
+    /// The Brier score of always forecasting their pass rate.
+    pub base_rate_brier: Option<f64>,
+    /// Brier skill against it: below 0, worse than the base rate.
+    pub brier_skill: Option<f64>,
+}
+
+/// Score every run's shadow forecasts under `runs_dir` ([`LiveForecasts`]). A forecast counts
+/// when its attempt settled with a label and it gave the arm that ran a pass probability.
+///
+/// # Errors
+///
+/// Returns an error when the directory or a run's files exist but cannot be read.
+pub fn score_live_forecasts(runs_dir: &Path) -> std::io::Result<LiveForecasts> {
+    let (mut n, mut passes, mut squared) = (0_usize, 0_usize, 0.0_f64);
+    for run_dir in run_dirs(runs_dir)? {
+        let run = RunRecords::load(&run_dir).map_err(std::io::Error::other)?;
+        let verdicts: HashMap<&str, &AttemptVerdictRecord> = run
+            .verdicts
+            .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
+            .map(|line| (line.record.identity.attempt_key.as_str(), &line.record))
+            .collect();
+        for line in &run.predictions {
+            let forecast = &line.record;
+            let Some(verdict) = verdicts.get(forecast.identity.attempt_key.as_str()) else {
+                continue;
+            };
+            let Some(passed) = verdict.learning_success() else {
+                continue;
+            };
+            let executed = &verdict.executed;
+            let model = executed
+                .model_dispatched
+                .as_deref()
+                .or(executed.model_requested.as_deref());
+            let ran = |arm: &ArmKey| {
+                Some(arm.provider.as_str()) == executed.provider.as_deref()
+                    && Some(arm.model.as_str()) == model
+            };
+            let Some(p) = forecast
+                .candidates
+                .iter()
+                .find(|candidate| candidate.arm.parse::<ArmKey>().is_ok_and(|arm| ran(&arm)))
+                .map(|candidate| candidate.p_gate)
+            else {
+                continue;
+            };
+            let outcome = if passed { 1.0 } else { 0.0 };
+            squared += (p - outcome) * (p - outcome);
+            n += 1;
+            passes += usize::from(passed);
+        }
+    }
+    let rate = share(passes, n);
+    let brier = (n > 0).then(|| squared / n as f64);
+    let base_rate_brier = rate.map(|rate| rate * (1.0 - rate));
+    let brier_skill = brier
+        .zip(base_rate_brier)
+        .and_then(|(brier, base)| (base > 0.0).then(|| 1.0 - brier / base));
+    Ok(LiveForecasts {
+        n,
+        passes,
+        brier,
+        base_rate_brier,
+        brier_skill,
+    })
 }
 
 /// `part` of `whole`; `None` when `whole` is 0.

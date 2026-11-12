@@ -2,7 +2,7 @@
 id = "gap-45f6bb"
 kind = "gap"
 title = "roko learn self-model fit refuses to run without --offline, its only mode, prints two Brier skills over different windows without naming either (0.079 and -0.024 on the roko repo), and scores today's predictor over the logs while saying nothing of the forecasts the runs made (v7's live shadow forecasts: skill -0.19)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands", "roko-learn/self-model"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "508b7a5ff"
 source = "round-v8 roko-learnguard survey ($V8/roko-learnguard/survey, roko a0089c19c)"
 discovered_from = "agent:roko-learnguard (round v8)"
 anchors = ["crates/roko-cli/src/commands/learn_self_model.rs", "crates/roko-learn/src/self_model/gate.rs::CalibrationGate::evaluate"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-00e982"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn self_model_fit_runs_offline_by_default' crates/roko-cli/src && cargo test -p roko-cli self_model_fit_runs_offline_by_default"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T13:08:33Z"
+commit = "508b7a5ff"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-11-12T12:00:45Z"
+forced = false
+evidence = "508b7a5ff. crates/roko-cli learn_self_model.rs: the fit runs offline without --offline (the flag stays accepted); its lines name their windows (prequential, over all N units; calibration, over the gate's last W outcomes); a live-forecasts line scores the runs' shadow forecasts for the arm that ran against their verdicts, with the base-rate Brier beside it (crates/roko-learn self_model/ingest.rs score_live_forecasts, FitReport::live_forecasts in the JSON). Red first on 57f0fdf6f: self_model_fit_runs_offline_by_default failed (the fit bailed without --offline); green: it and the_fit_names_its_windows_and_scores_the_live_forecasts pass with the learn_self_model tests; lib suites roko-cli 4109/0 (bins 10/0, 483/0), roko-learn 1413/0, roko-serve 1091/0, the known flake bug-5c77d6 passing alone and in the rerun; clippy -D warnings and nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/45f6bb-2e6afb-chain.log, 45f6bb-2e6afb-rerun.log)."
 +++
 
 ## Problem

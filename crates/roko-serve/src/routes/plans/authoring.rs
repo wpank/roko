@@ -382,6 +382,7 @@ pub(crate) async fn start_plan_generation(
             .map(|path| state.workdir.join(path)),
     };
     let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
+    let row_title = write_title(title.as_deref(), &prompt_text);
     let prompt_text = origin.request_text(&prompt_text).into_owned();
     // bug-7a08a8: a chat host's plan runs with nobody to answer its questions.
     let for_chat_host = origin.is_chat();
@@ -564,6 +565,8 @@ pub(crate) async fn start_plan_generation(
         progress: Some(progress_rx),
         write: Some(crate::state::PlanWrite {
             plan_id: slug.clone(),
+            title: row_title,
+            max_usd: cap.max_usd,
             cancel,
         }),
     };
@@ -573,6 +576,27 @@ pub(crate) async fn start_plan_generation(
     let _ = start_tx.send(());
 
     (op_id, slug)
+}
+
+/// What a plan write's row in the plan list calls it (gap-6774b5): `title`,
+/// when it was given one, else the first line of its `request`, as a
+/// heading's text, cut at 80 characters.
+fn write_title(title: Option<&str>, request: &str) -> String {
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        return title.to_string();
+    }
+    let line = request
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .trim_start_matches('#')
+        .trim();
+    // At most 80 characters, cut at a character's boundary (bug-7feee7).
+    line.char_indices()
+        .nth(80)
+        .map_or(line, |(end, _)| &line[..end])
+        .to_string()
 }
 
 /// Drive a plan write's `generation` until it ends, or until `cancel` stops

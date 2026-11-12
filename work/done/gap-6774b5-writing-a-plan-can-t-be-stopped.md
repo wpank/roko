@@ -2,7 +2,7 @@
 id = "gap-6774b5"
 kind = "gap"
 title = "A plan write's spend reaches the event stream only as bare efficiency events, and the plan list has no row for a plan being written: a host has to poll the operation to show SPENT, and closing the box that asked loses sight of the write"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -15,9 +15,23 @@ discovered_from = "agent:portal-v8 (round v8, 33c33e738)"
 anchors = ["crates/roko-cli/src/plan_authoring.rs::AuthoringSpend::record", "crates/roko-serve/src/routes/plans/reads.rs::list_plans", "crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation"]
 links = { depends_on = ["bug-36ce72"], blocks = ["gap-f8c57a"], related = ["gap-6c4d24", "gap-5c3347"], supersedes = [], duplicate_of = "" }
 last_verified = 2026-11-12
+last_verified_rev = "7b18bfe3e"
 
 [[verify]]
 command = "grep -rqw 'fn plan_writing_calls_publish_their_cost_as_they_settle' crates/roko-cli/src && grep -rqw 'fn the_plan_list_shows_a_plan_being_written' crates/roko-serve/src && cargo test -p roko-cli --lib plan_writing_calls_publish_their_cost_as_they_settle && cargo test -p roko-serve --lib the_plan_list_shows_a_plan_being_written"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T22:55:01Z"
+commit = "7b18bfe3e"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "M"
+claimed_at = "2026-11-12T21:50:01Z"
+forced = false
+evidence = "roko-cli AuthoringSpend::record publishes call_cost per plan-writing call as it settles (plan, task generate/revise, attempt 1, call N, model, tokens, cost_usd or null when unpriced, attempt_cost_usd = the write's spend so far, wall_ms, outcome); roko serve GET /api/plans?writing=true adds a row per plan being written (status writing, no tasks, title, writing {run_id, stage, elapsed_secs, calls, cost_usd, max_usd}); without the query the list is unchanged. Red first at 8fe567c37 (the writing row missing: []). At 7b18bfe3e's tree in roko-work-bug-36ce72: plan_writing_calls_publish_their_cost_as_they_settle and the existing spend tests pass (7), the_plan_list_shows_a_plan_being_written and the list/cancel tests pass (5), roko-serve lib 1101/1101, nightly fmt and clippy -D warnings clean on roko-serve and roko-cli."
 +++
 
 ## Problem

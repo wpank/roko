@@ -3,14 +3,28 @@
 
 use super::*;
 
+/// The query of `GET /api/plans`.
+#[derive(Deserialize, Default)]
+pub(super) struct ListPlansQuery {
+    /// Also list each plan being written (gap-6774b5).
+    #[serde(default)]
+    writing: bool,
+}
+
 /// `GET /api/plans` — list plans by delegating to the runtime's plan discovery.
 ///
 /// The previous implementation walked `.roko/plans/` and filtered by file
 /// extension, which silently skipped every plan stored as a directory (the
 /// normal layout). Delegating to `state.runtime.list_plans()` fixes that and
 /// also surfaces richer status metadata the portal needs to colour plans.
+///
+/// With `?writing=true` the list also has a row for each plan being written
+/// (gap-6774b5): `status: "writing"`, no tasks, and `writing`, what the write
+/// is doing and has spent. Without it the list is unchanged, so older hosts
+/// see only plans on disk.
 pub(super) async fn list_plans(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ListPlansQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let plans = state
         .runtime
@@ -20,7 +34,7 @@ pub(super) async fn list_plans(
             ApiError::internal(format!("list plans in {}: {e}", state.workdir.display()))
         })?;
 
-    let summaries: Vec<Value> = plans
+    let mut summaries: Vec<Value> = plans
         .into_iter()
         .map(|dto| {
             let mut v = serde_json::to_value(&dto).unwrap_or(Value::Null);
@@ -31,8 +45,52 @@ pub(super) async fn list_plans(
             v
         })
         .collect();
+    if query.writing {
+        let writing = writing_rows(&state, &summaries).await;
+        summaries.extend(writing);
+    }
 
     Ok(Json(Value::Array(summaries)))
+}
+
+/// A row for each plan being written whose plan isn't in `listed` yet, oldest
+/// first (gap-6774b5): the plan summary's fields, with `status: "writing"`
+/// and no tasks, and `writing`, what the write is doing and has spent.
+async fn writing_rows(state: &AppState, listed: &[Value]) -> Vec<Value> {
+    let operations = state.operations.read().await;
+    let mut writes: Vec<_> = operations
+        .values()
+        .filter(|operation| matches!(operation.status, OperationStatus::Running))
+        .filter_map(|operation| Some((operation, operation.write.as_ref()?)))
+        .filter(|(_, write)| !listed.iter().any(|row| row["id"] == write.plan_id.as_str()))
+        .collect();
+    writes.sort_by_key(|(operation, _)| operation.started);
+    writes
+        .into_iter()
+        .map(|(operation, write)| {
+            let progress = crate::operations::latest_progress(operation).unwrap_or(Value::Null);
+            json!({
+                "id": write.plan_id,
+                "title": write.title,
+                "task_count": 0,
+                "tasks_done": 0,
+                "completed_task_count": 0,
+                "tasks_failed": 0,
+                "completed": false,
+                "status": "writing",
+                "fixture": false,
+                "old_format": false,
+                "writing": {
+                    "run_id": operation.id,
+                    "stage": progress.get("stage"),
+                    "elapsed_secs": operation.started.elapsed().as_secs(),
+                    "calls": progress.get("calls"),
+                    "cost_usd": progress.get("cost_usd"),
+                    "max_usd": write.max_usd,
+                },
+            })
+        })
+        .collect()
 }
 
 /// `GET /api/plans/:id` — load a specific plan summary, with the plan's last

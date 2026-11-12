@@ -75,3 +75,7 @@ A reader can't tell from it which loops are working, which are measured, and wha
 
 - Found by roko-learnguard's round v8 survey (`$V8/findings/roko-learnguard.md`).
 - Related: gap-2cc5be (the HTTP route's list leaves out the same β fields).
+- Correction (2026-11-12, roko-learnguard): the counts in the title and the problem came from the table's n_L
+  column. Counting opportunities on both arms, Undertow's most measured loop is L-placebo with 110 (L-sec 107, L-know
+  and L-play 101 each), and `render_summary` counts 5 loops measured, L-M1 (8/0) among them. The summary line takes
+  its counts from the data, so the merged code is unaffected.

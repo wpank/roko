@@ -2,7 +2,7 @@
 id = "bug-187c5c"
 kind = "bug"
 title = "A plan write spends past the cap a person approved: the cap is checked only once the calls so far cost it, so phase 1's write spent $0.258 against $0.25, and nothing bounds a planner call's own tool loop"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "9d34a2e8b"
+last_verified_rev = "acb74de21"
 source = "round-v8 hermes-pilot-v8, phase 1 plan write op 19bfbbb8 (Undertow 19943c9, roko bd93521ee), tmp/hermes-roko-v8/pilot/evidence/p1-plan-writing-status.json"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/agent_exec.rs::AgentExecOpts", "crates/roko-cli/src/agent_spawn.rs::SpawnAgentSpec", "crates/roko-cli/src/plan_authoring.rs::AuthoringSpend"]
@@ -23,6 +23,17 @@ command = "grep -rqw 'fn plan_generation_never_spends_past_its_cap' crates/roko-
 
 [[verify]]
 command = "grep -rqw 'fn the_generation_budget_refuses_the_call_that_would_pass_the_cap' crates/roko-cli/src/ && cargo test -p roko-cli --lib the_generation_budget_refuses_the_call_that_would_pass_the_cap"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T16:03:41Z"
+commit = "122355614"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "M"
+forced = false
+evidence = "Between planner calls a call is made only while what is spent and the costliest call so far stay within the cap (AuthoringSpend keeps the costliest); an improvement it leaves out is skipped and the plan in hand written, a retry it needs stops with 'would pass its spend cap'. Inside a planner call AgentExecOpts carries a SpendLimit, what is left of the cap: roko's tool loop refuses a model call when the run's spend and the generation's costliest model call would pass it, priced as the call's spend is, and a Claude CLI planner gets it as --max-budget-usd; a run stopped there is the crash class BudgetExhausted, not retried. Verify plan_generation_never_spends_past_its_cap ($0.13 calls: under $0.25 the regeneration is skipped at $0.13 and a needed retry stops with the cap's error; under $0.30 both calls run with --max-budget-usd 0.300000 then 0.170000) and the_generation_budget_refuses_the_call_that_would_pass_the_cap pass on the trial merge 5419c421e (main ba5866664 + bug-6ebc03 + this branch), with plan_generation_stops_at_its_spend_cap, all 96 pipeline tests and nightly fmt --check; roko-cli lib 4131 passed on the combined tree before the test fix, and cargo clippy --workspace --no-deps -D warnings is clean."
 +++
 
 ## Problem

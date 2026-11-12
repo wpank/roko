@@ -180,7 +180,7 @@ These flags are `global = true` and can be placed before any subcommand.
 | `--no-replan` | flag | false | Disable re-planning; gate failures become terminal failures. |
 | `--skip-validate` | flag | false | Skip tasks.toml structure validation (for freshly-generated plans). |
 | `--headless` | flag | false | Run as a headless daemon (background service). |
-| `--color auto\|always\|never` | enum | `auto` | Control ANSI color output. Respects `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`. |
+| `--color auto\|always\|never` | enum | `auto` | Control ANSI color output, for every command. Respects `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and `TERM=dumb`. |
 | `--timing` | flag | false | Print elapsed time after command execution. Also enabled by `ROKO_TIMING=1`. |
 | `--no-serve` | flag | false | Do not start the HTTP control plane in the background. |
 
@@ -193,13 +193,15 @@ These flags are `global = true` and can be placed before any subcommand.
 | `high` | Thorough reasoning. |
 | `max` | Maximum reasoning -- slowest, most expensive. |
 
-**Color auto-mode precedence** (highest first):
+**Color auto-mode precedence** (highest first), for every command's output:
 
 1. `NO_COLOR` set and non-empty -> off
 2. `CLICOLOR_FORCE` set and not `"0"` -> on
-3. `CLICOLOR=0` -> off
-4. stdout is a TTY -> on
+3. `CLICOLOR=0` or `TERM=dumb` -> off
+4. the output stream is a TTY -> on
 5. otherwise -> off
+
+So a pipe, a file or CI gets plain text unless `--color always` or `CLICOLOR_FORCE` asks for color.
 
 ---
 
@@ -2353,6 +2355,7 @@ roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
 | `NO_COLOR` | Disable ANSI colors when set and non-empty. |
 | `CLICOLOR_FORCE` | Force ANSI colors when set and not `"0"`. |
 | `CLICOLOR=0` | Disable ANSI colors. |
+| `TERM=dumb` | Disable ANSI colors. |
 | `NUNCHI_DASHBOARD_URL` | Override the dashboard URL for browser auth (`roko login`). |
 | `PERPLEXITY_API_KEY` | Required for `roko research search` and Perplexity-backed research. |
 | `GEMINI_API_KEY` | Required for Gemini-grounded research. |

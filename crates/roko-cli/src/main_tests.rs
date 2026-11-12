@@ -475,6 +475,7 @@ fn cli_parses_run_flags() {
             resume_plan,
             no_holdout: false,
             no_audit: false,
+            tui: false,
         }) => {
             assert_eq!(prompt, vec!["add".to_string(), "login".to_string()]);
             assert!(plan);
@@ -491,6 +492,24 @@ fn cli_parses_run_flags() {
         }
         other => panic!("expected run command, got {other:?}"),
     }
+}
+
+/// gap-2c87f0: `--tui` opens the dashboard instead of the live view, on
+/// `roko run plans/<dir>` and on `roko plan run` (where it is `--approval`'s
+/// alias).
+#[test]
+fn cli_parses_the_dashboard_flag() {
+    let cli = Cli::try_parse_from(["roko", "run", "plans/add-login", "--tui"]).unwrap();
+    assert!(matches!(cli.command, Some(Command::Run { tui: true, .. })));
+    let cli = Cli::try_parse_from(["roko", "run", "plans/add-login"]).unwrap();
+    assert!(matches!(cli.command, Some(Command::Run { tui: false, .. })));
+    let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--tui"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Plan {
+            cmd: PlanCmd::Run { approval: true, .. }
+        })
+    ));
 }
 
 /// 9121: `roko run --domain <label>` names the one-task run's work domain.

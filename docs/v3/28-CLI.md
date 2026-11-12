@@ -274,7 +274,7 @@ roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
                               [--context <path>...] [--no-cascade] [--provider <name>]
                               [--workdir <path>] [--max-retries <n>] [--domain <label>]
                               [--serve] [--share] [--fresh] [--resume-plan [<path>]]
-                              [--no-holdout] [--no-audit]
+                              [--no-holdout] [--no-audit] [--tui]
 ```
 
 | Arg/Flag | Default | Description |
@@ -296,14 +296,16 @@ roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
 | `--resume-plan [<path>]` | -- | Plan directory only: resume from the last checkpoint (default `.roko/state/graph/`). |
 | `--no-holdout` | false | Maximize mode for this run alone (decision 4115), as `[experiments] maximize = true` is for every run: every holdout rate and the routing exploration rate are 0, so no learning loop is withheld, no route explores, and the spec gate holds out none of its decisions (`[spec_quality] holdout_frac` counts as 0). Every decision is still logged. |
 | `--no-audit` | false | Run no audits for this run alone (decision 7103), as `[audit] enabled = false` does for every run: no green attempt is drawn for a deep audit (see [`roko audit`](#roko-audit)), so audits spend nothing. |
+| `--tui` | false | Plan directory only: open the full-screen dashboard on a terminal instead of the live view, as `roko plan run --tui` does. |
 
 `--no-holdout` and `--no-audit` apply however the prompt runs: as one task, or as a plan written
 first. With a plan directory they apply as on `roko plan run`, which refuses them while a server
 owns the workspace.
 
 The global flags (`--model`, `--role`, `--json`, `--effort`, `--quiet`) apply as usual. For
-the full set of plan-run options (budgets, worktrees, topology, the inline TUI), use
-[`roko plan run`](#roko-plan-run).
+the full set of plan-run options (budgets, worktrees, topology, the dashboard), use
+[`roko plan run`](#roko-plan-run). What a run prints, the live view and its summary, is
+described there under [What a run shows](#what-a-run-shows).
 
 `roko run` does not classify intent: a question is not routed to research. Ask questions
 with `roko think "<question>"` or `roko research topic "<topic>"`.
@@ -633,7 +635,7 @@ run with the common options; `roko plan run` takes the full set below.
 
 ```
 roko plan run <plans-dir> [--engine graph] [--workdir <path>]
-              [--resume-plan [<path>]] [--approval] [--no-tui]
+              [--resume-plan [<path>]] [--approval | --tui] [--no-tui]
               [--max-retries <n>] [--max-tasks <n>] [--dry-run]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget] [--frozen-learning]
@@ -649,8 +651,8 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--engine <engine>` | `graph` | `graph` is the sole engine. `legacy`/`runner-v2` are accepted but exit with a deprecation error. |
 | `--workdir <path>` | cwd | Working directory (repo root). |
 | `--resume-plan [<path>]` | -- | Resume from checkpoint. Default resume path: `.roko/state/graph/`. Alias: `--resume-state`. |
-| `--approval` | false | Accepted, and changes nothing: the run opens the inline TUI whenever stdout is a terminal, unless `--no-tui`, `--quiet` or `--json` is given. Alias: `--tui`. |
-| `--no-tui` | false | Suppress auto-enabled TUI in interactive terminals. |
+| `--approval` | false | Open the full-screen dashboard (the TUI) on a terminal instead of the live view. A plan with `[meta] approval = "per_task"` opens it by itself, since its approvals are answered there. Alias: `--tui`. |
+| `--no-tui` | false | Show the live view, the default. Kept so scripts that pass it still work. |
 | `--max-retries <n>` | config | Maximum retry attempts per task. |
 | `--max-tasks <n>` | config | Maximum concurrent tasks per plan; `0` keeps configured behavior. |
 | `--dry-run` | false | Parse and display the plan without executing. |
@@ -674,7 +676,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 ```bash
 roko plan run plans/                            # Run all plans
 roko plan run plans/my-plan                     # Run one plan
-roko plan run plans/ --no-tui                   # Plain log output instead of the inline TUI
+roko plan run plans/ --tui                      # The full-screen dashboard instead of the live view
 roko plan run plans/ --max-parallel-plans 3     # Up to 3 independent plans at once
 roko plan run plans/ --dry-run                  # Preview without executing
 roko plan run plans/ --fresh                    # Archive old state, start clean
@@ -682,6 +684,25 @@ roko plan run plans/ --resume-plan              # Resume from last checkpoint
 roko plan run plans/ --max-retries 3            # Override retry limit
 roko plan run plans/ --budget-override 50.0     # $50 cost ceiling
 ```
+
+##### What a run shows
+
+`roko run` and `roko plan run` show a run the same way, in roko's design system:
+
+- **A header:** `◆ roko  run <plan>` (a one-task run is named by its request), then a faint line: tasks, how many
+  run at once, the model they start on, the cap.
+- **Live, on a terminal:** one line per task, redrawn in place: its state (○ waiting, a spinner running, ✓ passed,
+  ✗ failed), `task N`, its title, and what it is doing now (`writing cli.py`, `try 2 · checking usage`), or, once
+  done, its tries, time and spend. A try that failed shows under its task. A footer holds the figures that change
+  on black glass: tasks done, elapsed time, spend of the cap.
+- **In a pipe, in CI (`CI` set) or with `TERM=dumb`:** one line per event, appended, with the same words.
+- **The end:** the tasks as they finished, the plan check, then the summary on stdout: `✓ Done  3/3 tasks · 7 checks
+  passed · 17s · $0.44 of $3.00`, or `✗ Failed  task 1's check imports still failed after 2 tries`; where the work
+  is (`The work is on its own branch: +9 −1 in 3 files.`); and **Next**, one command to paste (`git merge --ff-only
+  roko/batch/<run-id>`, `roko diagnose <plan>`, or `roko run <plan-dir> --resume-plan` after a stop).
+
+The view writes to stderr and the summary to stdout; `--json` prints only the JSON report on stdout. Colour follows
+`--color` and [its rules](#global-flags).
 
 The Graph engine does not implement `--skip-preflight`, `--screenshots`, `--screenshot-interval`, `--screenshot-dir`,
 `--batch-size`, or the global `--resume <session>` and `--effort`. They still parse, but `plan run` stops with an error

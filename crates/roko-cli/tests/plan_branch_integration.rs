@@ -352,8 +352,11 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     // ...but the plan did not succeed: the command exits 1 naming it, the
     // plan branch is kept, and nothing reached the batch.
     assert_eq!(run.status.code(), Some(1), "{log}");
+    // The summary says it failed and names the plan to look into
+    // (gap-2c87f0).
+    let summary = String::from_utf8_lossy(&run.stdout);
     assert!(
-        String::from_utf8_lossy(&run.stdout).contains("Plans that did not succeed: c4"),
+        summary.contains("✗ Failed") && summary.contains("Next  roko diagnose c4"),
         "{log}"
     );
     let batch = git(

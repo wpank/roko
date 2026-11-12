@@ -151,6 +151,7 @@ tempfile = { workspace = true }
 [dev-dependencies]
 agent-relay = { path = "../../apps/agent-relay" }
 assert_cmd = { workspace = true }
+insta = "1.43.2"
 predicates = { workspace = true }
 roko-graph = { path = "../roko-graph", features = ["test-support"] }
 wat = "1"

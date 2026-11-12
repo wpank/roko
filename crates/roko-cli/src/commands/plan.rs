@@ -214,21 +214,21 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// pass a checkpoint directory, or a checkpoint file for a single plan.
         #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/state-snapshot.json")]
         resume_plan: Option<PathBuf>,
-        /// Open the inline TUI, which shows agent output, tokens and gate
-        /// progress live and closes when the run ends. The run already opens it
-        /// whenever stdout is a terminal, unless `--no-tui`, `--quiet` or
-        /// `--json` is given, so this flag changes nothing; scripts may pass it.
+        /// Open the full-screen dashboard (the TUI) on a terminal, which shows
+        /// agent output, tokens and check progress live and closes when the
+        /// run ends, instead of the live view: a line per task and a footer of
+        /// tasks done, time and spend.
         ///
         /// A plan with `[meta] approval = "per_task"` holds each verified task
-        /// until someone approves or rejects it: in this TUI (y or n), with
-        /// `roko plan review <plan> <task> --approve|--reject`, or with the
-        /// Review action in the portal.
+        /// until someone approves or rejects it: in the dashboard (y or n),
+        /// which such a plan opens on a terminal by itself, with `roko plan
+        /// review <plan> <task> --approve|--reject`, or with the Review action
+        /// in the portal.
         #[arg(long, visible_alias = "tui")]
         approval: bool,
-        /// Disable the inline TUI even in interactive terminals.
-        ///
-        /// By default, the TUI is auto-enabled when stdout is a TTY.
-        /// Pass `--no-tui` to suppress it and use plain log output instead.
+        /// Show the live view, the default: a line per task on a terminal,
+        /// one line per event in a pipe. Kept so scripts that pass it still
+        /// work.
         #[arg(long)]
         no_tui: bool,
         /// Maximum retry attempts per task (overrides per-task and config values).
@@ -1268,9 +1268,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             engine,
             workdir,
             resume_plan,
-            // `--approval` (`--tui`) names the default: the Graph run opens
-            // the inline TUI itself whenever stdout is a terminal.
-            approval: _,
+            approval: tui,
             no_tui,
             max_retries,
             max_tasks,
@@ -1297,6 +1295,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             max_parallel_plans,
             fail_fast,
         } => {
+            // The live view shows the run on a terminal; `--tui` (`--approval`)
+            // opens the dashboard instead (gap-2c87f0).
+            let no_tui = no_tui || !tui;
             let _t_setup = std::time::Instant::now();
             // `--worktree-per-task` / `--no-worktree-per-task`; neither leaves
             // it to `[runner] worktree_per_task` (gap-4ec59f).
@@ -2438,7 +2439,7 @@ pub(crate) async fn cmd_resume(
         resume_plan: Some(snapshot),
         workdir: Some(workdir),
         approval: false,
-        no_tui: false,
+        no_tui: true,
         max_retries: None,
         max_tasks,
         dry_run: false,
@@ -2506,7 +2507,7 @@ async fn resume_graph_run(
         resume_plan: Some(workdir.join(".roko/state/graph")),
         workdir: Some(workdir.to_path_buf()),
         approval: false,
-        no_tui: false,
+        no_tui: true,
         max_retries: None,
         max_tasks,
         dry_run: false,

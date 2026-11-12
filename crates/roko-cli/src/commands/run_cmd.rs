@@ -161,6 +161,8 @@ pub(crate) struct RunArgs {
     pub(crate) no_holdout: bool,
     /// `--no-audit`: no audits for this run alone (decision 7103).
     pub(crate) no_audit: bool,
+    /// `--tui` (plan directories only): the dashboard instead of the live view.
+    pub(crate) tui: bool,
 }
 
 /// Main entry point for `roko run`.
@@ -418,7 +420,7 @@ async fn run_plan_dir(
         engine: PlanEngine::default(),
         workdir: Some(workdir.to_path_buf()),
         resume_plan: args.resume_plan.clone(),
-        approval: false,
+        approval: args.tui,
         no_tui: false,
         max_retries: args.max_retries,
         max_tasks: 0,
@@ -464,18 +466,13 @@ async fn run_one_task(
     args: &RunArgs,
 ) -> Result<i32> {
     let tier = workflow_template_for_complexity(complexity);
-
-    // `--json` keeps stdout to the one report document.
-    let out = roko_cli::cli_output::CliOutput::new(cli.quiet || cli.json);
-    out.step(
-        "Complexity",
-        &format!(
-            "{} ({})",
-            complexity_label(complexity),
-            if forced { "forced" } else { "auto-detected" }
-        ),
+    // The run view's header names the run by its request (gap-2c87f0); the
+    // size it was given is detail.
+    tracing::info!(
+        complexity = complexity_label(complexity),
+        sized = if forced { "forced" } else { "auto-detected" },
+        "roko run: one checked task"
     );
-    out.step("Running", "single agent...");
 
     prepare_runtime_hooks(workdir, cli.quiet);
 
@@ -515,7 +512,7 @@ async fn run_one_task(
     })
     .await;
 
-    handle_workflow_result(cli, workdir, prompt, tier, result)
+    handle_workflow_result(cli, result)
 }
 
 // ─── Plan: write a plan from the prompt, then run it ────────────────────
@@ -887,17 +884,13 @@ fn print_run_preview(
 
 fn handle_workflow_result(
     cli: &Cli,
-    workdir: &Path,
-    prompt: &str,
-    tier: &str,
     result: anyhow::Result<roko_runtime::workflow_contract::WorkflowRunReport>,
 ) -> Result<i32> {
     match result {
         Ok(report) => {
+            // In text the run printed its own summary (gap-2c87f0).
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
-            } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(workdir, prompt, tier, &report);
             }
 
             if report.success {

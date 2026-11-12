@@ -24,6 +24,7 @@
 //! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
 //! | [`plan_verify`] | The whole-plan gate: `[meta] verify` on a plan's integrated result |
 //! | [`run_manifest`] | Each checkpoint run's `manifest.json`: harness, config hash, invocations |
+//! | [`run_view`] | What `roko run` and `roko plan run` show while a run goes, and its summary |
 //! | [`runtime_event_adapter`] | Graph event to canonical runtime event conversion |
 //! | [`view_state`] | TUI/HTTP graph status projection |
 //! | [`workflow_caller`] | Legacy workflow facade marker |
@@ -46,6 +47,7 @@ pub mod plan_runner;
 pub mod plan_set;
 pub mod plan_verify;
 pub mod run_manifest;
+pub mod run_view;
 pub mod runtime_event_adapter;
 pub mod time_limit;
 pub mod view_state;

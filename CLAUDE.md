@@ -166,7 +166,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
 | `roko run "<prompt>"` | Size the prompt: one checked task, or a plan written first and then run (`commands/run_cmd.rs`) |
 | `roko run --plan "<prompt>"` | Always write a plan first (`--dry-run`: write it and stop; on a terminal it asks before running) |
-| `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`) |
+| `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`, `--tui`) |
 | `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |
@@ -187,7 +187,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | Command | What it does |
 |---|---|
 | `roko plan list/show/create` | Manage plans |
-| `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error); `--no-holdout` runs it in maximize mode (decision 4115) |
+| `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error). On a terminal it shows the live view: a line per task and a footer of tasks, time and spend, then a summary ending in one Next command; `--tui` opens the dashboard instead. `--no-holdout` runs it in maximize mode (decision 4115) |
 | `roko plan generate/regenerate` | Generate a plan from a prompt, file, notes or backlog spec (runs nothing), or regenerate one in place |
 | `roko plan import --mori <dir>` | Import mori plan directories (`.mori/plans/<plan>/`) as roko plans, their checks included; no model runs |
 | `roko plan index` | Rebuild or verify the deterministic plans index |

@@ -2,14 +2,16 @@
 id = "bug-173a60"
 kind = "bug"
 title = "The portal's passed pads have a green border and its steps stretch across the page, unlike roko's design system (§4.7: a passed pad keeps its plain outline; the kit caps a pad at 240px), so its run card doesn't read like the plugin's"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "S"
 subsystem = ["apps/portal"]
 created = 2026-11-12
 updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "bfa5867d4"
 source = "plugin-wow-v8 (round v8), on the portal's run card (2026-11-12)"
 discovered_from = "agent:plugin-wow-v8 (round v8)"
 anchors = ["apps/portal/src/styles/portal.css", "apps/portal/src/styles/roko-kit.css"]
@@ -17,6 +19,19 @@ links = { depends_on = [], blocks = [], related = ["gap-60f6b6"], supersedes = [
 
 [[verify]]
 command = "cd apps/portal && npx vitest run src/styles/roko.accept.test.ts"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T21:10:00Z"
+commit = "bfa5867d4"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "S"
+claimed_at = "2026-11-12T20:45:00Z"
+forced = false
+evidence = "apps/portal/src/styles: roko-kit.css takes the kit's .rk-seq-grid rule (minmax(152px, 240px), justify-content: start); portal.css keeps its 220px floor under the 240px cap, drops the green border on a passed pad, and lets steps fill a phone's width. At bfa5867d4's tree in roko-work-bug-173a60: tsc clean, vitest 727/727 (roko.accept: 'leave a passed pad its plain outline', 'cap a pad at the kit's 240px'), orphans none, build:export OK, plan validate over the portal plans without errors, the CI browser check PASS 37 of 37. Shots: tmp/hermes-roko-v8/design/portal/pads/ (passed pads plain at 240px, phone steps full width)."
 +++
 
 ## Problem

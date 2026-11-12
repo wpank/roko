@@ -29,7 +29,7 @@ pub(crate) enum DaemonCmd {
     Uninstall, // remove launchd plist
 }
 
-/// `roko serve status|stop|restart` (gap-fb1594).
+/// `roko serve status|stop|restart|link` (gap-fb1594, gap-385e79).
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServeCmd {
     /// Report whether a project's roko serve runs: its URL, PID, build,
@@ -81,6 +81,17 @@ pub(crate) enum ServeCmd {
         /// Restart it even while runs are going; they stop.
         #[arg(long)]
         force: bool,
+    },
+    /// Print the portal's sign-in link of a project's running roko serve: its
+    /// URL with the launch token only you can read. Exits 1 when no serve runs
+    /// there.
+    Link {
+        /// The project (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Open the link in the browser too.
+        #[arg(long)]
+        open: bool,
     },
 }
 
@@ -768,7 +779,7 @@ fn print_lifecycle_error(error: &roko_cli::serve_lifecycle::LifecycleError, json
     error.code.exit_code()
 }
 
-/// `roko serve status|stop|restart` (gap-fb1594).
+/// `roko serve status|stop|restart|link` (gap-fb1594, gap-385e79).
 pub(crate) async fn cmd_serve_action(cli: &Cli, action: ServeCmd) -> Result<i32> {
     use roko_cli::serve_lifecycle as lifecycle;
 
@@ -780,6 +791,7 @@ pub(crate) async fn cmd_serve_action(cli: &Cli, action: ServeCmd) -> Result<i32>
         | ServeCmd::Restart {
             workdir, all, json, ..
         } => (workdir.clone(), *all, *json),
+        ServeCmd::Link { workdir, .. } => (workdir.clone(), false, false),
     };
     let targets = if all {
         tokio::task::spawn_blocking(lifecycle::registry_workdirs)
@@ -819,9 +831,42 @@ pub(crate) async fn cmd_serve_action(cli: &Cli, action: ServeCmd) -> Result<i32>
             print_report(&report, json, &outcomes, describe_restart);
             code
         }
+        ServeCmd::Link { open, .. } => targets
+            .first()
+            .map_or(EXIT_FAILURE, |workdir| serve_link(workdir, open)),
     })
     .await
     .context("join the serve command")
+}
+
+/// `roko serve link`: print the portal sign-in link of `workdir`'s serve,
+/// and open it with `open`; exit 1, with one sentence, when there is none.
+fn serve_link(workdir: &Path, open: bool) -> i32 {
+    use roko_cli::serve_lifecycle::{ServeLink, sign_in_link};
+
+    match sign_in_link(workdir) {
+        ServeLink::Link(link) => {
+            println!("{link}");
+            if open && webbrowser::open(&link).is_err() {
+                eprintln!("could not open a browser; open the link above");
+            }
+            EXIT_SUCCESS
+        }
+        ServeLink::NotRunning => {
+            eprintln!(
+                "no roko serve runs in {}; start one with `roko serve --detach`",
+                workdir.display()
+            );
+            EXIT_FAILURE
+        }
+        ServeLink::NoToken => {
+            eprintln!(
+                "roko serve runs in {}, but its sign-in token is gone; `roko serve restart` writes a new one",
+                workdir.display()
+            );
+            EXIT_FAILURE
+        }
+    }
 }
 
 /// `roko serve status` over `targets`: exit 0 when each runs, 1 when one

@@ -156,6 +156,38 @@ pub fn running_workspace_serve(workdir: &Path) -> Option<ServeEndpoint> {
     }
 }
 
+/// What `roko serve link` found in a workspace (gap-385e79).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServeLink {
+    /// The portal's sign-in link: the serve's URL, with its launch token as
+    /// the fragment the portal signs in with.
+    Link(String),
+    /// No roko serve runs in the workspace.
+    NotRunning,
+    /// Its serve runs, but its launch token file is gone or empty.
+    NoToken,
+}
+
+/// The portal sign-in link of `workdir`'s running serve: its URL and the
+/// launch token it wrote to `.roko/runtime/serve.token`. The file is mode
+/// 600, so only the user who started the serve can read it. A serve started
+/// in the background (`--detach`, Hermes) prints its link nowhere else.
+#[must_use]
+pub fn sign_in_link(workdir: &Path) -> ServeLink {
+    let Some(served) = running_workspace_serve(workdir) else {
+        return ServeLink::NotRunning;
+    };
+    let token = std::fs::read_to_string(endpoint::token_path(workdir)).unwrap_or_default();
+    let token = token.trim();
+    if token.is_empty() {
+        return ServeLink::NoToken;
+    }
+    ServeLink::Link(format!(
+        "{}/#token={token}",
+        served.url.trim_end_matches('/')
+    ))
+}
+
 /// Whether `pid` is alive and holds `workdir`'s workspace lock, which a serve
 /// takes before anything else and keeps for its whole life.
 fn holds_workspace(workdir: &Path, pid: u32) -> bool {
@@ -1593,6 +1625,31 @@ mod tests {
         let served = endpoint_for(dir.path(), std::process::id(), &health.url(), "");
         endpoint::write_endpoint(dir.path(), &served).unwrap();
         assert_eq!(check_workspace_serve(dir.path()).state, ServeState::Running);
+    }
+
+    /// gap-385e79: `roko serve link` gives the portal sign-in link of the
+    /// workspace's running serve, which a serve started in the background
+    /// prints nowhere; without a serve, or without its token, it says so.
+    #[test]
+    fn serve_link_prints_the_portal_sign_in_link() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(sign_in_link(dir.path()), ServeLink::NotRunning);
+
+        let _lock =
+            crate::workspace_lock::acquire_workspace_lock(&dir.path().join(".roko")).unwrap();
+        let health = FakeHealth::answering("me");
+        let served = endpoint_for(dir.path(), std::process::id(), &health.url(), "me");
+        endpoint::write_endpoint(dir.path(), &served).unwrap();
+        assert_eq!(sign_in_link(dir.path()), ServeLink::NoToken);
+
+        endpoint::write_token(dir.path(), "launch-tok\n").unwrap();
+        assert_eq!(
+            sign_in_link(dir.path()),
+            ServeLink::Link(format!(
+                "{}/#token=launch-tok",
+                health.url().trim_end_matches('/')
+            ))
+        );
     }
 
     /// gap-fb1594: status removes what a dead serve left, and says so; it

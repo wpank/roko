@@ -17,9 +17,11 @@ export function SignIn() {
           ends in <code className="pt-code">#token=…</code>, and it changes each time roko serve restarts.
         </p>
         <p>
-          If roko serve started in the background, the link is the <code className="pt-code">portal:</code> line in
-          the project’s <code className="pt-code">.roko/logs/serve.log</code>.
+          If roko serve started in the background, this prints the link, in the project’s folder:
         </p>
+        <div className="pt-command">
+          <code data-command>roko serve link --open</code>
+        </div>
       </section>
     </div>
   );

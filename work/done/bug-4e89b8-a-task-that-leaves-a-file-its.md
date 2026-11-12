@@ -2,7 +2,7 @@
 id = "bug-4e89b8"
 kind = "bug"
 title = "A task that leaves a file its spec says to delete passes its gate: no check covers a deletion, so phase 1's T2 kept the nine plugin/ui files its spec retires and the run passed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/plan_generate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
-last_verified_rev = "daf36c3ab"
+last_verified_rev = "4c0b49283"
 source = "round v8: the lead, from phase 1's run on roko ba5866664 (plan op 541860eb, Undertow 62155c4)"
 discovered_from = "agent:team-lead (round v8)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::attempt_verify_steps", "crates/roko-cli/src/graph_task_dispatch/verification.rs::verify_steps", "crates/roko-cli/src/plan_generate/named_files.rs::named_files"]
@@ -23,6 +23,17 @@ command = "grep -rqw 'fn a_task_that_leaves_a_file_its_spec_deletes_fails_its_ga
 
 [[verify]]
 command = "grep -rqw 'fn the_files_a_task_deletes_come_from_its_spec' crates/roko-cli/src/ && cargo test -p roko-cli --lib the_files_a_task_deletes_come_from_its_spec"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T17:07:03Z"
+commit = "4c0b49283"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "S"
+forced = false
+evidence = "verify_steps puts rung[deleted-files] first for a task whose plan's [meta] sources name files of its own to delete (plan_generate::files_task_deletes, bug-aa93e9's reading, whether or not the file is still there): a shell check that says 'task T2 should have deleted plugin/ui/Look.cpp' for each one still present and fails, so the try's feedback names it; the prompt lists it. Red first at daf36c3ab: a_task_that_leaves_a_file_its_spec_deletes_fails_its_gate passed the task with src/old.rs still there. At 4c0b49283: it fails naming the file and passes once it is gone; the_files_a_task_deletes_come_from_its_spec gives phase 1's T1 its 12 files and T2 its 9, still after they are deleted. roko-cli lib 4134 passed 0 failed, cargo clippy --workspace --no-deps -D warnings clean, nightly fmt --check clean."
 +++
 
 ## Problem

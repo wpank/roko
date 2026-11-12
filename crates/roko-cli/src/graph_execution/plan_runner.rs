@@ -11614,6 +11614,17 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
                 ["passed", "passed"],
                 "{mode}: T1 ran once, and once more for the hand-back"
             );
+            // bug-58a1d6: a hand-back's try is reported as its verdict says,
+            // never unverified, and so its run is not either.
+            let events = std::fs::read_to_string(RokoLayout::for_project(repo).events_jsonl_path())
+                .expect("the run's event log");
+            let completed: Vec<String> = events
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|event| event["type"] == "task_completed" && event["task_id"] == "T1")
+                .filter_map(|event| event["outcome"].as_str().map(str::to_string))
+                .collect();
+            assert_eq!(completed, ["passed", "passed"], "{mode}");
             let checkpoint = checkpoint_json(repo, "01-alpha");
             let handbacks = &checkpoint["extensions"]
                 [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];

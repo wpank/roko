@@ -2,14 +2,16 @@
 id = "bug-517d78"
 kind = "bug"
 title = "An installed roko serves the portal from its build tree's apps/portal/out on disk before its embedded copy, so re-exporting or cleaning that folder changes an installed binary's portal without a rebuild (Will's ~/.cargo/bin/roko reads roko-v7-build/apps/portal/out at run time); serve from disk first only in debug builds or with ROKO_SPA_DIR"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-serve/embedded"]
 created = 2026-11-12
 updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "0658ddfe3"
 source = "round v8 portal-v8 audit (tmp/hermes-roko-v8/design/portal/before, main bd93521ee), the lead's approved proposal (tmp/hermes-roko-v8/design/portal/README.md, 2026-11-12)"
 discovered_from = "agent:portal-v8 (round v8, bd93521ee)"
 anchors = ["crates/roko-serve/src/embedded.rs::disk_portal_dir", "crates/roko-serve/src/embedded.rs::disk_demo_dir"]
@@ -17,6 +19,19 @@ links = { depends_on = [], blocks = [], related = ["gap-195374"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_release_build_serves_its_embedded_portal' crates/roko-serve/src && cargo test -p roko-serve --lib a_release_build_serves_its_embedded_portal"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T19:10:00Z"
+commit = "0658ddfe3"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "S"
+claimed_at = "2026-11-12T18:20:00Z"
+forced = false
+evidence = "crates/roko-serve/src/embedded.rs: choose_disk_dir picks a UI's folder for both the portal and the demo app: an explicit override (ROKO_SPA_DIR) in any build, the build tree's folder only when SERVE_BUILD_TREE (cfg!(debug_assertions)), else the embedded copy. In roko-work-gap-6d2dd2 (heavy.sh cargo, CARGO_INCREMENTAL=0): cargo test -p roko-serve --lib embedded:: 19 passed (a_release_build_serves_its_embedded_portal, a_debug_build_serves_its_build_trees_portal and the 17 serving tests), clippy -p roko-serve clean, nightly fmt. The release path is checked through the choice function; no release build was made."
 +++
 
 ## Problem

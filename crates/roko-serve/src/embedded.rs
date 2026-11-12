@@ -1,20 +1,23 @@
-//! Serve two SPAs — disk-first, embedded-fallback.
+//! Serve two SPAs — disk-first in a debug build, embedded otherwise.
 //!
 //! **Routes**
 //! - `/demo` and `/demo/*` → demo app (`demo/demo-app/dist/`)
 //! - Everything else       → portal  (`apps/portal/out/`)
 //!
-//! **Dev workflow**:
+//! **Dev workflow** (a debug build):
 //! - Portal  : run `npm run build:export` in `apps/portal`,  then refresh.
 //! - Demo app: run `npm run build`        in `demo/demo-app`, then refresh.
 //!
 //! No Rust recompile needed for disk-served assets.
 //!
 //! **Production**: the binary carries baked-in copies of both UIs via
-//! `rust-embed`. When the on-disk directories don't exist the embedded copies
-//! are served automatically.
+//! `rust-embed`, and a release build serves those, never its build tree's
+//! folders: an installed roko shows the portal it was built with, whatever
+//! has happened to the tree it was built in since (bug-517d78). A debug build
+//! serves the build tree's folders when they exist, else its embedded copies.
 //!
-//! Override the portal disk path with `ROKO_SPA_DIR=/path/to/dir`.
+//! Override the portal disk path with `ROKO_SPA_DIR=/path/to/dir`, in any
+//! build.
 //!
 //! **SPA fallback rule**: a request for a path *without* a file extension is
 //! treated as a client-side route and falls back to the UI's `index.html`.
@@ -48,53 +51,62 @@ struct EmbeddedDemoAssets;
 
 // ── Disk-root resolution (resolved once at startup) ───────────────────────────
 
-/// The portal root: `ROKO_SPA_DIR` override first, then `apps/portal/out/`
-/// beside the crate.
+/// Whether this build serves a UI from its build tree's folder before its
+/// embedded copy: a debug build does, so a developer re-exports and refreshes;
+/// a release build, such as an installed roko, does not (bug-517d78).
+const SERVE_BUILD_TREE: bool = cfg!(debug_assertions);
+
+/// The folder a UI is served from, or `None` to serve its embedded copy:
+/// `override_dir` (an explicit choice, such as `ROKO_SPA_DIR`) when it holds an
+/// `index.html`, else `build_tree_dir` when `serve_build_tree` and it holds one.
+fn choose_disk_dir(
+    ui: &str,
+    override_dir: Option<&str>,
+    build_tree_dir: &Path,
+    serve_build_tree: bool,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir {
+        let p = PathBuf::from(dir);
+        if p.join("index.html").is_file() {
+            tracing::info!(path = %p.display(), "serving {ui} from its override");
+            return Some(p);
+        }
+        tracing::warn!(path = %dir, "{ui} override has no index.html, falling back");
+    }
+    if serve_build_tree && build_tree_dir.join("index.html").is_file() {
+        let canon = build_tree_dir
+            .canonicalize()
+            .unwrap_or_else(|_| build_tree_dir.to_path_buf());
+        tracing::info!(path = %canon.display(), "serving {ui} from disk (debug build)");
+        return Some(canon);
+    }
+    tracing::debug!("serving the embedded {ui}");
+    None
+}
+
+/// The portal root: `ROKO_SPA_DIR` first, then, in a debug build,
+/// `apps/portal/out/` beside the crate.
 fn disk_portal_dir() -> Option<&'static PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
-        // 1. Explicit env override
-        if let Ok(dir) = std::env::var("ROKO_SPA_DIR") {
-            let p = PathBuf::from(&dir);
-            if p.join("index.html").is_file() {
-                tracing::info!(path = %p.display(), "serving portal from ROKO_SPA_DIR");
-                return Some(p);
-            }
-            tracing::warn!(
-                path = %dir,
-                "ROKO_SPA_DIR set but index.html not found, falling back to embedded portal"
-            );
-        }
-
-        // 2. Relative to the compile-time crate directory (works during local dev)
-        let compile_time: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/portal/out");
-        let p = Path::new(compile_time);
-        if p.join("index.html").is_file() {
-            let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-            tracing::info!(path = %canon.display(), "serving portal from disk (dev mode)");
-            return Some(canon);
-        }
-
-        tracing::debug!("no on-disk apps/portal/out found, serving embedded portal assets");
-        None
+        let override_dir = std::env::var("ROKO_SPA_DIR").ok();
+        let build_tree = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/portal/out");
+        choose_disk_dir(
+            "portal",
+            override_dir.as_deref(),
+            Path::new(build_tree),
+            SERVE_BUILD_TREE,
+        )
     })
     .as_ref()
 }
 
-/// The demo app root: `demo/demo-app/dist/` beside the crate.
+/// The demo app root: in a debug build, `demo/demo-app/dist/` beside the crate.
 fn disk_demo_dir() -> Option<&'static PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
-        let compile_time: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../demo/demo-app/dist");
-        let p = Path::new(compile_time);
-        if p.join("index.html").is_file() {
-            let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-            tracing::info!(path = %canon.display(), "serving demo app from disk (dev mode)");
-            return Some(canon);
-        }
-
-        tracing::debug!("no on-disk demo/demo-app/dist found, serving embedded demo assets");
-        None
+        let build_tree = concat!(env!("CARGO_MANIFEST_DIR"), "/../../demo/demo-app/dist");
+        choose_disk_dir("demo app", None, Path::new(build_tree), SERVE_BUILD_TREE)
     })
     .as_ref()
 }
@@ -322,6 +334,50 @@ pub async fn serve_portal_index() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── choose_disk_dir ───────────────────────────────────────────────────────
+
+    /// A folder holding a UI's `index.html`.
+    fn ui_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("index.html"), "<!doctype html>").expect("write index.html");
+        dir
+    }
+
+    /// bug-517d78: a release build serves its embedded portal, even when the
+    /// tree it was built in still has an exported portal; an explicit
+    /// `ROKO_SPA_DIR` is still served.
+    #[test]
+    fn a_release_build_serves_its_embedded_portal() {
+        let tree = ui_dir();
+        assert_eq!(choose_disk_dir("portal", None, tree.path(), false), None);
+
+        let chosen = ui_dir();
+        let chosen_path = chosen.path().to_string_lossy().into_owned();
+        assert_eq!(
+            choose_disk_dir("portal", Some(&chosen_path), tree.path(), false),
+            Some(chosen.path().to_path_buf())
+        );
+    }
+
+    /// A debug build serves its build tree's portal when it has one, so a
+    /// developer re-exports and refreshes; without one, its embedded copy.
+    #[test]
+    fn a_debug_build_serves_its_build_trees_portal() {
+        let tree = ui_dir();
+        let canon = tree.path().canonicalize().expect("canonical path");
+        assert_eq!(
+            choose_disk_dir("portal", None, tree.path(), true),
+            Some(canon)
+        );
+
+        let empty = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(choose_disk_dir("portal", None, empty.path(), true), None);
+        assert_eq!(
+            choose_disk_dir("portal", Some("/no/such/dir"), empty.path(), true),
+            None
+        );
+    }
 
     // ── is_demo_path ──────────────────────────────────────────────────────────
 

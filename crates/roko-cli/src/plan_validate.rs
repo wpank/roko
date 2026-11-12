@@ -390,6 +390,39 @@ fn validate_plans_dir_impl(
                         });
                     }
                 }
+                // bug-aa93e9: the size limits count no file a task deletes,
+                // and a file the plan's sources tell a task to delete or
+                // change that no task lists is warned about (PLAN_062).
+                let named = roko_cli::plan_generate::named_files_of_plan(&tasks_file, workdir);
+                if !named.deleted.is_empty() {
+                    plan.diagnostics
+                        .retain(|diagnostic| diagnostic.rule_id != "PLAN_TIER_SIZE");
+                    let sized =
+                        roko_cli::plan_generate::without_deleted(&tasks_file, &named.deleted);
+                    for issue in roko_cli::plan_policy::validate_tier_sizes(
+                        &sized,
+                        roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
+                    ) {
+                        plan.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            rule_id: issue.code.to_string(),
+                            plan_id: Some(plan.plan_id.clone()),
+                            task_id: issue.task_id,
+                            message: issue.message,
+                        });
+                    }
+                }
+                if let Some(message) =
+                    roko_cli::plan_generate::unlisted_named_files_line(&tasks_file, &named)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_062".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: None,
+                        message,
+                    });
+                }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
                 let diagnostics =

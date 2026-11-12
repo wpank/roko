@@ -791,6 +791,9 @@ impl GraphTaskDispatcher {
         // raises the plan's budget alerts it crossed (backlog 2116).
         self.announce_budget_alerts(&spec.plan_id);
         self.credit_reflex_rule(spec, task, settled).await;
+        // Whether the gaming screen left the task unverified, for the end of
+        // the plan run (gap-0af587).
+        self.note_gaming_flag(&settled.verdict);
         let standing = self
             .gate_retry_context
             .ladder_standing(&spec.plan_id, &task.id);
@@ -1067,6 +1070,7 @@ fn cli_tool_calls_digest(key: &[u8; 32], calls: &[ToolCallRecord]) -> ContentHas
 mod tests {
     use tempfile::tempdir;
 
+    use roko_core::config::routing::LadderRung;
     use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::playbook::PlaybookStore;
     use roko_learn::prompt_experiment::ExperimentStore;
@@ -1206,10 +1210,23 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// The model sources the feedback events of one passing attempt carry,
     /// for a task without a model hint in the workspace `configure` sets up.
     async fn fed_back_sources(configure: impl FnOnce(&mut RokoConfig)) -> Vec<ModelChoiceSource> {
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".into()]));
+        fed_back_to(configure, router).await
+    }
+
+    /// [`fed_back_sources`], with a routing sink crediting `router` too.
+    async fn fed_back_to(
+        configure: impl FnOnce(&mut RokoConfig),
+        router: Arc<CascadeRouter>,
+    ) -> Vec<ModelChoiceSource> {
         let temp = tempdir().expect("tempdir");
         let sources = Arc::new(SourceLog::default());
+        let routing = crate::runtime_feedback::RoutingObservationSink::new(router);
+        let facade = FeedbackFacade::new()
+            .with_sink(sources.clone())
+            .with_sink(Arc::new(routing));
         let feedback = GraphFeedbackContext {
-            feedback_facade: Some(Arc::new(FeedbackFacade::new().with_sink(sources.clone()))),
+            feedback_facade: Some(Arc::new(facade)),
             ..GraphFeedbackContext::default()
         };
         let workspace = |config: &mut RokoConfig| {
@@ -1240,18 +1257,82 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 model.supports_tools = true;
             }
             config.routing.ladder.rungs = vec![
-                roko_core::config::routing::LadderRung {
-                    name: "cheap".to_string(),
-                    model: "no-such-model".to_string(),
-                },
-                roko_core::config::routing::LadderRung {
-                    name: "mid".to_string(),
-                    model: "stream-model".to_string(),
-                },
+                LadderRung::new("cheap", "no-such-model"),
+                LadderRung::new("mid", "stream-model"),
             ];
         })
         .await;
-        assert_eq!(laddered, [ModelChoiceSource::Ladder { rung: 1 }]);
+        let ladder = ModelChoiceSource::Ladder {
+            rung: 1,
+            draw: None,
+        };
+        assert_eq!(laddered, [ladder]);
+    }
+
+    /// A workspace whose `mid` rung runs `stream-model` or, in its place,
+    /// `stream-alt` (gap-51d2ca), both on the fixture's fake provider.
+    fn two_model_rung(config: &mut RokoConfig) {
+        let mut alternate = config
+            .models
+            .get("stream-model")
+            .cloned()
+            .expect("the fixture's model");
+        alternate.slug = "claude-haiku-4-5".to_string();
+        config.models.insert("stream-alt".to_string(), alternate);
+        for model in config.models.values_mut() {
+            model.supports_tools = true;
+        }
+        let mut mid = LadderRung::new("mid", "stream-model");
+        mid.alternates = vec!["stream-alt".to_string()];
+        config.routing.ladder.rungs = vec![LadderRung::new("cheap", "no-such-model"), mid];
+    }
+
+    /// gap-51d2ca (decision 4111 option B1), through Graph dispatch: an
+    /// attempt the ladder routes to a rung with two models that can run draws
+    /// between them at `[routing] explore_epsilon`. Its feedback carries the
+    /// draw, at a propensity below 1, and the routing sink credits the router
+    /// with the attempt's verified outcome. A run with learning frozen makes
+    /// no draw, nor does one in maximize mode, and neither teaches the router.
+    #[tokio::test]
+    async fn a_two_model_rung_draws_and_credits_the_router() {
+        let models = || vec!["claude-sonnet-4-6".into(), "claude-haiku-4-5".into()];
+        let trials = |router: &CascadeRouter| -> u64 {
+            let confidence = router.confidence_snapshot();
+            confidence.values().map(|(trials, _)| trials).sum()
+        };
+
+        let router = Arc::new(CascadeRouter::new(models()));
+        let sources = fed_back_to(two_model_rung, Arc::clone(&router)).await;
+        let [
+            ModelChoiceSource::Ladder {
+                rung: 1,
+                draw: Some(draw),
+            },
+        ] = sources.as_slice()
+        else {
+            panic!("the rung draws: {sources:?}");
+        };
+        assert!(draw.propensity > 0.0 && draw.propensity < 1.0, "{draw:?}");
+        assert!(draw.weight > 0.0 && draw.weight <= 1.0, "{draw:?}");
+        assert_eq!(trials(&router), 1, "the router is credited");
+        assert_eq!(router.total_observations(), 1);
+
+        let frozen = |config: &mut RokoConfig| {
+            two_model_rung(config);
+            config.learning.frozen = true;
+        };
+        let maximize = |config: &mut RokoConfig| {
+            two_model_rung(config);
+            config.experiments.maximize = true;
+        };
+        let ladder = ModelChoiceSource::Ladder {
+            rung: 1,
+            draw: None,
+        };
+        let router = Arc::new(CascadeRouter::new(models()));
+        assert_eq!(fed_back_to(frozen, Arc::clone(&router)).await, [ladder]);
+        assert_eq!(fed_back_to(maximize, Arc::clone(&router)).await, [ladder]);
+        assert_eq!(trials(&router), 0, "a rung without a draw teaches nothing");
     }
 
     /// bug-c34782 through the batch dispatch path: the router learns a
@@ -1891,11 +1972,12 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             .dispatch(&make_spec(&task), Vec::new(), &ctx)
             .await
             .expect_err("the provider call fails");
-        // A declared context file that does not exist fails prompt assembly.
+        // A declared context file outside the workspace fails prompt
+        // assembly; a missing one no longer does (bug-41791b).
         let mut unassembled = task.clone();
         unassembled.context = Some(crate::task_parser::TaskContext {
             read_files: vec![crate::task_parser::ReadFile {
-                path: "src/missing.rs".to_string(),
+                path: "../outside.rs".to_string(),
                 lines: None,
                 why: "context".to_string(),
             }],

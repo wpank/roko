@@ -280,6 +280,12 @@ pub(crate) fn jaccard_similarity(left: &HashSet<String>, right: &HashSet<String>
 /// Compare two knowledge entries for topic-level similarity using tag
 /// overlap and content keyword matching. This is deliberately lightweight
 /// (no ML, no embedding) to keep `ingest()` fast.
+/// Whether `new_entry` says what `existing` says, so that it confirms it:
+/// they share a topical tag, a file or a package, not one that every lesson
+/// of a run carries, and their content words, stopwords left out, overlap by
+/// [`MIN_CONTENT_JACCARD`] (gap-1220c5). Matching on any shared tag and two
+/// shared words, "the" among them, had every lesson of a run confirm every
+/// other: phase 5's gamed lesson "confirmed" 31 entries at its admission.
 pub(crate) fn entries_are_similar(existing: &KnowledgeEntry, new_entry: &KnowledgeEntry) -> bool {
     // Skip AntiKnowledge entries -- they are refutations, not confirmations.
     if existing.kind == KnowledgeKind::AntiKnowledge
@@ -288,21 +294,73 @@ pub(crate) fn entries_are_similar(existing: &KnowledgeEntry, new_entry: &Knowled
         return false;
     }
 
-    // Tag overlap: normalize and intersect.
-    let existing_tags: HashSet<String> = existing.tags.iter().map(|tag| normalize(tag)).collect();
-    let new_tags: HashSet<String> = new_entry.tags.iter().map(|tag| normalize(tag)).collect();
-    let tag_overlap = existing_tags.intersection(&new_tags).count();
-
+    let existing_tags = topical_tags(existing);
+    let tag_overlap = topical_tags(new_entry).intersection(&existing_tags).count();
     if tag_overlap < MIN_TAG_OVERLAP {
         return false;
     }
 
-    // Content keyword overlap: tokenize and intersect.
-    let existing_keywords: HashSet<String> = tokenize(&existing.content).into_iter().collect();
-    let new_keywords: HashSet<String> = tokenize(&new_entry.content).into_iter().collect();
-    let keyword_overlap = existing_keywords.intersection(&new_keywords).count();
+    let existing_words = content_words(&existing.content);
+    let new_words = content_words(&new_entry.content);
+    jaccard_similarity(&existing_words, &new_words) >= MIN_CONTENT_JACCARD
+}
 
-    keyword_overlap >= MIN_KEYWORD_OVERLAP
+/// The tags every lesson of a run carries, which say nothing about its
+/// topic: the lesson and runtime markers and the kind names.
+const RUN_GENERIC_TAGS: &[&str] = &[
+    "lesson",
+    "runtime",
+    "cross_domain_transfer",
+    "insight",
+    "heuristic",
+    "warning",
+    "causal_link",
+    "strategy_fragment",
+    "anti_knowledge",
+];
+
+/// The prefixes of the run-generic tags that carry an id: the plan, the gate
+/// steps, the task type and the model.
+const RUN_GENERIC_TAG_PREFIXES: &[&str] = &["plan:", "gate:", "task:", "model:"];
+
+/// Words that say nothing about a lesson's topic, as prompt assembly's query
+/// stopwords (`prompt_builder::QUERY_STOPWORDS`).
+const CONTENT_STOPWORDS: &[&str] = &[
+    "about", "after", "again", "all", "also", "and", "any", "are", "because", "been", "before",
+    "being", "both", "but", "can", "could", "did", "does", "doing", "done", "during", "each",
+    "every", "for", "from", "had", "has", "have", "here", "how", "into", "its", "just", "may",
+    "might", "more", "most", "must", "nor", "not", "off", "once", "only", "onto", "other", "our",
+    "out", "over", "own", "per", "same", "should", "some", "such", "than", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "those", "through", "too", "under", "until",
+    "upon", "very", "via", "was", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "will", "with", "within", "without", "would", "yet", "you", "your",
+];
+
+/// `entry`'s topical tags, normalized: its tags less the ones every lesson of
+/// a run carries.
+fn topical_tags(entry: &KnowledgeEntry) -> HashSet<String> {
+    entry
+        .tags
+        .iter()
+        .filter(|tag| {
+            let tag = tag.trim().to_ascii_lowercase();
+            !tag.is_empty()
+                && !RUN_GENERIC_TAGS.contains(&tag.as_str())
+                && !RUN_GENERIC_TAG_PREFIXES
+                    .iter()
+                    .any(|prefix| tag.starts_with(prefix))
+        })
+        .map(|tag| normalize(tag))
+        .collect()
+}
+
+/// The words of `text` that can carry its topic: longer than two characters,
+/// and no stopword.
+fn content_words(text: &str) -> HashSet<String> {
+    tokenize(text)
+        .into_iter()
+        .filter(|word| word.len() > 2 && !CONTENT_STOPWORDS.contains(&word.as_str()))
+        .collect()
 }
 
 pub(crate) fn compare_similarity_hits(
@@ -512,7 +570,8 @@ pub(crate) fn dedupe_entries_for_ingest(
 ///
 /// Returns a list of confirmation records for each (existing, new) pair
 /// where the entries are similar enough to indicate independent
-/// confirmation of the same insight.
+/// confirmation of the same insight. An existing entry still in a run's
+/// batch, or one a person retired, is never confirmed (bug-2ad4fa).
 pub(crate) fn detect_confirmations(
     existing: &[KnowledgeEntry],
     new_entries: &[KnowledgeEntry],
@@ -523,6 +582,11 @@ pub(crate) fn detect_confirmations(
     for new_entry in new_entries {
         for existing_entry in existing {
             if existing_entry.id == new_entry.id {
+                continue;
+            }
+            // A run's uncommitted entry gains nothing from the run that wrote
+            // it, and a retired one stays as a person left it (bug-2ad4fa).
+            if existing_entry.commit_batch.is_some() || existing_entry.deprecated {
                 continue;
             }
             if !entries_are_similar(existing_entry, new_entry) {

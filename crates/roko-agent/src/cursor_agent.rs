@@ -673,6 +673,7 @@ impl LlmBackend for CursorAgent {
             req = req.header(key, value);
         }
 
+        let request_start = std::time::Instant::now();
         let response = req
             .body(body)
             .send()
@@ -734,8 +735,13 @@ impl LlmBackend for CursorAgent {
             let _ = sent_done;
         });
 
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // Each event says when the request went, so the loop can time the
+        // call's first token (gap-0eb14e).
+        let sent_at = Some(request_start);
+        let stream = futures::stream::unfold(rx, move |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|item| (item.map(|event| event.with_sent_at(sent_at)), rx))
         });
         Ok(Box::pin(stream))
     }

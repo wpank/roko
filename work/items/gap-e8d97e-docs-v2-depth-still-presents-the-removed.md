@@ -8,8 +8,9 @@ severity = "p3"
 size = "M"
 subsystem = ["docs"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/workflow-audit (roko-7d migration, 2026-10-02)"
 discovered_from = "audit:tmp/workflow-audit/"
 anchors = ["docs/v2-depth/02-block/enrichment-pipeline.md", "docs/v2-depth/00-index/05-vision-and-positioning.md"]
@@ -66,3 +67,5 @@ source cut now applies to the request), or mark the section historical where it 
   docs/v2 is historical per Will, so this is recorded here rather than as its own item — fold it into whatever
   pass eventually touches `docs/v2/19-CONFIG.md`, or drop the section if `[prompt]`'s `vcg`-related fields are
   removed from the schema entirely.
+
+Checked 2026-10-27: 2026-10-26 sweep: the matching file count dropped from the original 18 (2026-10-02, including RESEARCH-PROMPT files) to 9 non-prompt files today, but drift shows no commit touched either of this item's two named anchor files, so whatever shrank the list did so outside this item's own fix. Both of its cited examples (enrichment-pipeline.md, 05-vision-and-positioning.md) are still unfixed.

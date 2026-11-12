@@ -176,6 +176,8 @@ def test_roko_plan_runner_records_planner_and_executor_costs(places):
     ctx = task_context(places, arm, fake_roko(places))
     outcome = run_roko_plan.run_task(ctx)
     assert outcome.status == "completed", outcome.reason
+    [run] = [event for event in outcome.transcript if event.get("event") == "run"]
+    assert "--no-audit" in run["argv"]  # the arm's `audit = false`: an audit would dispatch other models (gap-c7c462)
     classes = [attempt.cost_class for attempt in outcome.attempts]
     assert classes.count("plan") == 1 and classes.count("integrate") == 1
     assert classes.count("execute") == 3 and classes.count("retry") == 1 and classes.count("escalate") == 1

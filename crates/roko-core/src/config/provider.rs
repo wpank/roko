@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::ProviderKind;
+use crate::agent::{ProviderKind, ReasoningEffort};
 use crate::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 
 use super::agent::{default_context_window, default_tool_format, default_true};
@@ -288,7 +288,10 @@ pub struct ProviderConfig {
     /// Arguments passed to the CLI command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
-    /// Hard request or subprocess timeout in milliseconds.
+    /// Hard request or subprocess timeout in milliseconds. A streamed model
+    /// call of roko's own tool loop waits this long for its response, and for
+    /// each chunk after it (bug-5e597a): a reasoning model that holds its
+    /// response for minutes needs it raised.
     #[serde(
         default = "default_provider_timeout_ms",
         skip_serializing_if = "Option::is_none"
@@ -641,6 +644,21 @@ pub struct ModelProfile {
     /// Context window in tokens.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
+    /// The estimated prompt size, in tokens, past which roko's tool loop
+    /// compacts the conversation's older tool results: outside the newest
+    /// two groups, each result over 500 characters becomes a 200-character
+    /// preview (gap-b46c16). `None` compacts at 80% of `context_window`, as
+    /// before; a value above that changes nothing.
+    ///
+    /// A try re-sends its whole history every turn, and a long one on an
+    /// expensive model pays more for that re-sent, cached input than for
+    /// anything else, long before its window fills: about 40,000 suits
+    /// gpt-5.4 on Undertow's tasks, whose first prompt is 17,000. Each
+    /// compaction breaks the provider's prompt cache once, and the agent may
+    /// read a file again whose old contents it dropped. Keep it well above
+    /// the first prompt, or every turn compacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at_tokens: Option<u64>,
     /// Maximum output tokens, if the provider/model sets one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,
@@ -695,7 +713,10 @@ pub struct ModelProfile {
     /// Cache write cost per million tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_cache_write_per_m: Option<f64>,
-    /// Provider-specific reasoning depth label.
+    /// Provider-specific reasoning depth label: Gemini's thinking level, or
+    /// `"adaptive"` for an Anthropic model that thinks adaptively (Claude
+    /// 4.6 and later), which the Anthropic API then asks for adaptive
+    /// thinking at its effort, not a manual budget (bug-0e0dd9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
     /// Maximum number of tools before behavior degrades.
@@ -754,9 +775,59 @@ pub struct ModelProfile {
     /// (gap-13bbbd).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// Reasoning effort (`"low"`, `"medium"`, `"high"`, `"max"`) sent as
+    /// `reasoning_effort` with each request to this model that carries no
+    /// function tools, when it is an OpenAI reasoning model (the GPT-5 family
+    /// and the o-series) on an OpenAI-compatible provider: chat completions
+    /// refuses it beside tools for the GPT-5.4 family. `None` sends the
+    /// request's effort, else `[agent] default_effort` (bug-29014c).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// The OpenAI API roko's tool loop calls this model through:
+    /// `"chat_completions"` or `"responses"`. `None` picks the Responses API
+    /// for an OpenAI reasoning model (the GPT-5 family and the o-series) on
+    /// OpenAI's own endpoint, the only API where it reasons beside function
+    /// tools, and chat completions for any other model (gap-1ba0ac).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<OpenAiApi>,
+}
+
+/// The OpenAI API an OpenAI-compatible model is called through
+/// (`[models.*] api`, gap-1ba0ac).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiApi {
+    /// `/chat/completions`, which every OpenAI-compatible provider serves.
+    ChatCompletions,
+    /// `/responses`, OpenAI's own, where a reasoning model takes a reasoning
+    /// effort beside function tools.
+    Responses,
 }
 
 impl ModelProfile {
+    /// Whether this model thinks adaptively, as its `thinking_level` of
+    /// `"adaptive"` says: Claude 4.6 and later take `thinking.type:
+    /// "adaptive"` with `output_config.effort`, and 4.7 and later refuse a
+    /// manual `budget_tokens` with a 400 (bug-0e0dd9).
+    #[must_use]
+    pub fn thinks_adaptively(&self) -> bool {
+        self.thinking_level
+            .as_deref()
+            .is_some_and(|level| level.trim().eq_ignore_ascii_case("adaptive"))
+    }
+
+    /// This profile with the reasoning effort `effort` names, when it names
+    /// none of its own (bug-29014c): a request's effort, or `[agent]
+    /// default_effort`. A label that is none of roko's levels
+    /// ([`ReasoningEffort::from_label`]) leaves it unset.
+    #[must_use]
+    pub fn with_reasoning_effort_or(mut self, effort: &str) -> Self {
+        if self.reasoning_effort.is_none() {
+            self.reasoning_effort = ReasoningEffort::from_label(effort);
+        }
+        self
+    }
+
     /// This profile as `provider` bills it: one that names no cache-read rate
     /// takes its input rate when the provider bills cached input at that rate
     /// ([`ProviderConfig::bills_cached_input_at_input_rate`]), where the

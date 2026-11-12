@@ -8,16 +8,16 @@ severity = "p2"
 goal = "features"
 subsystem = ["roko-cli/github"]
 created = 2026-09-28
-updated = 2026-10-15
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/work-management/03-roko-native-capabilities.md"
 discovered_from = "doc:tmp/work-management/03-roko-native-capabilities.md"
 anchors = ["crates/roko-cli/src/runner/types.rs::RunConfig::from_roko_config", "crates/roko-cli/src/runner/types.rs:2726", "crates/roko-cli/src/github_ops_impl.rs::LiveGitHubOps::from_config", "crates/roko-cli/src/github_ops.rs::GitHubOps::create_task_issue"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rn 'LiveGitHubOps::from_config' crates/roko-cli/src --include='*.rs' | grep -v github_ops_impl.rs | grep -q . && grep -rqn 'create_task_issue\\|create_pr' crates/roko-cli/src/graph_execution && cargo test -p roko-cli --lib github_ops"
+command = "grep -rn 'create_plan_branch(\\\\|open_pr(' crates/roko-cli/src/graph_execution --include=*.rs | grep -qv '^[^:]*:[0-9]*: *//'"
 +++
 
 `GitHubOpsImpl` implements plan branches, PRs, CI checks and task-failure issues, but every production initializer passes `github_ops: None` (`runner/types.rs:2668`, `:2726`, `commands/do_cmd.rs:985`), and `create_task_issue` has no production caller.
@@ -33,3 +33,5 @@ Rechecked 2026-09-29 at d9e79e9d8. The adapter type is LiveGitHubOps (crates/rok
 - 2026-10-01 (wk-filer4): Left: (a) PRs. `create_plan_branch` and `open_pr` still have no caller. Batch delivery publishes nothing (`publish: false`, graph_execution/batch.rs:175 and :279), and GitHub refuses a PR whose branch has no commits, so the PR step needs a decision on when the plan branch is pushed. (b) Closing a failure issue once its task passes, and not filing a second issue when the task fails again: both need the issue number kept per task, and nothing stores it yet. (c) `auto_update_prs` PR comments.
 
 2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Only when [github] auto_pr = true, push the plan branch once, at plan end, and only after every task succeeded. Open it as a draft PR. Never push or open a PR for a failed, interrupted or cancelled run. Failure issues: store the issue number per task in the run's state, so a second failure comments on the open issue instead of filing a new one, and a later pass closes it. auto_update_prs comments: not now. Every test uses the recording fake GitHubOps and never calls GitHub. Turning auto_pr on for this repository stays Will's call (a public action). The item stays open. Why: LiveGitHubOps is built only when auto_pr is on, and failure issues are already filed through graph_execution/failure_issues.rs (item note 2026-10-01). create_plan_branch and open_pr have no caller because batch delivery publishes nothing (crates/roko-cli/src/graph_execution/batch.rs:183, :287 publish: false), and GitHub refuses a PR for a branch with no commits. Pushing once at a successful plan end gives the PR real commits and publishes nothing a failed run produced. A draft PR needs a person to mark it ready. This keeps every public effect behind the operator's opt-in. If vetoed: With per-task pushes, the branch updates as tasks land and the PR shows progress, but partial or failed work becomes public. With 'not now', auto_pr keeps doing nothing for PRs.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: failure-issue automation is fully wired (confirmed by call sites). PR automation (push the plan branch once at a successful plan's end, open it as a draft, per Will's 2026-10-15 decision) still has no implementation anywhere -- create_plan_branch/open_pr remain uncalled in production.

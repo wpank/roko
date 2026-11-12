@@ -12,7 +12,6 @@ use roko_core::tool::{
     ToolPermission, ToolResult, ToolSchema,
 };
 use std::ffi::OsString;
-use std::time::Duration;
 
 use super::child_group;
 use super::sandbox::{refuse_key_file_in_command, require_string};
@@ -41,7 +40,9 @@ pub fn tool_def() -> ToolDef {
             },
             "timeout_ms": {
                 "type": "integer",
-                "description": "Optional wall-clock timeout in milliseconds (default: 120000)."
+                "description": "Optional wall-clock timeout in milliseconds. Default 120000 \
+                    (`[timeouts] tool_execution_ms`); a longer one, such as for a build, is \
+                    honoured up to 600000 (`[timeouts] tool_execution_max_ms`)."
             }
         },
         "required": ["command"],
@@ -61,9 +62,11 @@ pub fn tool_def() -> ToolDef {
 
 /// Handler for `bash` (§36.20).
 ///
-/// Spawns `bash -c <command>` in the worktree with
-/// [`ToolContext::timeout`] as the wall-clock budget. The command's
-/// combined stdout+stderr is returned as the tool result's content.
+/// Spawns `bash -c <command>` in the worktree with the call's own
+/// `timeout_ms`, up to [`ToolContext::max_timeout`], else
+/// [`ToolContext::timeout`], as the wall-clock budget
+/// ([`ToolContext::call_timeout`], bug-c22bd9). The command's combined
+/// stdout+stderr is returned as the tool result's content.
 ///
 /// The command leads a process group of its own, which a call dropped or
 /// timed out before the command ends kills ([`child_group`], bug-c83c84).
@@ -71,7 +74,10 @@ pub fn tool_def() -> ToolDef {
 /// The command gets the environment verify steps get
 /// ([`child_env::apply_gate_env`]): system, locale and toolchain variables,
 /// never a provider key, a secret-looking name or a name roko loaded from a
-/// `.env` file, unless [`ToolContext::env_passthrough`] names it.
+/// `.env` file, unless [`ToolContext::env_passthrough`] names it. It also
+/// gets [`child_env::AGENT_ID_ENV`], set to the calling agent's id
+/// ([`ToolContext::correlation`]), which marks it and every script it runs
+/// as an agent's, so `roko safety release` refuses there (gap-31e8a7).
 ///
 /// Per the sandbox contract, the handler only runs when
 /// [`ToolPermission::exec`] is granted; safety policies layer additional
@@ -109,11 +115,7 @@ async fn run(
     if let Err(e) = refuse_key_file_in_command(&command, ctx.worktree()) {
         return ToolResult::Err(e);
     }
-    let effective_timeout = if ctx.timeout.is_zero() {
-        Duration::from_mins(2)
-    } else {
-        ctx.timeout
-    };
+    let timeout = ctx.call_timeout(&call);
     let mut cmd = tokio::process::Command::new("bash");
     cmd.arg("-c").arg(&command);
     cmd.current_dir(ctx.worktree());
@@ -122,16 +124,19 @@ async fn run(
         parent_env.unwrap_or_else(child_env::process_env),
         &ctx.env_passthrough,
     );
+    // A call with no agent id (a test's or a tool runner's context) is
+    // marked as an unnamed agent's.
+    child_env::mark_agent_process(cmd.as_std_mut(), &ctx.correlation.agent_id);
 
-    let output = match child_group::output_within(cmd, effective_timeout).await {
+    let output = match child_group::output_within(cmd, timeout.budget).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return ToolResult::Err(ToolError::Other(format!("bash: spawn failed: {e}")));
         }
         Err(_) => {
-            return ToolResult::Err(ToolError::Timeout {
-                after_ms: u64::try_from(effective_timeout.as_millis()).unwrap_or(u64::MAX),
-            });
+            return ToolResult::Err(
+                timeout.timed_out(u64::try_from(timeout.budget.as_millis()).unwrap_or(u64::MAX)),
+            );
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -155,6 +160,7 @@ async fn run(
 mod tests {
     use super::*;
     use roko_core::tool::ToolContext;
+    use std::time::Duration;
 
     /// Whether process `pid` still exists.
     #[cfg(unix)]
@@ -326,5 +332,30 @@ mod tests {
         ] {
             assert!(output.contains(kept), "{kept} missing:\n{output}");
         }
+    }
+
+    /// gap-31e8a7: a command carries `ROKO_AGENT_ID`, set to the calling
+    /// agent's id over any value roko inherited, and so does a script it
+    /// writes and runs; a call with no agent id is marked all the same.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_commands_carry_the_agent_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = "printf '%s\\n' 'printf %s \"$ROKO_AGENT_ID\"' > id.sh && sh id.sh";
+        let call = || ToolCall::new("c", NAME, serde_json::json!({ "command": command }));
+        let parent = parent_env(&[(child_env::AGENT_ID_ENV, "outer")]);
+        let agent = ToolContext::testing(dir.path()).with_correlation(
+            roko_core::tool::CorrelationEnvelope {
+                agent_id: "live-a/glm".to_string(),
+                ..roko_core::tool::CorrelationEnvelope::empty()
+            },
+        );
+
+        let named = env_output(run(call(), &agent, Some(parent.clone())).await);
+        let unnamed =
+            env_output(run(call(), &ToolContext::testing(dir.path()), Some(parent)).await);
+
+        assert_eq!(named, "live-a/glm");
+        assert_eq!(unnamed, child_env::UNNAMED_AGENT_ID);
     }
 }

@@ -304,6 +304,7 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
             provider: "mock".to_string(),
             slug: "gpt-5.4".to_string(),
             context_window: 128_000,
+            compact_at_tokens: None,
             max_output: Some(8_192),
             supports_tools: true,
             supports_thinking: false,
@@ -336,6 +337,8 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
             tier: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
+            api: None,
         },
     );
     config

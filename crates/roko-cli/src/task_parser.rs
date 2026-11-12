@@ -72,6 +72,19 @@ pub struct TaskMeta {
     /// lints and tests over the crates the plan affects.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verify: Vec<VerifyStep>,
+    /// Whether the whole-plan check runs from no build trees at all
+    /// (gap-dc24dd). Under `--worktree-per-task` it runs on the plan's
+    /// delivery merge in the workspace's regression checkout, which by default
+    /// keeps what earlier deliveries built there and gets a warm copy of the
+    /// person's checkout's build trees, for speed; cold, the checkout's
+    /// git-ignored files and the regression's cargo target dir are cleared
+    /// first. A plan that ships, such as a project's last phase, sets it: a
+    /// check run only on warm trees can pass on build state no clean checkout
+    /// reproduces, such as a step that uses what a later step builds. Without
+    /// per-task worktrees the check runs in the shared working tree, which is
+    /// the person's and is never cleared: there it only logs a warning.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cold_verify: bool,
     /// Whether a person approves each verified task before its work merges
     /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,6 +106,12 @@ pub struct TaskMeta {
     /// here why not.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped_checks: Vec<String>,
+    /// The workspace documents the plan is written from, such as the spec a
+    /// chat host named with `spec_path` (bug-60ad88). Plan generation has
+    /// every task read them, and `plan validate` warns about a task that does
+    /// not (PLAN_061).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1112,10 +1131,12 @@ pub const META_KEYS: &[&str] = &[
     "failure_policy",
     "workspace_rungs",
     "verify",
+    "cold_verify",
     "approval",
     "allow_unverified",
     "outbound",
     "dropped_checks",
+    "sources",
     // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
@@ -3042,10 +3063,12 @@ depends_on = []
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
+                cold_verify: false,
                 approval: None,
                 allow_unverified: false,
                 outbound: None,
                 dropped_checks: Vec::new(),
+                sources: Vec::new(),
             },
             tasks: Vec::new(),
         };
@@ -4122,10 +4145,12 @@ files = ["README.md"]
             failure_policy: Some(roko_core::config::PlanFailurePolicy::FailFast),
             workspace_rungs: Some(false),
             verify: vec![step.clone()],
+            cold_verify: true,
             approval: Some(ApprovalMode::PerTask),
             allow_unverified: true,
             outbound: Some(roko_core::tool::OutboundPolicy::Stage),
             dropped_checks: Vec::new(),
+            sources: vec!["docs/spec.md".into()],
         };
 
         let task = TaskDef::from(raw.clone());

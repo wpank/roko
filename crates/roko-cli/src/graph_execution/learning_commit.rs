@@ -6,14 +6,21 @@
 //! to its guard ([`ModelCallJournal::save_guarded`], 8136) and the run's
 //! knowledge batch to the knowledge store's ([`propose_batch`], 8137),
 //! whatever the run's outcome: a failed or cancelled run's learning is the
-//! one that most needs the check. Each proposal writes a `commits.jsonl`
-//! row, and a rollback, or in `observe` a would-be rollback, a notice on the
-//! run's StateHub. `off` saves the router unchecked, as before, and the run
-//! tags no knowledge batch. A frozen run saves and proposes nothing.
+//! one that most needs the check. The knowledge batch commits only when the
+//! run delivered every plan ([`run_delivery`]): a run whose plan failed its
+//! checks, or that was cancelled, interrupted or ended with an error, keeps
+//! none of its lessons, in `observe` too (bug-2ad4fa). A run that taught the
+//! router nothing proposes no router version and saves it unchecked
+//! (gap-51d2ca), which merges nothing into its file. Each proposal writes a
+//! `commits.jsonl` row, and a rollback, or in `observe` a would-be rollback,
+//! a notice on the run's StateHub. `off` saves the router unchecked, as
+//! before, and the run tags no knowledge batch. A frozen run saves and
+//! proposes nothing.
 //!
 //! At a run's start, [`recover_orphaned_knowledge`] proposes the knowledge
 //! batches earlier runs left unproposed, as a run that crashed before its end
-//! leaves its batch (gap-6ff99a), through the same guard.
+//! leaves its batch (gap-6ff99a), through the same guard, which rolls them
+//! back: nothing shows that their runs delivered.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -29,10 +36,12 @@ use roko_learn::router_commit::{self, ROUTER_STORE, RouterChecks, RouterGuard, S
 use roko_learn::telemetry::report::RunRecords;
 use roko_neuro::KnowledgeStore;
 use roko_neuro::knowledge_store::commit::{
-    KNOWLEDGE_STORE, KnowledgeBatch, KnowledgeChecks, load_knowledge_anchors, orphaned_batches,
-    propose_batch, recover_orphaned_batches,
+    Delivery, KNOWLEDGE_STORE, KnowledgeBatch, KnowledgeChecks, load_knowledge_anchors,
+    orphaned_batches, propose_batch, recover_orphaned_batches,
 };
 
+use super::plan_runner::PlanRunInterrupt;
+use super::plan_set::PlanOutcome;
 use crate::state_hub::StateHub;
 
 /// The StateHub event type of a guard's notice.
@@ -54,6 +63,41 @@ pub struct RunLearning<'a> {
     pub run_ids: &'a [String],
     /// The run's StateHub, for notices.
     pub notices: Option<&'a StateHub>,
+    /// Whether the run delivered every plan ([`run_delivery`]): its
+    /// knowledge batch commits only then (bug-2ad4fa).
+    pub delivery: Delivery,
+}
+
+/// Whether a run delivered every plan it set out to (bug-2ad4fa), from each
+/// plan with its outcome, `None` for one that never settled, and what
+/// stopped the run, if anything. Only a run whose every plan succeeded, and
+/// that nothing stopped, delivered; the reason names every plan that did not
+/// and the stop, such as "plan p5-ship interrupted; a cancel request stopped
+/// the run".
+pub fn run_delivery<'a>(
+    plans: impl IntoIterator<Item = (&'a str, Option<PlanOutcome>)>,
+    stopped_by: Option<PlanRunInterrupt>,
+) -> Delivery {
+    let mut delivered = Vec::new();
+    let mut missed = Vec::new();
+    for (plan, outcome) in plans {
+        match outcome {
+            Some(PlanOutcome::Succeeded) => delivered.push(plan),
+            Some(outcome) => missed.push(format!("plan {plan} {}", outcome.label())),
+            None => missed.push(format!("plan {plan} not started")),
+        }
+    }
+    if let Some(stop) = stopped_by {
+        missed.push(format!("{} stopped the run", stop.cause()));
+    }
+    match (missed.is_empty(), delivered.as_slice()) {
+        (false, _) => Delivery::Undelivered(missed.join("; ")),
+        (true, []) => Delivery::Undelivered("the run had no plan to deliver".to_string()),
+        (true, [plan]) => Delivery::Delivered(format!("the run delivered plan {plan}")),
+        (true, plans) => {
+            Delivery::Delivered(format!("the run delivered plans {}", plans.join(", ")))
+        }
+    }
 }
 
 /// What the run-end commit decided for each store; `None` where it proposed
@@ -83,8 +127,31 @@ pub fn commit_run_learning(run: &RunLearning<'_>) -> RunCommits {
     commits
 }
 
+/// Settle the knowledge batch of a run that ends with `error` before its
+/// learning is saved (bug-2ad4fa): the run did not deliver, so the batch is
+/// rolled back, with the error as the reason, instead of being left for the
+/// next run's start. The router keeps what it journaled for its next load,
+/// as before.
+pub fn settle_errored_run_knowledge(
+    workdir: &Path,
+    config: &RokoConfig,
+    batch: Option<&str>,
+    error: &dyn std::fmt::Display,
+    notices: Option<&StateHub>,
+) -> RunCommits {
+    commit_run_learning(&RunLearning {
+        workdir,
+        config,
+        batch,
+        router: None,
+        run_ids: &[],
+        notices,
+        delivery: Delivery::Undelivered(format!("the run ended with an error: {error}")),
+    })
+}
+
 /// Save the router through its journal: under guard in `mode`, or unchecked
-/// without one.
+/// without one or when the run taught it nothing (gap-51d2ca).
 fn save_router(
     run: &RunLearning<'_>,
     router: &CascadeRouter,
@@ -98,7 +165,19 @@ fn save_router(
             "failed to persist cascade router state (non-fatal)"
         );
     };
-    let Some(mode) = mode else {
+    // `off` saves unchecked. So does a run that taught the router nothing, as
+    // a run whose rungs each run one model with certainty does: it proposes
+    // no version, so the commit log records only real changes (gap-51d2ca).
+    // Its save merges nothing into the file, and still writes the file when
+    // it is missing. What other processes merged into the file waits for the
+    // next run that proposes a version.
+    let learned = router.learned_since_save();
+    let Some(mode) = mode.filter(|_| learned) else {
+        if mode.is_some() {
+            tracing::info!(
+                "the run taught the cascade router nothing; no router version is proposed"
+            );
+        }
         if let Err(error) = journal.save(router) {
             warn(&error);
         }
@@ -133,7 +212,8 @@ fn save_router(
     }
 }
 
-/// Propose the run's knowledge batch to the knowledge store's guard.
+/// Propose the run's knowledge batch to the knowledge store's guard, which
+/// commits it only when the run delivered (bug-2ad4fa).
 fn propose_knowledge(
     run: &RunLearning<'_>,
     batch: &str,
@@ -145,13 +225,22 @@ fn propose_knowledge(
         tracing::warn!(%problem, "no knowledge anchors: the file is unreadable");
         Vec::new()
     });
-    let checks = KnowledgeChecks::new(&store, batch, anchors);
+    let checks = KnowledgeChecks::new(&store, batch, anchors, run.delivery.clone());
     let proposer = Proposer::evolved("knowledge", KNOWLEDGE_STORE, format!("knowledge:{batch}"));
     let learn_dir = layout.learn_dir();
     match propose_batch(&store, batch, &learn_dir, mode, &checks, &proposer) {
         Ok(decision) => {
-            if let Some(decision) = decision {
-                notice(run.notices, "knowledge", decision);
+            match (decision, &run.delivery) {
+                (Some(CommitDecision::RolledBack), Delivery::Undelivered(why)) => publish_notice(
+                    run.notices,
+                    "knowledge",
+                    format!(
+                        "knowledge: the run did not deliver ({why}), so its knowledge batch was \
+                         rolled back and none of its lessons was kept"
+                    ),
+                ),
+                (Some(decision), _) => notice(run.notices, "knowledge", decision),
+                (None, _) => {}
             }
             decision
         }
@@ -264,7 +353,13 @@ fn notice(notices: Option<&StateHub>, store: &str, decision: CommitDecision) {
         ),
         CommitDecision::Committed | CommitDecision::Restored => return,
     };
-    tracing::warn!(store, ?decision, "{message}");
+    publish_notice(notices, store, message);
+}
+
+/// Log `message`, a guard's notice about `store`, and publish it on the
+/// run's StateHub.
+fn publish_notice(notices: Option<&StateHub>, store: &str, message: String) {
+    tracing::warn!(store, "{message}");
     if let Some(hub) = notices {
         let now = chrono::Utc::now().timestamp_millis();
         hub.publish(DashboardEvent::EventLogEntry {
@@ -353,6 +448,7 @@ mod tests {
             router: Some((&router, &journal)),
             run_ids: &[],
             notices: Some(&hub),
+            delivery: run_delivery([("p1", Some(PlanOutcome::Succeeded))], None),
         });
 
         assert_eq!(
@@ -403,5 +499,216 @@ mod tests {
         }
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].starts_with("knowledge: "), "{notices:?}");
+    }
+
+    /// gap-51d2ca: a run that taught the router nothing, as every
+    /// ladder-routed run did while each rung ran one model, proposes no
+    /// router version, so the commit log records only real changes. A run
+    /// that taught it something proposes one; the next run, and one that
+    /// loads the saved router, propose none until the router learns again.
+    #[test]
+    fn a_run_that_taught_the_router_nothing_proposes_no_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let layout = RokoLayout::for_project(workdir);
+        let config = RokoConfig::default();
+        assert_eq!(
+            guard_mode(&config),
+            Some(GuardMode::Observe),
+            "decision 8103's default"
+        );
+        let models = || vec!["model-a".to_string(), "model-b".to_string()];
+        let journal = ModelCallJournal::for_snapshot(&layout.cascade_router_path());
+        let commit = |router: &CascadeRouter| {
+            let run = RunLearning {
+                workdir,
+                config: &config,
+                batch: None,
+                router: Some((router, &journal)),
+                run_ids: &[],
+                notices: None,
+                delivery: run_delivery([("p1", Some(PlanOutcome::Succeeded))], None),
+            };
+            commit_run_learning(&run).router
+        };
+        let versions = || {
+            let guarded = GuardedStore::open(&layout.learn_dir(), ROUTER_STORE, GuardMode::Observe)
+                .expect("the router's guard");
+            guarded.rows().expect("its rows").len()
+        };
+
+        let router = CascadeRouter::new(models());
+        for _ in 0..3 {
+            assert_eq!(commit(&router), None, "nothing learned");
+        }
+        assert_eq!(versions(), 0);
+        // The run still writes the router's file, as every run did.
+        assert!(journal.snapshot_path().is_file(), "the router's snapshot");
+
+        router.record_observation(&RoutingContext::default(), "model-a", 1.0, true);
+        assert_eq!(commit(&router), Some(CommitDecision::Committed));
+        assert_eq!(versions(), 1);
+        assert_eq!(commit(&router), None, "nothing learned since");
+        let loaded = CascadeRouter::load_or_new(journal.snapshot_path(), models());
+        assert_eq!(commit(&loaded), None, "a loaded router learned nothing yet");
+        assert_eq!(versions(), 1);
+    }
+
+    /// Write `entries` as the workspace's knowledge store.
+    fn seed(knowledge: &KnowledgeStore, entries: &[KnowledgeEntry]) {
+        let neuro = knowledge.path().parent().expect("the neuro directory");
+        std::fs::create_dir_all(neuro).expect("create the neuro directory");
+        let lines: String = entries
+            .iter()
+            .map(|entry| serde_json::to_string(entry).expect("an entry") + "\n")
+            .collect();
+        std::fs::write(knowledge.path(), lines).expect("seed the knowledge store");
+    }
+
+    /// bug-2ad4fa: phase 5's run 1f677933 lost its plan check and was
+    /// cancelled, yet observe mode committed its batch, a gamed try's lesson
+    /// among them. A run's batch commits only when the run delivered: this
+    /// one's is rolled back in observe mode, its row says why and how many
+    /// lessons went, the run's hub hears it, and its router still saves what
+    /// the run taught it. A run that delivered commits its batch.
+    #[test]
+    fn a_cancelled_runs_lessons_are_not_committed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let layout = RokoLayout::for_project(workdir);
+        let config = RokoConfig::default();
+        assert_eq!(guard_mode(&config), Some(GuardMode::Observe));
+        let router = CascadeRouter::new(vec!["model-a".to_string(), "model-b".to_string()]);
+        router.record_observation(&RoutingContext::default(), "model-a", 1.0, true);
+        let journal = ModelCallJournal::for_snapshot(&layout.cascade_router_path());
+
+        // A committed entry, and the run's batch: a gamed try's lesson and a
+        // sound one.
+        let in_batch = |batch: &str, entry: KnowledgeEntry| KnowledgeEntry {
+            commit_batch: Some(batch.to_string()),
+            ..entry
+        };
+        let committed = entry(
+            "kn-toolchain",
+            "Pin the toolchain before a release.",
+            &[],
+            0.8,
+        );
+        let gamed = entry(
+            "kn-gamed",
+            "tools/render-demos.sh must compensate locally for quiet showcase renders.",
+            &["tools/render-demos.sh"],
+            0.874,
+        );
+        let sound = entry(
+            "kn-gain",
+            "Preset loudness is matched by each preset's master gain.",
+            &["presets"],
+            0.8,
+        );
+        let knowledge = KnowledgeStore::for_layout(&layout);
+        let seeded = [
+            committed,
+            in_batch("run-1", gamed),
+            in_batch("run-1", sound),
+        ];
+        seed(&knowledge, &seeded);
+
+        let delivery = run_delivery(
+            [("p5-ship", Some(PlanOutcome::Interrupted))],
+            Some(PlanRunInterrupt::Cancel),
+        );
+        let why = "plan p5-ship interrupted; a cancel request stopped the run";
+        assert_eq!(delivery, Delivery::Undelivered(why.to_string()));
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let commits = commit_run_learning(&RunLearning {
+            workdir,
+            config: &config,
+            batch: Some("run-1"),
+            router: Some((&router, &journal)),
+            run_ids: &[],
+            notices: Some(&hub),
+            delivery,
+        });
+        assert_eq!(
+            commits,
+            RunCommits {
+                router: Some(CommitDecision::Committed),
+                knowledge: Some(CommitDecision::RolledBack),
+            }
+        );
+
+        // Neither lesson is kept, and no run retrieves them.
+        let ids = |store: &KnowledgeStore| -> Vec<String> {
+            let entries = store.read_all().expect("read the knowledge store");
+            entries.into_iter().map(|entry| entry.id).collect()
+        };
+        assert_eq!(ids(&knowledge), ["kn-toolchain"]);
+        let hits = knowledge
+            .query("render-demos showcase compensate", 5)
+            .expect("query");
+        assert!(hits.is_empty(), "{hits:?}");
+
+        // The row: rolled back in observe mode, `delivered` first, saying why.
+        let guarded = GuardedStore::open(&layout.learn_dir(), KNOWLEDGE_STORE, GuardMode::Observe)
+            .expect("the knowledge store's guard");
+        let rows = guarded.rows().expect("its rows");
+        let row = rows.last().expect("the run's row");
+        assert_eq!(row.decision, CommitDecision::RolledBack);
+        assert_eq!(row.mode, GuardMode::Observe);
+        let delivered = &row.checks[0];
+        assert_eq!(delivered.check, "delivered");
+        assert!(!delivered.passed, "{delivered:?}");
+        let expected = format!("{why}; none of the batch's 2 lessons was kept");
+        assert_eq!(delivered.reason, expected);
+
+        // The run's hub hears why.
+        let mut notices = Vec::new();
+        while let Ok(envelope) = events.try_recv() {
+            if let DashboardEvent::EventLogEntry {
+                event_type,
+                message,
+                ..
+            } = envelope.payload
+                && event_type == GUARD_NOTICE
+            {
+                notices.push(message);
+            }
+        }
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("did not deliver"), "{notices:?}");
+        assert!(notices[0].contains(why), "{notices:?}");
+
+        // A run that delivered commits its batch.
+        let next = entry(
+            "kn-renderer",
+            "The renderer sets the showcase level, not the demo script.",
+            &["renderer"],
+            0.8,
+        );
+        let mut entries = knowledge.read_all().expect("read the knowledge store");
+        entries.push(in_batch("run-2", next));
+        seed(&knowledge, &entries);
+        let delivery = run_delivery([("p5-1-ship", Some(PlanOutcome::Succeeded))], None);
+        assert_eq!(
+            delivery,
+            Delivery::Delivered("the run delivered plan p5-1-ship".to_string())
+        );
+        let commits = commit_run_learning(&RunLearning {
+            workdir,
+            config: &config,
+            batch: Some("run-2"),
+            router: None,
+            run_ids: &[],
+            notices: None,
+            delivery,
+        });
+        assert_eq!(commits.knowledge, Some(CommitDecision::Committed));
+        assert_eq!(ids(&knowledge), ["kn-toolchain", "kn-renderer"]);
+        let hits = knowledge
+            .query("renderer showcase level", 5)
+            .expect("query");
+        assert_eq!(hits.len(), 1, "{hits:?}");
     }
 }

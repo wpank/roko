@@ -17,7 +17,8 @@ public_routes = ["health", "ready"]
 [serve.auth]
 enabled = true
 enforcement_mode = "enforce"
-# G0a: a workspace id no Privy token carries. (G0b's `privy_enabled = false` lands with its task.)
+# G0a: a workspace id no Privy token carries. G0b needs nothing here: privy_app_id is Privy's
+# only switch (there is no privy_enabled key, decision 9), and showcase mode refuses one.
 privy_workspace_id = "roko-showcase-privy-disabled-2e0c24bbd6947906d0c5ae1ec054763a"
 
 [showcase]

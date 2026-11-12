@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["self-hosting"]
 created = 2026-09-15
-updated = 2026-10-02
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "docs/v3/39-ROADMAP.md#7.5 Fresh Dogfood Proof"
 discovered_from = "audit:docs/v3/39-ROADMAP.md#7.5 Fresh Dogfood Proof"
 anchors = ["CLAUDE.md", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/commands/run_cmd.rs::cmd_run", "crates/roko-cli/src/research.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan"]
@@ -138,3 +138,5 @@ How to verify: cargo check -p roko-cli; grep SnapshotRebased match arms; then ru
 Verified 2026-09-28: the blocker is gone, but the full rerun is still unrecorded. output_sink.rs:1493 now handles DashboardEvent::SnapshotRebased, so the build failure cited in the title no longer applies. Some live evidence exists: tmp/dogfood/2026-09-20-final-session.md:170 records a fresh run in which 4 of 5 demo plans worked end to end, and the 2026-09-25 portal-programme run log records live `plan run` executions. None of these records the full prd idea -> draft -> plan -> run -> status workflow. What remains is to run that complete pass and record it.
 
 Re-checked 2026-09-29: the portal programme (plans 01-08g) ran many live `plan run` executions built by roko, but none started from `roko prd idea` / `prd draft` / `prd plan`, so the full self-hosting pass is still unrecorded. The SnapshotRebased blocker in the title no longer applies (output_sink.rs:1493), so the title should drop it. What remains is one live run of the CLAUDE.md self-hosting workflow, recorded with its run ids (see gap-09e478 for the evidence bundle). The parked, unverified gap-5a4afd and gap-b41d36 (both also created 2026-09-15) ask for the same rerun and can be marked duplicate_of this item.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: still unrecorded. The many touched commits are plan-generate pipeline improvements and CLAUDE.md edits; none is the live dogfood rerun record this item asks for.

@@ -17,7 +17,7 @@ source = "tmp/backlog/2026-10-02-complete-and-wire PK19"
 anchors = ["apps/portal/src/components/stage/PlanView.tsx", "crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/plan_generate.rs", "crates/roko-cli/src/plan_policy.rs", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/tests/plan_validate.rs", "crates/roko-gate/src/acceptance_contract.rs", "crates/roko-gate/src/lib.rs"]
 lane = "rust-hot"
 parent = "spec-fef7c5"
-links = { depends_on = ["gap-f61823", "gap-cb5133", "gap-e4bfbf"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-f61823", "gap-cb5133", "gap-e4bfbf"], blocks = [], related = ["gap-4dd77d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "! grep -q 'Prefer the fewest cohesive tasks' crates/roko-cli/src/plan_generate.rs && grep -rqw 'fn generator_prompt_sizes_tasks_by_tier' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_sizes_tasks_by_tier"
@@ -105,6 +105,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK10 (gap-f61823), PK17 (gap-cb5133), PK18 (gap-e4bfbf).
 - Suggested model: opus.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. The generator prompt and its retries moved from `prd.rs` to `crates/roko-cli/src/plan_generate/pipeline.rs` (anchor re-pointed); a task that names `prd.rs` means that file. Hold lifted.
+- 2026-10-27 (Will, through the round v7 lead): decision 3203's rule that generation never raises a tier itself
+  (3225 at 1d4116847, "tiers never raised" under Progress) is superseded. Generation raises a task over its tier's
+  size limits to the smallest tier it fits (gap-4dd77d, merged 8e3f70bbe), and a task no tier fits still goes back
+  for a split. The rest of 3203 stands: PLAN_TIER_SIZE binds at generation, and the limits move only on measured
+  first-try pass rates (0.80 target, at least 20 tries per bucket; gap-634954). gap-4cca5f, which waited on this
+  call, is unblocked. 3203's own text is in `tmp/backlog/`, which is frozen, so the note is here.
 
 ## Progress
 

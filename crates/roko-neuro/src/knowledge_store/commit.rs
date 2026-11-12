@@ -8,22 +8,37 @@
 //! a commit clears the batch id, so that every run sees the entries, and a
 //! rollback deletes them.
 //!
-//! [`KnowledgeChecks`] has no held-out check: M2 measures what knowledge is
-//! worth through S02.P1-7's withhold arm. Its anchor check runs the
-//! `[[knowledge]]` queries of the human-edited `.roko/policy/anchors.toml`
-//! on the store as other runs will see it once the batch commits, each
-//! expected entry staying in its query's top `k`, and checks invariants: no
-//! entry from an unverified outcome, a bounded batch, no duplicate content.
+//! [`KnowledgeChecks`]' precondition is `delivered` (bug-2ad4fa): a batch
+//! commits only when its run delivered every plan it set out to. A run whose
+//! plan failed its checks, that was cancelled or interrupted, or that ended
+//! before deciding its batch, as a crashed run does, commits none of it, in
+//! observe mode too: a check that passed on a try the run then failed to
+//! deliver, or a gamed one, is no evidence for a lesson.
+//!
+//! It has no held-out check: M2 measures what knowledge is worth through
+//! S02.P1-7's withhold arm. Its anchor check runs the `[[knowledge]]`
+//! queries of the human-edited `.roko/policy/anchors.toml` on the store as
+//! other runs will see it once the batch commits, each expected entry
+//! staying in its query's top `k`, and checks invariants: no entry from an
+//! unverified outcome, a bounded batch, no duplicate content.
+//!
+//! A person's rollback ([`LaterBatches`]) deletes the batches committed
+//! after the version rolled back to.
+//!
+//! Every proposal and rollback holds [`lock_knowledge_guard`]: a
+//! distillation proposes its batch the moment it writes it (bug-f8655e),
+//! beside runs' ends and a person's rollback, in this process or another.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use roko_learn::guarded_commit::{
-    CheckOutcome, CommitCheck, CommitDecision, GuardError, GuardMode, GuardedState, GuardedStore,
-    Proposer,
+    COMMITS_DIR, COMMITS_FILE, CheckOutcome, CommitCheck, CommitDecision, GuardError, GuardMode,
+    GuardedState, GuardedStore, Proposer,
 };
 use roko_learn::router_commit::ANCHORS_FILE;
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::KnowledgeStore;
 use crate::{KnowledgeEntry, SourceChannel};
@@ -111,26 +126,38 @@ impl KnowledgeBatch {
     }
 
     /// Commit the batch: its entries lose the batch id, so that every run's
-    /// retrieval sees them. Returns how many.
+    /// retrieval sees them, and the confirmations its run held apply, with
+    /// their records (gap-1220c5). Returns how many entries.
     ///
     /// # Errors
     ///
-    /// The store's read or rewrite error.
+    /// The store's, the ledger's or the confirmation log's read or write
+    /// error.
     pub fn commit(&self) -> anyhow::Result<usize> {
-        self.store.update_entries(|entry| {
-            let held = self.holds(entry);
-            if held {
+        let _guard = self.store.lock_writes();
+        let mut entries = self.store.read_all()?;
+        let mut held = 0;
+        for entry in &mut entries {
+            if self.holds(entry) {
                 entry.commit_batch = None;
+                held += 1;
             }
-            held
-        })
+        }
+        let (applied, records) = self.store.apply_pending(&self.batch, &mut entries)?;
+        if held > 0 || applied > 0 {
+            self.store.rewrite_all(&entries)?;
+        }
+        self.store.append_confirmations(&records)?;
+        self.store.drop_pending(&self.batch)?;
+        Ok(held)
     }
 
-    /// Roll the batch back: delete its entries. Returns how many.
+    /// Roll the batch back: delete its entries, and drop the confirmations
+    /// its run held (gap-1220c5). Returns how many entries.
     ///
     /// # Errors
     ///
-    /// The store's read or rewrite error.
+    /// The store's or the ledger's read or rewrite error.
     pub fn discard(&self) -> anyhow::Result<usize> {
         let _guard = self.store.lock_writes();
         let mut entries = self.store.read_all()?;
@@ -141,6 +168,7 @@ impl KnowledgeBatch {
             self.store.rewrite_all(&entries)?;
             self.store.synchronize_temporal_entries(&entries);
         }
+        self.store.drop_pending(&self.batch)?;
         Ok(removed)
     }
 
@@ -181,6 +209,17 @@ impl GuardedState for KnowledgeBatch {
     }
 }
 
+/// Whether the run that learned a batch delivered what it set out to
+/// (bug-2ad4fa): the batch commits only then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// The run delivered every plan; what it delivered, in words.
+    Delivered(String),
+    /// It did not; why, in words, such as "plan p5-ship interrupted; a
+    /// cancel request stopped the run".
+    Undelivered(String),
+}
+
 /// The knowledge store's commit checks (decision 8103).
 #[derive(Debug, Clone)]
 pub struct KnowledgeChecks {
@@ -190,16 +229,25 @@ pub struct KnowledgeChecks {
     pub anchors: Vec<KnowledgeAnchor>,
     /// The most entries the batch may add.
     pub max_batch: usize,
+    /// Whether the batch's run delivered: the precondition.
+    pub delivery: Delivery,
 }
 
 impl KnowledgeChecks {
-    /// The checks of the run `batch`'s batch in `store`, with `anchors`.
+    /// The checks of the run `batch`'s batch in `store`, with `anchors`, for
+    /// a run that ended as `delivery` says.
     #[must_use]
-    pub fn new(store: &KnowledgeStore, batch: &str, anchors: Vec<KnowledgeAnchor>) -> Self {
+    pub fn new(
+        store: &KnowledgeStore,
+        batch: &str,
+        anchors: Vec<KnowledgeAnchor>,
+        delivery: Delivery,
+    ) -> Self {
         Self {
             store: store.clone().with_commit_batch(batch),
             anchors,
             max_batch: MAX_BATCH_ENTRIES,
+            delivery,
         }
     }
 
@@ -287,11 +335,45 @@ impl CommitCheck for KnowledgeChecks {
             };
             return CheckOutcome::fail(CHECK, problem);
         }
-        let reason = format!(
-            "{} knowledge anchors hold, and the invariants",
-            self.anchors.len()
-        );
-        CheckOutcome::pass(CHECK, reason).with("batch_entries", batch.len() as f64)
+        // With no anchors the check measures nothing but the invariants, and
+        // says so (bug-2ad4fa).
+        let reason = if self.anchors.is_empty() {
+            format!(
+                "no [[knowledge]] anchors in .roko/{ANCHORS_FILE}, so no query was checked; \
+                 the invariants hold"
+            )
+        } else {
+            format!(
+                "{} knowledge anchors hold, and the invariants",
+                self.anchors.len()
+            )
+        };
+        CheckOutcome::pass(CHECK, reason)
+            .with("anchors", self.anchors.len() as f64)
+            .with("batch_entries", batch.len() as f64)
+    }
+
+    /// `delivered`: the batch's run delivered every plan (bug-2ad4fa).
+    ///
+    /// A batch whose run did not is rolled back whatever the mode, and the
+    /// reason says how many lessons went with it.
+    fn precondition(&self, candidate: &[u8]) -> Option<CheckOutcome> {
+        const CHECK: &str = "delivered";
+        let lessons = candidate
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.trim_ascii().is_empty())
+            .count();
+        let outcome = match &self.delivery {
+            Delivery::Delivered(what) => CheckOutcome::pass(CHECK, what.clone()),
+            Delivery::Undelivered(why) => {
+                let kept = match lessons {
+                    1 => "the batch's 1 lesson was not kept".to_string(),
+                    count => format!("none of the batch's {count} lessons was kept"),
+                };
+                CheckOutcome::fail(CHECK, format!("{why}; {kept}"))
+            }
+        };
+        Some(outcome.with("batch_entries", lessons as f64))
     }
 }
 
@@ -299,9 +381,11 @@ impl CommitCheck for KnowledgeChecks {
 ///
 /// The proposal runs under `checks` (P21, 8137) against the guarded store
 /// under `learn_dir`, in `mode`, and returns the decision: committed, the
-/// entries losing the batch id; rolled back, the entries deleted; or
-/// observed, committed with a row that records the rollback that would have
-/// happened. `None` when the batch holds no entry.
+/// entries losing the batch id; rolled back, the entries deleted, which a
+/// batch whose run did not deliver always is (bug-2ad4fa); or observed,
+/// committed with a row that records the rollback that would have happened.
+/// `None` when the batch holds no entry; the confirmations its run held then
+/// settle by its delivery alone (gap-1220c5).
 ///
 /// The store's first proposal commits an empty baseline version first, so
 /// that a rollback in enforce mode has a version to keep.
@@ -322,8 +406,21 @@ pub fn propose_batch(
         .entries()
         .map_err(|error| store_error(store, &error))?;
     if entries.is_empty() {
+        // A run that stored no lesson can still hold confirmations: they
+        // settle by its delivery alone, with no version to propose
+        // (gap-1220c5).
+        let settled = match checks.delivery {
+            Delivery::Delivered(_) => state.commit(),
+            Delivery::Undelivered(_) => state.discard(),
+        };
+        settled.map_err(|error| store_error(store, &error))?;
+        KnowledgeStore::release_batch(batch);
         return Ok(None);
     }
+    let _lock = lock_knowledge_guard(learn_dir).map_err(|source| GuardError::Io {
+        path: guard_dir(learn_dir).display().to_string(),
+        source,
+    })?;
     let mut guarded = GuardedStore::open(learn_dir, KNOWLEDGE_STORE, mode)?;
     if guarded.current().is_none() {
         let reason = "baseline: the store before its first guarded batch";
@@ -338,13 +435,36 @@ pub fn propose_batch(
     Ok(Some(decision))
 }
 
-/// The batches `store` holds besides `live`, sorted: at a run's start, the
-/// orphans of runs that ended before they proposed theirs, as a run that
-/// crashed leaves its batch (gap-6ff99a).
+/// Lock the knowledge store's guard under `learn_dir` until the returned
+/// file drops.
+///
+/// The lock holds off every other proposal or rollback, in this process or
+/// another (bug-f8655e). Without it, two proposals read the same next
+/// version, and one writes its snapshot and row over the other's.
 ///
 /// # Errors
 ///
-/// The store's read error.
+/// The guard directory's or the lock file's create error, or the lock's.
+pub fn lock_knowledge_guard(learn_dir: &Path) -> std::io::Result<std::fs::File> {
+    let dir = guard_dir(learn_dir);
+    std::fs::create_dir_all(&dir)?;
+    roko_fs::log_rotation::lock_jsonl(&dir.join(COMMITS_FILE))
+}
+
+/// The knowledge store's guard directory under `learn_dir`.
+fn guard_dir(learn_dir: &Path) -> std::path::PathBuf {
+    learn_dir.join(COMMITS_DIR).join(KNOWLEDGE_STORE)
+}
+
+/// The batches `store` holds besides `live`, sorted.
+///
+/// At a run's start these are the orphans of runs that ended before they
+/// proposed theirs, as a run that crashed leaves its batch (gap-6ff99a). A
+/// batch that holds only confirmations is one too (gap-1220c5).
+///
+/// # Errors
+///
+/// The store's or the ledger's read error.
 pub fn orphaned_batches(
     store: &KnowledgeStore,
     live: Option<&str>,
@@ -352,21 +472,32 @@ pub fn orphaned_batches(
     let entries = store
         .read_all()
         .map_err(|error| store_error(store, &error))?;
-    let batches: BTreeSet<String> = entries
+    let mut batches: BTreeSet<String> = entries
         .into_iter()
         .filter_map(|entry| entry.commit_batch)
-        .filter(|batch| Some(batch.as_str()) != live)
         .collect();
+    let held = store
+        .pending_batches()
+        .map_err(|error| store_error(store, &error))?;
+    batches.extend(held);
+    batches.retain(|batch| Some(batch.as_str()) != live);
     Ok(batches.into_iter().collect())
 }
+
+/// Why an orphaned batch commits none of its lessons: its run never reached
+/// the end that would have said whether it delivered (bug-2ad4fa).
+pub const ORPHAN_UNDELIVERED: &str = "its run ended before deciding its batch: it crashed, was \
+                                      killed, or its process stopped, so nothing shows that it \
+                                      delivered";
 
 /// Propose every batch `store` holds besides `live` through the guard.
 ///
 /// This works as [`propose_batch`] does for a run's own batch at its end
 /// (gap-6ff99a): a batch whose run ended before proposing it, as a crashed
-/// run's, is committed or rolled back under the same checks and mode, instead
-/// of staying hidden from every other run. Returns each orphan with its
-/// decision.
+/// run's, goes through the guard under the same checks and mode, instead of
+/// staying hidden from every other run. Nothing shows that such a run
+/// delivered, so its batch is rolled back (bug-2ad4fa). Returns each orphan
+/// with its decision.
 ///
 /// The caller holds the workspace's runner lock, so no other run is writing a
 /// batch.
@@ -385,13 +516,70 @@ pub fn recover_orphaned_batches(
     let orphans = orphaned_batches(store, live)?;
     let mut recovered = Vec::with_capacity(orphans.len());
     for batch in orphans {
-        let checks = KnowledgeChecks::new(store, &batch, anchors.to_vec());
+        let undelivered = Delivery::Undelivered(ORPHAN_UNDELIVERED.to_string());
+        let checks = KnowledgeChecks::new(store, &batch, anchors.to_vec(), undelivered);
         let reason = format!("knowledge:{batch} (orphaned: its run ended before proposing it)");
         let proposer = Proposer::evolved("knowledge", KNOWLEDGE_STORE, reason);
         let decision = propose_batch(store, &batch, learn_dir, mode, &checks, &proposer)?;
         recovered.push((batch, decision));
     }
     Ok(recovered)
+}
+
+/// The knowledge store as of a kept version, for a person's rollback (P21, 8139).
+///
+/// Restoring it deletes the entries of every batch committed after that
+/// version, which the store's later versions hold. The version's own batch
+/// and the earlier ones stay as they are: a rollback re-adds nothing, so an
+/// entry a person retired or removed stays so.
+#[derive(Debug)]
+pub struct LaterBatches {
+    store: KnowledgeStore,
+    ids: Vec<String>,
+}
+
+impl LaterBatches {
+    /// The entries of the batches `guarded` keeps after version `to`, in
+    /// `store`.
+    ///
+    /// # Errors
+    ///
+    /// I/O errors reading the kept versions.
+    pub fn after(
+        guarded: &GuardedStore,
+        to: u64,
+        store: KnowledgeStore,
+    ) -> Result<Self, GuardError> {
+        let mut ids = Vec::new();
+        let versions = guarded.versions()?;
+        for version in versions.into_iter().filter(|&version| version > to) {
+            let snapshot = guarded.snapshot(version)?;
+            for line in String::from_utf8_lossy(&snapshot).lines() {
+                if let Ok(entry) = serde_json::from_str::<Value>(line)
+                    && let Some(id) = entry["id"].as_str()
+                {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        Ok(Self { store, ids })
+    }
+}
+
+impl GuardedState for LaterBatches {
+    /// The ids of the entries a rollback deletes, one per line.
+    fn snapshot(&self) -> Vec<u8> {
+        self.ids.join("\n").into_bytes()
+    }
+
+    /// Delete the later batches' entries; the version's own batch stays.
+    fn restore(&mut self, _snapshot: &[u8]) -> Result<(), GuardError> {
+        let ids: Vec<&str> = self.ids.iter().map(String::as_str).collect();
+        self.store
+            .remove_entries(&ids)
+            .map(|_| ())
+            .map_err(|error| store_error(&self.store, &error))
+    }
 }
 
 /// The empty version a knowledge store's guard starts from: it passes
@@ -451,6 +639,11 @@ mod tests {
         }
     }
 
+    /// A run that delivered.
+    fn delivered() -> Delivery {
+        Delivery::Delivered("every plan of the run was delivered".to_string())
+    }
+
     /// The ids `store`'s retrieval finds for `query`, best first.
     fn found(store: &KnowledgeStore, query: &str) -> Vec<String> {
         let hits = store.query(query, 5).expect("query");
@@ -494,7 +687,7 @@ mod tests {
         let run7 = store.clone().with_commit_batch("run-7");
         assert_eq!(found(&run7, "retry backoff")[0], "kn-poison");
 
-        let checks = KnowledgeChecks::new(&store, "run-7", anchors.clone());
+        let checks = KnowledgeChecks::new(&store, "run-7", anchors.clone(), delivered());
         let decision = propose_batch(
             &store,
             "run-7",
@@ -527,7 +720,7 @@ mod tests {
         entries.push(neutral);
         store.rewrite_all(&entries).expect("add run 8's entry");
         assert!(found(&store, "dashboard colours").is_empty());
-        let checks = KnowledgeChecks::new(&store, "run-8", anchors);
+        let checks = KnowledgeChecks::new(&store, "run-8", anchors, delivered());
         let decision = propose_batch(
             &store,
             "run-8",
@@ -548,15 +741,16 @@ mod tests {
         let rows = guarded.rows().expect("its rows");
         let decisions: Vec<CommitDecision> = rows.iter().map(|row| row.decision).collect();
         assert_eq!(decisions, [Committed, RolledBack, Committed]);
-        let anchors_check = &rows[1].checks[1];
+        let anchors_check = &rows[1].checks[2];
         assert!(!anchors_check.passed, "{anchors_check:?}");
         assert!(anchors_check.reason.contains("kn-anchor"));
     }
 
     /// gap-6ff99a: at the next run's start, the batches of runs that crashed
-    /// before proposing them go through the guard. A sound one commits and
-    /// every run sees it, one that cites no attempt is rolled back, and the
-    /// running run's own batch waits for its end.
+    /// before proposing them go through the guard, and the running run's own
+    /// batch waits for its end. Nothing shows that a crashed run delivered,
+    /// so even a sound orphan is rolled back, in observe mode too, and its
+    /// row says why (bug-2ad4fa).
     #[test]
     fn orphaned_knowledge_batch_is_recovered_at_next_run_start() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -585,17 +779,17 @@ mod tests {
             &store,
             Some("run-live"),
             &learn_dir,
-            GuardMode::Enforce,
+            GuardMode::Observe,
             &[],
         )
         .expect("recovered");
         let expected = [
             ("run-claimed".to_string(), Some(RolledBack)),
-            ("run-crashed".to_string(), Some(Committed)),
+            ("run-crashed".to_string(), Some(RolledBack)),
         ];
         assert_eq!(recovered, expected);
 
-        assert_eq!(found(&store, "toolchain release"), ["kn-sound"]);
+        assert!(found(&store, "toolchain release").is_empty());
         let left: Vec<(String, Option<String>)> = store
             .read_all()
             .expect("read")
@@ -603,15 +797,97 @@ mod tests {
             .map(|entry| (entry.id, entry.commit_batch))
             .collect();
         let live = ("kn-live".to_string(), Some("run-live".to_string()));
-        assert_eq!(left, [("kn-sound".to_string(), None), live]);
+        assert_eq!(left, [live]);
 
-        // The store's baseline, then one row per orphan.
-        let guarded = GuardedStore::open(&learn_dir, KNOWLEDGE_STORE, GuardMode::Enforce)
+        // The store's baseline, then one row per orphan, each saying why.
+        let guarded = GuardedStore::open(&learn_dir, KNOWLEDGE_STORE, GuardMode::Observe)
             .expect("the knowledge store's guard");
         let rows = guarded.rows().expect("its rows");
         let decisions: Vec<CommitDecision> = rows.iter().map(|row| row.decision).collect();
-        assert_eq!(decisions, [Committed, RolledBack, Committed]);
+        assert_eq!(decisions, [Committed, RolledBack, RolledBack]);
         let reason = rows[2].reason.as_deref().unwrap_or_default();
         assert!(reason.contains("orphaned"), "{reason}");
+        let delivered = &rows[2].checks[0];
+        assert_eq!(delivered.check, "delivered");
+        assert!(!delivered.passed, "{delivered:?}");
+        let expected = format!("{ORPHAN_UNDELIVERED}; the batch's 1 lesson was not kept");
+        assert_eq!(delivered.reason, expected);
+    }
+
+    /// bug-f8655e: distillations propose their batches beside each other and
+    /// beside runs' ends. Proposals at once each take a version of their
+    /// own: none writes its snapshot or row over another's.
+    #[test]
+    fn concurrent_proposals_take_one_version_each() {
+        const BATCHES: usize = 8;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko_dir = temp.path().join(".roko");
+        let learn_dir = roko_dir.join("learn");
+        let store = KnowledgeStore::for_roko_dir(&roko_dir);
+        let seeded: Vec<KnowledgeEntry> = (0..BATCHES)
+            .map(|n| KnowledgeEntry {
+                commit_batch: Some(format!("distill:ep-{n}")),
+                ..entry(
+                    &format!("kn-{n}"),
+                    &format!("Lesson {n}: module {n} rebuilds when header {n} changes."),
+                    &["core"],
+                    0.7,
+                )
+            })
+            .collect();
+        store.rewrite_all(&seeded).expect("seed the store");
+
+        let start = std::sync::Barrier::new(BATCHES);
+        let decisions: Vec<Option<CommitDecision>> = std::thread::scope(|scope| {
+            let proposals: Vec<_> = (0..BATCHES)
+                .map(|n| {
+                    let (store, learn_dir, start) = (&store, &learn_dir, &start);
+                    scope.spawn(move || {
+                        let batch = format!("distill:ep-{n}");
+                        let checks = KnowledgeChecks::new(store, &batch, Vec::new(), delivered());
+                        let proposer = Proposer::evolved(
+                            "distiller",
+                            KNOWLEDGE_STORE,
+                            format!("knowledge:{batch}"),
+                        );
+                        start.wait();
+                        propose_batch(
+                            store,
+                            &batch,
+                            learn_dir,
+                            GuardMode::Observe,
+                            &checks,
+                            &proposer,
+                        )
+                        .expect("proposed")
+                    })
+                })
+                .collect();
+            proposals
+                .into_iter()
+                .map(|proposal| proposal.join().expect("a proposal thread"))
+                .collect()
+        });
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| *decision == Some(Committed)),
+            "{decisions:?}"
+        );
+
+        // The baseline, then one version per batch, each its own.
+        let guarded = GuardedStore::open(&learn_dir, KNOWLEDGE_STORE, GuardMode::Observe)
+            .expect("the knowledge store's guard");
+        let rows = guarded.rows().expect("its rows");
+        assert_eq!(rows.len(), BATCHES + 1, "{rows:#?}");
+        let versions: BTreeSet<u64> = rows.iter().map(|row| row.version).collect();
+        assert_eq!(versions.len(), BATCHES + 1, "{rows:#?}");
+        assert!(
+            store
+                .read_all()
+                .expect("read")
+                .iter()
+                .all(|entry| entry.commit_batch.is_none())
+        );
     }
 }

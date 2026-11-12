@@ -187,11 +187,14 @@ pub enum PlanRunInterrupt {
     /// The operator closed the TUI while plans were still running. It exits
     /// as SIGINT does.
     TuiClosed,
+    /// The run's time limit, `[timeouts] plan_total_secs`, elapsed
+    /// (bug-bfb75a). It exits as SIGTERM does.
+    TimeLimit,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Interrupt,
         Self::Terminate,
         Self::Hangup,
@@ -199,6 +202,7 @@ impl PlanRunInterrupt {
         Self::Conductor,
         Self::Cancel,
         Self::TuiClosed,
+        Self::TimeLimit,
     ];
 
     /// Conventional shell status for the signal: 128 + signal number.
@@ -206,13 +210,13 @@ impl PlanRunInterrupt {
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt | Self::Cancel | Self::TuiClosed => 130,
-            Self::Terminate | Self::Deadline | Self::Conductor => 143,
+            Self::Terminate | Self::Deadline | Self::Conductor | Self::TimeLimit => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name, `deadline`, `conductor`, `cancel` or `tui-closed`, for
-    /// logs, summaries and the checkpoint's stop cause.
+    /// Signal name, `deadline`, `conductor`, `cancel`, `tui-closed` or
+    /// `time-limit`, for logs, summaries and the checkpoint's stop cause.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -223,6 +227,7 @@ impl PlanRunInterrupt {
             Self::Conductor => "conductor",
             Self::Cancel => "cancel",
             Self::TuiClosed => "tui-closed",
+            Self::TimeLimit => "time-limit",
         }
     }
 
@@ -238,6 +243,7 @@ impl PlanRunInterrupt {
             Self::Conductor => "a conductor watcher",
             Self::Cancel => "a cancel request",
             Self::TuiClosed => "closing the TUI",
+            Self::TimeLimit => "the run's time limit ([timeouts] plan_total_secs)",
         }
     }
 
@@ -250,6 +256,7 @@ impl PlanRunInterrupt {
             Self::Conductor => 5,
             Self::Cancel => 6,
             Self::TuiClosed => 7,
+            Self::TimeLimit => 8,
         }
     }
 
@@ -262,6 +269,7 @@ impl PlanRunInterrupt {
             5 => Some(Self::Conductor),
             6 => Some(Self::Cancel),
             7 => Some(Self::TuiClosed),
+            8 => Some(Self::TimeLimit),
             _ => None,
         }
     }
@@ -321,9 +329,6 @@ const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 /// the disk before it returns, and the process exits.
 const ROW_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Set while a CLI plan run handles SIGINT/SIGTERM itself.
-static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
-
 /// Set while a CLI plan run handles SIGHUP itself, which it does unless
 /// SIGHUP was ignored when the run started, as under `nohup`.
 static CLI_OWNS_HANGUP_SIGNAL: AtomicBool = AtomicBool::new(false);
@@ -336,13 +341,6 @@ static RUNNING_PLAN_CHECKPOINTS: std::sync::Mutex<BTreeSet<PathBuf>> =
 /// Original stderr while it is redirected to the runner log for the TUI.
 static REDIRECTED_STDERR_ORIGINAL: AtomicI32 = AtomicI32::new(-1);
 
-/// Whether a CLI plan run currently owns SIGINT/SIGTERM. The binary's
-/// process-wide SIGTERM handler defers to the run while this is `true`.
-#[must_use]
-pub fn plan_run_owns_termination_signals() -> bool {
-    CLI_OWNS_TERMINATION_SIGNALS.load(Ordering::SeqCst)
-}
-
 /// Whether a CLI plan run currently owns SIGHUP, so its TUI must leave the
 /// signal to the run.
 fn plan_run_owns_hangup_signal() -> bool {
@@ -354,12 +352,14 @@ fn plan_run_owns_hangup_signal() -> bool {
 #[derive(Debug)]
 pub struct PlanRunSignalGuard {
     listener: tokio::task::JoinHandle<()>,
+    /// The run's claim on SIGINT/SIGTERM, which the binary's process-wide
+    /// SIGTERM handler defers to.
+    _claim: crate::cli_signals::TerminationSignalClaim,
 }
 
 impl Drop for PlanRunSignalGuard {
     fn drop(&mut self) {
         self.listener.abort();
-        CLI_OWNS_TERMINATION_SIGNALS.store(false, Ordering::SeqCst);
         CLI_OWNS_HANGUP_SIGNAL.store(false, Ordering::SeqCst);
     }
 }
@@ -386,12 +386,12 @@ pub fn install_plan_run_signal_handlers(
     let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
     // A hung-up terminal stops the run like SIGTERM (bug-4641e3), unless the
     // run was started to survive one.
-    let mut sighup = if hangup_ignored() {
+    let mut sighup = if crate::cli_signals::hangup_ignored() {
         None
     } else {
         Some(signal(SignalKind::hangup()).context("install SIGHUP handler")?)
     };
-    CLI_OWNS_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
+    let claim = crate::cli_signals::claim_termination_signals();
     CLI_OWNS_HANGUP_SIGNAL.store(sighup.is_some(), Ordering::SeqCst);
     let listener = tokio::spawn(async move {
         loop {
@@ -416,20 +416,10 @@ pub fn install_plan_run_signal_handlers(
             }
         }
     });
-    Ok(PlanRunSignalGuard { listener })
-}
-
-/// Whether SIGHUP is ignored, as `nohup` leaves it for the command it starts.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn hangup_ignored() -> bool {
-    // SAFETY: with a null new action, sigaction(2) only reads the current
-    // disposition into `current`, a zero-initialized plain C struct.
-    unsafe {
-        let mut current: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(libc::SIGHUP, std::ptr::null(), &raw mut current) == 0
-            && current.sa_sigaction == libc::SIG_IGN
-    }
+    Ok(PlanRunSignalGuard {
+        listener,
+        _claim: claim,
+    })
 }
 
 /// The next delivery of a signal the run may not have claimed; `None` at once
@@ -446,6 +436,7 @@ pub fn install_plan_run_signal_handlers(
 ) -> anyhow::Result<PlanRunSignalGuard> {
     Ok(PlanRunSignalGuard {
         listener: tokio::spawn(async {}),
+        _claim: crate::cli_signals::claim_termination_signals(),
     })
 }
 
@@ -882,10 +873,31 @@ pub fn compute_plan_run_order(
     plans_dir: &Path,
     only_plans: Option<&[String]>,
 ) -> anyhow::Result<Vec<String>> {
+    Ok(compute_plan_run_set(workdir, plans_dir, only_plans)?
+        .into_iter()
+        .map(|plan| plan.id)
+        .collect())
+}
+
+/// The plans a run of `plans_dir` executes, in the order it runs them: the
+/// directory's plans, or those `only_plans` names, selected and ordered as
+/// the run selects them, so the set its `PlanSetLoaded` announces. It lets a
+/// caller know a run's plans before the run starts: serve's member list
+/// ([`compute_plan_run_order`]) and a `--log-file` run's `run.started` line
+/// (bug-bd261a).
+///
+/// It fails where the run fails to select them: an id in `only_plans` that
+/// the directory does not hold, and a set that cannot be ordered.
+pub(crate) fn compute_plan_run_set(
+    workdir: &Path,
+    plans_dir: &Path,
+    only_plans: Option<&[String]>,
+) -> anyhow::Result<Vec<crate::runner::plan_loader::Plan>> {
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
-    let plans = filter_only_plans(plans, only_plans, plans_dir)?;
-    let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
-    Ok(plan_order.order)
+    let mut plans = filter_only_plans(plans, only_plans, plans_dir)?;
+    let order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?.order;
+    plans.sort_by_key(|plan| order.iter().position(|plan_id| *plan_id == plan.id));
+    Ok(plans)
 }
 
 /// Parameters for running plans through the Graph Engine.
@@ -972,6 +984,10 @@ pub struct GraphPlanRunParams {
     /// decision 4115): the run's config reads `[experiments] maximize =
     /// true`, so no loop is withheld and no route explores.
     pub no_holdout: bool,
+    /// No audits for this run alone (`roko plan run --no-audit`, decision
+    /// 7103): the run's config reads `[audit] enabled = false`, so no green
+    /// attempt is drawn and no audit spends.
+    pub no_audit: bool,
     /// Registry that counts this run's verify verdicts and durations
     /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
     /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
@@ -1015,7 +1031,8 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
 /// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
 /// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
 /// bug-ccc7c4). A resumed checkpoint keeps its recorded run, a set of several
-/// plans mints one run per plan, and a `--log-file` run mints its own.
+/// plans mints one run per plan, and a `--log-file` run mints its own. A run
+/// no caller names takes the id its events go under ([`run_graph_plan_observed`]).
 pub async fn run_graph_plan_in_run(
     params: GraphPlanRunParams,
     run_id: Option<String>,
@@ -1030,12 +1047,22 @@ pub async fn run_graph_plan_in_run(
 }
 
 /// [`run_graph_plan_in_run`] without a `log_file`, whose `status.json` and
-/// workspace event log name the run `observed_run_id`.
+/// workspace event log name the run `observed_run_id`. A run no caller named
+/// (`run_id` is `None`: the terminal's `roko plan run`, and a `--log-file`
+/// run) takes that id for its records, its batch and its knowledge batch too,
+/// and says it at its start: a single plan's fresh checkpoint used to mint a
+/// `graph-<plan>-<uuid>` of its own, so the run's attempt records and its
+/// events, which serve's summary reads, had two unrelated ids, and the run
+/// printed neither (bug-c872f6).
 pub(crate) async fn run_graph_plan_observed(
     params: GraphPlanRunParams,
     run_id: Option<String>,
     observed_run_id: String,
 ) -> anyhow::Result<i32> {
+    if run_id.is_none() && !params.quiet && !params.json {
+        eprintln!("Run {observed_run_id}");
+    }
+    let run_id = run_id.or_else(|| Some(observed_run_id.clone()));
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
@@ -1210,12 +1237,13 @@ async fn run_graph_plan_body(
         no_cascade,
         frozen_learning,
         no_holdout,
+        no_audit,
         metrics,
         outbound_floor,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
-    let _fast_deadline = super::fast_lane::arm_plan_deadline(&interrupt);
+    let fast_deadline = super::fast_lane::arm_plan_deadline(&interrupt);
 
     let plans_dir: &Path = &plans_dir;
     let workdir: &Path = &workdir;
@@ -1230,6 +1258,9 @@ async fn run_graph_plan_body(
     }
 
     let run_start = std::time::Instant::now();
+    // The rung probes trust a billing failure only from this run, so a
+    // recharged provider is probed again on resume (bug-374384).
+    let run_started_ms = chrono::Utc::now().timestamp_millis();
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
     // Apply only_plans filter: keep exactly the named ids, in name order, and
     // fail immediately if any listed id does not exist in the directory.
@@ -1256,7 +1287,9 @@ async fn run_graph_plan_body(
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
-    // batch.
+    // batch. `compute_plan_run_set` selects and orders the plans as the lines
+    // from `load_plans` to here do, before a run starts (serve's member
+    // list, `run.started`): keep them in step.
     let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
     let plan_execution_order = plan_order.order.clone();
 
@@ -1270,10 +1303,16 @@ async fn run_graph_plan_body(
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
     }
-    // `--frozen-learning` and `--no-holdout` apply to this run alone, before
-    // the manifest, the feedback facade and the dispatcher are built, so
-    // every reader sees one value.
-    apply_run_switches(&mut roko_config, frozen_learning, no_holdout);
+    // `--frozen-learning`, `--no-holdout` and `--no-audit` apply to this run
+    // alone, before the manifest, the feedback facade and the dispatcher are
+    // built, so every reader sees one value.
+    apply_run_switches(&mut roko_config, frozen_learning, no_holdout, no_audit);
+    // `[timeouts] plan_total_secs` bounds the run's wall-clock time
+    // (bug-bfb75a); a FAST run keeps its own, shorter deadline.
+    let _time_limit = fast_deadline
+        .is_none()
+        .then(|| super::time_limit::arm(&interrupt, &roko_config, run_start.elapsed()))
+        .flatten();
     // Every check the run starts builds with a job cap at a lower priority
     // (bug-b3849c): `[gates] cargo_jobs` and `[gates] nice`.
     let gate_limits = roko_config.gates.gate_limits();
@@ -1304,6 +1343,22 @@ async fn run_graph_plan_body(
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
     super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
+    // The rung probes run before the spec gate, whose red-on-base pre-check
+    // can build and run every task's steps on the base for minutes: a run
+    // whose ladder can't serve any of its tasks stops here, in the probes'
+    // own words (gap-c96097).
+    if let Some(stop) = unrunnable_ladder(
+        &roko_config,
+        workdir,
+        &plans,
+        no_budget,
+        cli_model_override.as_deref(),
+        run_started_ms,
+    )
+    .await
+    {
+        anyhow::bail!(stop);
+    }
     // 3231: the plan-load spec gate, which every run passes (plan run,
     // serve, ACP, roko run): score each task, prove its shell checks red on
     // the base when `[spec_quality] red_on_base` is on, and refuse the plans
@@ -1313,14 +1368,64 @@ async fn run_graph_plan_body(
         .iter()
         .map(|plan| plan.dir.join("tasks.toml"))
         .collect();
-    let spec_gate =
-        match crate::spec_gate::gate_plans(&spec_files, workdir, &roko_config.spec_quality) {
-            Ok(report) => report,
-            Err(interrupted) => {
-                tracing::error!("{interrupted}");
-                return Ok(RunExit::from(128 + interrupted.signal));
+    // The hub hears the gate start and end, so the minutes its checks can
+    // take on the base before any agent starts show (gap-6a319c).
+    let gating = std::time::Instant::now();
+    if let Some(hub) = &state_hub {
+        let (tasks_total, steps_total) = red_on_base_work(&plans, &roko_config.spec_quality);
+        hub.sender()
+            .publish(roko_core::DashboardEvent::SpecGateStarted {
+                plan_ids: plans.iter().map(|plan| plan.id.clone()).collect(),
+                tasks_total,
+                steps_total,
+            });
+    }
+    // Each step the red-on-base check runs on the base, or takes from the
+    // cache, shows as it ends (gap-e02ec4). The check is synchronous: what
+    // it borrows is gone before the next await.
+    let gated = {
+        let on_step = |step: &crate::spec_red_on_base::StepDone| {
+            if let Some(hub) = &state_hub {
+                hub.sender()
+                    .publish(roko_core::DashboardEvent::SpecGateStep {
+                        plan_id: step.plan_id.clone(),
+                        task_id: step.task_id.clone(),
+                        run: u32::try_from(step.run).unwrap_or(u32::MAX),
+                        step: u32::try_from(step.step).unwrap_or(u32::MAX),
+                        passed: step.passed,
+                        ms: step.ms,
+                        cached: step.cached,
+                    });
             }
         };
+        let gate_run = crate::spec_gate::GateRun {
+            warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
+            on_step: Some(&on_step),
+        };
+        crate::spec_gate::gate_plans_with(
+            &spec_files,
+            workdir,
+            &roko_config.spec_quality,
+            &gate_run,
+        )
+    };
+    let (spec_gate, checked) = match gated {
+        Ok(gated) => gated,
+        Err(interrupted) => {
+            tracing::error!("{interrupted}");
+            return Ok(RunExit::from(128 + interrupted.signal));
+        }
+    };
+    if let Some(hub) = &state_hub {
+        hub.sender()
+            .publish(roko_core::DashboardEvent::SpecGateFinished {
+                elapsed_ms: u64::try_from(gating.elapsed().as_millis()).unwrap_or(u64::MAX),
+                tasks_checked: Some(checked.tasks_checked),
+                steps_run: Some(checked.steps_run),
+                cached: Some(checked.cached),
+                blocked: u32::try_from(spec_gate.blocked().count()).unwrap_or(u32::MAX),
+            });
+    }
     if spec_gate.blocks() {
         crate::spec_gate::log_blocked(&spec_gate);
         // The run's event log and SSE show the refusal too.
@@ -1416,9 +1521,28 @@ async fn run_graph_plan_body(
     let probe_rungs = roko_config.routing.ladder.probe
         && !no_budget
         && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    // The rungs the probes skip: each plan's `rung_skipped` events name them
+    // once the plan set is announced, and the run's readout lists them at its
+    // end (gap-20301d).
+    let mut skipped_rungs = Vec::new();
     if probe_rungs && let Some(ladder) = shared_factory.dispatcher().routing_ladder().cloned() {
-        let failed =
-            crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
+        let failed = crate::dispatch::rung_probe::probe_ladder(
+            &roko_config,
+            &ladder,
+            workdir,
+            run_started_ms,
+        )
+        .await;
+        skipped_rungs =
+            crate::dispatch::rung_probe::skipped_rungs(&roko_config, &ladder, &failed, workdir);
+        // A rung that passed its probe in this run shows its provider can
+        // pay, so helper calls take that provider again (bug-e33b7e).
+        let resolver = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&roko_config));
+        let models = ladder.rung_models();
+        for model in crate::dispatch::rung_probe::passed_in_run(&models, workdir, run_started_ms) {
+            let provider = resolver.resolve(&model).provider_id;
+            shared_factory.health_registry.record_success(&provider);
+        }
         shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
     // A chat host's run holds its tasks' outbound tool calls for approval
@@ -1516,14 +1640,21 @@ async fn run_graph_plan_body(
     // Announce the whole selected set before any plan starts, so the TUI and
     // StateHub consumers show every plan, the whole-set task total, and one
     // run clock across plan boundaries.
-    state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded {
-        plans: plan_set_entries(
-            &crate::plan::plans_dir(workdir),
-            &plans,
-            &plan_order,
-            &plan_conflicts,
-        ),
-    });
+    let plan_set = plan_set_entries(
+        &crate::plan::plans_dir(workdir),
+        &plans,
+        &plan_order,
+        &plan_conflicts,
+    );
+    let plan_ids: Vec<String> = plan_set.iter().map(|plan| plan.plan_id.clone()).collect();
+    state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded { plans: plan_set });
+    // Each plan's view of the ladder shows the rungs the probes skipped, and
+    // until when (gap-20301d).
+    for plan_id in &plan_ids {
+        for rung in &skipped_rungs {
+            state_hub_sender.publish(rung.event(plan_id));
+        }
+    }
     let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         crate::runner::graph_tui_bridge::StateHubTelemetrySink::new(state_hub_sender.clone()),
     );
@@ -1551,6 +1682,20 @@ async fn run_graph_plan_body(
     let slot_events = dispatcher_tui_bridge.clone();
     let graph_tui_bridge = crate::runner::graph_tui_bridge::GraphTuiBridge::new(
         crate::runner::tui_bridge::TuiBridge::new(state_hub_sender),
+    );
+    // A plan's time left learns from how long the workspace's past tasks took,
+    // with half the attempt timeout as the guess for a task they don't cover
+    // (gap-c1045f).
+    let past_runs = roko_learn::telemetry::rung_stats::load_runs(
+        &graph_layout.runs_dir(),
+        Some(crate::runner::eta::HISTORY_RUNS),
+    );
+    graph_tui_bridge.use_eta_history(
+        crate::runner::eta::TaskDurations::new(
+            roko_learn::telemetry::rung_stats::task_times(&past_runs),
+            roko_config.timeouts.agent_dispatch_secs as f64 / 2.0,
+        ),
+        roko_config.conductor.max_agents,
     );
 
     // ── T0 reflex store ───────────────────────────────────────────────
@@ -1672,7 +1817,8 @@ async fn run_graph_plan_body(
             disk_admission = disk_admission.with_ring(ring);
         }
         let provider = Arc::new(
-            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
+            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager)
+                .with_warm_build_dirs(roko_config.gates.warm_build_dirs.clone()),
         );
         if !quiet && !json {
             let asked_by = if worktree_per_task_explicit {
@@ -1811,7 +1957,7 @@ async fn run_graph_plan_body(
         // When the CLI routes SIGINT/SIGTERM (and SIGHUP) to this run, keep
         // the TUI's terminal-reset handler off them so they stop the run
         // gracefully instead of killing the process.
-        let host_owns_signals = plan_run_owns_termination_signals();
+        let host_owns_signals = crate::cli_signals::cli_owns_termination_signals();
         let host_owns_hangup = plan_run_owns_hangup_signal();
         let state_hub_for_tui = state_hub.clone();
         let workdir_for_tui = workdir.to_path_buf();
@@ -1925,6 +2071,7 @@ async fn run_graph_plan_body(
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
         gate_env_passthrough: &roko_config.gates.env_passthrough,
+        warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
         worktrees: worktrees.as_ref(),
         delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
@@ -2151,11 +2298,18 @@ async fn run_graph_plan_body(
             let _ = acks.try_send(ack);
         }
     }
-    // A conductor `Fail` stopped the run: it fails, naming the watcher.
-    if let Some(stop) = conductor_stop.lock().take() {
-        return Err(anyhow!("{stop}"));
-    }
-    if let Some(error) = first_error {
+    // A conductor `Fail` stopped the run: it fails, naming the watcher. A
+    // run that ends with an error delivered nothing, so its knowledge batch
+    // is rolled back now, with the error as the reason (bug-2ad4fa).
+    let conductor_failure = conductor_stop.lock().take().map(|stop| anyhow!("{stop}"));
+    if let Some(error) = conductor_failure.or(first_error) {
+        super::learning_commit::settle_errored_run_knowledge(
+            workdir,
+            &roko_config,
+            knowledge_batch.as_deref(),
+            &error,
+            Some(&state_hub),
+        );
         return Err(error);
     }
 
@@ -2271,6 +2425,8 @@ async fn run_graph_plan_body(
             serde_json::json!({
                 "plan_id": plan.id,
                 "spent_usd": budget.spent_usd,
+                // Of it, what earlier processes of the run spent (bug-b7f6a8).
+                "carried_usd": budget.carried_usd,
                 "reserved_usd": budget.reserved_usd,
                 "ceiling_usd": budget.ceiling_usd,
                 "exhausted": budget.exhausted,
@@ -2326,8 +2482,9 @@ async fn run_graph_plan_body(
     // later load does not replay them again (bug-dfb28f). If the save fails,
     // the journal keeps them for that load. `[learning] guarded_commit`
     // proposes the router's merge and the run's knowledge batch to their
-    // guards, whatever the run's outcome; `off` saves the router unchecked.
-    // A frozen run saves and proposes nothing.
+    // guards, whatever the run's outcome; the batch commits only when every
+    // plan was delivered and nothing stopped the run (bug-2ad4fa). `off`
+    // saves the router unchecked. A frozen run saves and proposes nothing.
     let plan_run_ids: Vec<String> = plans
         .iter()
         .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
@@ -2336,6 +2493,12 @@ async fn run_graph_plan_body(
         .cascade_router
         .as_deref()
         .zip(cascade_journal.as_deref());
+    let delivery = super::learning_commit::run_delivery(
+        plan_execution_order
+            .iter()
+            .map(|plan_id| (plan_id.as_str(), scheduler.outcome(plan_id))),
+        stopped_by,
+    );
     super::learning_commit::commit_run_learning(&super::learning_commit::RunLearning {
         workdir,
         config: &roko_config,
@@ -2343,6 +2506,7 @@ async fn run_graph_plan_body(
         router,
         run_ids: &plan_run_ids,
         notices: Some(&state_hub),
+        delivery,
     });
 
     // ── Persist the section bandit (S02 L9) ─────────────────────────
@@ -2476,12 +2640,47 @@ async fn run_graph_plan_body(
         tui.stop();
     }
 
+    // gap-3217a0: how each rung did, from the runs' own records.
+    let rungs = {
+        let runs_dir = graph_layout.runs_dir();
+        let mut run_ids: Vec<String> = plans
+            .iter()
+            .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
+            .collect();
+        run_ids.sort();
+        run_ids.dedup();
+        let records: Vec<roko_learn::telemetry::report::RunRecords> = run_ids
+            .iter()
+            .filter_map(|run_id| {
+                roko_learn::telemetry::report::RunRecords::load(&runs_dir.join(run_id)).ok()
+            })
+            .collect();
+        // A rung's refused calls count on it (gap-5cfa9c).
+        roko_learn::telemetry::rung_stats::RungReport::of_with_costs(
+            &records,
+            &graph_layout.learn_dir().join("costs.jsonl"),
+        )
+    };
+
+    // Each plan's run, by which its records are kept: the run's own id for a
+    // single plan's fresh checkpoint, a resumed checkpoint's recorded run, or
+    // one run per plan of a set (bug-c872f6).
+    let plan_runs: std::collections::BTreeMap<String, String> = plans
+        .iter()
+        .filter_map(|plan| {
+            graph_task_dispatcher
+                .plan_run_id(&plan.id)
+                .map(|plan_run| (plan.id.clone(), plan_run))
+        })
+        .collect();
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "engine": "graph",
                 "dry_run": false,
+                "run_id": run_id,
+                "plan_runs": plan_runs,
                 "succeeded": all_succeeded,
                 "plan_count": plan_count,
                 "total_tasks": total_tasks,
@@ -2492,6 +2691,23 @@ async fn run_graph_plan_body(
                 "max_parallel_plans": max_parallel_plans,
                 "plan_outcomes": plan_outcome_labels,
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
+                "rungs": rungs.rows,
+                "rungs_skipped": skipped_rungs,
+                "misordered": rungs.misordered.as_ref().map(|misorder| &misorder.line),
+                // The paths of the person's checkout each task's checks
+                // changed, by plan and task (bug-b7d9ad).
+                "checkout_written": plans
+                    .iter()
+                    .map(|plan| (plan.id.clone(), graph_task_dispatcher.checkout_writes(&plan.id)))
+                    .filter(|(_, writes)| !writes.is_empty())
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                // Why the gaming screen left each task it flagged
+                // unverified, by plan and task (gap-0af587).
+                "gaming_flagged": plans
+                    .iter()
+                    .map(|plan| (plan.id.clone(), graph_task_dispatcher.gaming_flags(&plan.id)))
+                    .filter(|(_, flags)| !flags.is_empty())
+                    .collect::<std::collections::BTreeMap<_, _>>(),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
                     "discarded": batch_discarded,
@@ -2540,6 +2756,16 @@ async fn run_graph_plan_body(
                 plan_count, total_tasks, total_cost_usd,
             );
         }
+        // The run's id, which `roko diagnose`, serve's summary and the
+        // records take, and each plan's run kept apart from it (bug-c872f6).
+        if let Some(run_id) = &run_id {
+            println!("Run {run_id}");
+        }
+        for (plan_id, plan_run) in &plan_runs {
+            if run_id.as_ref() != Some(plan_run) {
+                println!("Plan {plan_id}: run {plan_run}");
+            }
+        }
         // Name the plans that did not succeed, such as one whose delivery
         // into the batch branch failed its regression check (spec-f830c4),
         // with how each ended (bug-db89d4).
@@ -2556,6 +2782,15 @@ async fn run_graph_plan_body(
         if !failed_plans.is_empty() {
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
         }
+        // How each rung did, and whether a higher one beat a lower one
+        // (gap-3217a0); then the rungs the probes skipped, and why
+        // (gap-20301d).
+        for line in rungs.lines() {
+            println!("{line}");
+        }
+        for rung in &skipped_rungs {
+            println!("Rung {}", rung.line());
+        }
         // Work no check ran on is never delivered: say where it is
         // (bug-db89d4).
         for (plan_id, work) in &plan_unverified_work {
@@ -2567,6 +2802,22 @@ async fn run_graph_plan_body(
                 short_oid(&work.commit),
                 work.review_command()
             );
+        }
+        // Tasks the gaming screen left unverified, with why (gap-0af587).
+        for plan in &plans {
+            let note = gaming_flagged_note(&graph_task_dispatcher.gaming_flags(&plan.id));
+            if !note.is_empty() {
+                println!("Plan {}{note}", plan.id);
+            }
+        }
+        // Checks that changed the person's checkout, not their own worktree
+        // (bug-b7d9ad).
+        for plan in &plans {
+            let note =
+                checkout_written_note(&workdir, &graph_task_dispatcher.checkout_writes(&plan.id));
+            if !note.is_empty() {
+                println!("Plan {}{note}", plan.id);
+            }
         }
         // Where each delivered plan's work landed (gap-415c54).
         if let Some(batch) = batch.as_ref() {
@@ -2655,22 +2906,27 @@ async fn run_graph_plan_body(
 }
 
 /// Apply a run's switches to its config: `frozen_learning`
-/// (`--frozen-learning`, decision 2218) freezes its learning and
-/// `no_holdout` (`--no-holdout`, decision 4115) turns on maximize mode, for
-/// this run alone. Without them the config's own `[learning] frozen` and
-/// `[experiments] maximize` stand. Maximize mode, from either, holds nothing
-/// out: it zeroes the plan-load spec gate's gate-off holdout
+/// (`--frozen-learning`, decision 2218) freezes its learning, `no_holdout`
+/// (`--no-holdout`, decision 4115) turns on maximize mode and `no_audit`
+/// (`--no-audit`, decision 7103) turns audits off, for this run alone.
+/// Without them the config's own `[learning] frozen`, `[experiments]
+/// maximize` and `[audit] enabled` stand. Maximize mode, from either, holds
+/// nothing out: it zeroes the plan-load spec gate's gate-off holdout
 /// (`[spec_quality] holdout_frac`) too (gap-29fe0a).
 pub fn apply_run_switches(
     config: &mut roko_core::config::schema::RokoConfig,
     frozen_learning: bool,
     no_holdout: bool,
+    no_audit: bool,
 ) {
     if frozen_learning {
         config.learning.frozen = true;
     }
     if no_holdout {
         config.experiments.maximize = true;
+    }
+    if no_audit {
+        config.audit.enabled = false;
     }
     if config.experiments.maximize {
         config.spec_quality.holdout_frac = 0.0;
@@ -2976,6 +3232,9 @@ struct PlanRunContext<'a> {
     /// `[gates] env_passthrough`: what the whole-plan check's steps (and the
     /// delivery regression that runs them) inherit beyond the gate allowlist.
     gate_env_passthrough: &'a [String],
+    /// `[gates] warm_build_dirs`: the build trees the delivery regression's
+    /// checkout gets a warm copy of (gap-dc24dd).
+    warm_build_dirs: Option<&'a [String]>,
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     /// `[runner] delete_attempt_branches`: a delivered plan's attempt
@@ -3110,6 +3369,46 @@ async fn close_plan(
         }
     }
     ctx.graph_tui_bridge.plan_completed(plan_id, succeeded);
+}
+
+/// The `budget_carried` event of plan `plan_id`, which resumed with
+/// `carried_micro_usd` that earlier processes of its run spent, `settled`
+/// saying what of it the attempts a stopped process left were charged
+/// (bug-b7f6a8), under `budget`, its budget once it took that spend over.
+fn budget_carried(
+    plan_id: &str,
+    carried_micro_usd: u64,
+    settled: Option<&crate::graph_checkpoint::SettledHolds>,
+    budget: &crate::graph_task_dispatch::GraphPlanBudgetSnapshot,
+) -> roko_core::DashboardEvent {
+    use crate::graph_task_dispatch::micro_usd_to_usd;
+    let carried_usd = micro_usd_to_usd(carried_micro_usd);
+    let settled_usd = settled.map_or(0.0, |settled| micro_usd_to_usd(settled.charged_micro_usd));
+    let of_it = settled
+        .filter(|settled| !settled.holds.is_empty())
+        .map(|settled| {
+            let attempts = settled.holds.len();
+            let plural = if attempts == 1 { "" } else { "s" };
+            format!(
+                " (${settled_usd:.4} of it by {attempts} attempt{plural} a stopped process \
+                 left)"
+            )
+        })
+        .unwrap_or_default();
+    let left = budget.ceiling_usd.map_or_else(
+        || "the plan has no budget ceiling".to_string(),
+        |ceiling| {
+            let left = (ceiling - budget.spent_usd).max(0.0);
+            format!("${left:.4} of its ${ceiling:.4} budget is left")
+        },
+    );
+    roko_core::DashboardEvent::BudgetCarried {
+        plan_id: plan_id.to_string(),
+        carried_usd,
+        settled_usd,
+        ceiling_usd: budget.ceiling_usd,
+        detail: format!("Resumed with ${carried_usd:.4} spent before the restart{of_it}; {left}"),
+    }
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -3660,6 +3959,214 @@ fn with_live_budgets(
     }
 }
 
+/// Watches a plan's running graph: a stop request or an operator cancel
+/// routed to the plan cancels it, and each task's status changes reach the
+/// live views. Its caller polls it every [`PLAN_WATCH_INTERVAL`]:
+///
+/// ```text
+/// while watch.tick(..) { sleep; watch.publish(..) }
+/// watch.finish(..)
+/// ```
+struct FlowWatch {
+    /// The stop request that cancelled the graph, if one came.
+    interrupted_by: Option<PlanRunInterrupt>,
+    /// Whether an operator's cancel cancelled it.
+    cancelled_by_tui: bool,
+    /// After a stop request, how long the cancelled graph may still settle.
+    drain_deadline: Option<Instant>,
+    /// Whether the graph was given up on, its stopped attempts never having
+    /// settled.
+    abandoned: bool,
+    /// The task nodes' statuses at the last tick, as the live views saw them.
+    statuses: HashMap<String, roko_graph::engine::NodeStatus>,
+}
+
+impl FlowWatch {
+    /// A watch whose live views last saw `statuses`.
+    fn new(statuses: HashMap<String, roko_graph::engine::NodeStatus>) -> Self {
+        Self {
+            interrupted_by: None,
+            cancelled_by_tui: false,
+            drain_deadline: None,
+            abandoned: false,
+            statuses,
+        }
+    }
+
+    /// One tick: whether `flow_handle`'s graph still runs. A stop request
+    /// cancels the graph and asks in-flight agents to stop so their nodes
+    /// settle; after [`INTERRUPT_DRAIN_TIMEOUT`] the attempts still running
+    /// are stopped (`stop_attempts`), and after a further
+    /// [`INTERRUPT_SETTLE_TIMEOUT`] the graph is given up on, so the
+    /// checkpoint is still finalized. An operator cancel routed to the plan
+    /// (`control`) cancels the graph.
+    fn tick(
+        &mut self,
+        ctx: &PlanRunContext<'_>,
+        plan_id: &str,
+        control: &PlanControl,
+        flow_handle: &roko_graph::engine::FlowHandle,
+        stop_attempts: &AtomicBool,
+    ) -> bool {
+        if !flow_handle.is_running() {
+            return false;
+        }
+        if let Some(deadline) = self.drain_deadline {
+            if Instant::now() >= deadline {
+                if stop_attempts.swap(true, Ordering::AcqRel) {
+                    tracing::warn!(
+                        plan_id,
+                        "stopped attempts did not settle in time; finalizing checkpoint without them"
+                    );
+                    self.abandoned = true;
+                    return false;
+                }
+                // A stopped attempt drops its provider call and settles with
+                // the usage it streamed (bug-2b1ddc).
+                tracing::warn!(
+                    plan_id,
+                    "cancelled graph did not settle in time; stopping its attempts"
+                );
+                self.drain_deadline = Some(Instant::now() + INTERRUPT_SETTLE_TIMEOUT);
+            }
+        } else if let Some(reason) = ctx.interrupt.requested() {
+            flow_handle.cancel();
+            // An agent that exits on this SIGTERM settles as cancelled.
+            ctx.graph_task_dispatcher.begin_stop();
+            let signalled = terminate_in_flight_agents();
+            tracing::warn!(
+                plan_id,
+                signal = reason.label(),
+                signalled,
+                "plan run interrupted: cancelling graph"
+            );
+            // Name what stops the run: an API cancel is not a SIGINT
+            // (bug-1d09e8).
+            ctx.graph_tui_bridge.log_event(
+                "graph.run_interrupted",
+                &format!(
+                    "{} is stopping the run: cancelling plan '{plan_id}'",
+                    reason.cause()
+                ),
+            );
+            self.interrupted_by = Some(reason);
+            self.drain_deadline = Some(Instant::now() + INTERRUPT_DRAIN_TIMEOUT);
+        }
+        if !self.cancelled_by_tui && control.cancel.load(Ordering::Acquire) {
+            tracing::info!(plan_id, "TUI cancel: requesting flow cancellation");
+            flow_handle.cancel();
+            self.cancelled_by_tui = true;
+        }
+        true
+    }
+
+    /// Publish the status changes of `flow_handle`'s task nodes (those in
+    /// `node_titles`; the rich topology adds helper nodes) since the last
+    /// tick, a completed task with the verdict `gate_verdicts` gives it.
+    /// While the run stops, a task whose node fails is held back until its
+    /// error says how it ended, so a task the stop cut off reads as
+    /// cancelled, not failed (bug-1d09e8).
+    fn publish(
+        &mut self,
+        ctx: &PlanRunContext<'_>,
+        plan_id: &str,
+        flow_handle: &roko_graph::engine::FlowHandle,
+        node_titles: &HashMap<String, String>,
+        gate_verdicts: impl FnOnce() -> BTreeMap<
+            String,
+            roko_graph::cells::task_executor::TaskGateVerdict,
+        >,
+    ) {
+        let mut current: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
+            .status()
+            .node_statuses
+            .into_iter()
+            .filter(|(id, _)| node_titles.contains_key(id))
+            .collect();
+        if self.interrupted_by.is_some() {
+            hold_back_failures(&self.statuses, &mut current);
+        }
+        ctx.graph_tui_bridge.poll_status_changes(
+            plan_id,
+            &self.statuses,
+            &current,
+            node_titles,
+            gate_verdicts,
+        );
+        // The time left, again every minute while tasks run (gap-c1045f).
+        ctx.graph_tui_bridge.refresh_eta();
+        self.statuses = current;
+    }
+
+    /// Once the graph ended: agents that ignored SIGTERM must not outlive
+    /// the run. They are killed once their attempts were asked to stop, so
+    /// an attempt settles as stopped rather than as a provider failure.
+    fn finish(&self, plan_id: &str, stop_attempts: &AtomicBool) {
+        if stop_attempts.load(Ordering::Acquire) {
+            let killed = kill_in_flight_agents();
+            if killed > 0 {
+                tracing::warn!(plan_id, killed, "killed agents that ignored SIGTERM");
+            }
+        }
+    }
+}
+
+/// What a plan's end says of the tasks that changed the person's checkout at
+/// `workdir` instead of their own worktree, through their checks or commands
+/// their agents ran (bug-b7d9ad, reg-d2deba), from the paths of each, by task;
+/// empty without any.
+fn checkout_written_note(
+    workdir: &Path,
+    writes: &std::collections::BTreeMap<String, Vec<String>>,
+) -> String {
+    if writes.is_empty() {
+        return String::new();
+    }
+    let tasks: Vec<String> = writes
+        .iter()
+        .map(|(task, paths)| {
+            let paths: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
+            format!("{task} ({})", paths.join(", "))
+        })
+        .collect();
+    let paths: Vec<&str> = writes.values().flatten().map(String::as_str).collect();
+    format!(
+        ". Your checkout changed while {} ran, not their own worktree; roko left the changes \
+         there and did not deliver them: see them with `git -C {} status -- {}`",
+        tasks.join("; "),
+        workdir.display(),
+        paths.join(" ")
+    )
+}
+
+/// What a plan's end says of the tasks the gaming screen left `unverified`
+/// (find-2ba86d, gap-0af587): each task with why, the reason its last try's
+/// verdict gives, from those reasons by task; empty without any.
+fn gaming_flagged_note(flags: &std::collections::BTreeMap<String, String>) -> String {
+    flags
+        .iter()
+        .map(|(task, reason)| format!(". Task {task} is unverified: {reason}"))
+        .collect()
+}
+
+/// Why a plan's end says its unverified tasks are: they ran no verify step,
+/// or, when the end names such tasks, changed the person's checkout while
+/// they ran (bug-b7d9ad) or passed their checks on a change the gaming screen
+/// flagged (find-2ba86d).
+fn unverified_why(checkout_written: bool, gaming_flagged: bool) -> String {
+    let mut causes = vec!["ran no verify step"];
+    if checkout_written {
+        causes.push("changed your checkout while they ran");
+    }
+    if gaming_flagged {
+        causes.push("passed their checks on a change the gaming screen flagged");
+    }
+    match causes.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{}, or {last}", rest.join(", ")),
+        _ => causes.concat(),
+    }
+}
+
 /// Run one admitted plan to a terminal checkpoint.
 ///
 /// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
@@ -3707,6 +4214,9 @@ async fn run_one_plan(
         } else {
             None
         };
+    // A hand-back of the plan's check runs its tasks again with the same
+    // budgets (find-5bcba7).
+    let handback_budgets = live_budgets.clone();
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
@@ -3816,6 +4326,19 @@ async fn run_one_plan(
         ctx.force_resume,
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
+    // A run that starts the plan over says whose progress it set aside, and
+    // how to bring it back (bug-cbdb6b).
+    if let Some(set_aside) = checkpoint.set_aside() {
+        ctx.graph_tui_bridge
+            .publish_event(roko_core::DashboardEvent::EventLogEntry {
+                timestamp_ms: u64::try_from(chrono::Utc::now().timestamp_millis())
+                    .unwrap_or_default(),
+                event_type: "checkpoint.set_aside".to_string(),
+                plan_id: plan.id.clone(),
+                task_id: String::new(),
+                message: format!("started over: {}", set_aside.describe(ctx.workdir)),
+            });
+    }
     // Until the plan writes its terminal status, a forced exit marks its
     // checkpoint `interrupted` (bug-4641e3).
     let _running = RunningPlanCheckpoint::register(&checkpoint.paths().manifest);
@@ -3865,8 +4388,21 @@ async fn run_one_plan(
         }
     }
     let replayed_entries = checkpoint.replayed_entries();
+    // What earlier processes of the run spent, which the plan's budget counts
+    // (bug-b7f6a8), read before its ledger moves to the budget.
+    let carried_micro_usd = checkpoint.restored_spend_micro_usd();
+    let settled = checkpoint.settled_holds().cloned();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
+    if carried_micro_usd > 0 {
+        let budget = ctx.graph_task_dispatcher.plan_budget_snapshot(&plan.id);
+        ctx.graph_tui_bridge.publish_event(budget_carried(
+            &plan.id,
+            carried_micro_usd,
+            settled.as_ref(),
+            &budget,
+        ));
+    }
     // By default a failed task blocks only its own dependants: the tasks that
     // do not depend on it keep running, and the plan reports failure once
     // every task has settled. `fail_fast` (from `[meta] failure_policy`, else
@@ -3974,6 +4510,20 @@ async fn run_one_plan(
     // ── Graph TUI bridge: emit PlanStarted + per-node TaskStarted ──
     let plan_task_count = tasks.len();
     graph_tui_bridge.plan_started(&plan.id, plan_task_count);
+    // Its time left follows its tasks: what each waits for, the rung it starts
+    // on and its tier (gap-c1045f).
+    let eta_tasks = plan
+        .tasks
+        .tasks
+        .iter()
+        .map(|task| crate::runner::eta::EtaTask {
+            id: task.id.clone(),
+            depends_on: task.depends_on.clone(),
+            rung: ctx.graph_task_dispatcher.planned_start_rung(task),
+            tier: task.tier_class(),
+        })
+        .collect();
+    graph_tui_bridge.plan_tasks(&plan.id, eta_tasks);
     graph_tui_bridge.log_event(
         "graph.plan_executing",
         &format!(
@@ -3988,119 +4538,34 @@ async fn run_one_plan(
     // on every tick. Only IDs present in this map are real tasks; the rich
     // topology adds helper nodes that must be ignored.
     let node_titles = crate::runner::graph_tui_bridge::build_node_title_map(&tasks);
-    // Tracks the status snapshot from the previous polling tick so the bridge
-    // can emit a diff (started / completed) rather than a full replay.
-    let mut previous_statuses: HashMap<String, roko_graph::engine::NodeStatus> = HashMap::new();
 
     // P2-TUI-3: Use engine.start() instead of engine.execute() so we can
     // watch for stop requests and operator cancels while the graph runs.
     let flow_handle = engine.start(cell_ctx);
-    let mut was_cancelled_by_tui = false;
-    let mut interrupted_by: Option<PlanRunInterrupt> = None;
-    // After an interrupt, how long the cancelled graph may still settle.
-    let mut drain_deadline: Option<Instant> = None;
-    let mut flow_abandoned = false;
 
     // ── Watch loop ───────────────────────────────────────────────────
     //
     // Every 100 ms while the plan runs: honour a stop request and an
     // operator cancel the plan-set driver routed to this plan. Pause and
     // resume act through the shared pause flag, which each task's dispatch
-    // checks before it starts an attempt.
-    loop {
-        if !flow_handle.is_running() {
-            break;
-        }
-        // Interrupt: cancel the graph and ask in-flight agents to stop so
-        // their nodes settle. After INTERRUPT_DRAIN_TIMEOUT, stop the
-        // attempts still running; after a further INTERRUPT_SETTLE_TIMEOUT,
-        // give up on the graph so the checkpoint is still finalized.
-        if let Some(deadline) = drain_deadline {
-            if Instant::now() >= deadline {
-                if stop_attempts.swap(true, Ordering::AcqRel) {
-                    tracing::warn!(
-                        plan_id = %plan.id,
-                        "stopped attempts did not settle in time; finalizing checkpoint without them"
-                    );
-                    flow_abandoned = true;
-                    break;
-                }
-                // A stopped attempt drops its provider call and settles with
-                // the usage it streamed (bug-2b1ddc).
-                tracing::warn!(
-                    plan_id = %plan.id,
-                    "cancelled graph did not settle in time; stopping its attempts"
-                );
-                drain_deadline = Some(Instant::now() + INTERRUPT_SETTLE_TIMEOUT);
-            }
-        } else if let Some(reason) = ctx.interrupt.requested() {
-            flow_handle.cancel();
-            // An agent that exits on this SIGTERM settles as cancelled.
-            ctx.graph_task_dispatcher.begin_stop();
-            let signalled = terminate_in_flight_agents();
-            tracing::warn!(
-                plan_id = %plan.id,
-                signal = reason.label(),
-                signalled,
-                "plan run interrupted: cancelling graph"
-            );
-            // Name what stops the run: an API cancel is not a SIGINT
-            // (bug-1d09e8).
-            graph_tui_bridge.log_event(
-                "graph.run_interrupted",
-                &format!(
-                    "{} is stopping the run: cancelling plan '{}'",
-                    reason.cause(),
-                    plan.id
-                ),
-            );
-            interrupted_by = Some(reason);
-            drain_deadline = Some(Instant::now() + INTERRUPT_DRAIN_TIMEOUT);
-        }
-        if !was_cancelled_by_tui && control.cancel.load(Ordering::Acquire) {
-            tracing::info!(plan_id = %plan.id, "TUI cancel: requesting flow cancellation");
-            flow_handle.cancel();
-            was_cancelled_by_tui = true;
-        }
+    // checks before it starts an attempt. A completed task is reported with
+    // the gate verdict of its recorded output (bug-7e1b6b).
+    let mut watch = FlowWatch::new(HashMap::new());
+    while watch.tick(ctx, &plan.id, control, &flow_handle, &stop_attempts) {
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
-        // Emit incremental TaskStarted/TaskCompleted events for any node whose
-        // status changed since the last tick. Filter to real tasks only (the
-        // rich topology adds helper nodes absent from `node_titles`). A
-        // completed task is reported with the gate verdict of its recorded
-        // output (bug-7e1b6b).
-        let mut current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
-            .status()
-            .node_statuses
-            .into_iter()
-            .filter(|(id, _)| node_titles.contains_key(id))
-            .collect();
-        // While the run stops, a task whose node fails is reported once its
-        // error says how it ended (the final diff below), so a task the stop
-        // cut off reads as cancelled, not failed (bug-1d09e8).
-        if interrupted_by.is_some() {
-            hold_back_failures(&previous_statuses, &mut current_statuses);
-        }
-        graph_tui_bridge.poll_status_changes(
-            &plan.id,
-            &previous_statuses,
-            &current_statuses,
-            &node_titles,
-            || checkpoint.recorded_gate_verdicts(),
-        );
-        previous_statuses = current_statuses;
+        watch.publish(ctx, &plan.id, &flow_handle, &node_titles, || {
+            checkpoint.recorded_gate_verdicts()
+        });
     }
-    // Agents that ignored SIGTERM must not outlive the run. They are killed
-    // once their attempts were asked to stop, so an attempt settles as
-    // stopped rather than as a provider failure.
-    if stop_attempts.load(Ordering::Acquire) {
-        let killed = kill_in_flight_agents();
-        if killed > 0 {
-            tracing::warn!(plan_id = %plan.id, killed, "killed agents that ignored SIGTERM");
-        }
-    }
+    watch.finish(&plan.id, &stop_attempts);
+    let mut was_cancelled_by_tui = watch.cancelled_by_tui;
+    let mut interrupted_by = watch.interrupted_by;
+    // The status snapshot of the last tick, so the final diff below emits
+    // only what the ticks did not.
+    let mut previous_statuses = watch.statuses;
 
     // Collect the final result from the background task.
-    let flow_result = if flow_abandoned {
+    let flow_result = if watch.abandoned {
         None
     } else {
         flow_handle.await_completion().await
@@ -4114,7 +4579,7 @@ async fn run_one_plan(
     )
     .await;
 
-    let Some(output) = flow_result else {
+    let Some(mut output) = flow_result else {
         // Flow was cancelled before producing a result (e.g. validation
         // failure inside start(), the task panicked, or an interrupted
         // graph did not settle in time).
@@ -4182,7 +4647,7 @@ async fn run_one_plan(
     // A plan succeeds only when every task passed its verify steps
     // (gap-29a84b); one whose tasks all completed, some without running a
     // verify step, is unverified.
-    let task_verdicts = TaskVerdictCounts::of(&output);
+    let mut task_verdicts = TaskVerdictCounts::of(&output);
     let outcome = plan_outcome(
         execution_succeeded,
         task_verdicts,
@@ -4196,35 +4661,89 @@ async fn run_one_plan(
     let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
     // Whether the tasks all passed, before the whole-plan check judged them.
     let tasks_succeeded = outcome.succeeded();
-    let outcome = match ctx.batch {
-        Some(batch) if outcome.succeeded() => {
-            deliver_plan_to_batch(
-                batch,
-                plan,
-                plan_checks,
-                ctx.gate_env_passthrough,
-                ctx.worktrees,
-                ctx.delete_attempt_branches,
-                &ctx.interrupt,
-                &mut checkpoint,
-                graph_tui_bridge,
-            )
-            .await?
+    // A check that fails once the plan's tasks all passed is handed back to
+    // them, and the plan is checked again, a bounded number of times
+    // (find-5bcba7).
+    let mut handbacks: Vec<super::plan_handback::Handback> = Vec::new();
+    let mut last_delivery: Option<String> = None;
+    let outcome = loop {
+        let checked = match ctx.batch {
+            Some(batch) if outcome.succeeded() => {
+                deliver_plan_to_batch(
+                    batch,
+                    plan,
+                    plan_checks,
+                    ctx.gate_env_passthrough,
+                    ctx.warm_build_dirs,
+                    ctx.worktrees,
+                    ctx.delete_attempt_branches,
+                    &ctx.interrupt,
+                    &mut checkpoint,
+                    graph_tui_bridge,
+                    handbacks.len(),
+                )
+                .await?
+            }
+            None if outcome.succeeded() && !plan_checks.is_empty() => {
+                check_plan_in_place(
+                    ctx.workdir,
+                    plan,
+                    plan_checks,
+                    ctx.gate_env_passthrough,
+                    &ctx.interrupt,
+                    &mut checkpoint,
+                    graph_tui_bridge,
+                )
+                .await?
+            }
+            _ => break outcome,
+        };
+        if checked.delivery_id.is_some() {
+            last_delivery = checked.delivery_id;
         }
-        None if outcome.succeeded() && !plan_checks.is_empty() => {
-            check_plan_in_place(
-                ctx.workdir,
-                plan,
-                plan_checks,
-                ctx.gate_env_passthrough,
-                &ctx.interrupt,
-                &mut checkpoint,
-                graph_tui_bridge,
-            )
-            .await?
+        let Some(failure) = checked.failed else {
+            break checked.outcome;
+        };
+        let rerun = HandbackRerun {
+            run_id: &run_id,
+            tasks: &tasks,
+            live_budgets: handback_budgets.as_ref(),
+            node_titles: &node_titles,
+        };
+        let step = hand_back_plan_check(
+            ctx,
+            plan,
+            control,
+            &rerun,
+            &failure,
+            &mut handbacks,
+            &mut output,
+            &mut previous_statuses,
+        )
+        .await?;
+        match step {
+            HandbackStep::Recheck => {}
+            HandbackStep::Fail => break checked.outcome,
+            HandbackStep::Stopped(reason) => {
+                interrupted_by = interrupted_by.or(Some(reason));
+                break PlanOutcome::Interrupted;
+            }
+            HandbackStep::Cancelled => {
+                was_cancelled_by_tui = true;
+                break PlanOutcome::Cancelled;
+            }
         }
-        _ => outcome,
     };
+    if !handbacks.is_empty() {
+        // The handed-back tasks' last attempts count, not their first.
+        task_verdicts = TaskVerdictCounts::of(&output);
+        record_handbacks(
+            ctx.batch,
+            last_delivery.as_deref(),
+            &handbacks,
+            &mut checkpoint,
+        )?;
+    }
     // A stop request that came during the whole-plan check stopped the plan
     // there: it reads as stopped, with what stopped it (bug-7b62ff).
     if outcome == PlanOutcome::Interrupted && interrupted_by.is_none() {
@@ -4338,11 +4857,21 @@ async fn run_one_plan(
             work.review_command()
         )
     });
+    // Tasks whose checks changed the person's checkout, not their own
+    // worktree (bug-b7d9ad).
+    let checkout_written = checkout_written_note(
+        ctx.workdir,
+        &ctx.graph_task_dispatcher.checkout_writes(&plan.id),
+    );
+    // Tasks the gaming screen left unverified, with why (gap-0af587).
+    let gaming_flagged = gaming_flagged_note(&ctx.graph_task_dispatcher.gaming_flags(&plan.id));
+    let why = unverified_why(!checkout_written.is_empty(), !gaming_flagged.is_empty());
+    let notes = format!("{gaming_flagged}{unverified_at}{checkout_written}");
     if outcome == PlanOutcome::Unverified {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}' is unverified: {} task(s) ran no verify step{unverified_at}",
+                "plan '{}' is unverified: {} task(s) {why}{notes}",
                 plan.id, task_verdicts.unverified
             ),
         );
@@ -4350,10 +4879,15 @@ async fn run_one_plan(
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': task(s) {} ran no verify step{unverified_at}",
+                "plan '{}': task(s) {} {why}{notes}",
                 plan.id,
                 work.tasks.join(", ")
             ),
+        );
+    } else if !checkout_written.is_empty() || !gaming_flagged.is_empty() {
+        graph_tui_bridge.log_event(
+            "graph.plan_unverified",
+            &format!("plan '{}'{gaming_flagged}{checkout_written}", plan.id),
         );
     }
     // Why each failed task failed, in the run's events, so a host can tell
@@ -4457,31 +4991,155 @@ async fn run_one_plan(
     })
 }
 
+/// How a plan's whole-plan check ended ([`deliver_plan_to_batch`],
+/// [`check_plan_in_place`]).
+struct PlanCheckResult {
+    /// What the check made of the plan.
+    outcome: PlanOutcome,
+    /// The step that failed, when the check ran and failed: neither a stop
+    /// nor a delivery that could not merge. A hand-back may give it to the
+    /// plan's tasks (find-5bcba7).
+    failed: Option<super::plan_handback::FailedPlanCheck>,
+    /// The delivery into the run's batch branch that ran the check, if one
+    /// did.
+    delivery_id: Option<String>,
+}
+
+impl PlanCheckResult {
+    /// A check that ended in `outcome`, with no failed step to hand back.
+    const fn ended(outcome: PlanOutcome) -> Self {
+        Self {
+            outcome,
+            failed: None,
+            delivery_id: None,
+        }
+    }
+}
+
+/// Why no task of `plans` can start (gap-c96097): every rung of the routing
+/// ladder failed its tool-use probe, each named here with the probe's own
+/// words, and the ladder routes every task, none pinned to a model by
+/// `--model` (`cli_model_override`), a `model_hint` or a `preferred_model`.
+/// The probes are plan start's ([`crate::dispatch::rung_probe::probe_ladder`],
+/// under its conditions, for the run that started at `run_started_ms`), whose
+/// verdicts stand for a day, so the probe at plan start reads them again. A
+/// billing failure from an earlier run is probed again here first
+/// (bug-374384), so one the stop reads is this run's: the person recharges
+/// either way, and the run stops before the pre-check (gap-d91691). `None`
+/// when the probes are off, a rung can run, or a task can start without the
+/// ladder.
+async fn unrunnable_ladder(
+    config: &roko_core::config::schema::RokoConfig,
+    workdir: &Path,
+    plans: &[crate::runner::plan_loader::Plan],
+    no_budget: bool,
+    cli_model_override: Option<&str>,
+    run_started_ms: i64,
+) -> Option<String> {
+    let probes = config.routing.ladder.probe
+        && !no_budget
+        && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    if !probes || cli_model_override.is_some() {
+        return None;
+    }
+    let ladder = crate::dispatch::RoutingLadder::from_config(config)?;
+    let routes_every_task = plans.iter().flat_map(|plan| &plan.tasks.tasks).all(|task| {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        task.model_hint.is_none()
+            && task.hints.preferred_model.is_none()
+            && ladder
+                .start(role, task.tier_class(), task.hints.rung.as_deref())
+                .is_some()
+    });
+    if !routes_every_task {
+        return None;
+    }
+    let failed =
+        crate::dispatch::rung_probe::probe_ladder(config, &ladder, workdir, run_started_ms).await;
+    let models = ladder.rung_models();
+    if !models.iter().all(|model| failed.contains_key(model)) {
+        return None;
+    }
+    let rungs = models
+        .iter()
+        .map(|model| format!("{model}: {}", failed[model]))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "no rung of the routing ladder can run, so no task of this run can start: {rungs}. \
+         The run stops before any check runs: fix the providers, or pin a model with --model, \
+         and run again; a rung refused on its provider's billing is probed again when the next \
+         run starts"
+    ))
+}
+
+/// What the plan-load gate's red-on-base check runs for `plans` (gap-6a319c):
+/// the implementer tasks with checks it runs on the base, and at most how
+/// many check runs that takes (each task's steps, [`RUNS`] times). Both are
+/// 0 when the check is off.
+///
+/// [`RUNS`]: crate::spec_red_on_base::RUNS
+fn red_on_base_work(
+    plans: &[crate::runner::plan_loader::Plan],
+    config: &roko_core::config::SpecQualityConfig,
+) -> (u32, u32) {
+    if !config.is_on() || !config.red_on_base {
+        return (0, 0);
+    }
+    let (mut tasks, mut steps) = (0_usize, 0_usize);
+    for task in plans.iter().flat_map(|plan| &plan.tasks.tasks) {
+        let role = task.role.as_deref().map_or("", str::trim);
+        let accept = task.accept.as_ref().map_or(0, |accept| accept.files.len());
+        let regression_only = accept == 0
+            && task.verify.iter().all(|step| {
+                matches!(
+                    step.expect,
+                    Some(crate::task_parser::VerifyExpect::PassOnBase)
+                )
+            });
+        if !matches!(role, "" | "implementer") || regression_only {
+            continue;
+        }
+        tasks += 1;
+        steps += (task.verify.len() + accept) * crate::spec_red_on_base::RUNS;
+    }
+    (
+        u32::try_from(tasks).unwrap_or(u32::MAX),
+        u32::try_from(steps).unwrap_or(u32::MAX),
+    )
+}
+
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
 /// (spec-f830c4): merge its verified plan-branch tip with the batch's tip, run
 /// the regression check on the merge, move the batch to the merge only once
 /// the check passed (bug-700d7c), and record the delivery in the plan's
 /// checkpoint. The plan succeeds only when the delivery does. A delivered
 /// plan's accepted attempt checkouts are then removed from `worktrees`, and
-/// with `delete_attempt_branches` their branches too (gap-415c54). `Err`
-/// only when the checkpoint cannot record it.
+/// with `delete_attempt_branches` their branches too (gap-415c54).
+///
+/// After `handbacks` hand-backs of the plan's failed check (find-5bcba7) it is
+/// a delivery of its own ([`super::batch::BatchIntegration::recheck_request`]),
+/// which supersedes the failed one. A check that fails names its failed step,
+/// for the next hand-back. `Err` only when the checkpoint cannot record it.
 async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
     env_passthrough: &[String],
+    warm_build_dirs: Option<&[String]>,
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
     stop: &PlanRunInterruptHandle,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
-) -> anyhow::Result<PlanOutcome> {
+    handbacks: usize,
+) -> anyhow::Result<PlanCheckResult> {
     let Some(verified) = super::batch::plan_branch_tip(batch.repo(), &plan.id).await else {
         tracing::info!(
             plan_id = %plan.id,
             "no attempt of the plan was accepted, so it has nothing to deliver"
         );
-        return Ok(PlanOutcome::Succeeded);
+        return Ok(PlanCheckResult::ended(PlanOutcome::Succeeded));
     };
     // The regression check is the plan's whole-plan check (gap-60233f), with
     // the environment verify steps get. Its receipt says where the steps came
@@ -4490,6 +5148,9 @@ async fn deliver_plan_to_batch(
         .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
         .with_regression_source(plan_check_source(plan))
         .with_env_passthrough(env_passthrough.to_vec())
+        // Warm by default, cold for a plan that asks (gap-dc24dd).
+        .with_warm_build_dirs(warm_build_dirs.map(<[String]>::to_vec))
+        .with_cold_check(plan.tasks.meta.cold_verify)
         .with_check_events(plan_check_events(
             graph_tui_bridge,
             plan,
@@ -4501,7 +5162,8 @@ async fn deliver_plan_to_batch(
         Arc::new(backend),
     )
     .with_events(delivery_events(graph_tui_bridge));
-    let request = batch.request(&plan.id, verified);
+    let request = batch.recheck_request(&plan.id, verified, handbacks);
+    let delivery_id = request.delivery_id.clone();
     let receipt = match batch
         .deliver(&service, request, checkpoint.recorded_delivery())
         .await
@@ -4514,10 +5176,17 @@ async fn deliver_plan_to_batch(
                 plan.id,
                 batch.branch()
             ));
-            return Ok(PlanOutcome::Failed);
+            return Ok(PlanCheckResult::ended(PlanOutcome::Failed));
         }
     };
+    // The delivery whose failed check was handed back gives way to this one.
+    batch.supersede_handed_back(&plan.id, handbacks);
     checkpoint.record_batch_delivery(batch.record(&receipt), &receipt)?;
+    let ended = |outcome| PlanCheckResult {
+        outcome,
+        failed: None,
+        delivery_id: Some(delivery_id.clone()),
+    };
     if receipt.state.is_success() {
         tracing::info!(
             plan_id = %plan.id,
@@ -4527,7 +5196,7 @@ async fn deliver_plan_to_batch(
         );
         release_delivered_attempts(worktrees, &plan.id, delete_attempt_branches, batch, receipt)
             .await;
-        return Ok(PlanOutcome::Succeeded);
+        return Ok(ended(PlanOutcome::Succeeded));
     }
     let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
     // A stop request cut the delivery's regression check short: the plan
@@ -4539,7 +5208,7 @@ async fn deliver_plan_to_batch(
             reason,
             "the run was asked to stop during the plan's delivery; it was not delivered"
         );
-        return Ok(PlanOutcome::Interrupted);
+        return Ok(ended(PlanOutcome::Interrupted));
     }
     tracing::error!(
         plan_id = %plan.id,
@@ -4554,7 +5223,38 @@ async fn deliver_plan_to_batch(
         batch.branch(),
         receipt.state
     ));
-    Ok(PlanOutcome::Failed)
+    Ok(PlanCheckResult {
+        failed: failed_delivery_check(&receipt),
+        ..ended(PlanOutcome::Failed)
+    })
+}
+
+/// The step of `receipt`'s whole-plan check that failed, with everything it
+/// wrote when the delivery's check log still holds it, else the tail its
+/// receipt keeps (backlog 3111). `None` when the delivery did not fail its
+/// check: it conflicted, was stopped, or its check could not run at all.
+fn failed_delivery_check(
+    receipt: &roko_graph::delivery::CompletionDeliveryReceiptV1,
+) -> Option<super::plan_handback::FailedPlanCheck> {
+    use super::plan_handback::FailedPlanCheck;
+
+    if receipt.state != roko_graph::delivery::CompletionDeliveryState::RegressionFailed {
+        return None;
+    }
+    let checks: Vec<super::delivery::DeliveryCheck> = receipt
+        .extensions
+        .get(super::delivery::DELIVERY_CHECKS_EXTENSION)
+        .and_then(|checks| serde_json::from_value(checks.clone()).ok())?;
+    let failed = checks
+        .iter()
+        .rev()
+        .find(|check| check.exit_code != Some(0) && check.stopped_by.is_none())?;
+    let logged = receipt
+        .regression_evidence_ref
+        .as_deref()
+        .and_then(|log| std::fs::read_to_string(log).ok())
+        .and_then(|log| FailedPlanCheck::from_check_log(&log, &failed.command));
+    Some(logged.unwrap_or_else(|| FailedPlanCheck::new(&failed.command, &failed.output_tail)))
 }
 
 /// A plan that ended without succeeding, as [`settle_undelivered_plan`]
@@ -4852,7 +5552,8 @@ async fn release_delivered_attempts(
 /// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
 /// `workdir`, which its tasks edited, and record it in the plan's
 /// checkpoint. Its steps inherit what the gate policy and `env_passthrough`
-/// admit. The plan succeeds only when the check passes. `Err` only when the
+/// admit. The plan succeeds only when the check passes; a check that fails
+/// names its failed step, for a hand-back (find-5bcba7). `Err` only when the
 /// checkpoint cannot record it.
 async fn check_plan_in_place(
     workdir: &Path,
@@ -4862,7 +5563,17 @@ async fn check_plan_in_place(
     stop: &PlanRunInterruptHandle,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
-) -> anyhow::Result<PlanOutcome> {
+) -> anyhow::Result<PlanCheckResult> {
+    // A cold check needs a checkout of its own to clear (gap-dc24dd); the
+    // shared working tree is the person's, so here it runs on their build
+    // trees.
+    if plan.tasks.meta.cold_verify {
+        tracing::warn!(
+            plan_id = %plan.id,
+            "[meta] cold_verify asks for a cold check, which needs --worktree-per-task; the \
+             plan's check runs warm in the shared working tree"
+        );
+    }
     let events = plan_check_events(
         graph_tui_bridge,
         plan,
@@ -4880,12 +5591,12 @@ async fn check_plan_in_place(
     match result {
         Ok(()) => {
             tracing::info!(plan_id = %plan.id, steps = checks.len(), "plan check passed");
-            Ok(PlanOutcome::Succeeded)
+            Ok(PlanCheckResult::ended(PlanOutcome::Succeeded))
         }
         // A stop request ended the check: the plan stopped (bug-7b62ff).
         Err(failure) if failure.stopped_by.is_some() => {
             tracing::warn!(plan_id = %plan.id, step = %failure.command, "plan check stopped");
-            Ok(PlanOutcome::Interrupted)
+            Ok(PlanCheckResult::ended(PlanOutcome::Interrupted))
         }
         Err(failure) => {
             tracing::error!(
@@ -4895,9 +5606,447 @@ async fn check_plan_in_place(
                 "plan check failed: its tasks passed, but not together"
             );
             graph_tui_bridge.error(&format!("plan '{}': [meta] verify {failure}", plan.id));
-            Ok(PlanOutcome::Failed)
+            // A step that never ran to its end wrote nothing to hand back.
+            let wrote = if failure.text.is_empty() {
+                None
+            } else {
+                Some(super::plan_handback::FailedPlanCheck::new(
+                    &failure.command,
+                    &failure.text,
+                ))
+            };
+            Ok(PlanCheckResult {
+                failed: wrote,
+                ..PlanCheckResult::ended(PlanOutcome::Failed)
+            })
         }
     }
+}
+
+/// What a hand-back of a plan's failed check needs to run its tasks again
+/// (find-5bcba7): the plan's checkpoint run, its tasks as the Graph
+/// converters take them, the live retry budgets its graph ran with, and the
+/// titles of its task nodes.
+struct HandbackRerun<'a> {
+    run_id: &'a str,
+    tasks: &'a [(String, roko_graph::PlanTaskInfo)],
+    live_budgets: Option<&'a Arc<dyn roko_graph::cells::RetryBudgetSource>>,
+    node_titles: &'a HashMap<String, String>,
+}
+
+/// What a hand-back of a plan's failed check did ([`hand_back_plan_check`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandbackStep {
+    /// Its try passed, the plan's check included: check the plan again.
+    Recheck,
+    /// It was not handed back, or its try did not pass: the plan failed.
+    Fail,
+    /// A stop request came while its try ran.
+    Stopped(PlanRunInterrupt),
+    /// An operator cancelled the plan while its try ran.
+    Cancelled,
+}
+
+/// Hand plan `plan`'s failed whole-plan check `failure` back to its tasks
+/// (find-5bcba7): one attempt, from the plan's accepted work, with the
+/// failure as its feedback. The tasks it goes back to run a test that failed
+/// in their own checks or own the files the failure's own lines name, or are
+/// every task that changed a file when neither names one
+/// ([`super::plan_handback::implicate`]); a file belongs to the task that
+/// changed it last ([`super::plan_handback::file_owners`]).
+///
+/// The attempt is one, not one per task, since fixing the failure can take
+/// more than one task's files (bug-fc05a3): one of them runs it, a task whose
+/// own steps run the test that failed, else the one of the highest tier
+/// ([`super::plan_handback::lead_task`]). It may change all their files, and
+/// is judged by its own verify steps, theirs and the plan's check
+/// ([`super::plan_handback::handback_task`]). An attempt that changes nothing
+/// while the check fails is then a failure, not "already satisfied".
+///
+/// It is not handed back once it was [`super::plan_handback::MAX_HANDBACKS`]
+/// times, under the rich topology, when its step printed nothing, or when no
+/// task of the plan changed a file: the plan fails as it did. The try's attempts replace the task's
+/// result in `output` and its status in `statuses`, and the hand-back is
+/// added to `handbacks`. `Err` only when the try cannot be put in a graph.
+async fn hand_back_plan_check(
+    ctx: &PlanRunContext<'_>,
+    plan: &crate::runner::plan_loader::Plan,
+    control: &PlanControl,
+    rerun: &HandbackRerun<'_>,
+    failure: &super::plan_handback::FailedPlanCheck,
+    handbacks: &mut Vec<super::plan_handback::Handback>,
+    output: &mut roko_graph::GraphOutput,
+    statuses: &mut HashMap<String, roko_graph::engine::NodeStatus>,
+) -> anyhow::Result<HandbackStep> {
+    use roko_graph::engine::NodeStatus;
+
+    use super::plan_handback::{
+        Handback, MAX_HANDBACKS, file_owners, handback_feedback, implicate, lead_task,
+    };
+
+    let not_handed_back = |why: &str| -> anyhow::Result<HandbackStep> {
+        tracing::warn!(plan_id = %plan.id, check = %failure.command, why, "the plan's check is not handed back");
+        ctx.graph_tui_bridge.log_event(
+            "graph.plan_check_not_handed_back",
+            &format!(
+                "plan '{}': its whole-plan check `{}` failed and is not handed back to its tasks: {why}",
+                plan.id, failure.command
+            ),
+        );
+        Ok(HandbackStep::Fail)
+    };
+    if handbacks.len() >= MAX_HANDBACKS {
+        return not_handed_back(&format!("it was handed back {MAX_HANDBACKS} times already"));
+    }
+    if ctx.rich_topology {
+        return not_handed_back("a hand-back runs only on the default topology");
+    }
+    if failure.printed_nothing() {
+        return not_handed_back("its failed step printed nothing to go on");
+    }
+    let repo = ctx.batch.map(super::batch::BatchIntegration::repo);
+    let owners = file_owners(repo, plan, rerun.run_id).await;
+    let implicated = implicate(plan, &owners, failure);
+    let Some(lead) = lead_task(plan, &implicated) else {
+        return not_handed_back("no task of the plan changed a file");
+    };
+    let checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
+    let Some(try_task) = handback_try(plan, rerun, &lead, &implicated, checks, failure, &owners)
+    else {
+        return not_handed_back(&format!("task {lead}'s definition could not be read"));
+    };
+    let (files, tasks) = (implicated.files.clone(), implicated.tasks.clone());
+    let round = handbacks.len() + 1;
+    if let Some(feedback) = handback_feedback(failure, &implicated) {
+        ctx.graph_task_dispatcher
+            .hand_back(&plan.id, &lead, &failure.command, feedback);
+    }
+    let named_list = if files.is_empty() {
+        "no file a task changed".to_string()
+    } else {
+        files.keys().cloned().collect::<Vec<_>>().join(", ")
+    };
+    let runners = match implicated.runners.as_slice() {
+        [] => String::new(),
+        runners => format!(" in a test that task(s) {} run", runners.join(", ")),
+    };
+    tracing::info!(
+        plan_id = %plan.id,
+        check = %failure.command,
+        files = %named_list,
+        runners = %implicated.runners.join(", "),
+        tasks = %tasks.join(", "),
+        lead = %lead,
+        round,
+        "handing the plan's failed check back to its tasks"
+    );
+    ctx.graph_tui_bridge.log_event(
+        "graph.plan_check_handback",
+        &format!(
+            "plan '{}': its whole-plan check `{}` failed{runners}, naming {named_list}; handing \
+             it back to task {lead}, which may change the files of task(s) {} (hand-back \
+             {round} of at most {MAX_HANDBACKS})",
+            plan.id,
+            failure.command,
+            tasks.join(", ")
+        ),
+    );
+
+    let ran =
+        rerun_handed_back_tasks(ctx, plan, control, rerun, try_task, statuses.clone()).await?;
+    let mut handback = Handback {
+        round,
+        check: failure.command.clone(),
+        files,
+        tasks: tasks.clone(),
+        lead: lead.clone(),
+        result: String::new(),
+    };
+    statuses.extend(ran.statuses);
+    if let Some(rerun_output) = &ran.output {
+        merge_rerun_output(output, rerun_output);
+    }
+    let step = if let Some(reason) = ran.interrupted_by {
+        handback.result = "stopped".to_string();
+        HandbackStep::Stopped(reason)
+    } else if ran.cancelled_by_tui {
+        handback.result = "cancelled".to_string();
+        HandbackStep::Cancelled
+    } else {
+        let passed = ran.output.as_ref().is_some_and(|rerun_output| {
+            rerun_output
+                .node_results
+                .iter()
+                .any(|result| result.node_id == lead && result.status == NodeStatus::Complete)
+        });
+        if passed {
+            handback.result = "passed".to_string();
+            HandbackStep::Recheck
+        } else if ctx.graph_task_dispatcher.changed_nothing(&plan.id, &lead) {
+            handback.result = "unchanged".to_string();
+            HandbackStep::Fail
+        } else {
+            handback.result = "failed".to_string();
+            HandbackStep::Fail
+        }
+    };
+    match handback.result.as_str() {
+        "passed" => ctx.graph_tui_bridge.log_event(
+            "graph.plan_check_handback",
+            &format!(
+                "plan '{}': task {lead} passed after hand-back {round}, the plan's check included; \
+                 checking the plan again",
+                plan.id
+            ),
+        ),
+        "failed" => ctx.graph_tui_bridge.error(&format!(
+            "plan '{}': task {lead} did not pass after hand-back {round} of its whole-plan check",
+            plan.id
+        )),
+        "unchanged" => ctx.graph_tui_bridge.error(&format!(
+            "plan '{}': task {lead} changed nothing after hand-back {round} of its whole-plan \
+             check, which still fails; the check fails across the work of task(s) {}",
+            plan.id,
+            handback.tasks.join(", ")
+        )),
+        _ => {}
+    }
+    handbacks.push(handback);
+    Ok(step)
+}
+
+/// Task `lead` of `plan` as a hand-back's try runs it, as the graph converter
+/// takes it (bug-fc05a3): its task as [`super::plan_handback::handback_task`]
+/// makes it for what the failure points at, `implicated`, of the files the
+/// plan's tasks changed, `owners`, with the verify steps of the tasks it goes
+/// back to and the plan's check `checks`, and without its dependencies, which
+/// passed. `None` when its definition cannot be read.
+fn handback_try(
+    plan: &crate::runner::plan_loader::Plan,
+    rerun: &HandbackRerun<'_>,
+    lead: &str,
+    implicated: &super::plan_handback::Implicated,
+    checks: &[crate::task_parser::VerifyStep],
+    failure: &super::plan_handback::FailedPlanCheck,
+    owners: &BTreeMap<String, String>,
+) -> Option<(String, roko_graph::PlanTaskInfo)> {
+    let (_, info) = rerun.tasks.iter().find(|(task_id, _)| task_id == lead)?;
+    let task: crate::task_parser::TaskDef =
+        serde_json::from_value(info.full_config_json.clone()).ok()?;
+    let others: Vec<&crate::task_parser::TaskDef> = plan
+        .tasks
+        .tasks
+        .iter()
+        .filter(|other| other.id != lead && implicated.tasks.contains(&other.id))
+        .collect();
+    let task =
+        super::plan_handback::handback_task(&task, &others, checks, failure, implicated, owners);
+    let mut info = info.clone();
+    info.depends_on.clear();
+    info.files.clone_from(&task.files);
+    info.description.clone_from(&task.description);
+    info.full_config_json = serde_json::to_value(&task).ok()?;
+    Some((lead.to_string(), info))
+}
+
+/// The retry budget of a hand-back's try (bug-fc05a3): its task's own budget,
+/// `budgets` when the run keeps live ones, but at most
+/// [`super::plan_handback::HANDBACK_RETRIES`] retries, and none once an
+/// attempt changed nothing, since the next would start from the same tree.
+struct HandbackRetries {
+    plan_id: String,
+    task_id: String,
+    budgets: Option<Arc<dyn roko_graph::cells::RetryBudgetSource>>,
+    dispatcher: Arc<crate::graph_task_dispatch::GraphTaskDispatcher>,
+}
+
+impl roko_graph::cells::RetryBudgetSource for HandbackRetries {
+    fn max_retries(
+        &self,
+        spec: &roko_graph::cells::TaskExecutionSpec,
+        ctx: &roko_graph::CellContext,
+    ) -> Option<u32> {
+        if self
+            .dispatcher
+            .changed_nothing(&self.plan_id, &self.task_id)
+        {
+            return Some(0);
+        }
+        let budget = self
+            .budgets
+            .as_ref()
+            .and_then(|budgets| budgets.max_retries(spec, ctx))
+            .unwrap_or(spec.max_retries);
+        Some(budget.min(super::plan_handback::HANDBACK_RETRIES))
+    }
+}
+
+/// What running a hand-back's try left ([`rerun_handed_back_tasks`]).
+struct HandbackRerunResult {
+    /// The graph's result; `None` when it did not settle.
+    output: Option<roko_graph::GraphOutput>,
+    /// The stop request that came while the try ran, if one did.
+    interrupted_by: Option<PlanRunInterrupt>,
+    /// Whether an operator cancelled the plan while it ran.
+    cancelled_by_tui: bool,
+    /// The tasks' statuses as the live views last saw them.
+    statuses: HashMap<String, roko_graph::engine::NodeStatus>,
+}
+
+/// Run a hand-back's try, `try_task` of `plan` ([`handback_try`]), after the
+/// hand-back left it its feedback (find-5bcba7): a graph of that task alone,
+/// through the run's task dispatcher, so each attempt runs, is checked and is
+/// accepted onto the plan branch as any other, within [`HandbackRetries`]. It
+/// is watched as the plan's graph is ([`FlowWatch`]), from the live views'
+/// last `statuses`.
+async fn rerun_handed_back_tasks(
+    ctx: &PlanRunContext<'_>,
+    plan: &crate::runner::plan_loader::Plan,
+    control: &PlanControl,
+    rerun: &HandbackRerun<'_>,
+    try_task: (String, roko_graph::PlanTaskInfo),
+    statuses: HashMap<String, roko_graph::engine::NodeStatus>,
+) -> anyhow::Result<HandbackRerunResult> {
+    use roko_graph::cells::TaskExecutorCell;
+    use roko_graph::engine::GraphEngine;
+
+    let retries: Arc<dyn roko_graph::cells::RetryBudgetSource> = Arc::new(HandbackRetries {
+        plan_id: plan.id.clone(),
+        task_id: try_task.0.clone(),
+        budgets: rerun.live_budgets.cloned(),
+        dispatcher: Arc::clone(ctx.graph_task_dispatcher),
+    });
+    let tasks = [try_task];
+    let mut graph = roko_graph::plan_to_graph(&plan.id, &plan.dir.display().to_string(), &tasks, 1)
+        .map_err(|error| {
+            anyhow!(
+                "put the hand-back of plan '{}' in a graph: {error}",
+                plan.id
+            )
+        })?;
+    drop_exclusion_for_worktrees(&mut graph, ctx.worktree_per_task);
+    graph.policy.failure_strategy = roko_graph::FailureStrategy::SkipFailed;
+    let mut registry = roko_graph::default_registry();
+    let dispatcher = Arc::clone(ctx.task_dispatcher);
+    registry.register("task-executor", move |config| {
+        let cell = TaskExecutorCell::live(config, Arc::clone(&dispatcher));
+        Box::new(cell.with_retry_budget(Arc::clone(&retries)))
+    });
+    let budget_dispatcher = Arc::clone(ctx.graph_task_dispatcher);
+    let budget_plan_id = plan.id.clone();
+    let engine = GraphEngine::new(graph, registry)
+        .with_telemetry(Arc::clone(ctx.graph_telemetry))
+        .with_dispatch_stop(Arc::new(move || {
+            budget_dispatcher.plan_dispatch_stop(&budget_plan_id)
+        }));
+    let issues = engine.validate();
+    if !issues.is_empty() {
+        anyhow::bail!(
+            "the hand-back of plan '{}' does not validate: {}",
+            plan.id,
+            issues.join("; ")
+        );
+    }
+    let stop_attempts = Arc::new(AtomicBool::new(false));
+    let cell_ctx = plan_cell_context(
+        rerun.run_id,
+        ctx.shared_pause_flag,
+        &stop_attempts,
+        ctx.cell_resources,
+    );
+    let flow_handle = engine.start(cell_ctx);
+    let mut watch = FlowWatch::new(statuses);
+    while watch.tick(ctx, &plan.id, control, &flow_handle, &stop_attempts) {
+        tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
+        watch.publish(
+            ctx,
+            &plan.id,
+            &flow_handle,
+            rerun.node_titles,
+            BTreeMap::new,
+        );
+    }
+    watch.finish(&plan.id, &stop_attempts);
+    let output = if watch.abandoned {
+        None
+    } else {
+        flow_handle.await_completion().await
+    };
+    // What the ticks did not publish of how the tasks ended.
+    let mut statuses = watch.statuses;
+    if let Some(output) = &output {
+        let ended: HashMap<String, roko_graph::engine::NodeStatus> = output
+            .node_results
+            .iter()
+            .filter(|result| rerun.node_titles.contains_key(&result.node_id))
+            .filter(|result| watch.interrupted_by.is_none() || cancel_reason(result).is_none())
+            .map(|result| (result.node_id.clone(), result.status))
+            .collect();
+        ctx.graph_tui_bridge.poll_status_changes(
+            &plan.id,
+            &statuses,
+            &ended,
+            rerun.node_titles,
+            || output.gate_verdicts.clone(),
+        );
+        statuses.extend(ended);
+    }
+    Ok(HandbackRerunResult {
+        output,
+        interrupted_by: watch.interrupted_by,
+        cancelled_by_tui: watch.cancelled_by_tui,
+        statuses,
+    })
+}
+
+/// Put the results of `rerun`, a hand-back's graph, in place of its tasks'
+/// earlier results in `output`, the plan's graph result, with their gate
+/// verdicts.
+fn merge_rerun_output(output: &mut roko_graph::GraphOutput, rerun: &roko_graph::GraphOutput) {
+    for result in &rerun.node_results {
+        if let Some(earlier) = output
+            .node_results
+            .iter_mut()
+            .find(|earlier| earlier.node_id == result.node_id)
+        {
+            *earlier = result.clone();
+        }
+        match rerun.gate_verdicts.get(&result.node_id) {
+            Some(verdict) => {
+                output
+                    .gate_verdicts
+                    .insert(result.node_id.clone(), *verdict);
+            }
+            None => {
+                output.gate_verdicts.remove(&result.node_id);
+            }
+        }
+    }
+    output.success = output.success && rerun.success;
+    output.total_duration += rerun.total_duration;
+}
+
+/// Record the hand-backs of plan's failed check (find-5bcba7) in its
+/// checkpoint, and on the plan's last delivery into the run's batch branch,
+/// `delivery_id`, whose summary record shows them.
+fn record_handbacks(
+    batch: Option<&super::batch::BatchIntegration>,
+    delivery_id: Option<&str>,
+    handbacks: &[super::plan_handback::Handback],
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+) -> anyhow::Result<()> {
+    let value = serde_json::to_value(handbacks).context("serialize the plan's hand-backs")?;
+    checkpoint.record_plan_handbacks(value.clone())?;
+    if let (Some(batch), Some(delivery_id)) = (batch, delivery_id)
+        && let Some(mut receipt) = batch.store().get(delivery_id)
+    {
+        receipt
+            .extensions
+            .insert(super::plan_handback::HANDBACKS_EXTENSION.to_string(), value);
+        batch.store().update(&receipt);
+        checkpoint.record_batch_delivery(batch.record(&receipt), &receipt)?;
+    }
+    Ok(())
 }
 
 /// How many plan runs the cost trend a run publishes as it ends covers
@@ -5501,6 +6650,40 @@ mod tests {
         assert_eq!(entries[2].group, None, "outside plans/");
     }
 
+    /// bug-bd261a: the plans a run executes, worked out before it starts, are
+    /// the ones it selects, in the order it runs them: a prerequisite before
+    /// the plan that needs it, else by id, and only the plans `only_plans`
+    /// names.
+    #[test]
+    fn compute_plan_run_set_selects_and_orders_plans_as_the_run_does() {
+        let dir = disabled_role_plan_set(
+            &[
+                ("a-needs-b", "a.txt", &["b-first"]),
+                ("b-first", "b.txt", &[]),
+                ("c-alone", "c.txt", &[]),
+            ],
+            "",
+        );
+        let plans_dir = dir.path().join("plans");
+        let selected = |only: Option<&[String]>| {
+            compute_plan_run_set(dir.path(), &plans_dir, only)
+                .map(|plans| plans.into_iter().map(|plan| plan.id).collect::<Vec<_>>())
+        };
+
+        let whole_set = ["b-first", "a-needs-b", "c-alone"];
+        assert_eq!(selected(None).expect("whole set"), whole_set);
+        assert_eq!(
+            compute_plan_run_order(dir.path(), &plans_dir, None).expect("run order"),
+            whole_set
+        );
+        let only = ["c-alone".to_string(), "b-first".to_string()];
+        assert_eq!(
+            selected(Some(&only)).expect("two plans"),
+            ["b-first", "c-alone"]
+        );
+        assert!(selected(Some(&["no-such-plan".to_string()])).is_err());
+    }
+
     /// Workspace config whose only role in use is disabled, so the task
     /// fails without dispatching a provider (bug-a843d4).
     const DISABLED_ROLE_CONFIG: &str = r#"
@@ -5514,6 +6697,11 @@ command = "claude"
 [models.claude-sonnet-4-6]
 provider = "claude_cli"
 slug = "claude-sonnet-4-6"
+
+# Audits are on by default (decision 7103): a fixture runs none, so no test
+# writes to the operator's ~/.roko/audit.
+[audit]
+enabled = false
 
 [agent.roles.researcher]
 enabled = false
@@ -5577,6 +6765,7 @@ files = ["README.md"]
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         })
@@ -5599,6 +6788,124 @@ files = ["README.md"]
             crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-disabled"),
             Some(GraphCheckpointStatus::Failed)
         );
+    }
+
+    /// A two-rung ladder of OpenAI-compatible models, as the rung probes
+    /// probe them, on a provider nothing listens at: a test seeds their
+    /// verdicts, so no probe call is made.
+    const PROBED_LADDER_CONFIG: &str = r#"
+[providers.cheap_api]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "PATH"
+
+[providers.mid_api]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "PATH"
+
+[models.cheap-model]
+provider = "cheap_api"
+slug = "cheap-1"
+supports_tools = true
+tool_format = "openai_json"
+
+[models.mid-model]
+provider = "mid_api"
+slug = "mid-1"
+supports_tools = true
+tool_format = "openai_json"
+
+[routing.ladder]
+rungs = [{ name = "cheap", model = "cheap-model" }, { name = "mid", model = "mid-model" }]
+"#;
+
+    /// gap-20301d: a rung whose model's fresh probe failed is skipped at plan
+    /// start with one `rung_skipped` event for the run's plan, naming the
+    /// rung, its model and provider, the probe's words and until when the
+    /// verdict stands, and the run's own record keeps it for its summary. The
+    /// rung whose fresh probe passed gets none. Both verdicts are fresh, so
+    /// no probe runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_probe_skips_its_rung_with_an_event() {
+        use crate::dispatch::rung_probe::{PROBE_TTL_MS, RungProbe, RungProbes};
+
+        let dir = disabled_role_plan_set(&[("a", "a.txt", &[])], PROBED_LADDER_CONFIG);
+        let probed_at_ms = chrono::Utc::now().timestamp_millis() - 60_000;
+        let probe = |passed: bool, reason: &str| RungProbe {
+            passed,
+            reason: reason.to_string(),
+            probed_at_ms,
+        };
+        let probes = RungProbes {
+            models: [
+                (
+                    "cheap-1".to_string(),
+                    probe(
+                        false,
+                        "request_refused: cheap_api refused the request (HTTP 400): Function \
+                         tools with reasoning_effort are not supported",
+                    ),
+                ),
+                ("mid-1".to_string(), probe(true, "")),
+            ]
+            .into(),
+        };
+        let path = RungProbes::path(dir.path());
+        std::fs::create_dir_all(path.parent().expect("learn dir")).expect("learn dir");
+        std::fs::write(&path, serde_json::to_string(&probes).expect("probes")).expect("probes");
+
+        let (_, _, hub) = run_plan_set_with(dir.path(), Some(1), None, false, false).await;
+
+        let skipped: Vec<_> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::RungSkipped {
+                    plan_id,
+                    rung,
+                    model,
+                    provider,
+                    reason,
+                    until_ms,
+                    billing,
+                    detail,
+                } => Some((
+                    plan_id, rung, model, provider, reason, until_ms, billing, detail,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(skipped.len(), 1, "one rung, one plan: {skipped:?}");
+        let (plan_id, rung, model, provider, reason, until_ms, billing, detail) = &skipped[0];
+        assert!(!billing, "a refused parameter is not a billing failure");
+        assert_eq!(
+            (
+                plan_id.as_str(),
+                rung.as_str(),
+                model.as_str(),
+                provider.as_str()
+            ),
+            ("a", "cheap", "cheap-1", "cheap_api")
+        );
+        assert!(reason.contains("(HTTP 400)"), "{reason}");
+        assert_eq!(*until_ms, Some(probed_at_ms + PROBE_TTL_MS));
+        assert!(
+            detail.starts_with("rung cheap (cheap-1 on cheap_api) is skipped until ")
+                && detail.contains("its tool-use probe failed: request_refused")
+                && detail.ends_with("run `roko learn probes clear cheap-1`"),
+            "{detail}"
+        );
+        let events =
+            std::fs::read_to_string(RokoLayout::for_project(dir.path()).events_jsonl_path())
+                .expect("the run's event log");
+        let kept = events
+            .lines()
+            .filter(|line| line.contains("\"type\":\"rung_skipped\""))
+            .count();
+        assert_eq!(kept, 1, "the run's record keeps the event for its summary");
+        assert_eq!(RungProbes::load(&path), probes, "no probe ran");
     }
 
     /// gap-568056: a Graph run keeps `.roko/state/status.json` current and
@@ -5793,6 +7100,7 @@ max_retries = 0
             no_cascade: false,
             frozen_learning,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         })
@@ -6280,11 +7588,18 @@ verify = [{{ phase = "structural", command = {verify:?} }}]
     /// `true`, can never fail), followed by `extra_config`. The provider ignores its
     /// prompt, appends a line to `provider-calls`, and reports a finished turn
     /// costing `cost_usd`, so each task's verify step alone decides its
-    /// outcome.
+    /// outcome. Audits are on by default (decision 7103), so the workspace
+    /// runs none unless `extra_config` has an `[audit]` table of its own: a
+    /// test's run never writes to the operator's `~/.roko/audit`.
     #[cfg(unix)]
     fn fake_provider_workspace(dir: &Path, cost_usd: f64, extra_config: &str) {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let audit = if extra_config.contains("[audit]") {
+            ""
+        } else {
+            "\n[audit]\nenabled = false\n"
+        };
         let provider = dir.join("fake-provider.sh");
         std::fs::write(
             &provider,
@@ -6326,7 +7641,7 @@ mode = "off"
 
 [gates]
 sibling_settle_secs = 0
-{extra_config}"#,
+{extra_config}{audit}"#,
                 provider = provider.display().to_string()
             ),
         )
@@ -7070,17 +8385,23 @@ max_retries = 0
     /// Decision 2218: `--frozen-learning` freezes a run's learning (the
     /// params' `frozen_learning`), and `[learning] frozen = true` every
     /// run's. Either reaches the run's config, so its fingerprint is a frozen
-    /// one, and its manifest records `ablation_flags = ["learning_frozen"]`;
-    /// neither leaves the flags empty.
+    /// one, and its manifest's `ablation_flags` hold `learning_frozen`; a live
+    /// run's do not. The other flags follow the workspace's audit and holdout
+    /// settings (find-697944), which these runs do not exercise (reg-1bf684).
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn frozen_learning_switch_reaches_config_and_manifest() {
+        let frozen_flag = |flags: &[String]| {
+            flags
+                .iter()
+                .any(|flag| flag == super::super::run_manifest::LEARNING_FROZEN_FLAG)
+        };
         let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
         let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let live = only_run_manifest(dir.path());
         assert!(
-            live.experiment.ablation_flags.is_empty(),
+            !frozen_flag(&live.experiment.ablation_flags),
             "{:?}",
             live.experiment
         );
@@ -7089,7 +8410,11 @@ max_retries = 0
         let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, true, true).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let frozen = only_run_manifest(dir.path());
-        assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
+        assert!(
+            frozen_flag(&frozen.experiment.ablation_flags),
+            "{:?}",
+            frozen.experiment
+        );
         let hashes: Vec<&str> = frozen
             .invocations
             .iter()
@@ -7104,7 +8429,11 @@ max_retries = 0
         let (exit_code, _, _) = run_plan_set(configured.path(), Some(1), None).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let manifest = only_run_manifest(configured.path());
-        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+        assert!(
+            frozen_flag(&manifest.experiment.ablation_flags),
+            "{:?}",
+            manifest.experiment
+        );
     }
 
     /// The `[gates]` and later lines of the workspace of
@@ -7357,7 +8686,17 @@ max_retries = 0
             "a frozen run wrote learned state: {changed:?}"
         );
         let manifest = only_run_manifest(dir.path());
-        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+        // The other flags follow the workspace's audit and holdout settings
+        // (find-697944, reg-1bf684).
+        assert!(
+            manifest
+                .experiment
+                .ablation_flags
+                .iter()
+                .any(|flag| flag == super::super::run_manifest::LEARNING_FROZEN_FLAG),
+            "{:?}",
+            manifest.experiment
+        );
 
         let run_dir = dir.path().join(".roko/runs").join(&manifest.run_id);
         let run = RunRecords::load(&run_dir).expect("read the run's records");
@@ -8021,6 +9360,9 @@ exec sleep 60
         assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
         assert_eq!(PlanRunInterrupt::Conductor.label(), "conductor");
+        // bug-bfb75a: the run's time limit exits as SIGTERM does too.
+        assert_eq!(PlanRunInterrupt::TimeLimit.exit_code(), 143);
+        assert_eq!(PlanRunInterrupt::TimeLimit.label(), "time-limit");
         // bug-1d09e8: a cancel request and a closed TUI exit as SIGINT does,
         // each named for what it was.
         for (interrupt, label, cause) in [
@@ -8143,13 +9485,13 @@ exec sleep 60
         unsafe {
             let _ = libc::signal(libc::SIGHUP, libc::SIG_IGN);
         }
-        assert!(hangup_ignored(), "as under nohup");
+        assert!(crate::cli_signals::hangup_ignored(), "as under nohup");
         // SAFETY: as above.
         #[allow(unsafe_code)]
         unsafe {
             let _ = libc::signal(libc::SIGHUP, libc::SIG_DFL);
         }
-        assert!(!hangup_ignored());
+        assert!(!crate::cli_signals::hangup_ignored());
 
         let interrupt = PlanRunInterruptHandle::default();
         let _signals = install_plan_run_signal_handlers(interrupt.clone()).expect("handlers");
@@ -8213,6 +9555,38 @@ exec sleep 60
         assert_eq!(
             status(false, passed, false, false),
             GraphCheckpointStatus::Failed
+        );
+    }
+
+    /// gap-0af587: a plan's end names each task the gaming screen left
+    /// unverified with its reason, and says why its unverified tasks are
+    /// without claiming that none of them ran a check.
+    #[test]
+    fn a_plans_end_names_the_gaming_screens_reasons() {
+        let flags = BTreeMap::from([
+            ("T1".to_string(), "hidden_state `money.py`".to_string()),
+            ("T3".to_string(), "special_case `dates.py`".to_string()),
+        ]);
+        assert_eq!(
+            gaming_flagged_note(&flags),
+            ". Task T1 is unverified: hidden_state `money.py`. Task T3 is unverified: \
+             special_case `dates.py`"
+        );
+        assert_eq!(gaming_flagged_note(&BTreeMap::new()), "");
+
+        assert_eq!(unverified_why(false, false), "ran no verify step");
+        assert_eq!(
+            unverified_why(true, false),
+            "ran no verify step, or changed your checkout while they ran"
+        );
+        assert_eq!(
+            unverified_why(false, true),
+            "ran no verify step, or passed their checks on a change the gaming screen flagged"
+        );
+        assert_eq!(
+            unverified_why(true, true),
+            "ran no verify step, changed your checkout while they ran, or passed their checks \
+             on a change the gaming screen flagged"
         );
     }
 
@@ -9010,6 +10384,53 @@ exec sleep 60
         }
     }
 
+    /// bug-daa54e: two tasks that each add their source to
+    /// `core/CMakeLists.txt` overlap only on that list. In a shared tree
+    /// their nodes keep it, so the engine runs them one at a time; with a
+    /// worktree per task nothing holds them apart, and they run together.
+    #[test]
+    fn a_shared_build_list_serializes_tasks_only_in_a_shared_tree() {
+        let plan_task = |source: &str| roko_graph::convert::PlanTaskInfo {
+            title: format!("Add {source}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec![
+                format!("core/src/{source}.cpp"),
+                "core/CMakeLists.txt".to_string(),
+            ],
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let graph = roko_graph::convert::plan_to_graph(
+            "p",
+            "plans/p",
+            &[
+                ("T1".to_string(), plan_task("oscillator")),
+                ("T2".to_string(), plan_task("filter")),
+            ],
+            2,
+        )
+        .expect("plan graph");
+        let overlap = |graph: &roko_graph::Graph| {
+            let paths = |id: &str| graph.get_node(id).expect("a task node").exclusive.clone();
+            roko_graph::exclusion::first_overlap(&paths("T1"), &paths("T2"))
+                .map(|(path, _)| path.to_string())
+        };
+        let mut shared = graph.clone();
+        drop_exclusion_for_worktrees(&mut shared, false);
+        assert_eq!(overlap(&shared).as_deref(), Some("core/CMakeLists.txt"));
+        let mut isolated = graph;
+        drop_exclusion_for_worktrees(&mut isolated, true);
+        assert_eq!(overlap(&isolated), None);
+    }
+
     /// Stands in for a rich-topology task executor under
     /// `--worktree-per-task`: runs its attempt in a worktree from `provider`
     /// and hands that worktree on to the task's gate.
@@ -9307,6 +10728,7 @@ exec sleep 60
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         })
@@ -9411,9 +10833,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         std::fs::write(
             repo.join("roko.toml"),
+            // Audits off: decision 7103 turned them on by default.
             format!(
                 "[agent]\ndefault_model = \"fake\"\n\n[providers.fake]\nkind = \"claude_cli\"\n\
-                 command = \"{}\"\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
+                 command = \"{}\"\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\
+                 \n[audit]\nenabled = false\n",
                 agent.display()
             ),
         )
@@ -9493,9 +10917,59 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         }
+    }
+
+    /// bug-c872f6: a terminal `roko plan run` names no run id, and its
+    /// records (`.roko/runs/graph-<plan>-<uuid>/`) and its events (the index
+    /// serve's summary reads, `status.json`) took two unrelated ids. A run no
+    /// caller names now takes one id for its records, its events, its status
+    /// and its batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cli_plan_run_uses_one_run_id_for_records_and_events() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+
+        let exit_code = run_graph_plan(worktree_run_params(repo))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let runs: Vec<String> = std::fs::read_dir(repo.join(".roko/runs"))
+            .expect("the run records")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join("manifest.json").is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let [run_id] = runs.as_slice() else {
+            panic!("one run's records: {runs:?}");
+        };
+        assert!(run_id.starts_with("graph-"), "{run_id}");
+        let status: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/status.json")).expect("status.json"),
+        )
+        .expect("status json");
+        assert_eq!(status["run_id"], run_id.as_str(), "{status}");
+        let index = roko_fs::run_index::run_index_path(&repo.join(".roko/events.jsonl"), run_id)
+            .expect("the run's index path");
+        let indexed = std::fs::read_to_string(&index).expect("the run's event index");
+        assert!(
+            indexed.contains("\"RunCompleted\"") || indexed.contains("run_completed"),
+            "{indexed}"
+        );
+        let checkpoint: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        assert_eq!(checkpoint["run_id"], run_id.as_str());
+        assert_eq!(
+            checkpoint["extensions"]["roko.batch@1"]["value"]["branch"],
+            format!("roko/batch/{run_id}")
+        );
     }
 
     /// spec-f830c4: a `--worktree-per-task` run of two plans delivers each
@@ -9569,6 +11043,90 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+        // bug-b7d9ad: the plans live in the checkout and the run changes
+        // nothing there, so no task's checks are said to have changed it. Each
+        // plan keeps its records under a run of its own.
+        let runs: Vec<roko_learn::telemetry::report::RunRecords> =
+            std::fs::read_dir(repo.join(".roko/runs"))
+                .expect("read .roko/runs")
+                .map(|entry| entry.expect("run directory").path())
+                .filter(|path| path.is_dir())
+                .map(|path| {
+                    roko_learn::telemetry::report::RunRecords::load(&path)
+                        .expect("the run's records")
+                })
+                .collect();
+        let verdicts: usize = runs.iter().map(|run| run.verdicts.len()).sum();
+        assert!(verdicts >= 2, "{verdicts}");
+        assert!(runs.iter().all(|run| run.checkout_writes().is_empty()));
+    }
+
+    /// bug-4fadf8: a run whose task passed but whose delivery a crash cut
+    /// (roko-recovery's kill point e: the run never wrote its end, so its
+    /// checkpoint says running and records no delivery, and its batch branch
+    /// never moved) resumes without running the task again, and delivers
+    /// into the resuming run's batch branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivery_cut_run_resumes_with_no_task_attempt_and_delivers() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let first = run_graph_plan_in_run(worktree_run_params(repo), Some("run-cut".into()))
+            .await
+            .expect("run the plan");
+        assert_eq!(first, EXIT_SUCCESS);
+        let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&checkpoint).expect("checkpoint"))
+                .expect("checkpoint json")
+        };
+        let mut manifest = read();
+        manifest["status"] = serde_json::json!("running");
+        let extensions = manifest["extensions"].as_object_mut().expect("extensions");
+        extensions.remove("roko.batch@1");
+        extensions.remove("roko.delivery@1");
+        std::fs::write(&checkpoint, serde_json::to_vec(&manifest).expect("json")).expect("write");
+        git_in(repo, &["branch", "-D", "roko/batch/run-cut"]);
+
+        let again = run_graph_plan_in_run(worktree_run_params(repo), Some("run-resume".into()))
+            .await
+            .expect("resume the plan");
+
+        assert_eq!(again, EXIT_SUCCESS);
+        let attempts = std::fs::read_to_string(repo.join(".roko/runs/run-resume/attempts.jsonl"))
+            .unwrap_or_default();
+        assert!(
+            !attempts.contains("roko.attempt_open"),
+            "no task ran again: {attempts}"
+        );
+        let record = &read()["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["state"], "delivered", "{record}");
+        assert_eq!(record["branch"], "roko/batch/run-resume", "{record}");
+        let files = git_stdout(repo, &["ls-tree", "--name-only", "roko/batch/run-resume"]);
+        assert!(files.contains("alpha.txt"), "{files}");
+    }
+
+    /// bug-b7d9ad: what roko writes in the person's checkout during a run,
+    /// its own `.roko/` here not ignored by git, beside plans that live in the
+    /// checkout, is not taken for a task's checks changing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rokos_own_writes_in_the_checkout_raise_no_checkout_flag() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        git_in(repo, &["rm", "-q", ".gitignore"]);
+        git_in(repo, &["commit", "-q", "-m", "show .roko to git"]);
+
+        let exit_code = run_graph_plan_in_run(worktree_run_params(repo), Some("run-own".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let status = git_stdout(repo, &["status", "--porcelain"]);
+        assert!(status.contains(".roko/"), "roko wrote its state: {status}");
+        let records =
+            roko_learn::telemetry::report::RunRecords::load(&repo.join(".roko/runs/run-own"))
+                .expect("the run's records");
+        assert!(!records.verdicts.is_empty());
+        assert!(records.checkout_writes().is_empty());
     }
 
     /// backlog 3104: with per-task worktrees and `max_parallel_plans = 2`,
@@ -9727,6 +11285,608 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                     "the batch moved to the failed plan's merge"
                 );
             }
+        }
+    }
+
+    /// gap-c96097: the rung probes run before the red-on-base pre-check.
+    /// Every rung of the ladder failed its probe within the day, as OpenAI
+    /// refused phase 4's in run 16fc88ae, and the ladder routes the run's one
+    /// task. The run stops in the probes' own words before the pre-check runs
+    /// the task's step on the base, which would leave a mark. 16fc88ae
+    /// pre-checked for 134 s, then died in 7 s on the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_rung_probes_run_before_the_red_on_base_pre_check() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let marks = tempfile::tempdir().expect("a directory for the mark");
+        let mark = marks.path().join("ran-on-base");
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks)
+            .expect("tasks.toml")
+            .replace(
+                "command = \"test -f alpha.txt\"",
+                &format!(
+                    "command = {:?}",
+                    format!("touch '{}'; test -f alpha.txt", mark.display())
+                ),
+            );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        std::fs::write(
+            repo.join("roko.toml"),
+            "[agent]\ndefault_model = \"mid-model\"\n\n\
+             [providers.rungs_api]\nkind = \"openai_compat\"\nbase_url = \"http://127.0.0.1:9/v1\"\n\
+             api_key_env = \"PATH\"\n\n\
+             [models.cheap-model]\nprovider = \"rungs_api\"\nslug = \"cheap-1\"\n\n\
+             [models.mid-model]\nprovider = \"rungs_api\"\nslug = \"mid-1\"\n\n\
+             [models.strong-model]\nprovider = \"rungs_api\"\nslug = \"strong-1\"\n\n\
+             [routing.ladder]\nrungs = [\n  { name = \"cheap\", model = \"cheap-model\" },\n  \
+             { name = \"mid\", model = \"mid-model\" },\n  { name = \"strong\", model = \"strong-model\" },\n]\n\n\
+             [spec_quality]\nred_on_base = true\n\n[audit]\nenabled = false\n",
+        )
+        .expect("roko.toml");
+        git_in(
+            repo,
+            &[
+                "commit",
+                "-qam",
+                "a ladder whose rungs the provider refuses",
+            ],
+        );
+        let refused = "request_refused: rungs_api refused the request (HTTP 400): Function tools \
+                       with reasoning_effort are not supported";
+        let now = chrono::Utc::now().timestamp_millis();
+        let probes = crate::dispatch::rung_probe::RungProbes {
+            models: ["cheap-1", "mid-1", "strong-1"]
+                .into_iter()
+                .map(|model| {
+                    let probe = crate::dispatch::rung_probe::RungProbe {
+                        passed: false,
+                        reason: refused.to_string(),
+                        probed_at_ms: now,
+                    };
+                    (model.to_string(), probe)
+                })
+                .collect(),
+        };
+        let path = crate::dispatch::rung_probe::RungProbes::path(repo);
+        std::fs::create_dir_all(path.parent().expect("the learn directory")).expect("mkdir");
+        std::fs::write(&path, serde_json::to_vec(&probes).expect("json")).expect("probes");
+        let params = GraphPlanRunParams {
+            worktree_per_task: false,
+            no_budget: false,
+            ..worktree_run_params(repo)
+        };
+
+        let error = run_graph_plan_in_run(params, Some("run-refused".into()))
+            .await
+            .expect_err("no task can start");
+
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("no rung of the routing ladder can run"),
+            "{error}"
+        );
+        assert!(error.contains(&format!("mid-1: {refused}")), "{error}");
+        assert!(!mark.exists(), "the pre-check ran a step on the base");
+
+        // A task that can start without the ladder lets the run go on: one
+        // pinned to a model, or every task under `--model`; and a run that
+        // probes nothing stops nothing.
+        let config = roko_core::config::loader::load_config_validated(repo)
+            .expect("the config")
+            .into_config();
+        let mut plans = crate::runner::plan_loader::load_plans(&repo.join("plans")).expect("plans");
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, false, None, now)
+                .await
+                .is_some()
+        );
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, true, None, now)
+                .await
+                .is_none()
+        );
+        let pinned = unrunnable_ladder(&config, repo, &plans, false, Some("mid-model"), now);
+        assert!(pinned.await.is_none());
+        // A rung refused on its provider's billing in this run stops the run
+        // early too: one from an earlier run is probed again first
+        // (bug-374384), so the person recharges either way (gap-d91691).
+        let billing = crate::dispatch::rung_probe::RungProbes {
+            models: ["cheap-1", "mid-1", "strong-1"]
+                .into_iter()
+                .map(|model| {
+                    let probe = crate::dispatch::rung_probe::RungProbe {
+                        passed: false,
+                        reason: "insufficient_credits: rungs_api refused the request (HTTP 402): \
+                                 payment required"
+                            .to_string(),
+                        probed_at_ms: now,
+                    };
+                    (model.to_string(), probe)
+                })
+                .collect(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&billing).expect("json")).expect("probes");
+        let billed = unrunnable_ladder(&config, repo, &plans, false, None, now)
+            .await
+            .expect("a billing failure of this run stops the run early");
+        assert!(billed.contains("(HTTP 402)"), "{billed}");
+        assert!(
+            billed.contains("probed again when the next run starts"),
+            "{billed}"
+        );
+        for (reason, billed) in [
+            (
+                "insufficient_credits: cerebras refused the request (HTTP 402)",
+                true,
+            ),
+            (
+                "provider_exhausted: the plan's usage window ends at 20:00",
+                true,
+            ),
+            (
+                "unknown: z.ai: insufficient balance or no resource package (1113)",
+                true,
+            ),
+            (
+                "request_refused: openai refused the request (HTTP 400): reasoning_effort",
+                false,
+            ),
+            (
+                "empty_response: the model answered with reasoning only",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                crate::dispatch::rung_probe::billing_refusal(reason),
+                billed,
+                "{reason}"
+            );
+        }
+        plans[0].tasks.tasks[0].model_hint = Some("mid-model".to_string());
+        assert!(
+            unrunnable_ladder(&config, repo, &plans, false, None, now)
+                .await
+                .is_none()
+        );
+    }
+
+    /// A scripted provider like [`WRITES_NAMED_FILE_AGENT`] that, when its
+    /// prompt carries a hand-back of the plan's whole-plan check
+    /// (find-5bcba7), runs `on_handback` instead, with `$name` and `$prompt`
+    /// set.
+    fn handback_agent(on_handback: &str) -> String {
+        handback_agent_writing("printf '%s\\n' \"$name\" > \"$name.txt\"", on_handback)
+    }
+
+    /// [`handback_agent`] whose first attempts run `writes` in place of
+    /// writing their task's name to its file.
+    fn handback_agent_writing(writes: &str, on_handback: &str) -> String {
+        format!(
+            r#"#!/bin/sh
+set -eu
+prompt="$(cat) $*"
+name=$(printf '%s' "$prompt" | sed -n 's/.*Write \([a-z]*\)\.txt.*/\1/p' | head -n 1)
+if printf '%s' "$prompt" | grep -q "the plan's whole-plan check"; then
+  {on_handback}
+else
+  {writes}
+fi
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"wrote the file"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{{"input_tokens":5,"output_tokens":10}}}}'
+"#
+        )
+    }
+
+    /// [`repo_with_file_plans`] with one plan, `01-alpha`, whose task writes
+    /// `alpha.txt`, `meta_verify` as its whole-plan check, and
+    /// [`handback_agent`]`(on_handback)` as its provider.
+    fn repo_with_handback_plan(meta_verify: &str, on_handback: &str) -> tempfile::TempDir {
+        let dir = repo_with_file_plans(&["alpha"], Some(meta_verify));
+        let repo = dir.path();
+        std::fs::write(repo.join("agent.sh"), handback_agent(on_handback)).expect("agent");
+        git_in(repo, &["commit", "-qam", "the agent takes hand-backs"]);
+        dir
+    }
+
+    /// The outcomes of task `task_id`'s attempts in `repo`'s one run, in
+    /// order, from its attempt log.
+    fn attempt_outcomes(repo: &Path, task_id: &str) -> Vec<String> {
+        let runs: Vec<PathBuf> = std::fs::read_dir(repo.join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .filter(|path| path.is_dir())
+            .collect();
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        std::fs::read_to_string(runs[0].join("attempts.jsonl"))
+            .expect("read attempts.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("a record"))
+            .filter(|record| {
+                record["schema_version"] == "roko.verdict/1" && record["task_id"] == task_id
+            })
+            .map(|record| record["outcome"].as_str().unwrap_or("?").to_string())
+            .collect()
+    }
+
+    /// Plan `plan_id`'s checkpoint in `repo`, as JSON.
+    fn checkpoint_json(repo: &Path, plan_id: &str) -> serde_json::Value {
+        let path = repo
+            .join(".roko/state/graph")
+            .join(plan_id)
+            .join("checkpoint.json");
+        serde_json::from_slice(&std::fs::read(path).expect("checkpoint")).expect("checkpoint json")
+    }
+
+    /// find-5bcba7: a whole-plan check that fails on a file a task of the
+    /// plan changed goes back to that task as a retry with the check's
+    /// output, and the plan is checked again, in the shared working tree and
+    /// as its delivery into the run's batch branch. Here the check wants
+    /// `alpha.txt` to say "fixed", which T1 writes only once the hand-back's
+    /// feedback asks it to; the plan then succeeds. Its checkpoint records
+    /// the hand-back, and the batch holds only the fixed work: the failed
+    /// delivery never moved it, and the run's summary shows the one that
+    /// passed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_plan_check_goes_back_to_the_task_whose_file_it_names() {
+        for worktree_per_task in [false, true] {
+            let mode = if worktree_per_task {
+                "worktree"
+            } else {
+                "shared tree"
+            };
+            let dir = repo_with_handback_plan(
+                "grep -qx fixed alpha.txt || { echo 'error: alpha.txt is not fixed' >&2; exit 1; }",
+                "printf 'fixed\\n' > \"$name.txt\"",
+            );
+            let repo = dir.path();
+            let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-handback".into()))
+                .await
+                .expect("run the plan");
+
+            assert_eq!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Succeeded),
+                "{mode}"
+            );
+            assert_eq!(
+                attempt_outcomes(repo, "T1"),
+                ["passed", "passed"],
+                "{mode}: T1 ran once, and once more for the hand-back"
+            );
+            let checkpoint = checkpoint_json(repo, "01-alpha");
+            let handbacks = &checkpoint["extensions"]
+                [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];
+            assert_eq!(
+                handbacks.as_array().map(Vec::len),
+                Some(1),
+                "{mode}: {handbacks}"
+            );
+            assert_eq!(handbacks[0]["round"], 1, "{mode}: {handbacks}");
+            assert_eq!(handbacks[0]["tasks"], serde_json::json!(["T1"]), "{mode}");
+            assert_eq!(handbacks[0]["lead"], "T1", "{mode}");
+            assert_eq!(
+                handbacks[0]["files"],
+                serde_json::json!({"alpha.txt": "T1"}),
+                "{mode}"
+            );
+            assert_eq!(handbacks[0]["result"], "passed", "{mode}");
+            assert!(
+                handbacks[0]["check"]
+                    .as_str()
+                    .is_some_and(|check| check.starts_with("grep -qx fixed alpha.txt")),
+                "{mode}: {handbacks}"
+            );
+            if worktree_per_task {
+                let batch = "roko/batch/run-handback";
+                assert_eq!(
+                    git_stdout(repo, &["show", &format!("{batch}:alpha.txt")]),
+                    "fixed",
+                    "the batch holds the fixed work"
+                );
+                let record = &checkpoint["extensions"]["roko.batch@1"]["value"];
+                assert_eq!(record["state"], "delivered", "{record}");
+                assert_eq!(record["handbacks"][0]["result"], "passed", "{record}");
+                // The failed delivery's merge never reached the batch: it held
+                // its creation, then the delivery that passed.
+                let held = git_stdout(repo, &["log", "--walk-reflogs", "--format=%H", batch]);
+                assert_eq!(held.lines().count(), 2, "{held}");
+                assert_eq!(held.lines().last(), Some(head.as_str()), "{held}");
+                // The operator's checkout never moved.
+                assert_eq!(git_stdout(repo, &["rev-parse", "HEAD"]), head);
+                assert!(!repo.join("alpha.txt").exists());
+            } else {
+                assert_eq!(
+                    std::fs::read_to_string(repo.join("alpha.txt")).expect("alpha.txt"),
+                    "fixed\n"
+                );
+                let verify = &checkpoint["extensions"]["roko.plan.verify@1"]["value"];
+                assert_eq!(verify["passed"], true, "{verify}");
+            }
+        }
+    }
+
+    /// Plan `01-alpha`'s hand-backs in `repo`'s checkpoint, and how each
+    /// ended.
+    fn handback_results(repo: &Path) -> (serde_json::Value, Vec<String>) {
+        let checkpoint = checkpoint_json(repo, "01-alpha");
+        let handbacks = checkpoint["extensions"][crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]
+            ["value"]
+            .clone();
+        let results = handbacks
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter_map(|handback| handback["result"].as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (handbacks, results)
+    }
+
+    /// find-5bcba7: hand-backs are bounded. A check that the task's try
+    /// passes, but that fails again when the plan is checked, here one that
+    /// fails every other time it runs, is handed back
+    /// [`super::super::plan_handback::MAX_HANDBACKS`] times, and then the
+    /// plan fails as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_check_is_handed_back_at_most_max_handbacks_times() {
+        use super::super::plan_handback::MAX_HANDBACKS;
+
+        for worktree_per_task in [false, true] {
+            let mode = if worktree_per_task {
+                "worktree"
+            } else {
+                "shared tree"
+            };
+            let runs = tempfile::tempdir().expect("a counter's directory");
+            let count = runs.path().join("count");
+            let dir = repo_with_handback_plan(
+                &format!(
+                    "n=$(cat '{count}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '{count}'; \
+                     [ $((n % 2)) -eq 0 ] || {{ echo 'error: alpha.txt is still wrong' >&2; exit 1; }}",
+                    count = count.display()
+                ),
+                "printf 'fixed\\n' >> \"$name.txt\"",
+            );
+            let repo = dir.path();
+            let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-bounded".into()))
+                .await
+                .expect("run the plan");
+
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            assert_eq!(
+                attempt_outcomes(repo, "T1"),
+                vec!["passed"; 1 + MAX_HANDBACKS],
+                "{mode}"
+            );
+            let (handbacks, results) = handback_results(repo);
+            assert_eq!(
+                results,
+                vec!["passed"; MAX_HANDBACKS],
+                "{mode}: {handbacks}"
+            );
+            let failure = crate::graph_checkpoint::recorded_plan_check_failure(repo, "01-alpha")
+                .unwrap_or_else(|| panic!("{mode}: no recorded plan check failure"));
+            assert!(
+                failure.contains("alpha.txt is still wrong"),
+                "{mode}: {failure}"
+            );
+            if worktree_per_task {
+                assert_eq!(
+                    git_stdout(repo, &["rev-parse", "roko/batch/run-bounded"]),
+                    head,
+                    "{mode}: the failed plan stayed out of the batch"
+                );
+            }
+        }
+    }
+
+    /// bug-fc05a3: a hand-back's try is judged by the plan's check as well
+    /// as its own, and is retried at most
+    /// [`super::super::plan_handback::HANDBACK_RETRIES`] times. A check that
+    /// fails whatever the try changes, here on the seed's README, which no
+    /// output line ties to a task's file, ends the plan after that one
+    /// hand-back: the check would fail again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hand_back_whose_try_fails_ends_the_plan() {
+        use super::super::plan_handback::HANDBACK_RETRIES;
+
+        for worktree_per_task in [false, true] {
+            let mode = format!("worktree per task: {worktree_per_task}");
+            let dir = repo_with_handback_plan(
+                "echo 'error: README.md is out of date' >&2; exit 1",
+                "printf 'fixed\\n' >> \"$name.txt\"",
+            );
+            let repo = dir.path();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-try-fails".into()))
+                .await
+                .expect("run the plan");
+
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            let outcomes = attempt_outcomes(repo, "T1");
+            let tries = 1 + HANDBACK_RETRIES as usize;
+            assert_eq!(outcomes.len(), 1 + tries, "{mode}: {outcomes:?}");
+            assert!(
+                outcomes[1..].iter().all(|outcome| outcome == "gate_failed"),
+                "{mode}: {outcomes:?}"
+            );
+            let (handbacks, results) = handback_results(repo);
+            assert_eq!(results, ["failed"], "{mode}: {handbacks}");
+            assert_eq!(handbacks[0]["files"], serde_json::json!({}), "{mode}");
+            assert_eq!(handbacks[0]["tasks"], serde_json::json!(["T1"]), "{mode}");
+        }
+    }
+
+    /// bug-fc05a3 (Undertow phase 4, run c4fa953f: T7#2 settled
+    /// `already_satisfied` on a check that still failed, and was accepted as
+    /// an empty commit): a hand-back's try that changes nothing, while the
+    /// plan's check still fails on its tree, is not already satisfied. The
+    /// check is one of its verify steps, so the try fails; having changed
+    /// nothing, it is not retried, and the plan fails after that one
+    /// hand-back, `unchanged`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hand_back_that_changes_nothing_is_not_satisfied_while_the_plan_check_fails() {
+        for worktree_per_task in [false, true] {
+            let mode = format!("worktree per task: {worktree_per_task}");
+            let dir = repo_with_handback_plan(
+                "grep -qx fixed alpha.txt || { echo 'error: alpha.txt is not fixed' >&2; exit 1; }",
+                ":",
+            );
+            let repo = dir.path();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-unchanged".into()))
+                .await
+                .expect("run the plan");
+
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            assert_eq!(
+                attempt_outcomes(repo, "T1"),
+                ["passed", "gate_failed"],
+                "{mode}"
+            );
+            let (handbacks, results) = handback_results(repo);
+            assert_eq!(results, ["unchanged"], "{mode}: {handbacks}");
+            if worktree_per_task {
+                // Nothing of the try reached the plan branch: it holds T1's
+                // first attempt alone.
+                let plan_branch = crate::orchestrator::worktree::format_branch_name("01-alpha");
+                let commits = git_stdout(
+                    repo,
+                    &["log", "--format=%H", &format!("main..{plan_branch}")],
+                );
+                assert_eq!(commits.lines().count(), 1, "{mode}: {commits}");
+            }
+        }
+    }
+
+    /// bug-fc05a3, Undertow phase 4's shape (run c4fa953f): two tasks each
+    /// draw a colour the plan's check forbids, and the check, which names
+    /// neither file, fails until both are fixed, so no try at one task's
+    /// files alone could pass it. The failure goes back as one try, which T2,
+    /// the last of the plan's equal tasks, runs: it may change both tasks'
+    /// files, the plan's check judges it, and the plan succeeds after that
+    /// one hand-back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failure_across_two_tasks_goes_back_as_one_try_at_both_files() {
+        for worktree_per_task in [false, true] {
+            let mode = format!("worktree per task: {worktree_per_task}");
+            let dir = repo_with_file_plans(
+                &["panel"],
+                Some(
+                    "if grep -q bone look.txt status.txt; then \
+                     echo 'error: the panel shows bone outside the chest' >&2; exit 1; fi",
+                ),
+            );
+            let repo = dir.path();
+            std::fs::write(
+                repo.join("plans/01-panel/tasks.toml"),
+                "[meta]\nplan = \"01-panel\"\nmax_parallel = 1\nskip_enrichment = true\n\n\
+                 [[meta.verify]]\ncommand = \"if grep -q bone look.txt status.txt; then echo 'error: \
+                 the panel shows bone outside the chest' >&2; exit 1; fi\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Write look.txt\"\ndescription = \"Write look.txt.\"\n\
+                 role = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\nfiles = [\"look.txt\"]\n\n\
+                 [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f look.txt\"\n\n\
+                 [[task]]\nid = \"T2\"\ntitle = \"Write status.txt\"\ndescription = \"Write status.txt.\"\n\
+                 role = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\nfiles = [\"status.txt\"]\n\n\
+                 [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f status.txt\"\n",
+            )
+            .expect("tasks.toml");
+            // Each task draws bone; a hand-back's try repaints every file
+            // its prompt names.
+            std::fs::write(
+                repo.join("agent.sh"),
+                handback_agent_writing(
+                    "printf 'bone\\n' > \"$name.txt\"",
+                    "for file in look.txt status.txt; do\n    \
+                     if printf '%s' \"$prompt\" | grep -q \"$file\"; then printf 'rose\\n' > \"$file\"; fi\n  \
+                     done",
+                ),
+            )
+            .expect("agent");
+            git_in(repo, &["commit", "-qam", "two tasks draw the panel"]);
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-panel".into()))
+                .await
+                .expect("run the plan");
+
+            assert_eq!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(attempt_outcomes(repo, "T1"), ["passed"], "{mode}");
+            assert_eq!(attempt_outcomes(repo, "T2"), ["passed", "passed"], "{mode}");
+            let checkpoint = checkpoint_json(repo, "01-panel");
+            let handbacks = &checkpoint["extensions"]
+                [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];
+            assert_eq!(
+                handbacks.as_array().map(Vec::len),
+                Some(1),
+                "{mode}: {handbacks}"
+            );
+            assert_eq!(handbacks[0]["files"], serde_json::json!({}), "{mode}");
+            assert_eq!(
+                handbacks[0]["tasks"],
+                serde_json::json!(["T1", "T2"]),
+                "{mode}"
+            );
+            assert_eq!(handbacks[0]["lead"], "T2", "{mode}");
+            assert_eq!(handbacks[0]["result"], "passed", "{mode}");
+            let (look, status) = if worktree_per_task {
+                let batch = "roko/batch/run-panel";
+                (
+                    git_stdout(repo, &["show", &format!("{batch}:look.txt")]),
+                    git_stdout(repo, &["show", &format!("{batch}:status.txt")]),
+                )
+            } else {
+                let read = |file: &str| {
+                    std::fs::read_to_string(repo.join(file))
+                        .expect("the panel's file")
+                        .trim()
+                        .to_string()
+                };
+                (read("look.txt"), read("status.txt"))
+            };
+            assert_eq!((look.as_str(), status.as_str()), ("rose", "rose"), "{mode}");
         }
     }
 

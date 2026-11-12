@@ -204,7 +204,7 @@ const CHECKS: [(VerifyDepth, Check); 6] = [
 
 /// What one check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Checked {
+pub(super) enum Checked {
     /// It passed.
     Passed,
     /// It failed: what the attempt's feedback says.
@@ -215,13 +215,24 @@ enum Checked {
 
 impl Checked {
     /// Whether it passed; `None` when it gave no verdict.
-    fn passed(&self) -> Option<bool> {
+    pub(super) fn passed(&self) -> Option<bool> {
         match self {
             Self::Passed => Some(true),
             Self::Failed(_) => Some(false),
             Self::Skipped(_) => None,
         }
     }
+}
+
+/// What a check command's run found.
+#[derive(Debug, Clone)]
+pub(super) struct CheckRun {
+    /// Whether it passed.
+    pub(super) passed: bool,
+    /// Its verdict's reason.
+    pub(super) reason: String,
+    /// What it printed.
+    pub(super) output: String,
 }
 
 /// What the checks of an attempt's verify depth found.
@@ -252,6 +263,9 @@ struct DeepRun<'a> {
     budget: Duration,
     /// What B1 and B3 may still spend, in USD.
     usd_left: f64,
+    /// Whether the task's Rust checks already ran clippy over the changed
+    /// crates and it passed (find-fc5cdd), so that V1 does not run it again.
+    clippy_passed: bool,
 }
 
 impl DeepRun<'_> {
@@ -292,6 +306,15 @@ impl GraphTaskDispatcher {
         applied.depth = depth;
         // The verdict records the depth (gap-595e28).
         self.depths.apply(attempt_key, applied);
+        // find-fc5cdd: the task's Rust checks, at every depth, before the depth's own.
+        let rust = self
+            .rust_task_checks(spec, task, attempt_key, workdir, step_verdicts)
+            .await?;
+        deepened.checks += rust.checks;
+        if rust.failure.is_some() {
+            deepened.failure = rust.failure;
+            return Ok(deepened);
+        }
         if depth == VerifyDepth::V0 {
             deepened.failure = self.self_model_after_pass(spec, task, attempt_key, executor, depth);
             return Ok(deepened);
@@ -323,6 +346,7 @@ impl GraphTaskDispatcher {
             started: Instant::now(),
             budget: Duration::from_secs(self.config.audit.per_audit_cpu_secs),
             usd_left: self.config.audit.per_audit_usd,
+            clippy_passed: rust.clippy_passed,
         };
         // The audit worktree V2 and deeper check in, opened for the first.
         let mut opened: Option<Opened> = None;
@@ -436,8 +460,13 @@ impl GraphTaskDispatcher {
 
     /// V1's clippy over the crates the attempt changed, in its working tree,
     /// once no sibling edits what it reads, and on the compile lock, as a
-    /// cargo verify step runs.
+    /// cargo verify step runs; not again when the task's Rust checks passed it.
     async fn clippy_check(&self, run: &DeepRun<'_>) -> Result<Checked> {
+        if run.clippy_passed {
+            return Ok(Checked::Skipped(
+                "the task's Rust checks ran it (rust:clippy)".to_string(),
+            ));
+        }
         let Some(command) = clippy_command(run.workdir, &run.changed) else {
             return Ok(Checked::Skipped(
                 "no Rust change in a Cargo workspace".to_string(),
@@ -447,13 +476,52 @@ impl GraphTaskDispatcher {
         if left.is_zero() {
             return Ok(Checked::Skipped(OUT_OF_TIME.to_string()));
         }
-        let (spec, task, workdir) = (run.spec, run.task, run.workdir);
         let label = rung_of(VerifyDepth::V1, Check::Clippy);
+        let timeout_ms = u64::try_from(left.as_millis()).unwrap_or(u64::MAX);
+        let ran = self
+            .run_check_command(
+                run.spec,
+                run.task,
+                run.workdir,
+                &label,
+                "lint",
+                &command,
+                timeout_ms,
+            )
+            .await?;
+        if ran.passed {
+            return Ok(Checked::Passed);
+        }
+        Ok(Checked::Failed(format!(
+            "`{command}`: {}\n{}",
+            ran.reason,
+            tail(&ran.output)
+        )))
+    }
+
+    /// Run `command` as the check `label` of `task` in `workdir`, a step of
+    /// `phase` within `timeout_ms`: once no sibling edits what it reads, and
+    /// on the compile lock, as a cargo verify step runs.
+    ///
+    /// # Errors
+    ///
+    /// The plan run began to stop.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn run_check_command(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        workdir: &Path,
+        label: &str,
+        phase: &str,
+        command: &str,
+        timeout_ms: u64,
+    ) -> Result<CheckRun> {
         let step = crate::task_parser::VerifyStep {
-            phase: "lint".to_string(),
-            command,
+            phase: phase.to_string(),
+            command: command.to_string(),
             fail_msg: None,
-            timeout_ms: u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
+            timeout_ms,
             scope: Vec::new(),
             covers: Vec::new(),
             expect: None,
@@ -462,16 +530,16 @@ impl GraphTaskDispatcher {
         let read = sibling_settle::StepRead {
             plan_id: &spec.plan_id,
             task_id: &task.id,
-            label: &label,
+            label,
             workdir,
             scope: &scope,
             limit: Duration::from_secs(self.config.gates.sibling_settle_secs),
         };
         let reading = self.in_flight.begin_step(&read);
-        let _reading = self.unless_stopped(spec, task, &label, reading).await?;
+        let _reading = self.unless_stopped(spec, task, label, reading).await?;
         let gate = ShellGate::verify_step(&self.verify_command(&step.command))
             .with_timeout_ms(step.timeout_ms)
-            .with_name(&label)
+            .with_name(label)
             .with_phase(&step.phase);
         let payload = GatePayload::in_dir(workdir)
             .with_label(format!("{}/{}", spec.plan_id, task.id))
@@ -492,16 +560,13 @@ impl GraphTaskDispatcher {
         )
         .await;
         let Some(verdict) = verdict else {
-            return Err(verify_cancelled(spec, task, &label));
+            return Err(verify_cancelled(spec, task, label));
         };
-        if verdict.passed {
-            return Ok(Checked::Passed);
-        }
-        let output = verdict.detail.as_deref().map(tail).unwrap_or_default();
-        Ok(Checked::Failed(format!(
-            "`{}`: {}\n{output}",
-            step.command, verdict.reason
-        )))
+        Ok(CheckRun {
+            passed: verdict.passed,
+            reason: verdict.reason,
+            output: verdict.detail.unwrap_or_default(),
+        })
     }
 
     /// V2's re-run or a phase-B check of `run` in `worktree`, which lies in
@@ -741,26 +806,43 @@ fn a1_checked(changes: &[AttemptChange]) -> Checked {
     ))
 }
 
-/// V1's clippy command for an attempt in `workdir` that changed `changed`:
-/// over each crate under `crates/` with a changed Rust file or manifest, or
-/// the whole workspace when one lies elsewhere; `None` outside a Cargo
-/// workspace or without a Rust change.
-fn clippy_command(workdir: &Path, changed: &[String]) -> Option<String> {
+/// What the Rust checks of an attempt cover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RustScope {
+    /// The whole workspace: it changed Rust outside `crates/`.
+    Workspace,
+    /// Each crate under `crates/` it changed a Rust file or manifest in.
+    Packages(BTreeSet<String>),
+}
+
+/// The Rust checks' scope for an attempt in `workdir` that changed
+/// `changed`: each crate under `crates/` with a changed Rust file or
+/// manifest, or the whole workspace when one lies elsewhere; `None` outside a
+/// Cargo workspace or without a Rust change.
+pub(super) fn rust_scope(workdir: &Path, changed: &[String]) -> Option<RustScope> {
     if !workdir.join("Cargo.toml").is_file() {
         return None;
     }
     let mut crates = BTreeSet::new();
     for path in changed.iter().filter(|path| is_rust(path)) {
         let Some(name) = crate_of(path) else {
-            return Some(clippy_over("--workspace"));
+            return Some(RustScope::Workspace);
         };
-        crates.insert(name);
+        crates.insert(name.to_string());
     }
-    if crates.is_empty() {
-        return None;
+    (!crates.is_empty()).then_some(RustScope::Packages(crates))
+}
+
+/// V1's clippy command for an attempt in `workdir` that changed `changed`,
+/// over its [`rust_scope`].
+fn clippy_command(workdir: &Path, changed: &[String]) -> Option<String> {
+    match rust_scope(workdir, changed)? {
+        RustScope::Workspace => Some(clippy_over("--workspace")),
+        RustScope::Packages(crates) => {
+            let packages: Vec<String> = crates.iter().map(|name| format!("-p {name}")).collect();
+            Some(clippy_over(&packages.join(" ")))
+        }
     }
-    let packages: Vec<String> = crates.iter().map(|name| format!("-p {name}")).collect();
-    Some(clippy_over(&packages.join(" ")))
 }
 
 /// `cargo clippy` over `scope`, warnings denied, as CI runs it.
@@ -782,7 +864,7 @@ fn crate_of(path: &str) -> Option<&str> {
 }
 
 /// The last [`OUTPUT_TAIL_LINES`] lines of a check's `output`.
-fn tail(output: &str) -> String {
+pub(super) fn tail(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
     lines[lines.len().saturating_sub(OUTPUT_TAIL_LINES)..].join("\n")
 }
@@ -871,8 +953,8 @@ mod tests {
     fn a_depth_holds_within_its_window_and_takes_the_floor() {
         let rung = |level, window: &str| Rung {
             level,
-            quiet: 0,
             window: Some(window.to_string()),
+            ..Rung::default()
         };
         let depths = Depths::default();
         let first = rung(V2, "window:1-10");
@@ -981,8 +1063,8 @@ mod tests {
         let set_ladder = |level, window: &str| {
             let rung = Rung {
                 level,
-                quiet: 0,
                 window: Some(window.to_string()),
+                ..Rung::default()
             };
             let task_types = BTreeMap::from([("implementer".to_string(), rung)]);
             Ladder { task_types }
@@ -1081,8 +1163,8 @@ mod tests {
             let depth = |level, window: &str| {
                 let rung = Rung {
                     level,
-                    quiet: 0,
                     window: Some(window.to_string()),
+                    ..Rung::default()
                 };
                 let task_types = BTreeMap::from([(task_type(&task).to_string(), rung)]);
                 Ladder { task_types }

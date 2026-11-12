@@ -305,6 +305,289 @@ pub enum DashboardEvent {
         #[serde(default)]
         suggestion: String,
     },
+    /// A Graph task's passed attempt was merged onto its plan branch, or
+    /// was not (gap-6a319c): the step after its `attempt_settled`.
+    AttemptMerged {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// How long the merge took, in ms.
+        #[serde(default)]
+        merge_ms: u64,
+        /// `accepted` (on the plan branch), `conflict` (its work conflicts
+        /// with the plan's accepted work, so the task starts over) or `kept`
+        /// (its verdict does not let its work land; the checkout is kept).
+        #[serde(default)]
+        outcome: String,
+    },
+    /// A model call of a Graph task's attempt returned (gap-5c3347): what it
+    /// used and cost, and what the attempt's calls have cost so far. Published
+    /// as each call returns, so a run's spend moves during a try; the
+    /// attempt's `attempt_settled` stays the record of what it spent.
+    CallCost {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The call's number among the attempt's model calls, from 1.
+        #[serde(default)]
+        call: u32,
+        /// The model that served it.
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        output_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        /// What it cost, in USD; `None` when no rate prices its model.
+        #[serde(default)]
+        cost_usd: Option<f64>,
+        /// What the attempt's priced calls have cost so far, this one
+        /// included.
+        #[serde(default)]
+        attempt_cost_usd: f64,
+        /// The reasoning tokens inside `output_tokens` (gap-1ba0ac).
+        #[serde(default)]
+        reasoning_tokens: u64,
+        /// Why the call ended, as its provider named it; `None` when the
+        /// loop did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+        /// How long the call took, in ms; `None` when the loop did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_ms: Option<u64>,
+        /// How long after its request went the call's first token came (text,
+        /// reasoning or a tool call), in ms (gap-0eb14e). Beside `wall_ms`,
+        /// which also counts any wait before the request went, it tells a
+        /// call slow to start from one slow to finish. `None` when the call
+        /// was not streamed or its stream does not say when its request
+        /// went: it is never estimated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_token_ms: Option<u64>,
+        /// How the call ended (bug-8bcd98): `ok` when it returned a response;
+        /// for one that failed past the loop's retries, `timeout`,
+        /// `rate_limited`, `refused` or `error`, its usage what it streamed,
+        /// else nothing. `None` on a row from before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
+    },
+    /// The plan-load spec gate started (gap-6a319c): before any task runs,
+    /// it scores the plans' tasks and, with `[spec_quality] red_on_base`,
+    /// runs each implementer task's checks on the unchanged base.
+    SpecGateStarted {
+        /// The plans it checks.
+        #[serde(default)]
+        plan_ids: Vec<String>,
+        /// The tasks whose checks it runs on the base; 0 when it runs none.
+        #[serde(default)]
+        tasks_total: u32,
+        /// At most how many check runs that takes: each task's steps, twice.
+        #[serde(default)]
+        steps_total: u32,
+    },
+    /// The plan-load spec gate ended (gap-6a319c).
+    SpecGateFinished {
+        /// How long it ran, in ms.
+        #[serde(default)]
+        elapsed_ms: u64,
+        /// The tasks whose checks ran on the base; `None` when not counted.
+        #[serde(default)]
+        tasks_checked: Option<u32>,
+        /// The check runs it made; `None` when not counted.
+        #[serde(default)]
+        steps_run: Option<u32>,
+        /// The tasks whose result came from an earlier check; `None` when
+        /// not counted.
+        #[serde(default)]
+        cached: Option<u32>,
+        /// The tasks it refused, which stop the run before any dispatch.
+        #[serde(default)]
+        blocked: u32,
+    },
+    /// A step of the plan-load spec gate's red-on-base check ended
+    /// (gap-e02ec4): one per step it ran on the base, and one per step of a
+    /// task whose earlier runs the cache gave, so a host can show the check's
+    /// progress against `spec_gate_started.steps_total`.
+    SpecGateStep {
+        plan_id: String,
+        task_id: String,
+        /// The run, from 1: each task's steps run twice.
+        #[serde(default)]
+        run: u32,
+        /// The step's number among the task's steps, from 1.
+        #[serde(default)]
+        step: u32,
+        /// Whether it exited 0.
+        #[serde(default)]
+        passed: bool,
+        /// How long it ran, in ms.
+        #[serde(default)]
+        ms: u64,
+        /// Whether its result came from an earlier check of the unchanged task.
+        #[serde(default)]
+        cached: bool,
+    },
+    /// roko's tool loop stopped a reply that had only reasoned, with no text
+    /// and no tool call, at 3/8 of its output limit, and asked again
+    /// (gap-f3f950). One per stopped reply, once its try's dispatch ends.
+    ReasoningCut {
+        /// The plan of the try the reply was in.
+        plan_id: String,
+        /// That try's task.
+        task_id: String,
+        /// That try's ordinal, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The reply's turn in the try's tool loop, from 1.
+        #[serde(default)]
+        turn: u32,
+        /// The model that reasoned.
+        #[serde(default)]
+        model: String,
+        /// The reasoning tokens it streamed before it was stopped, by
+        /// estimate.
+        #[serde(default)]
+        reasoning_tokens: u64,
+        /// The reasoning limit it reached: 3/8 of its output limit.
+        #[serde(default)]
+        limit_tokens: u64,
+        /// How long its call ran, in seconds.
+        #[serde(default)]
+        secs: Option<f64>,
+        /// The seconds the stop saved, by estimate: the rest of the output
+        /// limit at the reply's own pace.
+        #[serde(default)]
+        saved_secs: Option<f64>,
+        /// What the re-ask did: `acted` (a tool call), `answered` (text),
+        /// `cut_again`, or `ended` (the try ended first).
+        #[serde(default)]
+        reask: String,
+        /// The finding in words.
+        #[serde(default)]
+        detail: String,
+    },
+    /// A rung of the model ladder runs slow (gap-3217a0), once per run and
+    /// rung: one of its tries reached the rung's time bound, or its tries
+    /// spent more than `[routing.ladder] slow_call_secs` on each model call.
+    RungSlow {
+        /// The plan of the try that showed it.
+        plan_id: String,
+        /// That try's task.
+        task_id: String,
+        /// That try's ordinal, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The rung.
+        rung: String,
+        /// Its model.
+        #[serde(default)]
+        model: String,
+        /// `time_bound` or `slow_calls`.
+        reason: String,
+        /// The rung's time bound, in seconds, for `time_bound`.
+        #[serde(default)]
+        bound_secs: Option<u64>,
+        /// The seconds its tries spent on each model call, for `slow_calls`.
+        #[serde(default)]
+        secs_per_call: Option<f64>,
+        /// The model calls that average counts.
+        #[serde(default)]
+        model_calls: Option<u32>,
+        /// The finding in words, with the knob that changes it.
+        #[serde(default)]
+        detail: String,
+    },
+    /// A rung of the model ladder the run skips (gap-20301d): its model
+    /// failed the tool-use probe roko gives each API rung at plan start, and
+    /// the verdict stands until `until_ms`. A task that would start on the
+    /// rung starts on the next one that runs. One per plan of the run and
+    /// skipped rung, once the plan set is announced.
+    RungSkipped {
+        /// A plan of the run.
+        plan_id: String,
+        /// The rung.
+        rung: String,
+        /// Its model, as dispatch runs it.
+        #[serde(default)]
+        model: String,
+        /// The model's provider.
+        #[serde(default)]
+        provider: String,
+        /// Why the probe failed, in its own words.
+        #[serde(default)]
+        reason: String,
+        /// When roko probes the rung again, unix ms: when it was probed, plus
+        /// the day a verdict stands. Absent for a billing failure, which the
+        /// next run probes again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_ms: Option<i64>,
+        /// The probe failed on the provider's billing or usage window (a 402,
+        /// z.ai's 1113, an insufficient balance, an exhausted plan): it stands
+        /// only for this run, and the next run probes the rung again
+        /// (bug-374384).
+        #[serde(default)]
+        billing: bool,
+        /// The finding in words, with how to probe the rung again now.
+        #[serde(default)]
+        detail: String,
+    },
+    /// A plan the run resumed carried over what earlier processes of its
+    /// run spent (bug-b7f6a8): its budget counts it, so its ceiling caps the
+    /// whole run, not each process. One per plan that resumed with spend.
+    BudgetCarried {
+        /// The plan.
+        plan_id: String,
+        /// What earlier processes of its run spent, in USD, the attempts a
+        /// stopped process left included.
+        carried_usd: f64,
+        /// Of it, what this resume charged the attempts a stopped process
+        /// left in flight: their finished model calls, and each call in
+        /// flight at its estimate.
+        #[serde(default)]
+        settled_usd: f64,
+        /// The plan's budget ceiling, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ceiling_usd: Option<f64>,
+        /// The finding in words.
+        #[serde(default)]
+        detail: String,
+    },
+    /// A provider refused a try's call because the account is out of usage
+    /// or can't be billed (bug-390e4b): roko skips it until `until_ms`, and
+    /// the try goes on with the next model, with no retry, no wait and no try
+    /// spent on the refusal. One per refusal.
+    ProviderExhausted {
+        /// The plan of the try whose call it refused.
+        plan_id: String,
+        /// That try's task.
+        task_id: String,
+        /// That try's ordinal, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The provider.
+        provider: String,
+        /// The model the call ran.
+        #[serde(default)]
+        model: String,
+        /// The provider can't bill the account (its balance or plan is used
+        /// up), rather than a usage window that resets on its own.
+        #[serde(default)]
+        billing: bool,
+        /// The provider's own words, as roko read them.
+        #[serde(default)]
+        reason: String,
+        /// When roko calls it again, unix ms.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_ms: Option<i64>,
+        /// The finding in words, with what to do about it.
+        #[serde(default)]
+        detail: String,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -480,6 +763,11 @@ pub enum DashboardEvent {
     EfficiencyEvent {
         plan_id: String,
         task_id: String,
+        /// The try the metric is of, from 1, when it is one try's: a side
+        /// call's cost names the try that made the call (gap-1430ea).
+        /// `None`, and absent from the JSON, for a task's or a plan's metric.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
         metric: String,
         value: f64,
     },
@@ -806,11 +1094,24 @@ pub enum DashboardEvent {
     /// Published after `AgentSpawned` or `AgentCompleted` events so the TUI
     /// can display the current agent relationship graph.
     AgentTopologyUpdated { topology: crate::AgentTopology },
-    /// Critical-path ETA updated after a task state change.
+    /// Critical-path ETA updated after a task state change, and every minute
+    /// while tasks run (gap-c1045f).
     CriticalPathEtaUpdated {
         plan_id: String,
-        /// Remaining minutes on the critical path. `None` clears the value.
+        /// Remaining minutes on the critical path, the estimate's median.
+        /// `None` clears the value.
         eta_minutes: Option<u32>,
+        /// The same estimate's 90th percentile, when it has one: a reader
+        /// shows "about `eta_minutes`, up to this".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        eta_p90_minutes: Option<u32>,
+        /// When it was computed, in ms since the Unix epoch, so a reader can
+        /// show its age.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_at_ms: Option<u64>,
+        /// What it rests on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        basis: Option<EtaBasis>,
     },
     /// A cost anomaly (spike) was detected by the anomaly detector.
     CostAnomaly {
@@ -864,6 +1165,12 @@ pub enum DashboardEvent {
         /// β̂, when judged.
         #[serde(default)]
         beta: Option<f64>,
+        /// β's interval, or why β is not judged, and the opportunities on
+        /// each arm (gap-1ee8c4), as the event's own fields (`beta_lcb`,
+        /// `beta_ucb`, `beta_reason`, `n_learned`, `n_default`). Boxed, so
+        /// every other event stays small.
+        #[serde(flatten)]
+        detail: Box<LoopHealthDetail>,
         /// When the auditor evaluated it (RFC 3339).
         ts: String,
     },
@@ -1006,7 +1313,8 @@ pub struct PlanDisplayState {
     #[serde(default)]
     pub finished_at_ms: Option<u64>,
     /// What the plan's latest run has cost so far, in USD: the sum of the
-    /// `cost_usd` efficiency events that name the plan while it runs.
+    /// `cost_usd` and side-call cost ([`SIDE_CALL_USD_METRIC_PREFIX`])
+    /// efficiency events that name the plan while it runs.
     #[serde(default)]
     pub cost_usd: f64,
 }
@@ -1019,6 +1327,52 @@ pub const PLAN_SET_PENDING_PHASE: &str = "pending";
 
 /// Most candidates a [`DashboardEvent::RouteDecided`] carries.
 pub const ROUTE_EVENT_CANDIDATES: usize = 5;
+
+/// The prefix of a [`DashboardEvent::EfficiencyEvent`] metric that reports
+/// one side call's cost in USD (bug-11e54b): a model call an attempt makes
+/// beside its own dispatch, such as a helper's, an audit check's or one its
+/// provider refused before the attempt failed over. Its cost row bills the
+/// plan, and the attempt's own `cost_usd` does not count it. The call's role
+/// follows the prefix, as in `side_call_usd.failover_refused`.
+pub const SIDE_CALL_USD_METRIC_PREFIX: &str = "side_call_usd.";
+
+/// The side-call role of a call that an attempt's provider refused, with a
+/// rate limit or a spent quota, before the attempt failed over to another
+/// model: the role roko-cli's failover (`FAILOVER_REFUSED_ROLE`) gives its
+/// cost rows. It is one of the attempt's own model calls, so the attempt's
+/// `call_cost` figure holds its spend too until the attempt settles.
+pub const FAILOVER_REFUSED_SIDE_CALL: &str = "failover_refused";
+
+/// The [`SIDE_CALL_USD_METRIC_PREFIX`] metric of a side call with `role`.
+#[must_use]
+pub fn side_call_usd_metric(role: &str) -> String {
+    format!("{SIDE_CALL_USD_METRIC_PREFIX}{role}")
+}
+
+/// The role that a side-call cost `metric` names, or `None` for any other
+/// metric.
+#[must_use]
+pub fn side_call_role(metric: &str) -> Option<&str> {
+    metric
+        .strip_prefix(SIDE_CALL_USD_METRIC_PREFIX)
+        .filter(|role| !role.is_empty())
+}
+
+/// What a run's time-left estimate rests on, as
+/// [`DashboardEvent::CriticalPathEtaUpdated`] carries it (gap-c1045f), so a
+/// reader can say "from 12 runs" or "a guess".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EtaBasis {
+    /// The weakest source any unfinished task's duration came from:
+    /// `history` (three or more past tasks of its start rung and tier),
+    /// `scaled` (past tasks of other tiers or rungs, scaled by the tiers'
+    /// size bounds) or `guess` (no past task: half the attempt timeout).
+    pub source: String,
+    /// The past tasks behind the estimate.
+    pub tasks: u32,
+    /// The runs they come from.
+    pub runs: u32,
+}
 
 /// One candidate a route weighed, as [`DashboardEvent::RouteDecided`]
 /// carries it.
@@ -1081,6 +1435,25 @@ pub struct RouteLadder {
     pub forecast: Option<RouteForecast>,
 }
 
+/// What a [`DashboardEvent::LoopHealth`] says of the loop's β besides β̂,
+/// and of its opportunities on each arm (gap-1ee8c4): its ledger row's
+/// `beta.lcb`, `beta.ucb`, `beta.reason`, `n_L` and `n_D`. Every field is
+/// optional, so an event written before them still parses.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoopHealthDetail {
+    /// The lower end of β's confidence sequence, when judged.
+    pub beta_lcb: Option<f64>,
+    /// The upper end of β's confidence sequence, when judged.
+    pub beta_ucb: Option<f64>,
+    /// Why β is not judged yet, e.g. `n_below_n_beta`.
+    pub beta_reason: Option<String>,
+    /// Learned-arm opportunities (the ledger row's `n_L`).
+    pub n_learned: Option<u64>,
+    /// Default-arm opportunities (the ledger row's `n_D`).
+    pub n_default: Option<u64>,
+}
+
 /// How a Graph attempt ended, where it ran on the model ladder and what it
 /// used, as [`DashboardEvent::AttemptSettled`] carries it (gap-4e852d).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1140,6 +1513,106 @@ pub struct AttemptSettlement {
     /// Whether its failure exhausted the ladder: no rung or retry left.
     #[serde(default)]
     pub exhausted: bool,
+    /// Where its time went (gap-6a319c); `None` from an emitter that does
+    /// not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phases: Option<AttemptPhases>,
+    /// The checkout it ran in (gap-6a319c); `None` from an emitter that does
+    /// not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<AttemptWorkspace>,
+}
+
+/// Where a Graph attempt's time went (gap-6a319c), as its settlement and its
+/// `roko.verdict/1` row (`timing.phases`) carry it. Times are in ms, and one
+/// that was not measured is `None`, never 0. The phases of the try itself
+/// add up to its `duration_ms`: `prompt_ms + model_ms + tools_ms + checks_ms
+/// + other_ms`. Its whole wall time adds `queue_ms` and `workspace_ms`
+/// before it and the merge (`attempt_merged`) after it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptPhases {
+    /// Waiting before the try opened: for an agent slot, the plan's pause,
+    /// its budget and disk admission.
+    #[serde(default)]
+    pub queue_ms: Option<u64>,
+    /// Getting its checkout ready before it opened: a new worktree, with its
+    /// warm build trees, or the task's earlier checkout.
+    #[serde(default)]
+    pub workspace_ms: Option<u64>,
+    /// Assembling its prompt.
+    #[serde(default)]
+    pub prompt_ms: Option<u64>,
+    /// From the provider call's start to its first streamed token. Part of
+    /// `model_ms`.
+    #[serde(default)]
+    pub ttft_ms: Option<u64>,
+    /// The provider call's time outside tool calls: the model's turns, and a
+    /// wait for the provider's own concurrency limit.
+    #[serde(default)]
+    pub model_ms: Option<u64>,
+    /// The model turns the provider call took.
+    #[serde(default)]
+    pub model_calls: Option<u32>,
+    /// Time inside tool calls, overlapping calls counted once.
+    #[serde(default)]
+    pub tools_ms: Option<u64>,
+    /// The tool calls the agent made.
+    #[serde(default)]
+    pub tool_calls: Option<u32>,
+    /// The tools that took longest, at most [`ATTEMPT_PHASE_TOOLS`], the
+    /// longest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_by_name: Vec<ToolTime>,
+    /// Its checks: the pre-verify screen and the verify steps.
+    #[serde(default)]
+    pub checks_ms: Option<u64>,
+    /// Each verify step, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckTime>,
+    /// The rest of `duration_ms`: roko's own work between the phases.
+    #[serde(default)]
+    pub other_ms: Option<u64>,
+}
+
+/// Most tools [`AttemptPhases::tools_by_name`] lists.
+pub const ATTEMPT_PHASE_TOOLS: usize = 5;
+
+/// One tool's share of an attempt's tool time (gap-6a319c).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolTime {
+    /// The tool, as the provider named it.
+    pub tool: String,
+    /// Its calls.
+    pub calls: u32,
+    /// Its calls' time together, in ms.
+    pub ms: u64,
+}
+
+/// One verify step of an attempt (gap-6a319c).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckTime {
+    /// The step, as its gate result names it (`verify[0:build]`).
+    pub name: String,
+    /// How long it ran, in ms.
+    #[serde(default)]
+    pub ms: Option<u64>,
+    /// Whether it passed; `None` when it was skipped.
+    #[serde(default)]
+    pub passed: Option<bool>,
+}
+
+/// The checkout a Graph attempt ran in (gap-6a319c): what made its builds
+/// warm, when they were.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptWorkspace {
+    /// It ran in its task's checkout from an earlier try, whose builds it
+    /// kept.
+    #[serde(default)]
+    pub reused: bool,
+    /// The build trees its checkout held when it started: warm copies of
+    /// the person's (gap-6754ab), or an earlier try's.
+    #[serde(default)]
+    pub warm_build_trees: u32,
 }
 
 /// The tokens of one attempt, as [`DashboardEvent::AttemptSettled`]
@@ -2793,6 +3266,7 @@ impl DashboardSnapshot {
                 task_id,
                 metric,
                 value,
+                ..
             } => {
                 // Update per-agent token/cost stats when the metric carries them.
                 // The metric field encodes the metric name; we match known names.
@@ -2840,7 +3314,9 @@ impl DashboardSnapshot {
                         }
                         self.stats.total_cache_write_tokens += *value as u64;
                     }
-                    "cost_usd" => {
+                    // A side call's cost is its task's and plan's spend too
+                    // (bug-11e54b).
+                    name if name == "cost_usd" || side_call_role(name).is_some() => {
                         if let Some(agent) =
                             agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
                         {
@@ -3194,6 +3670,109 @@ impl DashboardSnapshot {
             // S10's calibration view reads the export from the event stream
             // (6134); the snapshot keeps none of it.
             DashboardEvent::SelfModelCalibration { .. } => {}
+            // The timeline reads merges from the event stream (gap-6a319c), and
+            // a host its live spend (gap-5c3347).
+            DashboardEvent::AttemptMerged { .. } | DashboardEvent::CallCost { .. } => {}
+            DashboardEvent::SpecGateStarted {
+                plan_ids,
+                tasks_total,
+                ..
+            } => {
+                let message = if *tasks_total == 0 {
+                    "scoring the plans' tasks".to_string()
+                } else {
+                    format!("checking {tasks_total} tasks' checks on the unchanged base")
+                };
+                self.push_event_log(
+                    ts,
+                    "spec_gate_started".to_string(),
+                    plan_ids.join(","),
+                    String::new(),
+                    message,
+                );
+            }
+            DashboardEvent::SpecGateFinished {
+                elapsed_ms,
+                blocked,
+                ..
+            } => {
+                #[allow(clippy::cast_precision_loss)]
+                let secs = *elapsed_ms as f64 / 1000.0;
+                self.push_event_log(
+                    ts,
+                    "spec_gate_finished".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("done in {secs:.1} s; {blocked} tasks blocked"),
+                );
+            }
+            // A host reads the check's progress from the event stream
+            // (gap-e02ec4); the log keeps its start and end.
+            DashboardEvent::SpecGateStep { .. } => {}
+            DashboardEvent::ReasoningCut {
+                plan_id,
+                task_id,
+                detail,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "reasoning_cut".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::RungSlow {
+                plan_id,
+                task_id,
+                detail,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "rung_slow".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::RungSkipped {
+                plan_id, detail, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "rung_skipped".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::BudgetCarried {
+                plan_id, detail, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "budget_carried".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    detail.clone(),
+                );
+            }
+            DashboardEvent::ProviderExhausted {
+                plan_id,
+                task_id,
+                detail,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "provider_exhausted".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    detail.clone(),
+                );
+            }
             DashboardEvent::ConfirmWaiting {
                 plan_id,
                 task_id,
@@ -5439,7 +6018,9 @@ mod tests {
 
     /// S03 §5: M2's loop events carry the `loop_health` and
     /// `loop_transition` kinds, round-trip through serde, and a transition
-    /// lands in the snapshot's event log.
+    /// lands in the snapshot's event log. A health event carries β's
+    /// interval or why β is not judged, and the arm counts, as its own
+    /// fields (gap-1ee8c4); one written before them still parses.
     #[test]
     fn loop_events_serialize_with_kind() {
         let health = DashboardEvent::LoopHealth {
@@ -5451,6 +6032,12 @@ mod tests {
             eps: Some(0.0),
             iota_net: Some(0.94),
             beta: None,
+            detail: Box::new(LoopHealthDetail {
+                beta_reason: Some("eps_below_min".into()),
+                n_learned: Some(32),
+                n_default: Some(8),
+                ..LoopHealthDetail::default()
+            }),
             ts: "2026-10-03T10:00:00Z".into(),
         };
         let transition = DashboardEvent::LoopTransition {
@@ -5468,6 +6055,25 @@ mod tests {
             let again: DashboardEvent = serde_json::from_value(json).expect("parse a loop event");
             assert_eq!(&again, event);
         }
+        let mut older = serde_json::to_value(&health).expect("serialize the health event");
+        let fields = older.as_object_mut().expect("a JSON object");
+        assert_eq!(fields["beta_reason"], "eps_below_min");
+        let arms = (fields["n_learned"].as_u64(), fields["n_default"].as_u64());
+        assert_eq!(arms, (Some(32), Some(8)));
+        for added in [
+            "beta_lcb",
+            "beta_ucb",
+            "beta_reason",
+            "n_learned",
+            "n_default",
+        ] {
+            fields.remove(added);
+        }
+        let parsed: DashboardEvent = serde_json::from_value(older).expect("parse an older event");
+        let DashboardEvent::LoopHealth { detail, .. } = &parsed else {
+            panic!("a loop_health event: {parsed:?}");
+        };
+        assert_eq!(**detail, LoopHealthDetail::default());
 
         let mut snap = DashboardSnapshot::default();
         snap.apply_with_ts(&health, 1);
@@ -5784,6 +6390,7 @@ mod tests {
         let usage = |plan_id: &str, metric: &str, value: f64| DashboardEvent::EfficiencyEvent {
             plan_id: plan_id.into(),
             task_id: "t1".into(),
+            attempt: None,
             metric: metric.into(),
             value,
         };
@@ -6028,6 +6635,7 @@ mod tests {
         let spend = |task_id: &str, value: f64| DashboardEvent::EfficiencyEvent {
             plan_id: "p1".into(),
             task_id: task_id.into(),
+            attempt: None,
             metric: "cost_usd".into(),
             value,
         };
@@ -6049,6 +6657,69 @@ mod tests {
 
         assert_eq!(snap.plans["p1"].cost_usd, 0.25);
         assert_eq!(snap.stats.cost_usd_total, 1.75);
+    }
+
+    /// bug-11e54b: a side call's cost, such as a call refused before a
+    /// failover, counts in its plan's run and the total, as `cost_usd` does;
+    /// other metrics with a `_usd` name do not.
+    #[test]
+    fn side_call_costs_count_in_the_plans_spend() {
+        let metric = |metric: &str, value: f64| DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            attempt: None,
+            metric: metric.into(),
+            value,
+        };
+        let refused = side_call_usd_metric(FAILOVER_REFUSED_SIDE_CALL);
+        assert_eq!(refused, "side_call_usd.failover_refused");
+        assert_eq!(side_call_role(&refused), Some(FAILOVER_REFUSED_SIDE_CALL));
+        assert_eq!(side_call_role("side_call_usd."), None);
+        assert_eq!(side_call_role("cost_usd"), None);
+
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&plan_set_event(&[("p1", 1)]));
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 1,
+        });
+        snap.apply(&metric(&refused, 0.25));
+        snap.apply(&metric("cost_usd", 0.5));
+        snap.apply(&metric(&side_call_usd_metric("helper"), 0.125));
+        snap.apply(&metric("budget_remaining_usd", 4.0));
+
+        assert_eq!(snap.plans["p1"].cost_usd, 0.875);
+        assert_eq!(snap.stats.cost_usd_total, 0.875);
+    }
+
+    /// gap-1430ea: an efficiency event names its try when it is one try's,
+    /// and one without a try reads and writes as before.
+    #[test]
+    fn an_efficiency_event_names_its_try_when_it_has_one() {
+        let event = |attempt| DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            attempt,
+            metric: side_call_usd_metric(FAILOVER_REFUSED_SIDE_CALL),
+            value: 0.25,
+        };
+        let named = serde_json::to_value(event(Some(2))).expect("serialize");
+        assert_eq!(named["type"], "efficiency_event");
+        assert_eq!(named["attempt"], 2);
+        let unnamed = serde_json::to_value(event(None)).expect("serialize");
+        assert!(unnamed.get("attempt").is_none(), "{unnamed}");
+        let older: DashboardEvent = serde_json::from_value(serde_json::json!({
+            "type": "efficiency_event",
+            "plan_id": "p1",
+            "task_id": "t1",
+            "metric": "cost_usd",
+            "value": 0.5,
+        }))
+        .expect("an event written before the field");
+        assert!(matches!(
+            older,
+            DashboardEvent::EfficiencyEvent { attempt: None, .. }
+        ));
     }
 
     #[test]

@@ -681,14 +681,33 @@ pub async fn run_summary(
 /// `GET /health` — bare liveness probe for load balancers and external tools.
 ///
 /// Returns 200 while the process is alive. For richer telemetry use
-/// `GET /api/health`.
+/// `GET /api/health`. On a loopback bind it also says which server answers
+/// (gap-fb1594): `pid`, `workdir`, `instance_id`, `git_sha`, `git_dirty`,
+/// `started_at` and `idle_exit_secs`, as `serve.json` records them, so a
+/// client can tell this project's serve from another one on the same port.
+/// Never on any other bind, where it would tell strangers about the machine.
 async fn top_level_health(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(json!({
+    let mut body = json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": state.started_at.elapsed().as_secs(),
         "features": FEATURES,
-    }))
+    });
+    if state.listener_is_loopback()
+        && let Some(endpoint) = state.endpoint()
+        && let Some(fields) = body.as_object_mut()
+    {
+        fields.extend([
+            ("pid".to_string(), json!(endpoint.pid)),
+            ("workdir".to_string(), json!(endpoint.workdir)),
+            ("instance_id".to_string(), json!(endpoint.instance_id)),
+            ("git_sha".to_string(), json!(endpoint.git_sha)),
+            ("git_dirty".to_string(), json!(endpoint.git_dirty)),
+            ("started_at".to_string(), json!(endpoint.started_at)),
+            ("idle_exit_secs".to_string(), json!(endpoint.idle_exit_secs)),
+        ]);
+    }
+    Json(body)
 }
 
 /// `GET /ready` — readiness probe for platforms that drain shutting-down
@@ -1047,6 +1066,66 @@ mod tests {
         assert_eq!(body["status"], "ok");
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
         assert!(body["uptime_secs"].as_u64().is_some());
+    }
+
+    /// gap-fb1594: on a loopback bind `/health` says which server answers,
+    /// as its `serve.json` records it, so a client tells this project's serve
+    /// from another on the same port; on any other bind it says nothing more
+    /// than before.
+    #[tokio::test]
+    async fn health_reports_identity_on_loopback() {
+        let (dir, state, app) = build_test_state_and_router(RokoConfig::default());
+        let (_, before) = get_json(&app, "/health").await;
+        assert!(
+            before.get("instance_id").is_none(),
+            "no identity before the listener is bound: {before}"
+        );
+
+        let endpoint = crate::endpoint::ServeEndpoint {
+            pid: 4242,
+            url: "http://127.0.0.1:6804".to_string(),
+            workdir: dir.path().to_path_buf(),
+            started_at: "2026-10-19T10:00:00+00:00".to_string(),
+            instance_id: "6f1c0e2a-1f2b-4c3d-8e4f-5a6b7c8d9e0f".to_string(),
+            port: 6804,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            git_sha: Some("e31f4d52c".to_string()),
+            git_dirty: Some(false),
+            exe: None,
+            idle_exit_secs: Some(3600),
+            args: crate::endpoint::ServeArgs::default(),
+        };
+        state.set_endpoint(endpoint);
+        state.configure_listener_security("127.0.0.1", false);
+        let (status, body) = get_json(&app, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["features"], json!(FEATURES), "{body}");
+        assert_eq!(body["pid"], 4242, "{body}");
+        assert_eq!(body["workdir"], json!(dir.path()), "{body}");
+        assert_eq!(body["instance_id"], "6f1c0e2a-1f2b-4c3d-8e4f-5a6b7c8d9e0f");
+        assert_eq!(body["git_sha"], "e31f4d52c");
+        assert_eq!(body["git_dirty"], false);
+        assert_eq!(body["started_at"], "2026-10-19T10:00:00+00:00");
+        assert_eq!(body["idle_exit_secs"], 3600);
+
+        for bind in ["0.0.0.0", "10.0.0.5"] {
+            state.configure_listener_security(bind, true);
+            let (status, body) = get_json(&app, "/health").await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["status"], "ok");
+            for field in [
+                "pid",
+                "workdir",
+                "instance_id",
+                "git_sha",
+                "git_dirty",
+                "started_at",
+                "idle_exit_secs",
+            ] {
+                assert!(body.get(field).is_none(), "{field} on {bind}: {body}");
+            }
+        }
     }
 
     #[tokio::test]

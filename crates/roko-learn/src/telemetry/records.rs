@@ -397,8 +397,14 @@ pub enum AttemptOutcome {
     /// steps: prompt assembly, or recording its spend in the plan's cost
     /// ledger.
     HarnessError,
-    /// An attempt-open line with no verdict. It is derived offline; dispatch
-    /// never writes it.
+    /// Every rung of the routing ladder failed its tool-use probe at plan
+    /// start, so roko refused the task the ladder routes before any model
+    /// call, rather than send it to a model outside the ladder (gap-20301d,
+    /// gap-b856d3).
+    AllRungsSkipped,
+    /// An attempt-open line with no verdict, derived offline, or the verdict
+    /// a resume writes for an attempt a stopped process left in flight
+    /// (bug-b7f6a8). Dispatch never writes it.
     Abandoned,
 }
 
@@ -420,6 +426,7 @@ impl AttemptOutcome {
             | Self::WorkspaceError
             | Self::PromiseTerminated
             | Self::HarnessError
+            | Self::AllRungsSkipped
             | Self::Abandoned => Blame::Harness,
         }
     }
@@ -520,6 +527,11 @@ pub struct VerifyStepVerdict {
     pub skipped: bool,
     /// Why the step was skipped, e.g. `fail_fast`.
     pub skip_reason: Option<String>,
+    /// Whether the gate took the step's pass from the try's own checks of
+    /// the tree it ends with instead of running it again (gap-6df2bf); its
+    /// `duration_ms` is then that run's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub self_checked: bool,
     /// Whether the person the work is for confirmed the outcome: a passed
     /// `confirm` rung (9137). It is a person's judgement, kept apart from
     /// the machine checks, which routing and audits read as such.
@@ -527,20 +539,34 @@ pub struct VerifyStepVerdict {
     pub confirmed_by_user: bool,
 }
 
+/// [`VerifyStepVerdict::rung`] of the step the gaming screen adds to the
+/// verdict of an attempt whose checks passed on a change that may pass them
+/// without doing its task, which it settles `unverified` (find-2ba86d). The
+/// step reached no pass, and its `skip_reason` says what the screen found
+/// ([`AttemptVerdictRecord::gaming_reason`]).
+pub const GAMING_SCREEN_RUNG: &str = "pre_verify:gaming";
+
 /// Most scope findings a verdict lists; it counts the rest
 /// ([`AttemptVerdictRecord::scope_findings_omitted`]).
 pub const SCOPE_FINDINGS_LISTED: usize = 50;
 
+/// [`ScopeFinding::kind`] of a path of the person's own checkout that an
+/// attempt's checks, run in its worktree, changed (bug-b7d9ad).
+pub const SCOPE_CHECKOUT_WRITTEN: &str = "checkout_written";
+
 /// A path a settled attempt changed outside its task's `files`, as the
 /// pre-verify screen found it (`scope_findings[]`, backlog 1125). Under
 /// `[gates] diff_scope = "record"` it is recorded and does not fail the
-/// attempt.
+/// attempt. Kind [`SCOPE_CHECKOUT_WRITTEN`] is a path of the person's own
+/// checkout that the attempt's checks, run in its worktree, changed
+/// (bug-b7d9ad).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScopeFinding {
-    /// The path, relative to the attempt's working tree.
+    /// The path, relative to the attempt's working tree, or to the person's
+    /// checkout for a `checkout_written` finding.
     pub path: String,
-    /// The finding's kind, e.g. `outside_scope`.
+    /// The finding's kind, e.g. `outside_scope` or `checkout_written`.
     pub kind: String,
 }
 
@@ -568,6 +594,11 @@ pub struct AttemptTiming {
     pub verify_ended_at: Option<i64>,
     /// The verdict was settled.
     pub settled_at: Option<i64>,
+    /// Where the attempt's time went, in ms, the hub's `attempt_settled`
+    /// carrying the same (gap-6a319c); `None` from an emitter that does not
+    /// say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phases: Option<roko_core::dashboard_snapshot::AttemptPhases>,
 }
 
 /// The model that actually ran (`executed`, S01 §5.5). After failover it
@@ -606,6 +637,13 @@ pub struct ExecutedModel {
     /// out of the record, when the provider's defaults applied (gap-13bbbd).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub sampling: BTreeMap<String, serde_json::Value>,
+    /// The `reasoning_effort` roko sent with each request to an OpenAI
+    /// reasoning model (bug-29014c): `low`, `medium` or `high`, or `none`
+    /// when its requests carried function tools, which take no effort on
+    /// chat completions, so the API's default ran. Left out of the record
+    /// for any other model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// The tool policy the attempt's contract asked for and what its provider
     /// enforced, for a provider that runs its own tools; left out otherwise
     /// (gap-baab0a).
@@ -807,6 +845,32 @@ pub struct AttemptCost {
     /// Price snapshot behind the API-equivalent figures, e.g.
     /// `prices-2026-09-28`.
     pub price_snapshot_id: Option<String>,
+    /// The part of `billed_usd` roko estimated rather than read from a
+    /// provider: the model call a crash cut off, which an `abandoned`
+    /// attempt is charged at its costliest call so far (bug-b7f6a8). `None`
+    /// when nothing in it is estimated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_usd: Option<f64>,
+    /// What the try's calls cost that a provider refused part-way, with a
+    /// rate limit or an out-of-usage answer, before failover moved the try
+    /// to another model or it called the same one again (bug-8bcd98). The
+    /// figures above are the call that ran; the try's spend is that plus
+    /// this. `None` when no call was refused; older rows lack it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused_usd: Option<f64>,
+}
+
+impl AttemptCost {
+    /// `usd`, what a reader takes the call that ran to cost, plus what the
+    /// try's refused calls cost ([`Self::refused_usd`]): the try's spend
+    /// (bug-8bcd98). `None` when neither is known.
+    #[must_use]
+    pub fn plus_refused(&self, usd: Option<f64>) -> Option<f64> {
+        match (usd, self.refused_usd) {
+            (Some(usd), Some(refused)) => Some(usd + refused),
+            (usd, refused) => usd.or(refused),
+        }
+    }
 }
 
 /// How many content items were retrieved and included for the attempt
@@ -871,6 +935,9 @@ impl AttemptOpenRecord {
 pub enum LadderReason {
     /// The start rung of the task's role and tier.
     Start,
+    /// The runnable rung below the highest one, because no rung at or above
+    /// the task's start rung can run here (gap-ff2c38).
+    StartUnreachable,
     /// The rung the task's `rung` hint names.
     Hint,
     /// A rung above the start, after agent-blamed failures.
@@ -1027,7 +1094,30 @@ pub struct AttemptVerdictRecord {
     /// its checks having failed first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_depth: Option<VerifyDepthRecord>,
+    /// The checkout the attempt ran in: whether an earlier try's, and the
+    /// warm build trees it held (gap-6a319c); `None` without a checkout of
+    /// its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
+    /// The rung's bound the try ended at, when it did: [`BOUND_TURNS`],
+    /// [`BOUND_SPEND`] or [`BOUND_TIME`] (gap-3217a0). Its checks then judged
+    /// the work it left (gap-2c9412).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound: Option<String>,
+    /// How many times the try's agent, having handed back while its task's
+    /// checks still failed, was sent back to them within the try
+    /// (bug-cbbaa8); `None` when it never handed back with turns left, or
+    /// ran its own loop (a CLI agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<u32>,
 }
+
+/// [`AttemptVerdictRecord::bound`] of a try that used up its rung's turns.
+pub const BOUND_TURNS: &str = "turns";
+/// [`AttemptVerdictRecord::bound`] of a try that spent its rung's allowance.
+pub const BOUND_SPEND: &str = "spend";
+/// [`AttemptVerdictRecord::bound`] of a try that ran its rung's time.
+pub const BOUND_TIME: &str = "time";
 
 impl AttemptVerdictRecord {
     /// Settle `identity` with `outcome`. Blame and the learning label follow
@@ -1066,6 +1156,9 @@ impl AttemptVerdictRecord {
             harness: None,
             trust_exclusions: None,
             verify_depth: None,
+            workspace: None,
+            bound: None,
+            continues: None,
         }
     }
 
@@ -1084,6 +1177,21 @@ impl AttemptVerdictRecord {
         findings.truncate(SCOPE_FINDINGS_LISTED);
         self.scope_findings = findings;
         self.scope_findings_omitted = u32::try_from(omitted).ok().filter(|&count| count > 0);
+    }
+
+    /// Why the gaming screen left the attempt `unverified` although its
+    /// checks passed: the reason of its [`GAMING_SCREEN_RUNG`] step
+    /// (find-2ba86d). `None` for an attempt the screen did not flag, and for
+    /// one that did not settle `unverified`.
+    #[must_use]
+    pub fn gaming_reason(&self) -> Option<&str> {
+        if self.outcome != AttemptOutcome::Unverified {
+            return None;
+        }
+        self.steps
+            .iter()
+            .find(|step| step.rung == GAMING_SCREEN_RUNG)
+            .and_then(|step| step.skip_reason.as_deref())
     }
 
     /// The learning label as learners apply it (S01 §4.1): `Some(true)` for
@@ -1420,7 +1528,7 @@ pub struct ContentDecisionRecord {
 
 /// What each policy proposed for a set decision (S01 §5.3 `proposals`, as
 /// arrays of ids).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContentProposals {
     /// The ids the learned reader would include, computed on both arms.
@@ -1428,6 +1536,47 @@ pub struct ContentProposals {
     /// The ids the default policy π⁰ includes: none for knowledge, the
     /// seeded ones for playbooks.
     pub default: Option<Vec<String>>,
+    /// At the `sections` point, the odds the section bandit leaves each
+    /// section out at, beside the floor policy's, which L-sec's influence is
+    /// measured on (q-beea61); `None` elsewhere, and on rows written before
+    /// them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclusion: Option<ExclusionProposals>,
+}
+
+/// L-sec's policy and the floor policy as the probability each leaves a
+/// droppable section out at (q-beea61, Will's option b). The bandit's p_ex
+/// comes from the draw the prompt made on either arm, applied on the learned
+/// arm and only logged on the arm that runs π⁰; the floor policy leaves every
+/// section out at the bandit's floor. The census measures L-sec's influence
+/// on these and not on the draws: a policy that explores differs from a
+/// second draw of itself as much as from π⁰, so S03's A/A floor on draws
+/// would read the bandit inert whatever its posteriors say.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExclusionProposals {
+    /// p_ex of each section the bandit drew, by section id.
+    pub learned: BTreeMap<String, f64>,
+    /// The floor policy's p_ex, the same for every section.
+    pub floor: f64,
+}
+
+impl ExclusionProposals {
+    /// What the section bandit's `draws` for one prompt propose, whether the
+    /// prompt applied them or only logged them: each drawn section's p_ex,
+    /// against a floor policy at [`SECTION_EXCLUSION_FLOOR`]. `None` when it
+    /// drew no section.
+    ///
+    /// [`SECTION_EXCLUSION_FLOOR`]: crate::section_effect::SECTION_EXCLUSION_FLOOR
+    #[must_use]
+    pub fn of_draws(draws: &[crate::section_effect::SectionDecision]) -> Option<Self> {
+        (!draws.is_empty()).then(|| Self {
+            learned: draws
+                .iter()
+                .map(|draw| (draw.section.clone(), draw.p_exclude))
+                .collect(),
+            floor: crate::section_effect::SECTION_EXCLUSION_FLOOR,
+        })
+    }
 }
 
 /// Whether a decision was an opportunity of its loop (S01 §5.3
@@ -1949,6 +2098,9 @@ pub enum ForecastBasis {
     Prior,
     /// L1, the logit over the task's and the arm's features.
     Logit,
+    /// L0's per-arm rate for a retry whose L1 forecast ran away, below 1e-6 or above 1 − 1e-6: a
+    /// fit that ran away is no evidence (bug-bce0ed, gap-d91691).
+    PriorFallback,
 }
 
 /// One candidate arm's forecast. Probabilities are in [0, 1], costs in USD at the price
@@ -1998,15 +2150,55 @@ pub struct PredictionCandidate {
 
 /// What the predictor would do for the attempt, so that a shadow pick can be scored against the
 /// pick routing made without it (as `router_pick` is for G56).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PredictionDecision {
     /// The arm it would choose; `null` when it would dispatch nothing.
     pub would_choose: Option<String>,
     /// The arm routing chooses without it, when known.
     #[serde(default)]
     pub default: Option<String>,
-    /// Its action: `dispatch`, `climb`, `skip`, `retry`, `refine_spec` or `abandon`.
+    /// Its action: `start`, `dispatch`, `climb`, `skip`, `retry`, `refine_spec`, `abandon` or
+    /// `pinned`.
     pub action: String,
+    /// On a chain's first attempt under policy (b), both start rules' picks with their numbers,
+    /// whichever one `would_choose` follows (gap-74893d); absent otherwise, and in rows
+    /// written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_rules: Option<StartRulePicks>,
+}
+
+/// Both start rules' picks for a chain's first attempt (gap-74893d), so that a run's
+/// predictions show what the rule `[self_model] start_rule` did not set would have done.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartRulePicks {
+    /// The rule `would_choose` follows: `expected_total` or `break_even`.
+    pub rule: String,
+    /// S04 §4.4's break-even rule.
+    pub break_even: BreakEvenPick,
+    /// The rule that weighs time: the lowest expected total to a verified pass.
+    pub expected_total: ExpectedTotalPick,
+}
+
+/// The break-even rule's pick (S04 §4.4, decision 6101).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BreakEvenPick {
+    /// The arm it would start on.
+    pub pick: Option<String>,
+    /// Per candidate, cheapest first, the bar c_j/c_{j+1} + m_b its `p_vs_lcb` had to beat;
+    /// `null` on the last rung.
+    pub bars: Vec<Option<f64>>,
+}
+
+/// The expected-total rule's pick (gap-74893d).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExpectedTotalPick {
+    /// The arm it would start on.
+    pub pick: Option<String>,
+    /// λ, the price it put on an hour of a try's wall time, in USD.
+    pub usd_per_hour: f64,
+    /// Per candidate, cheapest first, the expected total in USD, cost plus λ·time, to a
+    /// verified pass for a task started there; `null` where it is infinite.
+    pub totals_usd: Vec<Option<f64>>,
 }
 
 // ── Line envelope ─────────────────────────────────────────────────────
@@ -2320,8 +2512,42 @@ mod tests {
         assert_eq!(json["usage"]["tokens_cache_write_5m"], 1_024);
         assert!(json["usage"]["tokens_cache_write_1h"].is_null());
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
+        assert!(json["cost"].get("refused_usd").is_none(), "{json}");
         let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);
+    }
+
+    /// bug-8bcd98: a try that failed over records what its refused calls
+    /// cost beside the call that ran, and its spend is the two together.
+    #[test]
+    fn a_try_s_spend_counts_its_refused_calls() {
+        let mut record =
+            AttemptVerdictRecord::settle(identity("T2", 1), AttemptOutcome::Passed, true);
+        record.cost = AttemptCost {
+            billed_usd: Some(0.0354),
+            refused_usd: Some(0.2076),
+            source: CostSource::ProviderUsage,
+            ..AttemptCost::default()
+        };
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["cost"]["refused_usd"], 0.2076);
+        let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        let spend = record.cost.plus_refused(record.cost.billed_usd);
+        assert!((spend.expect("a spend") - 0.2430).abs() < 1e-9, "{spend:?}");
+        // A try whose own call cost nothing known still spent its refused
+        // calls; one with no refused call spent what it billed.
+        assert_eq!(record.cost.plus_refused(None), Some(0.2076));
+        let billed_only = AttemptCost {
+            billed_usd: Some(0.0354),
+            ..AttemptCost::default()
+        };
+        assert_eq!(
+            billed_only.plus_refused(billed_only.billed_usd),
+            Some(0.0354)
+        );
+        assert_eq!(AttemptCost::default().plus_refused(None), None);
     }
 
     /// backlog 1125: a verdict lists at most `SCOPE_FINDINGS_LISTED` scope
@@ -2380,6 +2606,7 @@ mod tests {
             (O::WorkspaceError, false, Blame::Harness, None),
             (O::PromiseTerminated, false, Blame::Harness, None),
             (O::HarnessError, true, Blame::Harness, None),
+            (O::AllRungsSkipped, false, Blame::Harness, None),
             (O::Abandoned, false, Blame::Harness, None),
         ];
         for (outcome, first_token_seen, blame, label) in cases {

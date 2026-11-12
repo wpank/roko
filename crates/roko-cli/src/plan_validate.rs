@@ -123,7 +123,7 @@ pub fn validate_plans_dir(
     dir: &Path,
     models: Option<&IndexMap<String, ModelProfile>>,
 ) -> Result<ValidationReport> {
-    validate_plans_dir_impl(dir, models, None)
+    validate_plans_dir_impl(dir, models, None, false)
 }
 
 /// Validate plans in `dir` with optional prerequisite checking against `workdir`.
@@ -137,13 +137,26 @@ pub fn validate_plans_dir_with_workdir(
     models: Option<&IndexMap<String, ModelProfile>>,
     workdir: Option<&Path>,
 ) -> Result<ValidationReport> {
-    validate_plans_dir_impl(dir, models, workdir)
+    validate_plans_dir_impl(dir, models, workdir, false)
+}
+
+/// [`validate_plans_dir_with_workdir`], also asking this machine what it can
+/// run (gap-ff78e1): a check whose runner, or Python module, it does not have
+/// cannot run here (PLAN_060). `plan validate --dynamic` asks it; the rest of
+/// validation reports a plan the same way on every machine.
+pub fn validate_plans_dir_on_this_machine(
+    dir: &Path,
+    models: Option<&IndexMap<String, ModelProfile>>,
+    workdir: &Path,
+) -> Result<ValidationReport> {
+    validate_plans_dir_impl(dir, models, Some(workdir), true)
 }
 
 fn validate_plans_dir_impl(
     dir: &Path,
     models: Option<&IndexMap<String, ModelProfile>>,
     workdir: Option<&Path>,
+    on_this_machine: bool,
 ) -> Result<ValidationReport> {
     let tasks_files = collect_tasks_files(dir)?;
     let plan_output_paths = collect_plan_output_paths(&tasks_files);
@@ -158,6 +171,10 @@ fn validate_plans_dir_impl(
         ..Totals::default()
     };
 
+    // gap-ff78e1: what holds on any machine, and, when asked, what this one
+    // can run, asked once for every plan.
+    let portable = roko_cli::plan_generate::Probe::portable();
+    let machine = on_this_machine.then(roko_cli::plan_generate::Probe::default);
     for tasks_path in tasks_files {
         let mut plan = validate_tasks_file(&tasks_path, models)
             .with_context(|| format!("validate {}", tasks_path.display()))?;
@@ -229,6 +246,149 @@ fn validate_plans_dir_impl(
                              but it does not depend on '{dependency}', so it can run first"
                         ),
                     });
+                }
+                // bug-27f00b: a check that only reads files no task of the
+                // plan writes is settled before the plan runs. One that fails
+                // can never pass (PLAN_054); one that passes checks nothing
+                // its task does (PLAN_055).
+                // The steps a rule below names, which PLAN_059 leaves alone.
+                let mut named: HashSet<(String, usize)> = HashSet::new();
+                for settled in roko_cli::plan_generate::settled_steps(&tasks_file, workdir) {
+                    let (severity, rule_id) = match settled.passes {
+                        Some(false) => (Severity::Error, "PLAN_054"),
+                        Some(true) => (Severity::Warning, "PLAN_055"),
+                        None => continue,
+                    };
+                    named.insert((settled.task.clone(), settled.step));
+                    plan.diagnostics.push(Diagnostic {
+                        severity,
+                        rule_id: rule_id.to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(settled.task.clone()),
+                        message: format!(
+                            "task '{}' verify step {} {}",
+                            settled.task,
+                            settled.step,
+                            settled.outcome()
+                        ),
+                    });
+                }
+                // Round v7, phase-0 finding #2: a check that needs a file only
+                // a task after its own writes cannot pass when its task ends
+                // (PLAN_058): an error when every writer waits for the task, a
+                // warning when one may run alongside it, or when roko only
+                // guesses the need from a type's name (gap-3f4d97).
+                for later in roko_cli::plan_generate::later_files(&tasks_file, workdir) {
+                    if !later.guessed {
+                        named.insert((later.task.clone(), later.step));
+                    }
+                    plan.diagnostics.push(Diagnostic {
+                        severity: if later.after && !later.guessed {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                        rule_id: "PLAN_058".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(later.task.clone()),
+                        message: format!(
+                            "task '{}' verify step {} cannot pass when its task ends: {}",
+                            later.task,
+                            later.step,
+                            later.why()
+                        ),
+                    });
+                }
+                // bug-d758f6: an implementer whose checks run code but whose
+                // tools leave out a shell cannot build or run them (PLAN_057).
+                for (task, command) in
+                    roko_cli::plan_generate::implementers_without_a_shell(&tasks_file)
+                {
+                    let command = command.lines().next().unwrap_or_default();
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_057".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' cannot run its own checks: its check `{command}` runs \
+                             code, but its tools leave out bash, so its agent cannot build, run \
+                             the check or see a compiler error; leave allowed_tools out"
+                        ),
+                    });
+                }
+                // bug-27f00b: a check of roko's own state checks no task's
+                // work (PLAN_056).
+                for task in &tasks_file.tasks {
+                    for (number, step) in (1..).zip(&task.verify) {
+                        let Some(path) =
+                            roko_cli::plan_generate::roko_state_read(&step.command, workdir)
+                        else {
+                            continue;
+                        };
+                        named.insert((task.id.clone(), number));
+                        plan.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            rule_id: "PLAN_056".to_string(),
+                            plan_id: Some(plan.plan_id.clone()),
+                            task_id: Some(task.id.clone()),
+                            message: format!(
+                                "task '{}' verify step {number} reads `{path}`, roko's own state: \
+                                 no task writes it, and roko changes it as it runs",
+                                task.id
+                            ),
+                        });
+                    }
+                }
+                // gap-ff78e1: a check that cannot pass as written, as plan
+                // generation finds it, for a reason no rule above names and
+                // that holds on any machine: a build tool without its
+                // manifest, a file that does not exist and no task writes, or
+                // a test its file does not define (PLAN_059). Asked, this
+                // machine adds a check whose runner, or Python module, it
+                // does not have (PLAN_060).
+                let probes = std::iter::once((&portable, "PLAN_059", "cannot pass as written"))
+                    .chain(
+                        machine
+                            .as_ref()
+                            .map(|machine| (machine, "PLAN_060", "cannot run on this machine")),
+                    );
+                for (probe, rule_id, outcome) in probes {
+                    for step in
+                        roko_cli::plan_generate::unrunnable_steps(&tasks_file, workdir, probe)
+                    {
+                        if !named.insert((step.task.clone(), step.step)) {
+                            continue;
+                        }
+                        plan.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            rule_id: rule_id.to_string(),
+                            plan_id: Some(plan.plan_id.clone()),
+                            task_id: Some(step.task.clone()),
+                            message: format!(
+                                "task '{}' verify step {} {outcome}: {}",
+                                step.task, step.step, step.why
+                            ),
+                        });
+                    }
+                }
+                // bug-60ad88: a task that does not read a document its plan
+                // is written from may never see what it states (PLAN_061).
+                for (index, task) in tasks_file.tasks.iter().enumerate() {
+                    for source in roko_cli::plan_generate::unread_sources(&tasks_file, index) {
+                        plan.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            rule_id: "PLAN_061".to_string(),
+                            plan_id: Some(plan.plan_id.clone()),
+                            task_id: Some(task.id.clone()),
+                            message: format!(
+                                "task '{}' does not read `{source}`, which its plan is written \
+                                 from ([meta] sources): its agent may never see what it states; \
+                                 add it to the task's read_files",
+                                task.id
+                            ),
+                        });
+                    }
                 }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
@@ -2304,6 +2464,12 @@ depends_on_plan = ["foundation"]
 
         fs::create_dir_all(root.join("plans/demo")).unwrap();
         fs::create_dir_all(root.join("crates/existing-crate/src")).unwrap();
+        // The plan's check runs cargo from the root (PLAN_059).
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
         fs::write(
             root.join("crates/existing-crate/Cargo.toml"),
             "[package]\nname = \"existing-crate\"\nversion = \"0.1.0\"\n",

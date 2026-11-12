@@ -11,8 +11,9 @@ size = "S"
 hold = "waits on Will's deferred decision(s) 3333, 3346 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK68"
 anchors = ["benchmarks/viabilitybench/experiments"]
 lane = "bench"
@@ -59,3 +60,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK26 (gap-057cc7), PK31 (gap-7c9a9c), PK45 (gap-a42df2), PK67 (gap-ed1a08).
 - On hold until Will takes the deferred decision(s) 3333, 3346 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: sonnet.
+
+Checked 2026-10-27: 2026-10-26: no change; still fully blocked on Will's spend/host decisions and on PK26/PK31.

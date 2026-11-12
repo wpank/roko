@@ -804,6 +804,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -836,6 +837,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -914,6 +917,7 @@ mod tests {
                 provider: "hermes-local".into(),
                 slug: "hermes-3-llama-3.1-405b".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -946,6 +950,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1014,6 +1020,7 @@ mod tests {
                 provider: "openclaw-gpu".into(),
                 slug: "openclaw-7b-instruct".into(),
                 context_window: 32_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -1046,6 +1053,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1095,6 +1104,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: true,
@@ -1127,6 +1137,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1193,7 +1205,7 @@ mod tests {
         for (key, slug, prices) in [
             ("cheap", "gpt-oss-120b", Some((9.0, 9.0))),
             ("own", "my-own-model", Some((1.0, 2.0))),
-            ("top", "claude-sonnet-4-6", None),
+            ("registry", "o3", None),
             ("mystery", "no-such-model", None),
         ] {
             config.models.insert(key.into(), profile(slug, prices));
@@ -1248,11 +1260,13 @@ mod tests {
         assert_eq!(own["cost_cache_read_per_m"], 0.1, "{own}");
         assert!(own.get("price_snapshot").is_none(), "{own}");
 
-        let top = model("top");
-        assert_eq!(top["priced_by"], "builtin", "{top}");
-        assert_eq!(top["cost_input_per_m"], 3.0, "{top}");
-        assert_eq!(top["cost_output_per_m"], 15.0, "{top}");
-        assert_eq!(top["cost_cache_read_per_m"], 0.3, "{top}");
+        // o3 has built-in rates and no snapshot row.
+        assert!(snapshot.row("o3").is_none());
+        let registry = model("registry");
+        assert_eq!(registry["priced_by"], "builtin", "{registry}");
+        assert_eq!(registry["cost_input_per_m"], 2.0, "{registry}");
+        assert_eq!(registry["cost_output_per_m"], 8.0, "{registry}");
+        assert_eq!(registry["cost_cache_read_per_m"], 0.5, "{registry}");
 
         let mystery = model("mystery");
         for field in [
@@ -1331,6 +1345,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 200_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: true,
@@ -1363,6 +1378,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
         config.models.insert(
@@ -1371,6 +1388,7 @@ mod tests {
                 provider: "anthropic".into(),
                 slug: "claude-sonnet-4-6".into(),
                 context_window: 200_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -1403,6 +1421,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
 
@@ -1588,6 +1608,7 @@ mod tests {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
+                compact_at_tokens: None,
                 max_output: None,
                 supports_tools: true,
                 supports_thinking: false,
@@ -1620,6 +1641,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
 

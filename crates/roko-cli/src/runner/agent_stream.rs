@@ -29,6 +29,12 @@ use super::types::{AgentEvent, RunConfig};
 
 const FAST_AGENT_TURN_LIMIT: u32 = 6;
 
+/// The name prefix of the temporary directory holding a provider config
+/// roko writes for one CLI agent's run (Gemini's system settings). The
+/// variable naming the file marks the agent's processes as roko's, and
+/// `roko safety release` refuses to run under it (find-d05b5e).
+pub(crate) const PROVIDER_CONFIG_DIR_PREFIX: &str = "roko-cli-provider-";
+
 /// Cancellation and absolute deadline applied while a CLI runtime is being
 /// materialized. Once [`AgentHandle`] is returned, ordinary attempt ownership
 /// takes over.
@@ -496,7 +502,7 @@ pub async fn spawn_agent_controlled(
     let mut ephemeral_config_dir = None;
     let ephemeral_config_env = if let Some(config) = &invocation.ephemeral_config {
         let directory = tempfile::Builder::new()
-            .prefix("roko-cli-provider-")
+            .prefix(PROVIDER_CONFIG_DIR_PREFIX)
             .tempdir()
             .context("creating temporary provider config directory")
             .map_err(AgentStartupError::Failed)?;
@@ -527,7 +533,10 @@ pub async fn spawn_agent_controlled(
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
 
-    // Environment.
+    // Environment. The agent's id marks it, and what it runs, as an agent's
+    // process (gap-31e8a7): before the invocation's variables, so an
+    // explicit one wins.
+    roko_core::child_env::mark_agent_process(cmd.as_std_mut(), &invocation.agent_id);
     for (key, value) in &invocation.env {
         cmd.env(key, value);
     }
@@ -1040,6 +1049,34 @@ mod tests {
         );
     }
 
+    /// gap-31e8a7: a CLI agent runs marked with its agent id
+    /// (`ROKO_AGENT_ID`), and what it starts inherits the mark.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_agent_runs_marked_with_its_id() {
+        let (temp, config) = scripted_agent(
+            "#!/bin/sh\nsh -c 'printf %s \"$ROKO_AGENT_ID\"' > \"$(dirname \"$0\")/agent-id\"\n\
+             cat >/dev/null\n",
+        );
+        let (event_tx, _event_rx) = mpsc::channel(32);
+
+        let handle = spawn_agent(&config, event_tx)
+            .await
+            .expect("spawn test agent");
+
+        assert!(matches!(
+            handle.wait().await,
+            AgentWait::Confirmed {
+                exit_code: Some(0),
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("agent-id")).expect("agent id"),
+            config.agent_id
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn gemini_spawn_materializes_auth_config_parses_events_and_cleans_up() {
@@ -1048,6 +1085,7 @@ mod tests {
 set -eu
 test -f "${GEMINI_CLI_SYSTEM_SETTINGS_PATH:?}"
 test "${ROKO_PLUGIN_MCP_TOKEN:?}" = "signed-secret"
+test "${ROKO_AGENT_ID:?}" = "test-agent"
 printf '%s' "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" > "$PWD/settings-path"
 cp "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" "$PWD/settings-snapshot.json"
 cat >/dev/null

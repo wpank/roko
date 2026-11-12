@@ -8,9 +8,9 @@ severity = "p3"
 goal = "features"
 subsystem = ["roko-cli/impact-analysis"]
 created = 2026-09-28
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gaps-md#impact-analysis-uses-conservative-syntax-and-cargo-graph-evidence----partial"
 anchors = ["crates/roko-cli/src/runner/impact_analysis.rs::analyze", "crates/roko-cli/src/runner/impact_analysis.rs::try_symbol_oracle", "crates/roko-cli/src/commands/impact.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }

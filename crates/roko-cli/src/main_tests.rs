@@ -76,6 +76,58 @@ fn cli_parses_learn_reflexes_workdir() {
     ));
 }
 
+/// gap-d2ad57: `roko learn probes` lists by default; `clear` takes a model
+/// or `--all`, not both and not neither.
+#[test]
+fn cli_parses_learn_probes() {
+    use commands::learn::ProbesCmd;
+
+    let parse = |args: &[&str]| {
+        Cli::try_parse_from(["roko", "learn", "probes"].iter().chain(args)).map(|cli| cli.command)
+    };
+    assert!(matches!(
+        parse(&[]).expect("list"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes { cmd: None, .. },
+        })
+    ));
+    assert!(matches!(
+        parse(&["clear", "gpt-oss-120b"]).expect("clear a model"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes {
+                cmd: Some(ProbesCmd::Clear { model: Some(ref model), all: false }),
+                ..
+            },
+        }) if model == "gpt-oss-120b"
+    ));
+    assert!(matches!(
+        parse(&["clear", "--all"]).expect("clear all"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes {
+                cmd: Some(ProbesCmd::Clear {
+                    model: None,
+                    all: true
+                }),
+                ..
+            },
+        })
+    ));
+    assert!(matches!(
+        parse(&["clear", "glm-4.7", "--workdir", "/tmp/w"]).expect("a workdir after clear"),
+        Some(Command::Learn {
+            cmd: LearnCmd::Probes {
+                workdir: Some(ref workdir),
+                ..
+            },
+        }) if workdir == std::path::Path::new("/tmp/w")
+    ));
+    assert!(parse(&["clear"]).is_err(), "a model or --all");
+    assert!(
+        parse(&["clear", "gpt-oss-120b", "--all"]).is_err(),
+        "not both"
+    );
+}
+
 // ── #311: learn inspect / config preset parser tests ──────────
 
 #[test]
@@ -422,6 +474,7 @@ fn cli_parses_run_flags() {
             fresh,
             resume_plan,
             no_holdout: false,
+            no_audit: false,
         }) => {
             assert_eq!(prompt, vec!["add".to_string(), "login".to_string()]);
             assert!(plan);
@@ -460,6 +513,7 @@ fn cli_parses_run_no_holdout() {
         cli.command,
         Some(Command::Run {
             no_holdout: true,
+            no_audit: false,
             ..
         })
     ));
@@ -468,6 +522,7 @@ fn cli_parses_run_no_holdout() {
         cli.command,
         Some(Command::Run {
             no_holdout: true,
+            no_audit: false,
             ..
         })
     ));
@@ -476,6 +531,7 @@ fn cli_parses_run_no_holdout() {
         cli.command,
         Some(Command::Run {
             no_holdout: false,
+            no_audit: false,
             ..
         })
     ));
@@ -1385,6 +1441,7 @@ fn no_holdout_flag_sets_maximize_mode() {
         Some(Command::Plan {
             cmd: PlanCmd::Run {
                 no_holdout: true,
+                no_audit: false,
                 ..
             }
         })
@@ -1395,6 +1452,7 @@ fn no_holdout_flag_sets_maximize_mode() {
         Some(Command::Plan {
             cmd: PlanCmd::Run {
                 no_holdout: false,
+                no_audit: false,
                 ..
             }
         })
@@ -1403,12 +1461,63 @@ fn no_holdout_flag_sets_maximize_mode() {
     // The run's config: maximize with the flag, else as roko.toml says.
     let maximize = |toml: &str, no_holdout: bool| {
         let mut config = roko_core::config::schema::RokoConfig::from_toml(toml).unwrap();
-        apply_run_switches(&mut config, false, no_holdout);
+        apply_run_switches(&mut config, false, no_holdout, false);
         config.experiments.maximize
     };
     assert!(maximize("", true));
     assert!(!maximize("", false));
     assert!(maximize("[experiments]\nmaximize = true\n", false));
+}
+
+/// gap-d76b1b (decision 7103): `roko run --no-audit` and `roko plan run
+/// <dir> --no-audit` parse, and turn the run's audits off for that run alone;
+/// without the flag a run audits as roko.toml says, which is on by default.
+#[test]
+fn no_audit_flag_turns_the_runs_audits_off() {
+    use roko_cli::graph_execution::plan_runner::apply_run_switches;
+
+    for args in [
+        &["roko", "run", "--no-audit", "fix", "it"][..],
+        &["roko", "run", "plans/add-login", "--no-audit"][..],
+    ] {
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(
+            matches!(
+                cli.command,
+                Some(Command::Run {
+                    no_audit: true,
+                    no_holdout: false,
+                    ..
+                })
+            ),
+            "{args:?}"
+        );
+    }
+    let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--no-audit"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Plan {
+            cmd: PlanCmd::Run {
+                no_audit: true,
+                no_holdout: false,
+                ..
+            }
+        })
+    ));
+
+    // The run's config: no audits with the flag, else as roko.toml says.
+    let audited = |toml: &str, no_audit: bool| {
+        let mut config = roko_core::config::schema::RokoConfig::from_toml(toml).unwrap();
+        apply_run_switches(&mut config, false, false, no_audit);
+        config.audit.enabled
+    };
+    assert!(audited("", false), "audits are on by default");
+    assert!(!audited("", true));
+    assert!(!audited("[audit]\nenabled = false\n", false));
+    let mut config = roko_core::config::schema::RokoConfig::default();
+    apply_run_switches(&mut config, false, false, true);
+    assert!(!config.experiments.maximize && !config.learning.frozen);
+    assert_eq!(config.audit.rho, 0.10, "only the audits' switch changed");
 }
 
 /// gap-29fe0a: maximize mode holds nothing out of the plan-load spec gate.
@@ -1422,7 +1531,7 @@ fn no_holdout_flag_draws_no_holdout_attempts() {
 
     let held_out = |toml: &str, no_holdout: bool| {
         let mut config = roko_core::config::schema::RokoConfig::from_toml(toml).unwrap();
-        apply_run_switches(&mut config, false, no_holdout);
+        apply_run_switches(&mut config, false, no_holdout, false);
         let decision = |task: String| SpecGateDecision {
             plan_path: "plans/p/tasks.toml".to_string(),
             task_id: task,

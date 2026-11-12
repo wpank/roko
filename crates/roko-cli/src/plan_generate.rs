@@ -13,13 +13,25 @@
 //! - Feedback from failures feeds into retry context
 
 mod accept_blocks;
+mod build_system;
+mod check_reads;
 mod dry_run_fs;
+mod file_paths;
 mod overview;
 mod pipeline;
 mod runnable;
+mod sizes;
 mod source_checks;
+mod source_reads;
+mod symbol_reads;
 
-pub use runnable::{creates_without_write, missing_dependencies};
+pub use runnable::{
+    LaterFile, Probe, SettledStep, Unrunnable, creates_without_write, implementers_without_a_shell,
+    later_files, missing_dependencies, only_reads, read_only_files, roko_state_read, settled_reads,
+    settled_steps, unrunnable_steps,
+};
+
+pub use source_reads::unread_sources;
 
 pub use pipeline::{
     ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanProgress,
@@ -174,8 +186,6 @@ status = "ready"
 tier = "focused"
 max_loc = 50
 files = ["crates/roko-core/src/lib.rs"]
-allowed_tools = ["read_file", "grep", "edit_file"]
-denied_tools = []
 depends_on = []
 role = "implementer"
 
@@ -211,8 +221,10 @@ You are a task decomposition engine for software projects. Your job is to take a
 3. **One check per acceptance criterion**: Give each acceptance criterion its own verify step that names it in `covers`, so a failure says which criterion broke. One command may cover several criteria when one run checks them all (one test file). Keep the steps of different criteria separate, never chained into one command with `&&`: the first failure of a chain hides the rest. A task has at least one verify step and at most its tier's limit below. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
-6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). Never check a count of tests: correct work with a different number of tests fails it.
+6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step you write yourself checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). A check whose command the source gives is not yours to guard: the source wrote that command to check the task's work, so its step runs it alone and unchanged, with nothing before it (`tools/check.sh feature-x`, never `grep -q 'feature_x' tests/feature_x_test.cpp && tools/check.sh feature-x`). Never check a count of tests: correct work with a different number of tests fails it.
 7. **Say what you don't know**: When the source leaves a choice open that changes the outcome (a limit, a format, which caller wins), write it in the task's `open_questions` instead of guessing; such a plan will not run until it is answered. Leave `open_questions` empty when nothing is open.
+8. **A check sees its own task's work**: every verify step reads a file its task writes (one of its `files`), or runs code built from them. A step that reads only files no task of the plan writes is decided before the plan runs: it fails and no task can make it pass, or it passes and checks nothing. Generation runs such steps and sends the plan back, and `roko plan validate` reports them (PLAN_054, PLAN_055).
+9. **A check passes when its task ends**: a task's checks run before the tasks that wait for it, so a check needs only files that exist, that its task writes, or that a task it depends on writes. A check that needs later work, a file a later task writes or a test suite whose tests later tasks add, belongs to that later task or to the plan's own check (`[[meta.verify]]`). Generation sends back a check that needs a later task's file, and `roko plan validate` reports it (PLAN_058).
 
 ## Task tiers
 
@@ -257,8 +269,7 @@ tier = "mechanical"       # mechanical | focused | integrative | architectural
 # model_hint omitted — runtime picks the best model automatically
 max_loc = 20              # maximum lines of change
 files = ["crates/roko-core/src/types.rs"]   # REAL file paths only, never <path> or <crate>
-allowed_tools = ["read_file", "grep", "edit_file"]
-denied_tools = []
+# allowed_tools and denied_tools omitted — the role's own tools fit the task
 # mcp_servers omitted — only include when a task genuinely requires an MCP server
 depends_on = []
 role = "implementer"      # REQUIRED: implementer | architect | researcher | strategist | quick-reviewer | scribe
@@ -275,6 +286,8 @@ anti_patterns = [
     "Do NOT create new files. Modify crates/roko-core/src/types.rs only.",
 ]
 
+# A check you write yourself: a grep for what the task adds, then the gate.
+# A check whose command the source gives runs that command alone, unguarded.
 [[task.verify]]
 phase = "compile"
 command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs && cargo check -p roko-core"
@@ -296,8 +309,7 @@ tier = "focused"
 # model_hint omitted — runtime selects automatically
 max_loc = 40
 files = ["crates/roko-cli/src/commands/status.rs"]
-allowed_tools = ["read_file", "grep", "write_file"]
-denied_tools = []
+# allowed_tools and denied_tools omitted — the role's own tools fit the task
 # mcp_servers omitted — only include when a task genuinely requires an MCP server
 depends_on = ["T1"]
 role = "implementer"
@@ -327,18 +339,18 @@ Every `[[task]]` MUST include a `role` field. Choose the most specific role:
 
 | Role | Use when |
 |------|----------|
-| `"implementer"` | Writing code, adding fields, modifying functions, creating files |
+| `"implementer"` | Writing code, tests and build files, adding fields, modifying functions, creating files |
+| `"scribe"` | Writing a spec, design notes, a decision record or other docs, to a file its checks read |
 | `"architect"` | Reviewing and designing APIs and module structure (read-only: cannot change files) |
-| `"researcher"` | Gathering information, analyzing existing code, reading docs |
-| `"strategist"` | Decomposing requirements, planning approach, making design decisions |
-| `"scribe"` | Writing documentation, updating comments, generating markdown |
-| `"quick-reviewer"` | Code review tasks, auditing for correctness |
+| `"researcher"` | Gathering information, analyzing existing code, reading docs (read-only) |
+| `"strategist"` | Decomposing requirements, planning approach, making design decisions (read-only) |
+| `"quick-reviewer"` | Code review tasks, auditing for correctness (read-only) |
 
 Missing or misspelled roles will be rejected by `roko plan validate`. The `role` field is REQUIRED.
 
 ## Role-Tool Constraints
 
-Each role has a default tool permission set. Tasks can further restrict via `allowed_tools`/`denied_tools`, never widen it.
+Each role has a default tool permission set, and it is what a task needs: an implementer edits files, builds, runs its own checks with `bash` and sees each compiler error before its try ends. Leave `allowed_tools` and `denied_tools` out. Set one only to keep a task from a tool it must not use, never to list the tools you expect it to use: a task kept to read_file, write_file and grep cannot build, run its checks or patch a file, so every compile error costs it a whole try. A task can narrow its role's set, never widen it.
 
 {ROLE_TOOL_TABLE}
 
@@ -371,14 +383,63 @@ Detect the project language and use the right commands:
 - package.json → TypeScript: `npx tsc`, `npx jest`, `npx eslint`
 - go.mod → Go: `go build`, `go test`, `golangci-lint`
 - pyproject.toml/setup.py → Python: `python -m py_compile`, `pytest` (or `python3 -m unittest` when the tests use unittest), `ruff`
+- CMakeLists.txt → C/C++: `cmake --build`, `ctest -R <test>` (with CMakePresets.json: `cmake --preset <name>`, `cmake --build --preset <name>`, `ctest --preset <name> -R <test>`)
 
 ## Verify steps by role
 
 - **implementer**: MUST have at least one verify step, one per acceptance criterion (Core principle 3). Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or a shell command that puts a structural assertion before the selected check.
 - **Weak verify steps** (any role): a verify step must fail on the unchanged code and pass once the task is done. Prefer the crate's own gate (e.g. `cargo check -p roko-core`, `cargo test -p roko-core parse_config`) to a check that reads only the edited file, which lets a regression elsewhere in the crate through. Never negate a grep (`! grep -q ...`): correct code that mentions the text fails it (`roko plan validate` warns, PLAN_042). Never use a command that cannot fail (`echo ok`, `true`).
 - **Test runners** (any role): a test runner's exit status already says whether its tests passed, so run it on its own (`python3 -m unittest tests.test_budgets`, `pytest tests/test_x.py`). Do not pipe it into `grep -q OK`: that adds nothing and hides the runner's output, which a retry needs. Nor pipe it into any other program (`awk`, `tail`), send it to `/dev/null` or a file, or compare a count of its tests: when the check fails, that output is all the retry and the person see of why (`roko plan validate` warns, PLAN_050). Put any other assertion in its own command joined with `&&`.
-- **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
-- **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
+- **architect/researcher/strategist/quick-reviewer**: these roles write nothing, so no check can see their work: a check of theirs reads what other tasks write, or what no task writes, which Core principle 8 rules out. Give a plan's tasks a role that writes. A design, a decision, research findings or a spec is a `scribe` task that writes it to a file (`docs/spec.md`, `docs/design/<topic>.md`) whose checks read that file; work that only informs one implementer task belongs in that task.
+- **scribe**: structural checks of the files it writes, within its tier's verify-step limit: `test -f docs/spec.md`, then a `grep -q` for the sections the file must have (`grep -q '^## Acceptance criteria' docs/spec.md`), each `expect = "fail_on_base"` for a new file. The greps of one criterion may share a step.
+
+## A request without a spec
+
+A request that names a product, an app, a plugin or a large feature in a sentence or two, with no spec (no acceptance criteria, and no source checks listed with the request), is specified first, since a check needs something stated to check:
+
+1. The first task is one `scribe` task that writes the whole spec to `docs/spec.md`: what is built, each choice the request leaves open decided with its reason (or listed in `open_questions`), non-goals, and numbered acceptance criteria (`AC1: …`), each an observable outcome with the command that checks it. One task owns the file: never split it across tasks by section. Its checks read that file, as in the example below.
+2. After it, plan only the tasks whose checks you can state now, such as a project skeleton that builds, with its build or test command as its check. Leave the rest to a plan written from the reviewed spec (`roko plan generate --from-file docs/spec.md`); never invent a task whose check cannot fail or reads files no task writes.
+
+"Write a plan for X" or "only write the plan, don't run anything" asks for this plan: its tasks build X. Never write tasks whose output is a plan: no task writes a file under `plans/` (generation sends such a plan back), and none checks another plan's files or roko's state (`.roko/…`). The topics a request lists for the plan to cover are sections of the spec, not tasks.
+
+The spec task, in short:
+
+```toml
+[[task]]
+id = "T1"
+title = "Write the spec"
+goal = "docs/spec.md says what is built, what is decided, and how each part is checked."
+role = "scribe"
+tier = "integrative"
+max_loc = 150             # the tier's limit: the spec states what is built and checked, briefly
+files = ["docs/spec.md"]
+acceptance = [
+    "AC1: docs/spec.md has an `## Acceptance criteria` section whose criteria are numbered `AC1`, `AC2` and so on.",
+    "AC2: docs/spec.md has a `## Non-goals` section.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'test -f docs/spec.md && grep -q "^## Acceptance criteria" docs/spec.md && grep -qE "^- AC[0-9]+:" docs/spec.md'
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "structural"
+command = 'grep -q "^## Non-goals" docs/spec.md'
+covers = ["AC2"]
+expect = "fail_on_base"
+```
+
+## The plan's own check
+
+A check the source names as the plan's final or whole-plan check ("`tools/check.sh` is the plan's final check") goes in `[[meta.verify]]`, its command unchanged: it runs once on the merged result, after every task has passed. Never put it in a task's verify steps, where it would run before the other tasks' work is there.
+
+```toml
+[[meta.verify]]
+phase = "test"
+command = 'tools/check.sh'
+```
 
 ## Planner-written acceptance tests ([task.accept])
 
@@ -420,13 +481,15 @@ files = [
 
 Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the plan slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
-- [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
+- [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks, unless the file is a shared build or module list (File Path Rules 8)
 - [ ] Every task is within its tier's limits (files, max_loc, description words, verify steps); a larger one is split or given a higher tier
 - [ ] Every acceptance criterion has a verify step that covers it, steps of different criteria are not chained into one command, and no semantic duplicate exists elsewhere in the plan
-- [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
+- [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the project's gate would catch a regression
 - [ ] A test runner's own exit status is its check: no pipe, redirection or test count around it
-- [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
+- [ ] Every task writes files (implementer or scribe), and every verify step reads a file its own task writes or runs code built from them; none reads only files no task of the plan writes, another plan's files or `.roko/`
+- [ ] A request without a spec gets a `scribe` task that writes `docs/spec.md`, with numbered acceptance criteria, first
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
+- [ ] No task sets `allowed_tools` or `denied_tools` unless it must be kept from a tool; an implementer keeps `bash` and `edit_file`
 - [ ] Every task is within the generated-plan limits: its `read_files` entries, verify steps, `lines` ranges, declared context and symbol anchors
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
@@ -444,9 +507,10 @@ Before finalizing, verify your tasks against:
 2. Never use bare directory references like `"crates/"` or `"src/"`.
 3. Never use glob patterns like `*` in file paths.
 4. Never output angle-bracket placeholders like `<path>`, `<crate>`, `<file>`, `<module>`, or `<relevant-lib>`.
-5. Every `files` entry, every `path` in `read_files`, and every `cargo` command must reference actual files and crates that exist in the workspace or that the plan explicitly creates.
+5. Every `files` entry, every `path` in `read_files`, and every build or test command must reference actual files, crates and targets that exist in the workspace or that the plan explicitly creates.
 6. If a task creates a NEW crate, list the specific files: `"crates/new-crate/src/lib.rs"`, `"crates/new-crate/Cargo.toml"`. Use the plan slug as the crate name (e.g., slug "btc-funding-alert" → `"crates/btc-funding-alert/src/lib.rs"`).
 7. Researcher tasks that only READ files should still list specific file paths they will inspect.
+8. A task whose work must be registered in a shared build or module list (a `CMakeLists.txt` that names every source, a `mod.rs`, an `index.ts`, a `Cargo.toml` workspace) lists that file in its `files`, even when other tasks list it too. Sharing such a file is no reason to make one of those tasks wait for another.
 
 ## Complete Example (end-to-end)
 
@@ -485,8 +549,6 @@ files = [
     "crates/roko-serve/src/routes/mod.rs",
     "crates/roko-serve/tests/api_integration.rs",
 ]
-allowed_tools = ["read_file", "write_file", "grep"]
-denied_tools = []
 depends_on = []
 role = "implementer"
 
@@ -602,8 +664,11 @@ pub fn render_generated_plan_limits() -> String {
         "Each draft is checked against these limits before the plan is written. A draft that \
          breaks one comes back to you, and every retry costs a full planner call, so meet them in \
          the first draft.\n\
-         - `[task.context] read_files`: at most {read_files} entries per task \
-         (PLAN_BUDGET_READ_FILES); keep the files the task needs most.\n\
+         - `[task.context] read_files`: at most {read_files} entries per task, or as many as \
+         the files the task owns when it owns more, not counting the documents the plan is written \
+         from, the tests its checks run or the headers of the sources it changes \
+         (PLAN_BUDGET_READ_FILES); keep the files the task needs most, and the files that hold \
+         the symbols it names.\n\
          - `[[task.verify]]`: {verify_steps}.\n\
          - `lines`: one range `START-END` inside the file, at most {range_lines} lines long \
          (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET). Never a list such as `1-25,320-332`: \
@@ -646,11 +711,12 @@ fn verify_step_limits(policy: PlanExecutionPolicy) -> String {
 #[must_use]
 pub fn build_generator_system_prompt(workdir: &Path) -> String {
     let mut prompt = String::new();
+    // bug-8723fc: a CMake workspace reads the examples in its own commands.
+    let base = build_system::localize(PLAN_GENERATOR_SYSTEM_PROMPT, workdir);
     let _ = writeln!(
         prompt,
         "{}",
-        PLAN_GENERATOR_SYSTEM_PROMPT
-            .replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+        base.replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
             .replace("{TIER_SIZE_LIMITS}", &render_tier_size_limits())
             .replace("{GENERATED_PLAN_LIMITS}", &render_generated_plan_limits())
     );
@@ -798,6 +864,76 @@ mod template_tests {
         }
     }
 
+    /// gap-343a23: round v7's phase-3 re-plan (op 3b13af5f) put a `grep -q`
+    /// guard before the spec's own command on all 7 steps, as rule 6 and the
+    /// source-check block taught for any check, and roko stripped every one
+    /// (bug-56a806). The guard is now taught for the planner's own checks
+    /// only: rule 6, the first example plan (in a CMake workspace's prompt
+    /// too, which Undertow's planner reads) and the source-check block each
+    /// say a source's command runs alone, unguarded.
+    #[test]
+    fn the_planner_is_told_not_to_guard_a_source_check() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for needle in [
+            "a `fail_on_base` step you write yourself checks what the task adds",
+            "A check whose command the source gives is not yours to guard",
+            "its step runs it alone and unchanged, with nothing before it \
+             (`tools/check.sh feature-x`, never `grep -q 'feature_x' tests/feature_x_test.cpp \
+             && tools/check.sh feature-x`)",
+            "# A check whose command the source gives runs that command alone, unguarded.",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+        let cmake = tempfile::tempdir().expect("tempdir");
+        std::fs::write(cmake.path().join("CMakeLists.txt"), "project(x)\n").expect("cmake");
+        let localized = build_generator_system_prompt(cmake.path());
+        for needle in [
+            "A check whose command the source gives is not yours to guard",
+            "# A check you write yourself: a grep for what the task adds, then the gate.\n\
+             # A check whose command the source gives runs that command alone, unguarded.\n\
+             [[task.verify]]\nphase = \"compile\"\ncommand = \"grep -q 'class GainStage'",
+            "A check whose command the request gives runs that command alone and unchanged, with \
+             no `grep -q` before it.",
+        ] {
+            assert!(localized.contains(needle), "the CMake prompt says {needle}");
+        }
+
+        let check = |id: &str, text: &str, run: Option<&str>| source_checks::SourceCheck {
+            id: id.into(),
+            text: text.into(),
+            run: run.map(Into::into),
+            plan_level: false,
+            regression: false,
+        };
+        let given = check(
+            "SC1",
+            "P3.01: steps start on the grid",
+            Some("tools/spec.sh 3 sequencer 'P3.01*'"),
+        );
+        let block = source_checks::planner_block(std::slice::from_ref(&given), "The spec states");
+        assert!(
+            block.contains(
+                "Put no `grep -q`, file test or other command before or after it, not even to \
+                 make it fail on the unchanged code"
+            ),
+            "{block}"
+        );
+        assert!(
+            !block.contains("put a `grep -q`"),
+            "no guard advice: {block}"
+        );
+
+        let prose = check("SC2", "the pattern survives a reset", None);
+        let mixed = source_checks::planner_block(&[given, prose], "The spec states");
+        let unguarded = mixed
+            .find("Put no `grep -q`")
+            .expect("the given commands' rule");
+        let guarded = mixed
+            .find("For a check with no command given, name a test the task writes")
+            .expect("the guard, for a check with no command");
+        assert!(unguarded < guarded, "{mixed}");
+    }
+
     /// 3222: the generator prompt teaches `[task.accept]`: the section, the
     /// `accept:` block syntax and the four keys, with a Rust and a Python
     /// example, and the Python example's entry passes `accept_issues`
@@ -893,7 +1029,8 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          every field for each task. Keep the existing id, title, description, and depends_on. Add:\n\
          - `tier` (mechanical/focused/integrative/architectural)\n\
          - `max_loc` (estimated lines of change)\n\
-         - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
+         - `mcp_servers` only for a task that needs an MCP server; leave `allowed_tools` and \
+           `denied_tools` out unless a task must be kept from a tool\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
          - `[[task.verify]]` steps: one per acceptance criterion, at least one per task\n\
          Do NOT set `model_hint`: the task's tier and role pick its model. Set `rung` only when a \
@@ -1322,8 +1459,14 @@ mod tests {
         assert!(fast.starts_with("exactly 1 step per task"), "{fast}");
         let limits = render_generated_plan_limits();
         for expected in [
+            // bug-417c4a: a task may read the files it owns, and the
+            // documents the plan is written from are no part of the count;
+            // gap-5db3d9: nor are its checks' tests and its sources' headers.
             format!(
-                "`[task.context] read_files`: at most {} entries per task (PLAN_BUDGET_READ_FILES)",
+                "`[task.context] read_files`: at most {} entries per task, or as many as the \
+                 files the task owns when it owns more, not counting the documents the plan is \
+                 written from, the tests its checks run or the headers of the sources it changes \
+                 (PLAN_BUDGET_READ_FILES)",
                 policy.max_read_files_per_task
             ),
             format!("`[[task.verify]]`: {verify_steps}"),
@@ -1347,6 +1490,96 @@ mod tests {
         assert!(
             !prompt.contains("No task requires reading more than"),
             "a hand-written limit is left"
+        );
+    }
+
+    /// bug-27f00b: the generator prompt no longer pins a non-writing task's
+    /// checks to files that already exist, which no task can change. It
+    /// says a check reads what its own task writes, gives work that writes
+    /// nothing to a scribe, and has a request without a spec specified
+    /// first, in `docs/spec.md`.
+    #[test]
+    fn generator_prompt_checks_what_a_task_writes_and_specifies_first() {
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        assert!(
+            !prompt.contains("structural checks on files that already exist"),
+            "{prompt}"
+        );
+        for needle in [
+            "8. **A check sees its own task's work**",
+            "(PLAN_054, PLAN_055)",
+            "these roles write nothing, so no check can see their work",
+            "## A request without a spec",
+            "one `scribe` task that writes the whole spec to `docs/spec.md`",
+            "One task owns the file: never split it across tasks by section.",
+            "numbered acceptance criteria (`AC1: …`)",
+            "`roko plan generate --from-file docs/spec.md`",
+            "\"Write a plan for X\" or \"only write the plan, don't run anything\" asks for this \
+             plan: its tasks build X.",
+            "no task writes a file under `plans/`",
+            "The topics a request lists for the plan to cover are sections of the spec, not tasks.",
+            "files = [\"docs/spec.md\"]",
+            "- [ ] Every task writes files (implementer or scribe)",
+            "## The plan's own check",
+            "goes in `[[meta.verify]]`, its command unchanged",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+
+        // The spec task's example parses, has no spec hard fail, and checks
+        // only the file it writes, so the base settles none of its checks.
+        let start = prompt.find("The spec task, in short").expect("the example");
+        let block = prompt[start..]
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|tail| tail.split("```").next())
+            .expect("its TOML");
+        let plan = format!("[meta]\nplan = \"p\"\n\n{block}");
+        let parsed = crate::task_parser::TasksFile::parse_str(&plan).expect("parse the example");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tasks.toml");
+        std::fs::write(&path, &plan).expect("write the example");
+        let report = roko_gate::spec_quality::lint_files(&[path], dir.path());
+        assert!(
+            report.tasks[0].hard_fail.is_empty(),
+            "{:?}",
+            report.tasks[0]
+        );
+        std::fs::create_dir_all(dir.path().join("docs")).expect("docs");
+        std::fs::write(dir.path().join("docs/spec.md"), "# Spec\n").expect("a spec");
+        for step in &parsed.tasks[0].verify {
+            assert_eq!(
+                read_only_files(&step.command),
+                Some(vec!["docs/spec.md".to_string()])
+            );
+        }
+        assert_eq!(settled_steps(&parsed, dir.path()), []);
+    }
+
+    /// bug-d758f6: planners copied the examples' three-tool lists into every
+    /// task, so implementers could not build or run their checks. No example
+    /// sets `allowed_tools` or `denied_tools` now, and the prompt says to
+    /// leave them out unless a task must be kept from a tool.
+    #[test]
+    fn generator_prompt_leaves_tool_lists_out() {
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        for line in prompt.lines() {
+            assert!(
+                !line.starts_with("allowed_tools =") && !line.starts_with("denied_tools ="),
+                "an example sets a tool list: {line}"
+            );
+        }
+        for needle in [
+            "Leave `allowed_tools` and `denied_tools` out.",
+            "never to list the tools you expect it to use",
+            "an implementer keeps `bash` and `edit_file`",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+        let regenerate = build_regeneration_prompt(std::path::Path::new("/test"), "");
+        assert!(
+            !regenerate.contains("`allowed_tools`, `denied_tools`, and `mcp_servers`"),
+            "{regenerate}"
         );
     }
 

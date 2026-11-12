@@ -323,6 +323,57 @@ pub struct ReleasedControl {
     pub by: String,
     /// Why it was released.
     pub reason: String,
+    /// How the release came in (find-d05b5e); `None` on a line written
+    /// before releases recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<ReleaseOrigin>,
+}
+
+/// How a release of an agent or tool control came in (find-d05b5e): what
+/// took it, where the name in its `by` came from, and whether a person's
+/// terminal was attached. Only a person releases a control, so the audit
+/// line says what the release rests on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseOrigin {
+    /// What took the release.
+    pub channel: ReleaseChannel,
+    /// Where `by` came from.
+    pub by_source: PrincipalSource,
+    /// For `roko safety release`, whether its standard input was a
+    /// terminal, as when a person types the command (an agent's shell has
+    /// none); `None` for a serve request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<bool>,
+}
+
+/// What took a control's release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseChannel {
+    /// `roko safety release`.
+    Cli,
+    /// `POST /api/safety/controls/{agent_id}/release` on `roko serve`.
+    ServeApi,
+}
+
+/// Where the `by` of a control's release came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalSource {
+    /// `roko safety release --by`, as given.
+    Flag,
+    /// `$USER`, for a command run without `--by`: the account the command
+    /// ran under, not a name anyone gave.
+    UserEnv,
+    /// `operator`, for a command run with neither `--by` nor `$USER`.
+    Fallback,
+    /// The user the serve request authenticated as.
+    AuthenticatedUser,
+    /// `local-api`, for a serve request that names no user: to a serve that
+    /// authenticates no one, or with a credential that carries no user, such
+    /// as the serve's launch token.
+    LocalApi,
 }
 
 /// Build the isolation control Signal for `agent_id` with reason code
@@ -448,11 +499,11 @@ pub fn list_agent_controls(workspace_root: &Path) -> io::Result<Vec<AgentControl
 }
 
 /// Release the isolation control of `agent_id`: remove it from the ledger
-/// and append one audit line (time, agent id, control id, `by`, `reason`)
-/// to [`agent_control_releases_path`], both under the ledger's lock. The
-/// audit line is written first, so no release goes unrecorded. Releasing an
-/// agent with no control in force (none, or an expired one) returns
-/// `Ok(None)` and writes no audit line.
+/// and append one audit line (time, agent id, control id, `by`, `reason`,
+/// and how the release came in, `via`) to [`agent_control_releases_path`],
+/// both under the ledger's lock. The audit line is written first, so no
+/// release goes unrecorded. Releasing an agent with no control in force
+/// (none, or an expired one) returns `Ok(None)` and writes no audit line.
 ///
 /// # Errors
 ///
@@ -465,6 +516,7 @@ pub fn release_agent_control(
     agent_id: &str,
     by: &str,
     reason: &str,
+    via: ReleaseOrigin,
 ) -> io::Result<Option<ReleasedControl>> {
     let invalid_input =
         |error: io::Error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string());
@@ -489,6 +541,7 @@ pub fn release_agent_control(
                 control_id: control.id.to_hex(),
                 by: by.to_string(),
                 reason: reason.to_string(),
+                via: Some(via),
             };
             append_release_audit(&audit_path, &released)?;
             ledger.controls.remove(&key);
@@ -497,7 +550,10 @@ pub fn release_agent_control(
     )
 }
 
-fn append_release_audit(path: &Path, released: &ReleasedControl) -> io::Result<()> {
+/// Append `released`, one release's audit record, as a line of the audit
+/// file at `path`, synced before it returns. Tool control releases
+/// (gap-a2787f) keep their own file the same way.
+pub(crate) fn append_release_audit<T: Serialize>(path: &Path, released: &T) -> io::Result<()> {
     let mut line = serde_json::to_vec(released)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     line.push(b'\n');
@@ -1157,16 +1213,23 @@ mod tests {
         assert_eq!(denied.output.tag("immune_reason"), Some("agent_isolated"));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
+        let via = ReleaseOrigin {
+            channel: ReleaseChannel::Cli,
+            by_source: PrincipalSource::Flag,
+            terminal: Some(true),
+        };
         let released = release_agent_control(
             workspace.path(),
             "plan/task#1",
             "operator",
             "blank answer, not tamper",
+            via,
         )
         .unwrap()
         .expect("a control was released");
         assert_eq!(released.agent_id, "plan/task#1");
         assert_eq!(released.control_id, isolated.control_id);
+        assert_eq!(released.via, Some(via));
         assert!(list_agent_controls(workspace.path()).unwrap().is_empty());
 
         let ran = boundary.run(&prompt, &roko_core::Context::now()).await;
@@ -1178,6 +1241,24 @@ mod tests {
         assert_eq!(lines.len(), 1, "{audit}");
         let recorded: ReleasedControl = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(recorded, released);
+        let line: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(
+            line["via"],
+            serde_json::json!({"channel": "cli", "by_source": "flag", "terminal": true}),
+            "{audit}"
+        );
+    }
+
+    /// An audit line written before releases recorded how they came in
+    /// still reads, with no `via`.
+    #[test]
+    fn an_audit_line_without_via_still_reads() {
+        let line =
+            r#"{"released_at_ms":1,"agent_id":"a","control_id":"c","by":"will","reason":"r"}"#;
+        let recorded: ReleasedControl = serde_json::from_str(line).unwrap();
+        assert_eq!(recorded.by, "will");
+        assert_eq!(recorded.via, None);
+        assert_eq!(serde_json::to_string(&recorded).unwrap(), line);
     }
 
     #[test]
@@ -1186,10 +1267,20 @@ mod tests {
         isolate_agent(workspace.path(), "kept-agent", "operator_isolation").unwrap();
         let path = agent_controls_path(workspace.path());
         let before = std::fs::read(&path).unwrap();
+        let via = ReleaseOrigin {
+            channel: ReleaseChannel::ServeApi,
+            by_source: PrincipalSource::LocalApi,
+            terminal: None,
+        };
 
-        let released =
-            release_agent_control(workspace.path(), "unknown-agent", "operator", "nothing")
-                .unwrap();
+        let released = release_agent_control(
+            workspace.path(),
+            "unknown-agent",
+            "operator",
+            "nothing",
+            via,
+        )
+        .unwrap();
 
         assert_eq!(released, None);
         assert_eq!(std::fs::read(&path).unwrap(), before);

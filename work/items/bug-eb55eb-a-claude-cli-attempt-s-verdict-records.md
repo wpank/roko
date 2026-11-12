@@ -9,8 +9,9 @@ goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-agent/claude_cli"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-dogfood-will#R4-3"
 discovered_from = "agent:dogfood-will (round v6 run 4, 2026-10-17)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent", "crates/roko-core/src/config/provider.rs::ModelProfile"]
@@ -83,3 +84,5 @@ Related: gap-ceffb3 (no dated price snapshot covers claude-sonnet-4-6).
 
 The plugin's Receipt (owned by plugin-runs) should price 1-hour cache writes at 2× input once roko publishes the rate.
 Tell its owners when this lands.
+
+Checked 2026-10-27: The item's Current-state section slightly overstates the gap: the raw BUILTIN_PRICING table already has a cache-write price for claude-sonnet-4-6 (since well before this item). The real gap is that EffectiveRates / ModelProfile (what /api/models actually surfaces) don't carry it through, and no 1-hour-vs-5-minute distinction exists anywhere. Worth cross-linking with bug-c67afc, which covers the same price_at_snapshot Unknown-source root cause from a different angle; neither currently lists the other as related.

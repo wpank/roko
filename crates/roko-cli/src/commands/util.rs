@@ -1,7 +1,7 @@
 //! util command handlers.
 
 use crate::*;
-use roko_cli::status::{StatusDiagnostic, collect_session_status};
+use roko_cli::status::{StatusDiagnostic, collect_session_status, unpriced_calls_summary};
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
@@ -471,7 +471,12 @@ fn print_ladder_skips(target: &Path) {
     ) else {
         return;
     };
-    let report = roko_cli::dispatch::model_routing::ladder_report(loaded.config());
+    // A rung's alternates are not rungs: a rung goes without one that cannot
+    // run (gap-51d2ca).
+    let report: Vec<_> = roko_cli::dispatch::model_routing::ladder_report(loaded.config())
+        .into_iter()
+        .filter(|rung| !rung.alternate)
+        .collect();
     let skipped: Vec<_> = report
         .iter()
         .filter_map(|rung| rung.dispatch.as_ref().err().map(|reason| (rung, reason)))
@@ -510,6 +515,7 @@ pub(crate) async fn cmd_run(
     engine: Option<String>,
     domain: Option<roko_core::TaskDomain>,
     no_holdout: bool,
+    no_audit: bool,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -589,6 +595,7 @@ pub(crate) async fn cmd_run(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout,
+        no_audit,
         // The server this command started, if any, decides as for its own
         // runs (gap-5fda00).
         live_agent_output: server_guard.as_ref().map_or_else(
@@ -803,7 +810,12 @@ pub(crate) async fn cmd_status(
         None
     };
     // Calls whose cost is unknown, which the total leaves out (backlog 2109).
-    let unpriced_calls = costs_log.unpriced_calls().await.unwrap_or(0);
+    // Text and JSON both report them (gap-2bec05).
+    let unpriced_calls = if total_cost_usd.is_some() {
+        costs_log.unpriced_calls().await.ok()
+    } else {
+        None
+    };
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -936,6 +948,7 @@ pub(crate) async fn cmd_status(
         status.cfactor = cfactor_snapshot;
         status.total_cost_usd = total_cost_usd;
         status.estimated_cost_usd = estimated_cost_usd;
+        status.unpriced_calls = unpriced_calls;
         status.today_cost_usd = today_cost_usd;
         status.diagnostics.extend(cost_diagnostics.iter().cloned());
 
@@ -1194,10 +1207,8 @@ pub(crate) async fn cmd_status(
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
         }
-        if unpriced_calls > 0 {
-            println!(
-                "  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total"
-            );
+        if let Some(calls) = unpriced_calls.filter(|calls| *calls > 0) {
+            println!("  Unpriced: {}", unpriced_calls_summary(calls));
         }
         if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
             println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");

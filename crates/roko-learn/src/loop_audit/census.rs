@@ -36,16 +36,28 @@
 //! attempt's placebo row to L-placebo (S03 §4.3; gap-6f31c3). The placebo's
 //! arms propose the same no-op, so its influence must stay 0: the auditor
 //! reads a placebo whose influence interval leaves 0 as a broken audit.
+//! L-sec's ε is read from the sections its prompts included, and its ι from
+//! the odds the bandit left each section out at, against the floor policy,
+//! which leaves every one out at the bandit's floor (q-beea61, Will's option
+//! b): one draw of a policy that explores differs from a second as much as
+//! from π⁰, so ι on draws, netted of their A/A floor, would read L-sec inert
+//! whatever its posteriors say. A sections row written before the rows
+//! logged those odds adds to L-sec's ε and to none of its ι.
 //!
 //! The section bandit can leave out the section L-know's and L-play's items
-//! render into. Their readers still proposed those items, so an item whose
-//! exposure row says `bandit_excluded` is in its loop's learned proposal and
-//! not in the executed action: the opportunity was not reached, and ε falls
-//! when L-sec removes the content (bug-550909). The writers record such
-//! items in the proposal; the census adds them for rows written before. Both
-//! loops' log rules say `dormant:unlogged` only when some prompt included
-//! one of their items and no episode or efficiency row names it; items that
-//! never reached a prompt are no exposure, which a fact says.
+//! render into, and the token budget can drop that section or cut items off
+//! it. Their readers still proposed those items, so an item whose exposure
+//! row says `bandit_excluded` (bug-550909) or `token_budget` (gap-be6bc5) is
+//! in its loop's learned proposal and not in the executed action: the
+//! opportunity was not reached, and ε falls when L-sec or the budget keeps
+//! the content out. The budget is the composer's, not part of either loop's
+//! policy. Reach compares the sets whole (S03 §4.4's `1[A_t ≡ A^L_t]`), so a
+//! prompt the budget cut only some of a loop's items from is not reached
+//! either. The writers record such items in the proposal; the census adds
+//! them for rows written before. Both loops' log rules say
+//! `dormant:unlogged` only when some prompt included one of their items and
+//! no episode or efficiency row names it; items that never reached a prompt
+//! are no exposure, which a fact says.
 //!
 //! The fold estimates each loop's benefit β too (S03 §4.4-§4.5;
 //! gap-03fcd0). The unit is the chain, whose arm every retry inherits, so β
@@ -82,8 +94,8 @@ use super::estimators::{
     BenefitConfig, BenefitEstimator, BenefitRow, ChainOutcome, Estimate, KAPPA_MAX, PreAssignment,
 };
 use super::exposure::{
-    Action, ExposureEstimate, ExposureEstimator, InfluenceEstimate, InfluenceEstimator,
-    Opportunity, ReadStatus,
+    Action, ExclusionOdds, ExposureEstimate, ExposureEstimator, InfluenceEstimate,
+    InfluenceEstimator, Opportunity, ReadStatus,
 };
 use super::ledger::{BetaFields, EpsilonFields};
 use super::spec::{AuditState, Lifecycle, LoopSpec, Qualifier, ReasonCode, Registry};
@@ -108,9 +120,12 @@ pub const CENSUS_STATE_FILE: &str = "loop-census-state.json";
 /// and the section bandit's (gap-6f31c3). Version 4 keeps each loop's
 /// benefit estimators (gap-03fcd0). Version 5 counts the knowledge and
 /// playbook items the section bandit left out as proposed and not reached
-/// (bug-550909). A census kept under an earlier version is read afresh, so
-/// the next tick reads every run once more.
-pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/5";
+/// (bug-550909). Version 6 measures L-sec's influence on the bandit's
+/// exclusion odds against the floor policy, not on its draws (q-beea61).
+/// Version 7 counts the items the token budget cut as proposed and not
+/// reached too (gap-be6bc5). A census kept under an earlier version is read
+/// afresh, so the next tick reads every run once more.
+pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/7";
 
 /// How long an attempt without a verdict holds back the rows after it, in a
 /// run that has not closed: one open longer than this died with its process.
@@ -219,7 +234,9 @@ pub struct MeasuredLoop {
     pub pre_instrumentation: u64,
     /// ε and its decomposition over the learned-arm opportunities.
     pub eps: EpsilonFields,
-    /// ι_net over every opportunity, net of the A/A floor.
+    /// ι_net over every opportunity, net of the A/A floor. L-sec's is
+    /// measured on the bandit's exclusion odds against the floor policy,
+    /// over the rows that log them (q-beea61).
     pub iota_net: f64,
     /// The learned arm has N_ε opportunities, so ε is judged.
     pub judged: bool,
@@ -415,20 +432,32 @@ pub fn render_json(report: &CensusReport) -> serde_json::Result<String> {
 }
 
 /// `report` as a table: one line per loop, `id state reason qualifiers
-/// evidence`.
+/// evidence`, then what the runs' decision rows measure of it
+/// (gap-1ee8c4): the opportunities on the learned and the default arm, ε̂,
+/// ι_net, and β̂ with its interval once judged, else why it is not. A loop
+/// no decision row measures prints `-` in those columns. Each column is as
+/// wide as its widest cell.
 #[must_use]
 pub fn render_text(report: &CensusReport) -> String {
-    let mut out = format!(
-        "{:<16} {:<16} {:<24} {:<26} {}\n",
-        "loop", "state", "reason", "qualifiers", "evidence"
-    );
+    let header = [
+        "loop",
+        "state",
+        "reason",
+        "qualifiers",
+        "evidence",
+        "n_L/n_D",
+        "ε",
+        "ι_net",
+        "β [LCB, UCB]",
+    ];
+    let mut lines = vec![header.map(str::to_string)];
     for row in &report.rows {
         let state = match (&row.lifecycle, row.state) {
             (Lifecycle::Retired { by }, _) => format!("retired({by})"),
             (_, Some(state)) => serde_label(&state),
             (_, None) => "-".to_string(),
         };
-        let reason = row.reason.map_or("-", ReasonCode::as_str);
+        let reason = row.reason.map_or("-", ReasonCode::as_str).to_string();
         let qualifiers = if row.qualifiers.is_empty() {
             "-".to_string()
         } else {
@@ -436,12 +465,55 @@ pub fn render_text(report: &CensusReport) -> String {
             labels.join(",")
         };
         let evidence = row.evidence.map_or("-".to_string(), |e| serde_label(&e));
-        out.push_str(&format!(
-            "{:<16} {:<16} {:<24} {:<26} {}\n",
-            row.loop_id, state, reason, qualifiers, evidence
-        ));
+        let [arms, eps, iota, beta] = measured_columns(row.measured.as_ref());
+        let loop_id = row.loop_id.clone();
+        lines.push([
+            loop_id, state, reason, qualifiers, evidence, arms, eps, iota, beta,
+        ]);
+    }
+    let mut widths = [0_usize; 9];
+    for line in &lines {
+        for (width, cell) in widths.iter_mut().zip(line) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let mut out = String::new();
+    for line in &lines {
+        let cells: Vec<String> = line
+            .iter()
+            .zip(widths)
+            .map(|(cell, width)| format!("{cell:<width$}"))
+            .collect();
+        out.push_str(cells.join(" ").trim_end());
+        out.push('\n');
     }
     out
+}
+
+/// A census row's measured columns: `n_L/n_D`, ε̂, ι_net and [`beta_text`];
+/// `-` in each for a loop no decision row measures.
+fn measured_columns(measured: Option<&MeasuredLoop>) -> [String; 4] {
+    let Some(measured) = measured else {
+        return ["-", "-", "-", "-"].map(str::to_string);
+    };
+    [
+        format!("{}/{}", measured.n_learned, measured.n_default),
+        format!("{:.2}", measured.eps.est),
+        format!("{:.2}", measured.iota_net),
+        beta_text(&measured.beta),
+    ]
+}
+
+/// β as the census prints it: `β̂ [LCB, UCB]` once judged, else `not
+/// judged (<why>)`.
+fn beta_text(beta: &BetaFields) -> String {
+    match (beta.est, beta.lcb.zip(beta.ucb)) {
+        (Some(est), Some((low, high))) => format!("{est:.3} [{low:.3}, {high:.3}]"),
+        _ => format!(
+            "not judged ({})",
+            beta.reason.as_deref().unwrap_or("not estimated")
+        ),
+    }
 }
 
 /// The snake_case label serde gives a unit variant.
@@ -553,16 +625,7 @@ fn measured_fact(measured: &MeasuredLoop) -> String {
     let (n, learned) = (measured.n_opp, measured.n_learned);
     let pre = measured.pre_instrumentation;
     let (eps, iota) = (measured.eps, measured.iota_net);
-    let beta = &measured.beta;
-    let benefit = match (beta.est, beta.lcb.zip(beta.ucb)) {
-        (Some(est), Some((low, high))) => {
-            format!("β {est:.3} [{low:.3}, {high:.3}]")
-        }
-        _ => format!(
-            "β not judged ({})",
-            beta.reason.as_deref().unwrap_or("not estimated")
-        ),
-    };
+    let benefit = format!("β {}", beta_text(&measured.beta));
     format!(
         "{n} opportunities measured, {learned} on the learned arm, and {pre} rows from before \
          S03's fields: ε {:.2} (read {:.2}, reach {:.2}, honest {:.2}, receipt {:.2}), \
@@ -596,7 +659,8 @@ pub fn read_runs(runs_dir: &Path) -> Vec<RunRecords> {
 /// L-placebo; and a route row in which audit feedback left a candidate out
 /// counts for L-M4 too (S03 §4.8). A row without S03's fields counts as
 /// pre-instrumentation, and a pin (a task hint, an override, a ladder rung
-/// outside L-M3's epochs) is no opportunity.
+/// outside L-M3's epochs) is no opportunity. L-sec's influence is read from
+/// its rows' exclusion odds, against the floor policy (q-beea61).
 #[must_use]
 pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
     measure_at(runs, &AuditParams::default())
@@ -904,7 +968,7 @@ fn fold_run(
     level: Level,
 ) {
     let attempts = Attempts::of(run);
-    let left_out = bandit_excluded(&run.exposures);
+    let left_out = kept_out(&run.exposures);
     for line in window(&run.decisions, from, until) {
         let row = &line.record;
         let key = row.attempt_key.as_deref();
@@ -959,7 +1023,18 @@ fn fold_run(
         }
         let point = (row.identity.attempt_key.as_str(), row.decision_point);
         if let Some(opportunity) = content_opportunity(row, left_out.get(&point)) {
-            loop_tally.push(&opportunity);
+            if row.decision_point == ContentDecisionPoint::Sections {
+                // L-sec's ι is read from the bandit's exclusion odds, not
+                // from the sections its draws left in (q-beea61).
+                loop_tally.push_exposure(&opportunity);
+                if let Some((learned, floor)) = exclusion_policies(row) {
+                    loop_tally
+                        .influence
+                        .push_policies(&learned, &floor, None, None);
+                }
+            } else {
+                loop_tally.push(&opportunity);
+            }
             let key = Some(row.identity.attempt_key.as_str());
             let draw = draw_of(&row.audit, row.arm_set.as_ref());
             loop_tally.push_benefit(attempts.benefit(loop_id, key, draw));
@@ -1216,11 +1291,12 @@ fn route_opportunity(
     })
 }
 
-/// The items of each attempt's knowledge and playbook decisions that the
-/// section bandit left out with the section they render into, by attempt
-/// key and decision point, from the run's exposure rows (bug-550909). The
-/// reader proposed them all the same: the bandit, L-sec, removed them.
-fn bandit_excluded(
+/// The items of each attempt's knowledge and playbook decisions that its
+/// prompt left out though their reader proposed them, by attempt key and
+/// decision point, from the run's exposure rows: those in a section the
+/// section bandit left out (bug-550909), and those the token budget cut
+/// (gap-be6bc5). L-sec or the composer's budget removed them, not the loop.
+fn kept_out(
     exposures: &[Stamped<ExposureRecord>],
 ) -> HashMap<(&str, ContentDecisionPoint), BTreeSet<String>> {
     let mut left_out: HashMap<(&str, ContentDecisionPoint), BTreeSet<String>> = HashMap::new();
@@ -1230,7 +1306,11 @@ fn bandit_excluded(
             row.decision_point,
             ContentDecisionPoint::Knowledge | ContentDecisionPoint::Playbooks
         );
-        if reader && row.excluded_reason == Some(ExcludedReason::BanditExcluded) {
+        let removed = matches!(
+            row.excluded_reason,
+            Some(ExcludedReason::BanditExcluded | ExcludedReason::TokenBudget)
+        );
+        if reader && removed {
             let point = (row.identity.attempt_key.as_str(), row.decision_point);
             left_out
                 .entry(point)
@@ -1244,9 +1324,10 @@ fn bandit_excluded(
 /// The opportunity a content row records, if it is one: the store offered
 /// candidates. Its proposals are id sets, and its receipt, the rendered
 /// sections found in the request, says whether the label is honest. The
-/// items the section bandit left out of the row's prompt, `left_out`, are
-/// in the learned proposal, as the writers have recorded them since
-/// bug-550909, and never in the executed action.
+/// items the section bandit left out of the row's prompt or the token budget
+/// cut from it, `left_out`, are in the learned proposal, as the writers have
+/// recorded them since bug-550909 and gap-be6bc5, and never in the executed
+/// action.
 fn content_opportunity(
     row: &ContentDecisionRecord,
     left_out: Option<&BTreeSet<String>>,
@@ -1280,6 +1361,35 @@ fn content_opportunity(
         receipt: receipt.is_some(),
         cites: None,
     })
+}
+
+/// L-sec's two policies at a sections row, which its ι is measured on
+/// (q-beea61, Will's option b): the odds the bandit left each section out
+/// at, as the row logs them on either arm, and the floor policy's, which
+/// leaves each of those sections out at the bandit's floor. No p_ex is ever
+/// below the floor, so the distance between them is the mean excess of the
+/// bandit's odds over the floor: the exclusions its posteriors add to the
+/// least it explores. The odds are what the policy executes on the prompt,
+/// so there is no draw for an A/A floor to net out, and as their distance
+/// from the floor is linear in them, the spread of the posterior draws
+/// behind each p_ex averages out instead of adding to ι. `None` for a row
+/// that logs no odds, one written before them, or one whose odds are no
+/// probabilities.
+fn exclusion_policies(row: &ContentDecisionRecord) -> Option<(ExclusionOdds, ExclusionOdds)> {
+    let exclusion = row.proposals.as_ref()?.exclusion.as_ref()?;
+    let probability = |p: &f64| (0.0..=1.0).contains(p);
+    if !probability(&exclusion.floor) || !exclusion.learned.values().all(probability) {
+        return None;
+    }
+    let floor = exclusion
+        .learned
+        .keys()
+        .map(|section| (section.clone(), exclusion.floor))
+        .collect();
+    Some((
+        ExclusionOdds(exclusion.learned.clone()),
+        ExclusionOdds(floor),
+    ))
 }
 
 /// The opportunity an L-M3 route row records (S03 §4.8), if it is one: the
@@ -1571,8 +1681,14 @@ impl Tally {
     }
 
     fn push<A: Action>(&mut self, opportunity: &Opportunity<A>) {
-        self.exposure.push(opportunity);
+        self.push_exposure(opportunity);
         self.influence.push(opportunity);
+    }
+
+    /// Take `opportunity` for ε and the arm counts alone, when its loop's ι
+    /// is measured on other actions, or not at all (L-sec; q-beea61).
+    fn push_exposure<A: Action>(&mut self, opportunity: &Opportunity<A>) {
+        self.exposure.push(opportunity);
         if opportunity.learned_arm {
             self.n_learned += 1;
         } else {
@@ -2097,12 +2213,13 @@ mod tests {
     use crate::loop_audit::LoopObservation;
     use crate::loop_audit::ledger::{HealthRow, LoopAuditRow};
     use crate::loop_audit::sim::SplitMix64;
+    use crate::section_effect::SectionDecision;
     use crate::telemetry::assign::{Arm, Assignment, AssignmentUnit};
     use crate::telemetry::records::{
         ATTEMPT_OPEN_SCHEMA, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome,
         AttemptVerdictRecord, ContentCandidate, ContentProposals, DECISION_SCHEMA,
-        DecisionAssignment, DecisionReceipt, EXPOSURE_SCHEMA, ExposureRecord, RunClosed, RunFile,
-        Stamped, VERDICT_SCHEMA,
+        DecisionAssignment, DecisionReceipt, EXPOSURE_SCHEMA, ExclusionProposals, ExposureRecord,
+        RunClosed, RunFile, Stamped, VERDICT_SCHEMA,
     };
 
     /// The 09-29 snapshot fixture (backlog 5105), laid out like `.roko`.
@@ -2335,6 +2452,7 @@ mod tests {
             proposals: Some(ContentProposals {
                 learned: Some(vec![item.to_string()]),
                 default: Some(Vec::new()),
+                exclusion: None,
             }),
             audit: AuditFields {
                 layer: Some(layer.to_string()),
@@ -2541,6 +2659,7 @@ mod tests {
                     would_choose: Some("model-a".to_string()),
                     default: Some("model-c".to_string()),
                     action: "dispatch".to_string(),
+                    start_rules: None,
                 };
                 let identity = AttemptIdentity::new(&key);
                 let prediction =
@@ -2696,6 +2815,7 @@ mod tests {
         row.proposals = Some(ContentProposals {
             learned: Some(ids(learned)),
             default: Some(Vec::new()),
+            exclusion: None,
         });
         if let Some(receipt) = row.audit.receipt.as_mut() {
             receipt.exposure_hashes = chosen.iter().map(|id| format!("b3:{id}")).collect();
@@ -2860,6 +2980,90 @@ mod tests {
         append(&episodes, "{\"extra\":{\"playbook_ids\":[\"pb-2\"]}}\n");
         let named = play_row();
         assert_eq!(named.reason, None, "{:?}", named.facts);
+    }
+
+    /// gap-be6bc5: what the token budget cut is the reader's proposal not
+    /// reached, as what the section bandit left out is (bug-550909). Run
+    /// gr-cut has four learned-arm chains of L-know, whose reader proposed
+    /// kn-1 and kn-2: the budget cut both of the first chain's, in a row
+    /// written before the writers proposed cut items, whose learned proposal
+    /// is empty; both of the second's, in a row written since; one of the
+    /// third's, which the sets' whole comparison counts as not reached too;
+    /// and none of the fourth's. L-play has two: the budget cut the first
+    /// one's playbook, in a row written before, and the second one's reached
+    /// its prompt. The census's reach is 1/4 for L-know and 1/2 for L-play,
+    /// and the tick folds the same rows to the same ε.
+    #[test]
+    fn token_budget_cut_items_count_as_not_reached() {
+        use roko_core::config::learning::LearningAuditConfig;
+
+        use crate::loop_audit::{LoopAuditor, RowOrigin};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(".roko").join(RUNS_DIR);
+        let (know, play) = (
+            ContentDecisionPoint::Knowledge,
+            ContentDecisionPoint::Playbooks,
+        );
+        let (lesson, playbook) = (ExposureItemKind::Knowledge, ExposureItemKind::Playbook);
+        let cut = Some(ExcludedReason::TokenBudget);
+        // Each L-know chain: the budget's cut of kn-1 and of kn-2, and the
+        // learned proposal and the choice its row names.
+        let chains: [([Option<ExcludedReason>; 2], &[&str], &[&str]); 4] = [
+            ([cut, cut], &[], &[]),
+            ([cut, cut], &["kn-1", "kn-2"], &[]),
+            ([None, cut], &["kn-1"], &["kn-1"]),
+            ([None, None], &["kn-1", "kn-2"], &["kn-1", "kn-2"]),
+        ];
+        let attempts: Vec<_> = chains
+            .into_iter()
+            .enumerate()
+            .map(|(index, ([first, second], learned, chosen))| {
+                let key = AttemptKey::new("gr-cut", "plan", format!("t{index}"), 1);
+                let mut shown = vec![
+                    exposure(&key, lesson, "kn-1", first),
+                    exposure(&key, lesson, "kn-2", second),
+                ];
+                let mut decided = vec![reader_row(&key, know, Arm::Learned, learned, chosen)];
+                if index < 2 {
+                    let reached = index == 1;
+                    let reason = (!reached).then_some(ExcludedReason::TokenBudget);
+                    shown.push(exposure(&key, playbook, "pb-1", reason));
+                    let ids: &[&str] = if reached { &["pb-1"] } else { &[] };
+                    decided.push(reader_row(&key, play, Arm::Learned, ids, ids));
+                }
+                (shown, decided)
+            })
+            .collect();
+        write_attempts(&runs_dir, "gr-cut", &attempts);
+
+        let registry = Registry::embedded().expect("the embedded registry");
+        let report = run(dir.path(), &registry, None);
+        let measured = |loop_id: &str| {
+            let row = report.row(loop_id).expect("a registered loop");
+            let facts = &row.facts;
+            row.measured
+                .clone()
+                .unwrap_or_else(|| panic!("{loop_id}: {facts:?}"))
+        };
+        let census_know = measured("L-know");
+        let know_eps = (
+            census_know.n_learned,
+            census_know.eps.read,
+            census_know.eps.reach,
+        );
+        assert_eq!(know_eps, (4, 1.0, 0.25), "{census_know:?}");
+        let census_play = measured("L-play");
+        let play_eps = (census_play.n_learned, census_play.eps.reach);
+        assert_eq!(play_eps, (2, 0.5), "{census_play:?}");
+
+        // The tick folds the same rows to the same ε.
+        let config = LearningAuditConfig::default();
+        let mut auditor = LoopAuditor::from_records(registry.clone(), &config, &[]);
+        let runs = read_runs(&runs_dir);
+        let observations = auditor.observe(&runs, &RowOrigin::default(), audit_time());
+        assert_eq!(health_of(&observations, "L-know").eps, census_know.eps);
+        assert_eq!(health_of(&observations, "L-play").eps, census_play.eps);
     }
 
     /// Append `lines` to the file at `path`.
@@ -3063,24 +3267,55 @@ mod tests {
         assert_eq!(logged.reason, None, "{:?}", logged.facts);
     }
 
+    /// The sections the section bandit draws on in the L-sec rows the tests
+    /// write; the prompt also offers `role`, which it may not drop.
+    const DROPPABLE: [&str; 3] = ["conventions", "tool_hints", "model_format"];
+
+    /// Attempt `key`'s sections decision as dispatch writes it from the
+    /// section bandit's draws at the early cap's odds, 0.2 on every
+    /// droppable section: [`drawn_section_row`] of draws that left
+    /// `left_out` out, if any.
+    fn section_row(key: &AttemptKey, arm: Arm, left_out: Option<&str>) -> ContentDecisionRecord {
+        let draws: Vec<SectionDecision> = DROPPABLE
+            .iter()
+            .map(|section| {
+                let excluded = left_out == Some(*section);
+                SectionDecision {
+                    section: (*section).to_string(),
+                    p_exclude: 0.2,
+                    excluded,
+                    propensity: if excluded { 0.2 } else { 0.8 },
+                }
+            })
+            .collect();
+        drawn_section_row(key, arm, &draws)
+    }
+
     /// Attempt `key`'s sections decision with S03's fields but no loop id,
     /// so the decision point names the loop: the prompt offered `role`,
-    /// which the bandit may not drop, and the droppable `conventions`,
-    /// `tool_hints` and `model_format`, which the composer scores alike. On
-    /// the learned arm the section bandit left `left_out` out, and π⁰ would
-    /// have kept it; on the default arm the prompt kept every section, and
-    /// the bandit's draw only proposed leaving `left_out` out.
-    fn section_row(key: &AttemptKey, arm: Arm, left_out: Option<&str>) -> ContentDecisionRecord {
+    /// which the bandit may not drop, and the [`DROPPABLE`] sections, which
+    /// the composer scores alike. On the learned arm the prompt applied the
+    /// section bandit's `draws`, leaving out the sections they drew out,
+    /// which π⁰ would have kept; on the default arm the prompt kept every
+    /// section, and the draws only proposed leaving them out. On both arms
+    /// the row logs the odds each draw left its section out at (q-beea61).
+    fn drawn_section_row(
+        key: &AttemptKey,
+        arm: Arm,
+        draws: &[SectionDecision],
+    ) -> ContentDecisionRecord {
         let offered = ["role", "conventions", "tool_hints", "model_format"];
         let learned_arm = arm == Arm::Learned;
-        let dropped = |id: &str| left_out == Some(id);
+        let dropped = |id: &str| draws.iter().any(|draw| draw.excluded && draw.section == id);
         let included: Vec<String> = offered
             .iter()
             .filter(|id| !(learned_arm && dropped(id)))
             .map(|id| (*id).to_string())
             .collect();
         let (learned, default) = if learned_arm {
-            let default = included.iter().cloned().chain(left_out.map(str::to_string));
+            let left_out = draws.iter().filter(|draw| draw.excluded);
+            let left_out = left_out.map(|draw| draw.section.clone());
+            let default = included.iter().cloned().chain(left_out);
             (included.clone(), default.collect())
         } else {
             let learned = included.iter().filter(|id| !dropped(id)).cloned();
@@ -3111,6 +3346,7 @@ mod tests {
             proposals: Some(ContentProposals {
                 learned: Some(learned),
                 default: Some(default),
+                exclusion: ExclusionProposals::of_draws(draws),
             }),
             audit: AuditFields {
                 layer: Some("sections".to_string()),
@@ -3177,7 +3413,8 @@ mod tests {
     /// both a health row, the placebo's first. L-sec: 40 chains, every
     /// fifth on the default arm; the bandit left a section out of every
     /// other learned-arm prompt and proposed one on each default-arm prompt,
-    /// so ι is 0.25 on 24 rows and 0, its ε whole; the composer's flat
+    /// its ε whole, and every draw was at the early cap's odds, so its ι is
+    /// their excess over the floor, 0.15 (q-beea61); the composer's flat
     /// scores say nothing of its degeneracy, and a row from before S03's
     /// fields is pre-instrumentation. L-placebo: 40 chains on its h = 0.5
     /// layer, its proposals the same no-op, so ι is 0 and nothing moves.
@@ -3269,6 +3506,162 @@ mod tests {
         assert!(placebo.placebo_ok);
         assert!(observations.iter().all(|seen| seen.transition.is_none()));
         assert!(!auditor.audit_broken());
+    }
+
+    /// q-beea61 (Will's option b): L-sec's ι is read from the section
+    /// bandit's exclusion odds against the floor policy, so a bandit with
+    /// flat posteriors and one with a learned preference read differently.
+    /// 400 chains each, every fifth on the default arm, over three droppable
+    /// sections. The flat bandit's arms hold one posterior, so P(θ_ex > θ_in)
+    /// is 1/2 and its odds sit at the early cap; the other has learned that
+    /// every section helps, so its odds sit at the floor. Their ι_net is the
+    /// cap's excess over the floor and 0, with no A/A floor, and their
+    /// intervals part: the audit tick reads the learned bandit `inert` and
+    /// leaves the flat one on probation. Read on single draws, netted of a
+    /// second, independently seeded draw (option a), both fall below 0,
+    /// inert whatever their posteriors say. Sections rows written before
+    /// the odds were logged count for ε and the arm counts, not for ι.
+    #[test]
+    fn l_sec_influence_reads_flat_and_learned_bandits_differently() {
+        use roko_core::config::learning::LearningAuditConfig;
+
+        use crate::loop_audit::{LoopAuditor, RowOrigin};
+        use crate::section_effect::{
+            BetaPosterior, SECTION_EXCLUSION_CAP_EARLY, SECTION_EXCLUSION_FLOOR, SectionArms,
+            SectionBandit,
+        };
+
+        const RUN: &str = "gr-odds";
+        const CHAINS: u64 = 400;
+        // A bandit whose every droppable section holds `included` and
+        // `excluded`, in its first 100 opportunities.
+        let bandit = |included: BetaPosterior, excluded: BetaPosterior| SectionBandit {
+            sections: DROPPABLE
+                .iter()
+                .map(|section| {
+                    let arms = SectionArms {
+                        included,
+                        excluded,
+                        opportunities: 40,
+                    };
+                    ((*section).to_string(), arms)
+                })
+                .collect(),
+        };
+        let flat = bandit(
+            BetaPosterior::new(11.0, 11.0),
+            BetaPosterior::new(11.0, 11.0),
+        );
+        let learned = bandit(BetaPosterior::new(31.0, 1.0), BetaPosterior::new(1.0, 31.0));
+        // `bandit`'s draws for chain `index`, each section from a seed of its
+        // own; `round` 1 is a second, independent draw.
+        let draws = |bandit: &SectionBandit, index: u64, round: u64| -> Vec<SectionDecision> {
+            (0_u64..)
+                .zip(DROPPABLE)
+                .map(|(at, section)| bandit.decide(section, (index * 4 + at) * 2 + round))
+                .collect()
+        };
+        // A workspace whose run holds a sections row per chain, as dispatch
+        // writes it from `bandit`'s draws, and `old` rows from before the
+        // odds were logged.
+        let workspace = |bandit: &SectionBandit, old: u64| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let run_dir = dir.path().join(".roko").join(RUNS_DIR).join(RUN);
+            std::fs::create_dir_all(&run_dir).expect("the run dir");
+            let mut decisions = String::new();
+            for index in 0..CHAINS + old {
+                let key = AttemptKey::new(RUN, "plan", format!("t{index}"), 1);
+                let arm = if index % 5 == 0 {
+                    Arm::Default
+                } else {
+                    Arm::Learned
+                };
+                let mut row = drawn_section_row(&key, arm, &draws(bandit, index, 0));
+                if index >= CHAINS {
+                    row.proposals.as_mut().expect("proposals").exclusion = None;
+                }
+                decisions.push_str(&line(DECISION_SCHEMA, index + 1, row));
+            }
+            let decided = RunFile::Decisions.path_in(&run_dir);
+            std::fs::write(decided, decisions).expect("decisions");
+            dir
+        };
+        let registry = Registry::embedded().expect("the embedded registry");
+        let config = LearningAuditConfig::default();
+        let params = AuditParams::configured(&config, &registry);
+        let l_sec = |dir: &Path| {
+            let runs = read_runs(&dir.join(".roko").join(RUNS_DIR));
+            let mut measured = measure_at(&runs, &params);
+            let sec = measured.remove("L-sec").expect("L-sec is measured");
+            let mut auditor = LoopAuditor::from_records(registry.clone(), &config, &[]);
+            let observations = auditor.observe(&runs, &RowOrigin::default(), audit_time());
+            let health = health_of(&observations, "L-sec");
+            (sec, (health.state, health.reason))
+        };
+
+        let excess = SECTION_EXCLUSION_CAP_EARLY - SECTION_EXCLUSION_FLOOR;
+        let flat_dir = workspace(&flat, 20);
+        let (flat_sec, flat_verdict) = l_sec(flat_dir.path());
+        assert_eq!(
+            flat_sec.measured.n_opp,
+            CHAINS + 20,
+            "old rows are opportunities"
+        );
+        assert_eq!(
+            flat_sec.influence.opportunities, CHAINS,
+            "{:?}",
+            flat_sec.influence
+        );
+        assert_eq!(flat_sec.measured.eps.est, 1.0, "{:?}", flat_sec.measured);
+        assert_eq!(flat_sec.influence.aa_floor, 0.0);
+        let iota = flat_sec.influence.iota_net;
+        assert!((iota - excess).abs() < 1e-12, "flat ι_net {iota}");
+        assert_eq!(flat_verdict, (AuditState::Probation, None));
+
+        let learned_dir = workspace(&learned, 0);
+        let (learned_sec, learned_verdict) = l_sec(learned_dir.path());
+        assert_eq!(
+            learned_sec.measured.eps.est, 1.0,
+            "{:?}",
+            learned_sec.measured
+        );
+        assert_eq!(
+            learned_sec.influence.iota_net, 0.0,
+            "{:?}",
+            learned_sec.influence
+        );
+        let (_, learned_high) = learned_sec.influence.interval.expect("an interval");
+        let (flat_low, _) = flat_sec.influence.interval.expect("an interval");
+        assert!(learned_high < flat_low, "{learned_high} ≥ {flat_low}");
+        assert_eq!(
+            learned_verdict,
+            (AuditState::Flagged, Some(ReasonCode::Inert))
+        );
+
+        // Option a's reading: single draws of the included sections, against
+        // π⁰'s every section, netted of a second draw.
+        let on_draws = |bandit: &SectionBandit| {
+            let kept = |draws: &[SectionDecision]| -> BTreeSet<String> {
+                let kept = draws.iter().filter(|draw| !draw.excluded);
+                let kept = kept.map(|draw| draw.section.clone());
+                kept.chain(["role".to_string()]).collect()
+            };
+            let every: BTreeSet<String> = DROPPABLE
+                .into_iter()
+                .chain(["role"])
+                .map(str::to_string)
+                .collect();
+            let mut influence = InfluenceEstimator::new(params.loop_alpha());
+            for index in 0..CHAINS {
+                let (first, second) = (draws(bandit, index, 0), draws(bandit, index, 1));
+                influence.push_policies(&kept(&first), &every, Some(&kept(&second)), None);
+            }
+            influence.estimate().iota_net
+        };
+        for (name, bandit) in [("flat", &flat), ("learned", &learned)] {
+            let iota = on_draws(bandit);
+            assert!(iota < 0.0, "{name}: ι_net {iota} on single draws");
+        }
     }
 
     /// gap-6f31c3: a census an earlier tick kept, which read a run to its

@@ -29,6 +29,73 @@ pub(crate) enum DaemonCmd {
     Uninstall, // remove launchd plist
 }
 
+/// `roko serve status|stop|restart` (gap-fb1594).
+#[derive(Debug, Subcommand)]
+pub(crate) enum ServeCmd {
+    /// Report whether a project's roko serve runs: its URL, PID, build,
+    /// uptime and runs. Files a dead serve left are removed. Exits 0 when
+    /// every serve asked about runs, 1 when one does not.
+    Status {
+        /// The project (default: cwd).
+        #[arg(long, conflicts_with = "all")]
+        workdir: Option<PathBuf>,
+        /// Every roko serve on this machine (~/.roko/runtime/serves).
+        #[arg(long)]
+        all: bool,
+        /// Print one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a project's roko serve: SIGTERM, then SIGKILL after --timeout. A
+    /// serve with runs going is left alone unless --force is given.
+    Stop {
+        /// The project (default: cwd).
+        #[arg(long, conflicts_with = "all")]
+        workdir: Option<PathBuf>,
+        /// Every roko serve on this machine; busy ones are skipped.
+        #[arg(long)]
+        all: bool,
+        /// Print one JSON object.
+        #[arg(long)]
+        json: bool,
+        /// Stop it even while runs are going; they stop too.
+        #[arg(long)]
+        force: bool,
+        /// Seconds to wait for it to let go of its workspace before SIGKILL.
+        #[arg(long, value_name = "SECS", default_value_t = 20)]
+        timeout: u64,
+    },
+    /// Restart a project's roko serve on this roko binary, with the flags it
+    /// was started with and its port when that is free again. A serve with
+    /// runs going is left alone unless --force is given.
+    Restart {
+        /// The project (default: cwd).
+        #[arg(long, conflicts_with = "all")]
+        workdir: Option<PathBuf>,
+        /// Every roko serve on this machine; busy ones are skipped.
+        #[arg(long)]
+        all: bool,
+        /// Print one JSON object.
+        #[arg(long)]
+        json: bool,
+        /// Restart it even while runs are going; they stop.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// The flags of `roko serve` that start a server, in the foreground or with
+/// `--detach`.
+#[derive(Debug, Clone)]
+pub(crate) struct ServeFlags {
+    pub(crate) bind: Option<String>,
+    pub(crate) port: Option<u16>,
+    pub(crate) workdir: Option<PathBuf>,
+    pub(crate) tui: bool,
+    pub(crate) enable_terminal: bool,
+    pub(crate) idle_exit: Option<u64>,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum DeployCmd {
     /// Deploy the current workspace to Railway via the public GraphQL API.
@@ -195,7 +262,8 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
         roko_serve::ServerBuildConfig::new(workdir.clone(), runtime, roko_config, None, None)
             .with_state_hub(state_hub)
             .with_metrics(metrics)
-            .with_advertised_endpoint();
+            .with_advertised_endpoint()
+            .with_build_info(build_info());
     let server_config = if let Some(ref tok) = launch_token {
         server_config.with_launch_token(tok.clone())
     } else {
@@ -344,15 +412,19 @@ fn install_loop_canary(state: &roko_serve::state::AppState, workdir: &std::path:
     let _ = state.loop_canary.set(std::sync::Arc::new(runner));
 }
 
-pub(crate) async fn cmd_serve(
-    cli: &Cli,
-    bind: Option<String>,
-    port: Option<u16>,
-    workdir: Option<PathBuf>,
-    tui: bool,
-    enable_terminal: bool,
-) -> Result<i32> {
+pub(crate) async fn cmd_serve(cli: &Cli, flags: ServeFlags) -> Result<i32> {
+    let ServeFlags {
+        bind,
+        port,
+        workdir,
+        tui,
+        enable_terminal,
+        idle_exit,
+    } = flags;
     let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+    // serve.json, the registry and /health name the workspace by its
+    // canonical path (gap-fb1594).
+    let wd = wd.canonicalize().unwrap_or(wd);
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&wd.join(".roko"))?;
     let config = resolve_config_for_workdir(cli, &wd)?;
     let repo_registry = RepoRegistry::load(&config, &wd).unwrap_or_default();
@@ -415,13 +487,22 @@ pub(crate) async fn cmd_serve(
     #[cfg(unix)]
     let ipc_hub = state_hub.clone();
     // `--bind`, `--port` and `--enable-terminal` hold for the server's life,
-    // also when it reloads roko.toml (bug-3eec27).
+    // also when it reloads roko.toml (bug-3eec27). `serve.json` records the
+    // build, `--idle-exit` and `--config` too, so `roko serve restart` starts
+    // the server the same way (gap-fb1594).
     let server_config =
         roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
             .with_terminal_enabled(enable_terminal)
             .with_state_hub(state_hub)
             .with_metrics(metrics)
-            .with_advertised_endpoint();
+            .with_advertised_endpoint()
+            .with_build_info(build_info())
+            .with_idle_exit(idle_exit)
+            .with_config_file(
+                cli.config
+                    .clone()
+                    .map(|path| std::path::absolute(&path).unwrap_or(path)),
+            );
     let server_config = if let Some(ref tok) = launch_token {
         server_config.with_launch_token(tok.clone())
     } else {
@@ -434,12 +515,20 @@ pub(crate) async fn cmd_serve(
     // too long on some systems) is non-fatal and must never prevent the HTTP
     // server from starting.
     #[cfg(unix)]
-    let ipc_token = {
+    let ipc = {
         let token = tokio_util::sync::CancellationToken::new();
-        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(ipc_hub, &wd, token.clone()) {
-            tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
-        }
-        token
+        let server = match roko_cli::state_hub_ipc::start_hub_ipc_server(
+            ipc_hub,
+            &wd,
+            token.clone(),
+        ) {
+            Ok(server) => Some(server),
+            Err(e) => {
+                tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
+                None
+            }
+        };
+        (token, server)
     };
 
     if tui {
@@ -470,9 +559,16 @@ pub(crate) async fn cmd_serve(
             Err(e) => tracing::error!(%e, "server task panicked"),
         }
         #[cfg(unix)]
-        ipc_token.cancel();
+        stop_hub_ipc(ipc).await;
         tui_result
     } else {
+        // SIGINT, SIGTERM and SIGHUP stop the server gracefully, and so does
+        // its own cancel (`--idle-exit`): it removes serve.json, serve.token
+        // and its registry entry, releases the workspace lock and exits 0
+        // (gap-fb1594, bug-06ac5f). The listeners are installed before the
+        // server starts, so a signal during startup is not lost.
+        let mut signals = ServeSignals::install()?;
+        let _claim = roko_cli::cli_signals::claim_termination_signals();
         // Expand run() inline so the portal line is printed after bind.
         let (state, handle) = server_builder.start_background().await?;
         install_loop_canary(&state, &wd);
@@ -484,17 +580,401 @@ pub(crate) async fn cmd_serve(
         } else {
             println!("portal: {}", portal_base);
         }
-        // Block until Ctrl-C, then shut down gracefully.
-        let _ = tokio::signal::ctrl_c().await;
+        tokio::select! {
+            signal = signals.next() => {
+                tracing::info!(signal, "shutting down roko serve");
+                println!("{signal}: shutting down");
+            }
+            () = state.cancel.cancelled() => {
+                tracing::info!("roko serve cancelled itself (idle exit); shutting down");
+                println!("idle: shutting down");
+            }
+        }
+        // A second signal while shutting down forces the exit.
+        let forced = tokio::spawn(exit_on_second_signal(signals, wd.clone()));
         state.shutdown().await;
         match handle.await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
             Err(e) => tracing::error!(%e, "server task panicked"),
         }
+        forced.abort();
         #[cfg(unix)]
-        ipc_token.cancel();
+        stop_hub_ipc(ipc).await;
         Ok(EXIT_SUCCESS)
+    }
+}
+
+/// Stop the StateHub IPC server and give it a moment to remove its socket,
+/// pointer and token files, which it does as it ends; the process exits right
+/// after.
+#[cfg(unix)]
+async fn stop_hub_ipc(
+    (token, server): (
+        tokio_util::sync::CancellationToken,
+        Option<tokio::task::JoinHandle<()>>,
+    ),
+) {
+    token.cancel();
+    if let Some(server) = server {
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+    }
+}
+
+/// The build `serve.json` and `/health` report: this binary's commit and
+/// dirty flag from its build script.
+fn build_info() -> roko_serve::BuildInfo {
+    roko_serve::BuildInfo::from_build_script(env!("ROKO_GIT_HASH"), env!("ROKO_GIT_DIRTY"))
+}
+
+/// The signals that stop a foreground `roko serve`: SIGINT, SIGTERM, and
+/// SIGHUP unless it is ignored (as under `nohup`).
+struct ServeSignals {
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hangup: Option<tokio::signal::unix::Signal>,
+}
+
+impl ServeSignals {
+    #[cfg(unix)]
+    fn install() -> Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt()).context("install SIGINT handler")?,
+            terminate: signal(SignalKind::terminate()).context("install SIGTERM handler")?,
+            hangup: if roko_cli::cli_signals::hangup_ignored() {
+                None
+            } else {
+                Some(signal(SignalKind::hangup()).context("install SIGHUP handler")?)
+            },
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn install() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    /// The name of the next signal.
+    #[cfg(unix)]
+    async fn next(&mut self) -> &'static str {
+        let hangup = async {
+            match self.hangup.as_mut() {
+                Some(hangup) => hangup.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = self.interrupt.recv() => "SIGINT",
+            _ = self.terminate.recv() => "SIGTERM",
+            _ = hangup => "SIGHUP",
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn next(&mut self) -> &'static str {
+        let _ = tokio::signal::ctrl_c().await;
+        "SIGINT"
+    }
+}
+
+/// After a first signal began the shutdown, a second one ends the process at
+/// once, with its conventional status, after removing what this serve
+/// advertised.
+async fn exit_on_second_signal(mut signals: ServeSignals, workdir: PathBuf) {
+    let signal = signals.next().await;
+    tracing::warn!(signal, "second signal while shutting down; exiting now");
+    roko_serve::endpoint::remove_advertisement_if_owned(
+        &workdir,
+        roko_serve::endpoint::registry_dir().as_deref(),
+        std::process::id(),
+    );
+    let code = match signal {
+        "SIGHUP" => 129,
+        "SIGINT" => 130,
+        _ => 143,
+    };
+    std::process::exit(code);
+}
+
+/// `roko serve --detach`: start the workdir's server in the background, or
+/// report the one that runs, as a JSON object or short lines (gap-fb1594).
+pub(crate) async fn cmd_serve_detach(
+    cli: &Cli,
+    flags: ServeFlags,
+    json: bool,
+    wait: Option<u64>,
+) -> Result<i32> {
+    use roko_cli::serve_lifecycle::{DEFAULT_DETACH_WAIT, DetachOptions, detach};
+
+    let options = DetachOptions {
+        workdir: flags.workdir.unwrap_or_else(|| resolve_workdir(cli)),
+        port: flags.port,
+        port_fallback: false,
+        bind: flags.bind,
+        idle_exit_secs: flags.idle_exit,
+        enable_terminal: flags.enable_terminal,
+        config: cli
+            .config
+            .clone()
+            .map(|path| std::path::absolute(&path).unwrap_or(path)),
+        wait: wait.map_or(DEFAULT_DETACH_WAIT, Duration::from_secs),
+    };
+    let result = tokio::task::spawn_blocking(move || detach(&options))
+        .await
+        .context("join the detached start")?;
+    match result {
+        Ok(detached) => {
+            if json {
+                println!("{}", detached.to_json());
+            } else {
+                let served = &detached.endpoint;
+                let verb = if detached.started {
+                    "started roko serve"
+                } else {
+                    "roko serve runs"
+                };
+                println!(
+                    "{verb} for {} at {} (pid {})",
+                    served.workdir.display(),
+                    served.url,
+                    served.pid
+                );
+                println!("  log: {}", detached.log.display());
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        Err(error) => Ok(print_lifecycle_error(&error, json)),
+    }
+}
+
+/// Print a failed lifecycle command, as JSON on stdout or as lines on
+/// stderr, and return its exit status.
+fn print_lifecycle_error(error: &roko_cli::serve_lifecycle::LifecycleError, json: bool) -> i32 {
+    if json {
+        println!("{}", json!({"ok": false, "error": error.to_json()}));
+    } else {
+        eprintln!("error: {}", error.message);
+        if !error.log_tail.is_empty() {
+            eprintln!("  last lines of the serve log:");
+            for line in &error.log_tail {
+                eprintln!("    {line}");
+            }
+        }
+    }
+    error.code.exit_code()
+}
+
+/// `roko serve status|stop|restart` (gap-fb1594).
+pub(crate) async fn cmd_serve_action(cli: &Cli, action: ServeCmd) -> Result<i32> {
+    use roko_cli::serve_lifecycle as lifecycle;
+
+    let (workdir, all, json) = match &action {
+        ServeCmd::Status { workdir, all, json }
+        | ServeCmd::Stop {
+            workdir, all, json, ..
+        }
+        | ServeCmd::Restart {
+            workdir, all, json, ..
+        } => (workdir.clone(), *all, *json),
+    };
+    let targets = if all {
+        tokio::task::spawn_blocking(lifecycle::registry_workdirs)
+            .await
+            .context("read the serve registry")?
+    } else {
+        let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+        match lifecycle::canonical_workdir(&workdir) {
+            Ok(workdir) => vec![workdir],
+            Err(error) => return Ok(print_lifecycle_error(&error, json)),
+        }
+    };
+    tokio::task::spawn_blocking(move || match action {
+        ServeCmd::Status { .. } => serve_status(&targets, json),
+        ServeCmd::Stop { force, timeout, .. } => {
+            let outcomes: Vec<_> = targets
+                .into_iter()
+                .map(|workdir| {
+                    let outcome = lifecycle::stop(&workdir, force, Duration::from_secs(timeout));
+                    (workdir, outcome)
+                })
+                .collect();
+            let (report, code) = lifecycle::stop_report(&outcomes, all);
+            print_report(&report, json, &outcomes, describe_stop);
+            code
+        }
+        ServeCmd::Restart { force, .. } => {
+            let outcomes: Vec<_> = targets
+                .into_iter()
+                .map(|workdir| {
+                    let outcome =
+                        lifecycle::restart(&workdir, force, lifecycle::DEFAULT_DETACH_WAIT);
+                    (workdir, outcome)
+                })
+                .collect();
+            let (report, code) = lifecycle::restart_report(&outcomes, all);
+            print_report(&report, json, &outcomes, describe_restart);
+            code
+        }
+    })
+    .await
+    .context("join the serve command")
+}
+
+/// `roko serve status` over `targets`: exit 0 when each runs, 1 when one
+/// does not.
+fn serve_status(targets: &[PathBuf], json: bool) -> i32 {
+    use roko_cli::serve_lifecycle::{ServeState, status};
+
+    let statuses: Vec<_> = targets.iter().map(|workdir| status(workdir)).collect();
+    if json {
+        let serves: Vec<Value> = statuses.iter().map(|status| status.to_json()).collect();
+        println!("{}", json!({"ok": true, "serves": serves}));
+    } else if statuses.is_empty() {
+        println!("no roko serve runs on this machine");
+    } else {
+        for status in &statuses {
+            println!("{}", describe_status(status));
+        }
+    }
+    let all_running = statuses
+        .iter()
+        .all(|status| status.check.state == ServeState::Running);
+    if all_running {
+        EXIT_SUCCESS
+    } else {
+        EXIT_FAILURE
+    }
+}
+
+/// One line of `roko serve status`.
+fn describe_status(status: &roko_cli::serve_lifecycle::ServeStatus) -> String {
+    use roko_cli::serve_lifecycle::ServeState;
+
+    let workdir = status.check.workdir.display();
+    let Some(served) = status.check.endpoint.as_ref() else {
+        return format!("stopped       {workdir}");
+    };
+    match status.check.state {
+        ServeState::Running => {
+            let mut line = format!(
+                "running       {workdir}  {}  pid {}",
+                served.url, served.pid
+            );
+            if let Some(secs) = status.uptime_secs {
+                line.push_str(&format!("  up {}", format_uptime(secs)));
+            }
+            match status.active_runs {
+                Some(runs) => line.push_str(&format!("  runs {runs}")),
+                None => line.push_str("  runs ?"),
+            }
+            if status.outdated == Some(true) {
+                line.push_str("  outdated: its binary was replaced; `roko serve restart`");
+            }
+            line
+        }
+        ServeState::Stale if status.cleaned => format!(
+            "stale         {workdir}  pid {} is gone; removed the files it left",
+            served.pid
+        ),
+        ServeState::Stale => format!(
+            "stale         {workdir}  pid {} is gone; its files stay while another process \
+             holds the workspace",
+            served.pid
+        ),
+        ServeState::Unresponsive => format!(
+            "unresponsive  {workdir}  {}  pid {} holds the workspace, but /health does not answer",
+            served.url, served.pid
+        ),
+        ServeState::Stopped => format!("stopped       {workdir}"),
+    }
+}
+
+/// Print a stop or restart report as JSON, or as one line per workspace and
+/// the error, if any.
+fn print_report<T>(
+    report: &Value,
+    json: bool,
+    outcomes: &[(PathBuf, T)],
+    describe: fn(&Path, &T) -> String,
+) {
+    if json {
+        println!("{report}");
+        return;
+    }
+    for (workdir, outcome) in outcomes {
+        println!("{}", describe(workdir, outcome));
+    }
+    if let Some(message) = report["error"]["message"].as_str() {
+        eprintln!("error: {message}");
+    }
+}
+
+fn describe_stop(workdir: &Path, outcome: &roko_cli::serve_lifecycle::StopOutcome) -> String {
+    use roko_cli::serve_lifecycle::StopOutcome;
+
+    let workdir = workdir.display();
+    match outcome {
+        StopOutcome::Stopped { pid } => format!("stopped roko serve for {workdir} (pid {pid})"),
+        StopOutcome::NotRunning => format!("roko serve is not running for {workdir}"),
+        StopOutcome::Busy {
+            active_runs: Some(runs),
+        } => format!("left alone: {runs} run(s) going in {workdir} (--force stops them)"),
+        StopOutcome::Busy { active_runs: None } => {
+            format!("left alone: roko serve for {workdir} does not say its runs (--force)")
+        }
+        StopOutcome::Unresponsive { pid } => {
+            format!("left alone: roko serve for {workdir} (pid {pid}) does not answer")
+        }
+    }
+}
+
+fn describe_restart(workdir: &Path, outcome: &roko_cli::serve_lifecycle::RestartOutcome) -> String {
+    use roko_cli::serve_lifecycle::RestartOutcome;
+
+    match outcome {
+        RestartOutcome::Restarted {
+            detached,
+            moved_from,
+        } => {
+            let mut line = format!(
+                "restarted roko serve for {} at {} (pid {})",
+                workdir.display(),
+                detached.endpoint.url,
+                detached.endpoint.pid
+            );
+            // bug-10d745: a client that pinned the old URL has to follow it.
+            if let Some(old) = moved_from {
+                line.push_str(&format!(
+                    "\n  moved from port {old} to {}: port {old} did not come free",
+                    detached.endpoint.port
+                ));
+            }
+            line
+        }
+        RestartOutcome::Failed(error) => format!(
+            "stopped roko serve for {}, but it did not start again: {}",
+            workdir.display(),
+            error.message
+        ),
+        RestartOutcome::NotStopped(outcome) => describe_stop(workdir, outcome),
+    }
+}
+
+/// `3d 4h`, `2h 5m`, `7m 30s` or `12s`.
+fn format_uptime(secs: u64) -> String {
+    let (days, hours, minutes) = (secs / 86_400, secs / 3_600 % 24, secs / 60 % 60);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {}s", secs % 60)
+    } else {
+        format!("{secs}s")
     }
 }
 

@@ -68,6 +68,9 @@ pub struct SystemPromptBuilder {
     domain: Option<String>,
     /// Layer 3b: Relevant assembled context for the current task.
     context: Option<String>,
+    /// Layer 3b': the task's declared files, under the role's budget for
+    /// files (bug-a8a787).
+    file_context: Option<String>,
     /// Layer 3c: Active pheromone/context signals.
     pheromones: Vec<ContextChunk>,
     /// Layer 4: Task context — current task details.
@@ -106,6 +109,10 @@ struct SectionEffectivenessConfig {
     registry: SectionEffectivenessRegistry,
 }
 
+/// The heading of the declared-files section (bug-a8a787), which counts
+/// toward its budget.
+pub const FILE_CONTEXT_HEADING: &str = "## Declared Files\n";
+
 /// Normalize prompt text so logically-identical content yields identical bytes.
 #[must_use]
 pub fn normalize_for_caching(content: &str) -> String {
@@ -140,6 +147,7 @@ impl SystemPromptBuilder {
             conventions: None,
             domain: None,
             context: None,
+            file_context: None,
             pheromones: Vec::new(),
             task: None,
             gate_feedback: Vec::new(),
@@ -176,6 +184,16 @@ impl SystemPromptBuilder {
     #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(normalize_owned(context));
+        self
+    }
+
+    /// Set layer 3b': the contents of the files the task declares, already
+    /// fitted to the role's `file_context` budget (bug-a8a787). They follow
+    /// the relevant context in a section of their own, so a long read never
+    /// cuts the task's structured context.
+    #[must_use]
+    pub fn with_file_context(mut self, files: impl Into<String>) -> Self {
+        self.file_context = Some(normalize_owned(files));
         self
     }
 
@@ -602,6 +620,23 @@ impl SystemPromptBuilder {
             sections.push(section);
         }
 
+        // Layer 3b': the task's declared files (bug-a8a787), under the role's
+        // budget for files. Critical, as the relevant context is: the task
+        // was written to read them.
+        if let Some(ref files) = self.file_context
+            && !files.is_empty()
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("file_context", format!("{FILE_CONTEXT_HEADING}{files}"))
+                    .with_priority(
+                        self.effective_priority("file_context", SectionPriority::Critical),
+                    )
+                    .with_cache_layer(CacheLayer::Workspace)
+                    .with_placement(Placement::Middle),
+            )
+        {
+            sections.push(section);
+        }
+
         // Layer 3c: Active pheromone signals
         if let Some(pheromones) = self.pheromone_section() {
             sections.push(pheromones);
@@ -912,6 +947,7 @@ impl SystemPromptBuilder {
             "conventions" | "tool_instructions" | "anti_patterns" => Some(budget.instructions),
             "domain_context" | "pheromone_signals" => Some(budget.context),
             "context_layer" | "gate_feedback" => Some(budget.runner_context),
+            "file_context" => Some(budget.file_context),
             "relevant_techniques" | "tool_hints" => Some(budget.skills),
             "role_identity" | "agents_instructions" => {
                 Some(budget.plan.max(budget.instructions).min(8_000))
@@ -1341,6 +1377,13 @@ const SECTION_SPECS: &[SectionSpec] = &[
     },
     SectionSpec {
         name: "context_layer",
+        order_rank: 4,
+        heading: None,
+    },
+    // bug-a8a787: right after the relevant context (its name sorts after
+    // `context_layer` at the same rank); its content carries its heading.
+    SectionSpec {
+        name: "file_context",
         order_rank: 4,
         heading: None,
     },
@@ -2309,5 +2352,42 @@ mod tests {
         assert!(prompt.contains("ROLE"));
         assert!(prompt.contains("## Current Task"));
         assert!(!prompt.contains("remaining budget"));
+    }
+
+    /// bug-a8a787: the task's declared files follow the relevant context in a
+    /// section of their own, under the role's budget for files. Files longer
+    /// than the relevant context's cap arrive whole, and the relevant context
+    /// is not cut for them.
+    #[test]
+    fn declared_files_follow_the_relevant_context_under_their_own_budget() {
+        let budget = crate::templates::common::budget_for(AgentRole::Implementer);
+        // More than the relevant context may hold, less than the files may.
+        let files = format!("{}END", "x".repeat(budget.runner_context * 4));
+        let sections = SystemPromptBuilder::new("ROLE")
+            .with_budget_profile(budget)
+            .with_context("# Files in scope\n- `plugin/ui/UnitArray.h`")
+            .with_file_context(files.clone())
+            .with_task("Build the unit array")
+            .build_sections();
+        let at = |name: &str| {
+            sections
+                .iter()
+                .position(|section| section.name == name)
+                .unwrap_or_else(|| panic!("no {name} section"))
+        };
+        assert_eq!(at("file_context"), at("context_layer") + 1);
+        let file_section = sections[at("file_context")].clone();
+        assert_eq!(file_section.hard_cap, Some(budget.file_context));
+        assert_eq!(file_section.priority, SectionPriority::Critical);
+        let shown = file_section.enforce_hard_cap();
+        assert!(
+            shown.content.starts_with(FILE_CONTEXT_HEADING),
+            "{}",
+            &shown.content[..40]
+        );
+        assert!(shown.content.ends_with("END"), "the files are not cut");
+        let context = sections[at("context_layer")].clone().enforce_hard_cap();
+        assert!(context.content.contains("UnitArray.h"));
+        assert!(!context.content.contains("truncated"));
     }
 }

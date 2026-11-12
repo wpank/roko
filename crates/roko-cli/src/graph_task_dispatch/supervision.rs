@@ -1277,10 +1277,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-h","model":"claude-sonnet-4-6
     async fn gate_advice_never_cancels_a_ladder_escalation() {
         const CHEAP: &str = "claude-haiku-4-5";
         const TOP: &str = "claude-sonnet-4-6";
-        let rung = |name: &str, model: &str| roko_core::config::routing::LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        };
+        let rung =
+            |name: &str, model: &str| roko_core::config::routing::LadderRung::new(name, model);
         let temp = tempfile::tempdir().expect("tempdir");
         let helper = temp.path().join("helper.sh");
         std::fs::write(&helper, VERIFY_PROVIDER).expect("write the helper provider");

@@ -12,8 +12,8 @@
 //!
 //! An empty stratum therefore backs off to its parent. L0 gives the cold-start forecast and
 //! L1's offset. The special functions behind `BetaQ` ([`ln_gamma`], [`reg_inc_beta`],
-//! [`beta_quantile`]) and [`normal_quantile`] are public, for the cost model's Student-t
-//! quantiles and L1's lower bound.
+//! [`beta_quantile`]), [`normal_quantile`] and [`normal_cdf`] are public, for the cost model's
+//! Student-t quantiles, L1's lower bound and a plan run's time-left estimate (gap-c1045f).
 
 use std::collections::BTreeMap;
 
@@ -244,6 +244,13 @@ pub fn beta_quantile(p: f64, a: f64, b: f64) -> f64 {
     low + 0.5 * (high - low)
 }
 
+/// The standard normal distribution function Φ(x), from the Abramowitz and Stegun erfc the
+/// prompt experiments use (accurate to about 1e-7).
+#[must_use]
+pub fn normal_cdf(x: f64) -> f64 {
+    0.5 * crate::prompt_experiment::erfc(-x / std::f64::consts::SQRT_2)
+}
+
 /// The standard normal quantile Φ⁻¹(p) (Acklam's rational approximation, accurate to about
 /// 1e-9).
 pub fn normal_quantile(p: f64) -> f64 {
@@ -360,6 +367,9 @@ mod tests {
         }
         assert!((normal_quantile(0.8) - 0.841_621_233_572_914).abs() < 1e-8);
         assert!((normal_quantile(0.025) + 1.959_963_984_540_05).abs() < 1e-8);
+        for p in [0.025, 0.2, 0.5, 0.8, 0.975] {
+            assert!((normal_cdf(normal_quantile(p)) - p).abs() < 1e-6, "{p}");
+        }
         assert!((ln_gamma(5.0) - 24.0_f64.ln()).abs() < 1e-12);
     }
 

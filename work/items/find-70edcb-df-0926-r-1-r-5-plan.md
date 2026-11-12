@@ -8,9 +8,9 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-26
-updated = 2026-10-15
-last_verified = 2026-10-01
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#R-1. Plan 01 shipped a regression its own gate could not see"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#R-1. Plan 01 shipped a regression its own gate could not see"
 anchors = ["crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/plan_generate.rs:353"]
@@ -50,3 +50,5 @@ pipes, redirects or captures its test runner's output (the failure then explains
 decision it moves no target: the same change made the active plans PLAN_050-free (demo-greeting-module,
 workspace-doctor-improvements; checked with the plan-validate CI job's discovery, 35 plans). The cannot-fail and
 file-scoped cases this item holds are unchanged.
+
+Checked 2026-10-27: 2026-10-26 sweep: plan-validate CI still does not run --strict, so the hold's precondition is still unmet; the cannot-fail default warning from the 2026-10-15 decision has not been added (PLAN_052 is an unrelated, already-existing rule).

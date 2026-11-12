@@ -1,0 +1,119 @@
+[meta]
+plan = "p4-3-the-editor-s-finish"
+total = 2
+done = 0
+status = "ready"
+dropped_checks = [
+  "SC9: Phase 4.2's layout regression is not a task-specific change in this phase; it is covered by the plan's final check `tools/check.sh --plugin`.",
+  "SC10: Phase 4 frame/control regression is not a task-specific change in this phase; it is covered by the plan's final check `tools/check.sh --plugin`.",
+  "SC11: The panel display regression is not a task-specific change in this phase; it is covered by the plan's final check `tools/check.sh --plugin`.",
+  "SC12: The unit-array regression is not a task-specific change in this phase; it is covered by the plan's final check `tools/check.sh --plugin`.",
+  "SC15: The hazard-stripes regression is not a task-specific change in this phase; it is covered by the plan's final check `tools/check.sh --plugin`.",
+]
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+
+[[task]]
+id = "T1"
+title = "Fit the limb panels to the mock"
+description = "Assumption: the existing panel set stays unchanged except for row geometry in plugin/ui/Theme.h. Adjust the limb-panel cell positions so the controls and labels satisfy the panels review checks and match the mock placements for OSC/01, FILTER/02, ENV/03, RUMBLE/04, and MOD/05."
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 50
+files = ["plugin/ui/Theme.h"]
+depends_on = []
+goal = "The limb panels in Theme.h place every control and label in the documented rows and columns."
+non_goals = [
+  "Do not change any API.",
+  "Do not edit Status, Displays, PluginEditor, or any tests in this task.",
+  "Do not add or remove controls.",
+]
+open_questions = []
+
+[task.context]
+read_files = [
+  { path = "docs/specs/phase-4.3-finish.md", lines = "1-220", why = "This is the phase spec and it defines the row centres, panel constraints, and acceptance checks for the panel geometry." },
+  { path = "plugin/ui/Theme.h", lines = "1-260", why = "This file contains the current limb panel geometry and control placement to adjust." },
+  { path = "plugin/PluginEditor.cpp", lines = "1-260", why = "This file uses the panel geometry to place controls and labels, so the task must preserve its expectations." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_3 panels"
+covers = ["SC1", "SC2", "SC3", "SC4"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_2 layout"
+covers = ["SC9"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 editor"
+covers = ["SC10"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.05*'"
+covers = ["SC11"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 steps"
+covers = ["SC12"]
+expect = "pass_on_base"
+
+[[task]]
+id = "T2"
+title = "Repair the status head, clip bands, number, and pump field"
+description = "Assumption: the phase-4 editor API remains unchanged. Update the status header, clipping bands, readout layout, and rumble pump display in the UI files so the finish review checks pass and the review images can be regenerated."
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 150
+files = ["plugin/ui/Status.h", "plugin/ui/Status.cpp", "plugin/ui/Displays.cpp", "plugin/PluginEditor.cpp"]
+depends_on = ["T1"]
+goal = "The editor finish in Status.cpp, Displays.cpp, and PluginEditor.cpp draws the exact words, clip bands, number layout, and rumble pump field required by the finish checks."
+non_goals = [
+  "Do not change any API.",
+  "Do not change the panel geometry owned by Theme.h.",
+  "Do not edit any tests.",
+]
+open_questions = []
+
+[task.context]
+read_files = [
+  { path = "docs/specs/phase-4.3-finish.md", lines = "1-220", why = "This phase spec defines the exact status text, clip bands, number layout, pump field, and image-refresh requirements." },
+  { path = "plugin/ui/Status.h", lines = "1-200", why = "This header defines the status painter interface and any state it maintains." },
+  { path = "plugin/ui/Status.cpp", lines = "1-260", why = "This file contains the current head, lamp, and clipping-band rendering to correct." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_3 finish"
+covers = ["SC5", "SC6", "SC7", "SC8"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4_2 head"
+covers = ["SC13"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'"
+covers = ["SC14"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 budget"
+covers = ["SC16"]
+expect = "pass_on_base"

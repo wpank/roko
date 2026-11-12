@@ -31,14 +31,14 @@ use crate::provider::{
     build_provider_tool_dispatcher, tool_limit_for_temperament,
     tool_loop_max_iterations_for_options, with_tool_observability,
 };
-use crate::tool_loop::backends::create_openai_compat_backend;
+use crate::tool_loop::backends::create_observed_openai_compat_backend;
 use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
 use crate::translate::Translator;
 use crate::translate::capability::{cap_tools_for_profile, translator_for_openai_compat};
-use roko_core::agent::ProviderKind;
+use roko_core::agent::{ProviderKind, ReasoningEffort};
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
-use roko_core::config::schema::{ModelProfile, ProviderConfig};
+use roko_core::config::schema::{ModelProfile, OpenAiApi, ProviderConfig};
 use roko_core::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 use roko_core::tool::aliases::canonical_of_claude;
 use roko_core::tool::{ToolDef, ToolRegistry, ToolSource, VecToolRegistry};
@@ -205,16 +205,179 @@ pub(crate) fn base_url_for_tool_loop(provider: &ProviderConfig) -> String {
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
 }
 
+/// The endpoint the rate limiter OpenAI-compatible backends share
+/// ([`shared_rate_limiter`]) keys `provider`'s calls by when roko's tool loop
+/// calls it, to learn from its rate limits how many it takes at once
+/// (bug-4b6844, bug-62ae1e): its chat completions URL. `None` for a provider
+/// no such backend calls.
+///
+/// [`shared_rate_limiter`]: crate::openai_compat_backend::shared_rate_limiter
+#[must_use]
+pub fn rate_limit_endpoint(provider: &ProviderConfig) -> Option<String> {
+    // Each kind's base URL as `create_openai_compat_backend` defaults it.
+    let default = match provider.kind {
+        ProviderKind::OpenAiCompat | ProviderKind::Hermes | ProviderKind::OpenClaw => {
+            "https://api.openai.com/v1"
+        }
+        ProviderKind::PerplexityApi => "https://api.perplexity.ai",
+        ProviderKind::CerebrasApi => "https://api.cerebras.ai/v1",
+        _ => return None,
+    };
+    let base_url = provider.base_url.as_deref().unwrap_or(default);
+    Some(crate::openai_compat_backend::chat_endpoint(base_url))
+}
+
+/// The process's own calls in flight to `provider` from roko's tool loop,
+/// while a rate limit it answered says how many it takes at once
+/// ([`ProviderRateLimiter::own_calls`] on the limiter its backends share);
+/// `None` when none is, or no such limit holds (bug-62ae1e).
+///
+/// [`ProviderRateLimiter::own_calls`]: crate::rate_limit::ProviderRateLimiter::own_calls
+#[must_use]
+pub fn own_calls(provider: &ProviderConfig) -> Option<crate::rate_limit::OwnCalls> {
+    crate::openai_compat_backend::shared_rate_limiter().own_calls(&rate_limit_endpoint(provider)?)
+}
+
 pub(crate) fn build_extra_body_params(
     provider: &ProviderConfig,
     model: &ModelProfile,
 ) -> Map<String, Value> {
     let mut extra_body_params = Map::new();
     inject_sampling_params(&mut extra_body_params, provider, model);
+    inject_reasoning_effort(&mut extra_body_params, model);
     inject_glm_params(&mut extra_body_params, provider, model);
     inject_kimi_params(&mut extra_body_params, model);
     inject_provider_routing(&mut extra_body_params, provider, model);
     extra_body_params
+}
+
+/// Whether `slug` is an OpenAI reasoning model, which takes
+/// `reasoning_effort`: the GPT-5 family and the o-series (bug-29014c). Their
+/// chat variants (`gpt-5-chat-latest`) and the first o1 previews (`o1-mini`,
+/// `o1-preview`) take no effort, so they are left out.
+fn is_openai_reasoning_model(slug: &str) -> bool {
+    const PREFIXES: &[&str] = &["gpt-5", "o1", "o3", "o4"];
+    const WITHOUT_EFFORT: &[&str] = &["o1-mini", "o1-preview"];
+    PREFIXES.iter().any(|prefix| slug.starts_with(prefix))
+        && !slug.contains("-chat")
+        && !WITHOUT_EFFORT.iter().any(|prefix| slug.starts_with(prefix))
+}
+
+/// The request-body key of an OpenAI reasoning model's effort (bug-29014c).
+pub(crate) const REASONING_EFFORT: &str = "reasoning_effort";
+
+/// The `reasoning_effort` `model`'s requests carry: its effort, when it is an
+/// OpenAI reasoning model (bug-29014c). `max` sends `high`, the most every
+/// one of them takes.
+fn reasoning_effort_param(model: &ModelProfile) -> Option<&'static str> {
+    if !is_openai_reasoning_model(&model.slug) {
+        return None;
+    }
+    match model.reasoning_effort? {
+        ReasoningEffort::Low => Some("low"),
+        ReasoningEffort::Medium => Some("medium"),
+        ReasoningEffort::High | ReasoningEffort::Max => Some("high"),
+        _ => None,
+    }
+}
+
+/// The profile's reasoning effort, for an OpenAI reasoning model
+/// (bug-29014c). Without it the API's default applies, and the GPT-5.4
+/// family then reported no reasoning tokens at all. A request that carries
+/// function tools leaves it out (`OpenAiCompatLlmBackend::build_body`): chat
+/// completions refuses the two together for that family.
+fn inject_reasoning_effort(body: &mut Map<String, Value>, model: &ModelProfile) {
+    if let Some(effort) = reasoning_effort_param(model) {
+        body.insert(REASONING_EFFORT.to_string(), Value::from(effort));
+    }
+}
+
+/// The `reasoning_effort` roko sends with each request to `model` on
+/// `provider`, for an attempt's record (bug-29014c). On the Responses API it
+/// goes with every request (gap-1ba0ac). On chat completions it is `none`
+/// for a model that calls tools: its requests carry function tools, so they
+/// carry no effort and the API's default applies. `None` when no effort
+/// applies at all: to a model that is no OpenAI reasoning model, or to a
+/// provider other than the OpenAI-compatible and Cerebras ones.
+#[must_use]
+pub fn request_reasoning_effort(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+) -> Option<&'static str> {
+    request_reasoning_effort_on(provider, model, openai_wire(provider, model))
+}
+
+/// [`request_reasoning_effort`], for requests that go through `wire`.
+fn request_reasoning_effort_on(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    wire: OpenAiApi,
+) -> Option<&'static str> {
+    if !matches!(
+        provider.kind,
+        ProviderKind::OpenAiCompat | ProviderKind::CerebrasApi
+    ) || !is_openai_reasoning_model(&model.slug)
+    {
+        return None;
+    }
+    if model.supports_tools && wire == OpenAiApi::ChatCompletions {
+        return Some("none");
+    }
+    reasoning_effort_param(model)
+}
+
+/// The environment variable that turns the Responses API off for every
+/// model: `0` (or `false`, `no`, `off`) calls each through chat completions
+/// whatever its `[models.*] api` says (gap-1ba0ac).
+pub const OPENAI_RESPONSES_ENV: &str = "ROKO_OPENAI_RESPONSES";
+
+/// The OpenAI API roko's tool loop calls `model` on `provider` through
+/// (gap-1ba0ac): the model's own `api`, else the Responses API for an OpenAI
+/// reasoning model on OpenAI's own endpoint, the only API where it reasons
+/// beside function tools, else chat completions. [`OPENAI_RESPONSES_ENV`]
+/// set to `0` turns the Responses API off for every model.
+#[must_use]
+pub fn openai_wire(provider: &ProviderConfig, model: &ModelProfile) -> OpenAiApi {
+    let disabled = std::env::var(OPENAI_RESPONSES_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    });
+    openai_wire_unless(provider, model, disabled)
+}
+
+/// [`openai_wire`], with the Responses API turned off when `disabled`.
+fn openai_wire_unless(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    disabled: bool,
+) -> OpenAiApi {
+    if disabled || provider.kind != ProviderKind::OpenAiCompat {
+        return OpenAiApi::ChatCompletions;
+    }
+    if let Some(api) = model.api {
+        return api;
+    }
+    if is_openai_reasoning_model(&model.slug) && is_openai_endpoint(provider) {
+        OpenAiApi::Responses
+    } else {
+        OpenAiApi::ChatCompletions
+    }
+}
+
+/// Whether `provider` calls OpenAI's own API: no `base_url`, which defaults
+/// to it, or one on `api.openai.com`.
+fn is_openai_endpoint(provider: &ProviderConfig) -> bool {
+    provider.base_url.as_deref().is_none_or(|base_url| {
+        let host = base_url
+            .split_once("://")
+            .map_or(base_url, |(_, rest)| rest)
+            .split(['/', ':'])
+            .next()
+            .unwrap_or_default();
+        host.eq_ignore_ascii_case("api.openai.com")
+    })
 }
 
 /// The request-body keys that set sampling.
@@ -503,7 +666,13 @@ pub(crate) fn tool_registry_for_options(
         .partition(|tool| !matches!(&tool.source, roko_core::tool::ToolSource::Builtin));
     plugin_tools.extend(runtime_tools);
     plugin_tools.extend(builtin_tools);
-    let mut tools = cap_tools_for_profile(model, plugin_tools);
+    // The caller's essential tools go first, so the cap keeps them
+    // (gap-770cb5).
+    let (mut ordered, rest): (Vec<_>, Vec<_>) = plugin_tools
+        .into_iter()
+        .partition(|tool| options.essential_tools.contains(&tool.name));
+    ordered.extend(rest);
+    let mut tools = cap_tools_for_profile(model, ordered);
     tools.truncate(tool_limit_for_temperament(tools.len()));
 
     let resolver = mcp_runtime.map_or(static_resolver.clone(), |runtime| {
@@ -560,7 +729,12 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
             let poster = Arc::new(ReqwestPoster::new());
-            let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
+            let backend = create_observed_openai_compat_backend(
+                &tool_loop_provider,
+                model,
+                poster,
+                options.live_output.clone(),
+            )?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
                 .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
@@ -569,8 +743,12 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 )
                 // Priced as its provider bills it (find-c3da60).
                 .with_model_profile(model.clone().with_provider_cache_rate(provider))
+                // A streamed call waits its provider's `timeout_ms` for a
+                // response, not the attempt's timeout (bug-5e597a).
+                .with_request_timeout_ms(provider.timeout_ms)
                 .with_optional_data_llm(options.data_llm.clone())
-                .with_optional_turn_budget(options.turn_budget.clone());
+                .with_optional_turn_budget(options.turn_budget.clone())
+                .with_optional_hand_off_check(options.hand_off_check.clone());
 
             let mut agent = ToolLoopAgent::new(tool_loop)
                 .with_tools(tools)
@@ -683,6 +861,36 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    /// bug-33a61f: the rate limiter keys a provider's calls by the chat
+    /// endpoint its backend calls, each kind's default base URL included, and
+    /// keys none for a provider no OpenAI-compatible backend calls.
+    #[test]
+    fn rate_limit_endpoint_is_the_chat_endpoint_its_backend_calls() {
+        let provider = |kind, base_url: Option<&str>| ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            ..ProviderConfig::default()
+        };
+        let endpoint = |kind, base_url| rate_limit_endpoint(&provider(kind, base_url));
+        assert_eq!(
+            endpoint(
+                ProviderKind::OpenAiCompat,
+                Some("https://api.z.ai/api/paas/v4/")
+            )
+            .as_deref(),
+            Some("https://api.z.ai/api/paas/v4/chat/completions")
+        );
+        assert_eq!(
+            endpoint(ProviderKind::CerebrasApi, None).as_deref(),
+            Some("https://api.cerebras.ai/v1/chat/completions")
+        );
+        assert_eq!(
+            endpoint(ProviderKind::PerplexityApi, None).as_deref(),
+            Some("https://api.perplexity.ai/chat/completions")
+        );
+        assert_eq!(endpoint(ProviderKind::ClaudeCli, None), None);
     }
 
     fn spawn_chat_server(
@@ -1890,6 +2098,31 @@ done
         assert!(error.to_string().contains("pre_discovered_mcp_runtime"));
     }
 
+    /// gap-770cb5: a model offered few tools (GLM's eight) keeps the ones
+    /// the caller marks essential: an attempt with checks keeps `run_tests`.
+    #[test]
+    fn a_capped_model_keeps_the_essential_tools() {
+        let glm = ModelProfile {
+            slug: "glm-4.7".to_string(),
+            ..ModelProfile::default()
+        };
+        let names = |options: &AgentOptions| -> Vec<String> {
+            let (_, tools, _) = tool_registry_for_options(&glm, options).expect("catalog");
+            tools.into_iter().map(|tool| tool.name).collect()
+        };
+
+        let plain = names(&AgentOptions::default());
+        assert_eq!(plain.len(), 8, "{plain:?}");
+        assert!(!plain.iter().any(|name| name == "run_tests"), "{plain:?}");
+
+        let with_checks = names(&AgentOptions {
+            essential_tools: vec!["run_tests".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(with_checks.len(), 8, "{with_checks:?}");
+        assert_eq!(with_checks[0], "run_tests", "{with_checks:?}");
+    }
+
     #[test]
     fn no_mcp_runtime_omits_definition_only_static_mcp_tools() {
         let (_, tools, resolver) =
@@ -2313,6 +2546,190 @@ done
         assert!(request_sampling(&anthropic, &sampled).is_empty());
     }
 
+    /// bug-29014c: the GPT-5 family and the o-series take roko's effort as
+    /// `reasoning_effort`, `max` as `high`; their chat variants, the first o1
+    /// previews and other models take none, and a record names what was sent:
+    /// `none` for a model whose requests carry function tools.
+    #[test]
+    fn openai_reasoning_models_take_the_profile_effort() {
+        let at = |slug: &str, effort| ModelProfile {
+            slug: slug.to_string(),
+            reasoning_effort: Some(effort),
+            ..ModelProfile::default()
+        };
+        let sent = |model: &ModelProfile| {
+            build_extra_body_params(&ProviderConfig::default(), model)
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        for slug in [
+            "gpt-5",
+            "gpt-5.4-mini",
+            "gpt-5.4-2026-03-05",
+            "o1",
+            "o3-mini",
+            "o4-mini",
+        ] {
+            assert_eq!(
+                sent(&at(slug, ReasoningEffort::Low)).as_deref(),
+                Some("low")
+            );
+            assert_eq!(
+                sent(&at(slug, ReasoningEffort::Medium)).as_deref(),
+                Some("medium")
+            );
+            assert_eq!(
+                sent(&at(slug, ReasoningEffort::High)).as_deref(),
+                Some("high")
+            );
+            assert_eq!(
+                sent(&at(slug, ReasoningEffort::Max)).as_deref(),
+                Some("high")
+            );
+        }
+        for slug in [
+            "gpt-5-chat-latest",
+            "gpt-5.1-chat-latest",
+            "o1-mini",
+            "o1-preview",
+            "gpt-4o",
+            "glm-4.7",
+            "gpt-oss-120b",
+            "openai/gpt-5",
+        ] {
+            assert_eq!(sent(&at(slug, ReasoningEffort::High)), None, "{slug}");
+        }
+        let unset = ModelProfile {
+            slug: "gpt-5.4".to_string(),
+            ..ModelProfile::default()
+        };
+        assert_eq!(sent(&unset), None);
+        assert_eq!(
+            sent(&unset.clone().with_reasoning_effort_or(" Medium ")).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(sent(&unset.clone().with_reasoning_effort_or("xhigh")), None);
+        assert_eq!(
+            sent(&at("gpt-5.4", ReasoningEffort::Low).with_reasoning_effort_or("high")).as_deref(),
+            Some("low")
+        );
+
+        let provider = |kind| ProviderConfig {
+            kind,
+            ..ProviderConfig::default()
+        };
+        let compat = provider(ProviderKind::OpenAiCompat);
+        let high = at("gpt-5.4", ReasoningEffort::High);
+        assert_eq!(request_reasoning_effort(&compat, &high), Some("high"));
+        // A model that calls tools sends function tools with each request:
+        // through chat completions they go without an effort, and the
+        // Responses API takes both (gap-1ba0ac).
+        let calls_tools = ModelProfile {
+            supports_tools: true,
+            ..high.clone()
+        };
+        assert_eq!(
+            request_reasoning_effort_on(&compat, &calls_tools, OpenAiApi::ChatCompletions),
+            Some("none")
+        );
+        assert_eq!(
+            request_reasoning_effort_on(&compat, &calls_tools, OpenAiApi::Responses),
+            Some("high")
+        );
+        let local = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9/v1".to_string()),
+            ..compat.clone()
+        };
+        assert_eq!(request_reasoning_effort(&local, &calls_tools), Some("none"));
+        let glm = ModelProfile {
+            slug: "glm-4.7".to_string(),
+            ..calls_tools
+        };
+        assert_eq!(request_reasoning_effort(&compat, &glm), None);
+        assert_eq!(
+            request_reasoning_effort(&provider(ProviderKind::CodexCli), &high),
+            None
+        );
+    }
+
+    /// gap-1ba0ac: roko's tool loop calls an OpenAI reasoning model on
+    /// OpenAI's own endpoint through the Responses API, where it reasons
+    /// beside its tools, and any other model or endpoint through chat
+    /// completions. A model's own `api` wins, and the kill switch sends every
+    /// model through chat completions.
+    #[test]
+    fn openai_reasoning_models_on_openai_take_the_responses_api() {
+        let model = |slug: &str, api| ModelProfile {
+            slug: slug.to_string(),
+            supports_tools: true,
+            api,
+            ..ModelProfile::default()
+        };
+        let provider = |kind, base_url: Option<&str>| ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            ..ProviderConfig::default()
+        };
+        let wire = |provider: &ProviderConfig, model: &ModelProfile| {
+            openai_wire_unless(provider, model, false)
+        };
+        let openai = provider(ProviderKind::OpenAiCompat, None);
+        let mini = model("gpt-5.4-mini", None);
+
+        assert_eq!(wire(&openai, &mini), OpenAiApi::Responses);
+        assert_eq!(wire(&openai, &model("o4-mini", None)), OpenAiApi::Responses);
+        for base_url in [
+            "https://api.openai.com/v1",
+            "https://API.OpenAI.com:443/v1/",
+        ] {
+            let named = provider(ProviderKind::OpenAiCompat, Some(base_url));
+            assert_eq!(wire(&named, &mini), OpenAiApi::Responses, "{base_url}");
+        }
+        for slug in ["gpt-4o", "gpt-5-chat-latest", "glm-4.7"] {
+            assert_eq!(
+                wire(&openai, &model(slug, None)),
+                OpenAiApi::ChatCompletions,
+                "{slug}"
+            );
+        }
+        for base_url in [
+            "http://127.0.0.1:18753/v1",
+            "https://api.openai.com.example.net/v1",
+            "https://openrouter.ai/api/v1",
+        ] {
+            let elsewhere = provider(ProviderKind::OpenAiCompat, Some(base_url));
+            assert_eq!(
+                wire(&elsewhere, &mini),
+                OpenAiApi::ChatCompletions,
+                "{base_url}"
+            );
+        }
+        for kind in [ProviderKind::Hermes, ProviderKind::CerebrasApi] {
+            assert_eq!(
+                wire(&provider(kind, None), &mini),
+                OpenAiApi::ChatCompletions
+            );
+        }
+
+        // A model's own `api` wins, either way.
+        let local = provider(ProviderKind::OpenAiCompat, Some("http://127.0.0.1:9/v1"));
+        let responses = model("gpt-5.4-mini", Some(OpenAiApi::Responses));
+        let chat = model("gpt-5.4-mini", Some(OpenAiApi::ChatCompletions));
+        assert_eq!(wire(&local, &responses), OpenAiApi::Responses);
+        assert_eq!(wire(&openai, &chat), OpenAiApi::ChatCompletions);
+
+        // The kill switch sends every model through chat completions.
+        assert_eq!(
+            openai_wire_unless(&openai, &mini, true),
+            OpenAiApi::ChatCompletions
+        );
+        assert_eq!(
+            openai_wire_unless(&local, &responses, true),
+            OpenAiApi::ChatCompletions
+        );
+    }
+
     #[test]
     fn classify_error_maps_retry_after_and_auth() {
         let adapter = OpenAiCompatAdapter;
@@ -2436,5 +2853,130 @@ done
     #[test]
     fn parse_allowed_tools_csv_empty_string_returns_none() {
         assert!(parse_allowed_tools_csv(Some("")).is_none());
+    }
+
+    /// A chat server that reads one request, holds its response headers for
+    /// `hold`, as a reasoning model can (Z.ai's glm-4.7), then streams the
+    /// answer "ok". A client that gave up meanwhile is no error.
+    fn spawn_late_sse_server(hold: Duration) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set read timeout");
+            let mut buf = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                });
+                if length.is_none_or(|length| body.len() >= length) {
+                    break;
+                }
+            }
+            thread::sleep(hold);
+            let events = [
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}"#,
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+                r#"{"id":"c1","object":"chat.completion.chunk","model":"glm-4.7","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}"#,
+                "[DONE]",
+            ];
+            let mut wire = String::from(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            for event in events {
+                wire.push_str(&format!("data: {event}\n\n"));
+            }
+            let _ = stream.write_all(wire.as_bytes());
+            let _ = stream.flush();
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// bug-5e597a: a streamed call waits for its response as long as its
+    /// provider's `timeout_ms` says, not 120 s whatever it says, and not
+    /// the attempt's own timeout (`AgentOptions::timeout_ms`). Phase 3's
+    /// glm-4.7 calls held their response past 120 s with `timeout_ms =
+    /// 300000` set, and two tries were lost.
+    #[tokio::test]
+    async fn a_providers_timeout_ms_bounds_a_streamed_calls_wait_for_its_response() {
+        let provider = |base_url: &str, timeout_ms: u64| ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(format!("{base_url}/v1")),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(timeout_ms),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+            stream_usage: None,
+            billing: None,
+        };
+        // Its own provider id: the process-wide rate limiter is shared.
+        let model = ModelProfile {
+            provider: "late-reasoner".to_string(),
+            slug: "glm-4.7".to_string(),
+            context_window: 128_000,
+            max_output: Some(1_024),
+            supports_tools: true,
+            tool_format: "openai_json".to_string(),
+            ..Default::default()
+        };
+        // An attempt's timeout, much longer than the provider's.
+        let options = AgentOptions {
+            timeout_ms: Some(60_000),
+            ..AgentOptions::default()
+        };
+        let streamed = |base_url: String, timeout_ms: u64| {
+            let agent = OpenAiCompatAdapter
+                .create_agent(&provider(&base_url, timeout_ms), &model, &options)
+                .expect("create tool-loop agent");
+            async move {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let started = std::time::Instant::now();
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                (result, started.elapsed())
+            }
+        };
+
+        // The response comes after 1.5 s; the provider waits 0.4 s for it.
+        let (base_url, server) = spawn_late_sse_server(Duration::from_millis(1_500));
+        let (result, took) = streamed(base_url, 400).await;
+        let text = result.output.body.as_text().unwrap_or_default().to_string();
+        assert!(!result.success, "{text}");
+        assert!(text.contains("no response within 400ms"), "{text}");
+        assert!(took < Duration::from_millis(1_400), "it waited {took:?}");
+        server.join().expect("server thread");
+
+        // The provider waits 5 s: the late response is the answer.
+        let (base_url, server) = spawn_late_sse_server(Duration::from_millis(600));
+        let (result, took) = streamed(base_url, 5_000).await;
+        let text = result.output.body.as_text().unwrap_or_default().to_string();
+        assert!(result.success, "{text}");
+        assert_eq!(text, "ok");
+        assert!(took >= Duration::from_millis(600), "it took {took:?}");
+        server.join().expect("server thread");
     }
 }

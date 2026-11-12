@@ -20,10 +20,12 @@ use assert_cmd::cargo::cargo_bin;
 use serde_json::Value;
 
 /// A provider that writes `feature.txt` in its working directory, the
-/// attempt's worktree, and reports success.
+/// attempt's worktree, and reports success. It notes each working directory
+/// in `provider-cwds`, beside itself.
 const WRITES_FEATURE: &str = r#"#!/bin/sh
 set -eu
 cat >/dev/null
+pwd -P >> "$(dirname -- "$0")/provider-cwds"
 printf 'feature\n' > feature.txt
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
 printf '%s\n' '{"type":"result","session_id":"proof","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
@@ -47,24 +49,50 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-/// A repository on `main` with `provider` as its only model, a one-task plan
-/// `proof` whose task must pass `verify`, and a `release` branch for the run
-/// to be promoted into. Returns the base commit.
-fn seed_repo(repo: &Path, provider: &Path, verify: &str) -> String {
+/// What serves a run's calls that are not the task's own: the helper calls
+/// after a failed verify step (`cheap-factory-agent`: error enrichment, gate
+/// reflections, the judge) and the background calls on `[agent]
+/// default_model`.
+#[derive(Clone, Copy)]
+enum Helpers {
+    /// A second model, `helper`, on the mock agent, which writes nothing;
+    /// the task names its own model, `fake` (`model_hint`).
+    Mock,
+    /// The task's provider: `fake` is the only model.
+    TaskProvider,
+}
+
+/// A repository on `main` with `provider` as the task's model, a one-task
+/// plan `proof` whose task must pass `verify`, and a `release` branch for the
+/// run to be promoted into. Returns the base commit.
+fn seed_repo(repo: &Path, provider: &Path, verify: &str, helpers: Helpers) -> String {
     fs::write(provider, WRITES_FEATURE).expect("write the provider");
     let mut permissions = fs::metadata(provider).expect("provider").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(provider, permissions).expect("make the provider executable");
-    let config = format!(
-        "[agent]\ndefault_model = \"fake\"\n\n[providers.fake]\nkind = \"claude_cli\"\n\
-         command = {:?}\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
+    let fake = format!(
+        "[providers.fake]\nkind = \"claude_cli\"\ncommand = {:?}\n\n\
+         [models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
         provider.display().to_string()
     );
+    let (config, model_hint) = match helpers {
+        Helpers::Mock => {
+            let mock = common::mock_agent_bin().join("claude");
+            let config = format!(
+                "[agent]\ndefault_model = \"helper\"\n\n[routing]\nfast_task_model = \"helper\"\n\n\
+                 {fake}\n[providers.helper]\nkind = \"claude_cli\"\ncommand = {:?}\n\n\
+                 [models.helper]\nprovider = \"helper\"\nslug = \"claude-haiku-4-5\"\n",
+                mock.display().to_string()
+            );
+            (config, "model_hint = \"fake\"\n")
+        }
+        Helpers::TaskProvider => (format!("[agent]\ndefault_model = \"fake\"\n\n{fake}"), ""),
+    };
     let tasks = format!(
         "[meta]\nplan = \"proof\"\nmax_parallel = 1\nskip_enrichment = true\n\n\
          [[task]]\nid = \"T1\"\ntitle = \"Write feature.txt\"\n\
          description = \"Write feature.txt.\"\nrole = \"implementer\"\nstatus = \"ready\"\n\
-         tier = \"focused\"\nfiles = [\"feature.txt\"]\nmax_retries = 0\n\n\
+         tier = \"focused\"\n{model_hint}files = [\"feature.txt\"]\nmax_retries = 0\n\n\
          [[task.verify]]\nphase = \"structural\"\ncommand = {verify:?}\n"
     );
     for (path, contents) in [
@@ -110,6 +138,7 @@ fn operator_state(repo: &Path) -> [String; 3] {
 fn run_plan(repo: &Path, target: &Path) -> Output {
     Command::new(cargo_bin("roko"))
         .isolated()
+        .with_mock_agents()
         .current_dir(repo)
         .args([
             "--json",
@@ -179,6 +208,7 @@ fn worktree_task_diff_is_gated_merged_and_cleaned() {
         &repo,
         &temp.path().join("provider.sh"),
         "test -f feature.txt",
+        Helpers::Mock,
     );
     let before = operator_state(&repo);
 
@@ -280,7 +310,9 @@ fn worktree_task_diff_is_gated_merged_and_cleaned() {
 /// gap-415c54: an edit that fails its verify step stays in its worktree, on
 /// its attempt branch, for post-mortem, and lands nowhere: no plan branch, no
 /// batch branch (the run left nothing on one, so it removed it, bug-58329f)
-/// and an unmoved `release`.
+/// and an unmoved `release`. The helper calls the failure brings have their
+/// own model, which writes nothing; served by the task's, they are
+/// `a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone`.
 #[test]
 fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -290,6 +322,7 @@ fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
         &repo,
         &temp.path().join("provider.sh"),
         "grep -q missing feature.txt",
+        Helpers::Mock,
     );
     let before = operator_state(&repo);
 
@@ -331,4 +364,49 @@ fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
     assert_eq!(branches(&repo, "refs/heads/roko/attempt/").len(), 1);
 
     assert_eq!(operator_state(&repo), before);
+}
+
+/// bug-ee2752: the helper calls after a failed verify step are served here by
+/// the task's provider, which writes `feature.txt` wherever it runs, as a CLI
+/// agent with its own tools may. A helper call runs in a scratch directory of
+/// its own, outside the repository, so the run leaves the operator's checkout
+/// as it was.
+#[test]
+fn a_helper_call_after_a_failed_verify_leaves_the_operators_checkout_alone() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).expect("repo dir");
+    seed_repo(
+        &repo,
+        &temp.path().join("provider.sh"),
+        "grep -q missing feature.txt",
+        Helpers::TaskProvider,
+    );
+    let before = operator_state(&repo);
+
+    let output = run_plan(&repo, &temp.path().join("target"));
+    let log = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(1), "{log}");
+    assert_eq!(operator_state(&repo), before, "{}", roko_logs(&repo));
+
+    // Not vacuous: the provider served the attempt in its worktree, and a
+    // helper call outside the repository.
+    let cwds = fs::read_to_string(temp.path().join("provider-cwds")).expect("the provider ran");
+    let repo = repo.canonicalize().expect("canonical repo");
+    let worktrees = repo.join(".roko/worktrees");
+    let cwds: Vec<&Path> = cwds.lines().map(Path::new).collect();
+    assert!(
+        cwds.iter().any(|cwd| cwd.starts_with(&worktrees)),
+        "{cwds:?}"
+    );
+    assert!(cwds.iter().any(|cwd| !cwd.starts_with(&repo)), "{cwds:?}");
+    assert!(
+        cwds.iter()
+            .all(|cwd| !cwd.starts_with(&repo) || cwd.starts_with(&worktrees)),
+        "a call ran in the operator's checkout: {cwds:?}"
+    );
 }

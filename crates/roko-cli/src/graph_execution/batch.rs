@@ -9,7 +9,9 @@
 //! merge in the repository's regression checkout, never the operator's.
 //! The batch moves to the merge only once that check passed (bug-700d7c), so
 //! an attempt that starts while another plan's check runs starts from checked
-//! work, and a plan whose check failed never reaches the batch.
+//! work, and a plan whose check failed never reaches the batch. A failed check
+//! handed back to the plan's tasks (find-5bcba7) is followed by a delivery of
+//! its own, of the plan branch's new tip, which supersedes the failed one.
 //! Deliveries run one at a time, since the
 //! batch has one tip, so a plan sees every plan delivered before it started.
 //!
@@ -70,6 +72,10 @@ pub struct BatchIntegration {
     /// Whether this run created the branch, rather than continuing it.
     created: bool,
     store: DeliveryReceiptStore,
+    /// Deliveries whose failed check was handed back to the plan's tasks
+    /// (find-5bcba7): the plan's later delivery stands in for each, so
+    /// [`Self::receipts`] leaves them out.
+    superseded: parking_lot::Mutex<std::collections::BTreeSet<String>>,
     /// Deliveries take turns: each merges into the tip the last one left.
     queue: tokio::sync::Mutex<()>,
 }
@@ -117,6 +123,7 @@ impl BatchIntegration {
             base_oid,
             created,
             store: DeliveryReceiptStore::new(),
+            superseded: parking_lot::Mutex::default(),
             queue: tokio::sync::Mutex::new(()),
         })
     }
@@ -207,13 +214,17 @@ impl BatchIntegration {
     }
 
     /// The receipt of each delivery into the batch in this process, by plan
-    /// id, for the run summary (gap-415c54).
+    /// id, for the run summary (gap-415c54). A delivery whose failed check
+    /// was handed back is left out: the plan's next delivery stands in for it
+    /// (find-5bcba7).
     #[must_use]
     pub fn receipts(&self) -> Vec<CompletionDeliveryReceiptV1> {
+        let superseded = self.superseded.lock().clone();
         let mut receipts: Vec<_> = self
             .store
             .delivery_ids()
             .iter()
+            .filter(|id| !superseded.contains(*id))
             .filter_map(|id| self.store.get(id))
             .collect();
         receipts.sort_by(|left, right| left.request.plan_id.cmp(&right.request.plan_id));
@@ -235,6 +246,40 @@ impl BatchIntegration {
             changed_files: Vec::new(),
             publish: false,
         }
+    }
+
+    /// The request that delivers plan `plan_id` at `verified` after its
+    /// whole-plan check failed and was handed back to its tasks `handbacks`
+    /// times (find-5bcba7): [`Self::request`] at first, and then a delivery
+    /// of its own each time, since a failed delivery is terminal. Delivering
+    /// it supersedes the one before ([`Self::supersede_handed_back`]).
+    #[must_use]
+    pub fn recheck_request(
+        &self,
+        plan_id: &str,
+        verified: String,
+        handbacks: usize,
+    ) -> CompletionDeliveryRequest {
+        let mut request = self.request(plan_id, verified);
+        if handbacks > 0 {
+            request
+                .delivery_id
+                .push_str(&format!(":recheck-{handbacks}"));
+        }
+        request
+    }
+
+    /// Leave plan `plan_id`'s delivery before hand-back `handbacks` out of
+    /// [`Self::receipts`], now that its failed check was handed back and the
+    /// plan is delivered again (find-5bcba7).
+    pub fn supersede_handed_back(&self, plan_id: &str, handbacks: usize) {
+        if handbacks == 0 {
+            return;
+        }
+        let earlier = self
+            .recheck_request(plan_id, String::new(), handbacks - 1)
+            .delivery_id;
+        self.superseded.lock().insert(earlier);
     }
 
     /// The request that delivers `verified`, the tip of the verified part of
@@ -398,7 +443,7 @@ impl BatchIntegration {
     /// under `roko.batch@1`.
     #[must_use]
     pub fn record(&self, receipt: &CompletionDeliveryReceiptV1) -> serde_json::Value {
-        serde_json::json!({
+        let mut record = serde_json::json!({
             "run_id": self.run_id,
             "branch": self.branch,
             "base_oid": self.base_oid,
@@ -409,7 +454,16 @@ impl BatchIntegration {
             "merge_commit": receipt.merge_commit,
             "error": receipt.error,
             "partial": receipt.extensions.contains_key(PARTIAL_EXTENSION),
-        })
+        });
+        // The hand-backs of a failed check before this delivery
+        // (find-5bcba7).
+        if let Some(handbacks) = receipt
+            .extensions
+            .get(super::plan_handback::HANDBACKS_EXTENSION)
+        {
+            record["handbacks"] = handbacks.clone();
+        }
+        record
     }
 }
 
@@ -1095,6 +1149,7 @@ mod tests {
                 evidence_ref: None,
                 checks: Vec::new(),
                 stopped_by: None,
+                build_trees: None,
             }
         }
 

@@ -209,6 +209,7 @@ impl PlanGateCell {
                     attempt_key: attempt.attempt_key.clone().unwrap_or_default(),
                     verdict: verdict.as_str().to_owned(),
                     title: self.title.clone(),
+                    files: self.files.clone(),
                 };
                 Some(workspaces.accept(lease, &request).await)
             }

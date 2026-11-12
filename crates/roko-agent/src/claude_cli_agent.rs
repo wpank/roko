@@ -889,6 +889,9 @@ impl ClaudeCliAgent {
         for (key, value) in self.isolation.env() {
             cmd.env(key, value);
         }
+        // The agent's name is its id when a dispatch names one, else
+        // `claude-cli:<model>` (gap-31e8a7).
+        roko_core::child_env::mark_agent_process(cmd.as_std_mut(), &self.name);
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
@@ -2690,6 +2693,50 @@ mod tests {
         }
     }
 
+    /// gap-31e8a7: a Claude agent's Bash call that runs `roko safety
+    /// release`, however its words spell it, is stopped before it runs, as
+    /// roko's own bash policy stops it; a quoted mention runs nothing and
+    /// passes.
+    #[test]
+    fn settings_hook_denies_roko_safety_release() {
+        let command = bash_hook_command();
+
+        for denied in [
+            "roko safety release live-a/cli --reason 'looks fine'",
+            "../../target/debug/roko --json safety release live-a/cli",
+            "cargo run -q -p roko-cli -- safety release --tool t --scope builtin:local",
+            "\"$ROKO_BIN\" safety release live-a/cli",
+            "$(which roko) safety release live-a/cli",
+            "cd /tmp && ROKO safety --workdir . Release live-a/cli",
+            "sudo -u dev roko safety release live-a/cli",
+            "bash -c \"$(printf x); roko safety release live-a/cli\"",
+            "echo \"$(roko safety release live-a/cli)\"",
+            "watch 'roko safety release live-a/cli'",
+            "bash <<EOF\nroko safety release live-a/cli\nEOF",
+        ] {
+            let output = run_hook(&command, &bash_payload(denied), &[]);
+            assert_eq!(output.status.code(), Some(2), "`{denied}` should be denied");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("only a person releases an immune control"),
+                "{denied}: {stderr}"
+            );
+        }
+        for allowed in [
+            "roko safety controls",
+            "roko plan run plans/x",
+            "grep 'roko safety release' CLAUDE.md",
+            "git commit -m \"roko safety release refuses in an agent's shell\"",
+            "cargo test -p roko-cli --lib release_refuses",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
     #[test]
     fn settings_hook_denies_git_aliases_to_denied_commands() {
         let command = bash_hook_command();
@@ -3747,6 +3794,26 @@ mod tests {
             .find(|(key, _)| *key == name)
             .and_then(|(_, value)| value)
             .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    /// gap-31e8a7: the agent process carries `ROKO_AGENT_ID`, its name: the
+    /// id a dispatch gives it, else `claude-cli:<model>`.
+    #[test]
+    fn command_marks_the_agent_with_its_id() {
+        let mark = |agent: ClaudeCliAgent| {
+            env_of(
+                &agent.build_command().expect("build command"),
+                roko_core::child_env::AGENT_ID_ENV,
+            )
+        };
+
+        let named = ClaudeCliAgent::new("claude", ".", "claude-test-model").with_name("live-a/cli");
+        assert_eq!(mark(named).as_deref(), Some("live-a/cli"));
+        let unnamed = ClaudeCliAgent::new("claude", ".", "claude-test-model");
+        assert_eq!(
+            mark(unnamed).as_deref(),
+            Some("claude-cli:claude-test-model")
+        );
     }
 
     #[test]

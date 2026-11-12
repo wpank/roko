@@ -11,8 +11,9 @@ size = "L"
 hold = "waits on Will's deferred decision 3346 (LOG1 spend), asked again when the pilots report; 7101 was approved 2026-10-15"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK57"
 anchors = ["benchmarks/viabilitybench", "benchmarks/viabilitybench/experiments"]
 lane = "bench"
@@ -67,3 +68,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK20 (gap-5ebb4f), PK21 (gap-1149aa), PK23 (gap-eb1aa3), PK24 (gap-e120a1), PK25 (gap-daeaa9), PK27 (gap-5ddf9b), PK30 (gap-2ca903), PK31 (gap-7c9a9c), PK37 (gap-e9218e), PK51 (gap-a21195), PK56 (gap-fd96c8).
 - On hold until Will takes the deferred decision(s) 3346, 7101 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: sonnet.
+
+Checked 2026-10-27: 2026-10-26: still on hold via decision 3346; no part of tasks 3238/3239/3241 has landed.

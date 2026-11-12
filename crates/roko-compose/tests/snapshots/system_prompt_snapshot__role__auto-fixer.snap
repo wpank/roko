@@ -20,21 +20,6 @@ IMPORTANT: This is a fully autonomous pipeline. Do NOT ask questions. Just fix t
 
 ## Project Conventions
 
-## Plans context layout
-
-- `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
-- `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
-- `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
-- `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
-- `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
-- `.roko/plans/<plan-base>/tasks.toml` — task checklists.
-- `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
-- `.roko/plans/<plan-base>/verify.sh` — invariant runner when generated (optional).
-- `.roko/plans/<plan-base>/brief.md` — implementation brief when present.
-- `.roko/plans/<plan-base>/reviews/` — per-plan review outputs when present.
-
-
 - Keep changes minimal and prefer wiring existing modules over reimplementation.
 - Use the repo's existing patterns before inventing new ones.
 
@@ -45,6 +30,11 @@ Prefer deterministic fixtures and readable snapshot diffs.
 Runtime tool allowlist: Read,Edit,Bash
 
 Use only the tools granted to your role.
+
+## Relevant Context
+### Workspace Notes
+- Snapshot output groups live prompt sections into six audit buckets.
+- Keep fixtures stable across runs.
 
 ## Active Signals
 
@@ -84,21 +74,6 @@ IMPORTANT: This is a fully autonomous pipeline. Do NOT ask questions. Just fix t
 <!-- POLICY -->
 ## Project Conventions
 
-## Plans context layout
-
-- `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
-- `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
-- `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
-- `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
-- `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
-- `.roko/plans/<plan-base>/tasks.toml` — task checklists.
-- `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
-- `.roko/plans/<plan-base>/verify.sh` — invariant runner when generated (optional).
-- `.roko/plans/<plan-base>/brief.md` — implementation brief when present.
-- `.roko/plans/<plan-base>/reviews/` — per-plan review outputs when present.
-
-
 - Keep changes minimal and prefer wiring existing modules over reimplementation.
 - Use the repo's existing patterns before inventing new ones.
 
@@ -110,6 +85,12 @@ Prefer deterministic fixtures and readable snapshot diffs.
 Runtime tool allowlist: Read,Edit,Bash
 
 Use only the tools granted to your role.
+
+<!-- CONTEXT -->
+## Relevant Context
+### Workspace Notes
+- Snapshot output groups live prompt sections into six audit buckets.
+- Keep fixtures stable across runs.
 
 <!-- MEMORY -->
 ## Active Signals

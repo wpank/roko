@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-6f31c3"
 discovered_from = "gap-6f31c3 (worker, 2026-10-16): L-sec reads empty state on a fresh workspace's first run"
 anchors = ["crates/roko-learn/src/loop_audit/mod.rs::loop_evidence", "crates/roko-learn/src/loop_audit/state.rs::Auditor::rule", "crates/roko-learn/src/loop_audit/census.rs::Tally"]
@@ -69,3 +70,5 @@ The verify passes, and a loop flagged on empty state is re-admitted by the tick 
 ## Notes
 
 Measurement only; enforce stays off (D10). Found while closing gap-6f31c3.
+
+Checked 2026-10-27: 2026-10-26 re-verify at 15335e2f9: unchanged since 2026-10-16; confirmed LoopEvidence::{repaired, version_influence} live in state.rs:277-279, not mod.rs.

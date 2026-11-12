@@ -1254,7 +1254,7 @@ command = "cargo test -p x parse"
         let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
         checkpoint
             .take_cost_ledger()
-            .persist(0, 0)
+            .persist(0, 0, Vec::new())
             .expect("cost ledger");
         checkpoint
             .finish_with_status(GraphCheckpointStatus::Failed)
@@ -1712,6 +1712,7 @@ command = "echo ok"
                     task_id,
                     metric,
                     value,
+                    ..
                 } if metric == "cost_usd" => Some((plan_id, task_id, value)),
                 _ => None,
             })

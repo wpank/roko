@@ -8,8 +8,9 @@ severity = "p3"
 size = "S"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/workflow-audit (roko-7d migration, 2026-10-02)"
 discovered_from = "audit:tmp/workflow-audit/"
 anchors = ["crates/roko-cli/src/plan_generator.rs::DefaultPlanGenerator", "crates/roko-execution/src/plan_generator.rs::adapter_keys"]
@@ -67,3 +68,5 @@ so the workflow-audit migration left both files in place.
 ## Notes
 
 - Found by the workflow-audit migration (session roko-7d, 2026-10-02).
+
+Checked 2026-10-27: 2026-10-26: commit 348cb6c3f touched roko-execution/src/plan_generator.rs for an unrelated config-key removal, not this cleanup.

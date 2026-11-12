@@ -208,7 +208,8 @@ pub(crate) struct FitAudit {
     pub(crate) duplicates: usize,
     /// Units left.
     pub(crate) units: usize,
-    /// Of those, the units the model trains on: labelled, and not a failover substitute.
+    /// Of those, the units the model learns: the labelled ones, a failover substitute's
+    /// included (bug-a35286), though the prequential scores leave the substitutes out.
     pub(crate) training_units: usize,
 }
 
@@ -285,16 +286,24 @@ pub(crate) fn fit_offline(
     let mut model = SelfModel::new(snapshot);
     let mut window = CalibrationWindow::new(model.version.clone()).keeping(gate.keeps());
     let mut scored = Vec::new();
+    let mut learned = 0;
     for unit in runs.units.iter().chain(fresh.iter().copied()) {
-        let Some(passed) = unit.label.y_gate.filter(|_| !unit.failover) else {
+        let Some(passed) = unit.label.y_gate else {
             continue;
         };
         let task = TaskFeatures::from(unit);
+        let w = unit.label.weight;
+        // A failover substitute teaches the model what the model that ran did, but nobody
+        // chose it: it is neither scored nor in the window, as in the live sink (bug-a35286).
+        if unit.failover {
+            model.observe_with(unit, &task, w);
+            learned += 1;
+            continue;
+        }
         let forecasts = model.forecast(&task, std::slice::from_ref(&unit.arm));
         let Some(p) = forecasts.first().map(|forecast| forecast.p_gate) else {
             continue;
         };
-        let w = unit.label.weight;
         scored.push(Scored::weighted(p, passed, w));
         // The fit routes nothing, so it scores as a shadow window does: the routed pass rate
         // is unknown and fails no bound (bug-92cc56).
@@ -306,6 +315,7 @@ pub(crate) fn fit_offline(
         };
         window.push(&model.version, outcome);
         model.observe_with(unit, &task, w);
+        learned += 1;
     }
     let report = (scored.len() >= gate.window).then(|| gate.evaluate(&window));
     let calibration = match &report {
@@ -322,7 +332,7 @@ pub(crate) fn fit_offline(
             raw_units,
             duplicates: raw_units - units,
             units,
-            training_units: scored.len(),
+            training_units: learned,
         },
         predictor_version: model.version.to_string(),
         price_snapshot_id: snapshot.id().to_string(),
@@ -573,7 +583,7 @@ enum Spec {
     /// H4-B1 on the rungs.
     Frugal(Vec<String>),
     /// H4-BL: the ladder, and each rung model's arm.
-    Ladder(LadderConfig, BTreeMap<String, String>),
+    Ladder(Box<LadderConfig>, BTreeMap<String, String>),
     /// H4-B2 over (model, provider, arm) triples.
     Router(Vec<(String, String, String)>),
     /// H4-B3 over every cell.
@@ -590,7 +600,7 @@ impl Spec {
             Self::Static(arms) => Box::new(CrossFitStatic(arms.clone())),
             Self::Frugal(rungs) => Box::new(FrugalCascade::new(rungs.clone())),
             Self::Ladder(config, arms) => {
-                Box::new(ProductionLadder::new(config.clone(), arms.clone()))
+                Box::new(ProductionLadder::new((**config).clone(), arms.clone()))
             }
             Self::Router(models) => {
                 let models: Vec<(&str, &str, &str)> = models
@@ -649,7 +659,7 @@ fn policy_spec(
                 let why = format!("no arm runs a ladder rung's model ({})", rungs.join(", "));
                 return Ok(Err(why));
             }
-            Spec::Ladder(ladder.clone(), by_model)
+            Spec::Ladder(Box::new(ladder.clone()), by_model)
         }
         "H4-B2" => {
             if by_model.is_empty() {
@@ -924,6 +934,7 @@ mod tests {
                 would_choose: None,
                 default: None,
                 action: "dispatch".to_string(),
+                start_rules: None,
             };
             AttemptPredictionRecord::new(identity(task), predictor, Vec::new(), decision)
         };
@@ -1039,12 +1050,13 @@ mod tests {
     fn learn_econ_prices_lists_every_snapshot_row() {
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
         let text = render_prices(&snapshot);
-        assert_eq!(text.lines().count(), 1 + 10, "{text}");
+        let rows = snapshot.rows().len();
+        assert_eq!(text.lines().count(), 1 + rows, "{text}");
         for row in snapshot.rows() {
             assert!(text.contains(&row.source_url));
         }
         let json = prices_json(&snapshot);
-        assert_eq!(json["rows"].as_array().map(Vec::len), Some(10));
+        assert_eq!(json["rows"].as_array().map(Vec::len), Some(rows));
     }
 
     /// 6124: the three commands parse.

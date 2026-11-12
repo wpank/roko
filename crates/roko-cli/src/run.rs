@@ -492,6 +492,9 @@ pub struct PromptRun<'a> {
     /// 4115): no learning loop is withheld, no route explores and the spec
     /// gate holds no task out, though every decision is logged.
     pub no_holdout: bool,
+    /// No audits for this run alone (`roko run --no-audit`, decision 7103):
+    /// no green attempt is drawn for a deep audit, so audits spend nothing.
+    pub no_audit: bool,
     /// The live agent output the run publishes while its attempts run, as
     /// `roko plan run` and a server's plan runs choose it (gap-5fda00).
     pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
@@ -659,6 +662,8 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             });
     }
 
+    // The run's `workflow_complete` episode starts here (bug-41e2de).
+    let started_at = Utc::now();
     let started = std::time::Instant::now();
     // The Graph run takes this run's id, so its attempt records and manifest
     // land in `run_dir` beside the plan (bug-ccc7c4).
@@ -700,6 +705,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             // `[learning] frozen` freezes a `roko run`.
             frozen_learning: false,
             no_holdout: run.no_holdout,
+            no_audit: run.no_audit,
             metrics: None,
             // A chat host's run holds outbound effects whatever its plan says
             // (gap-1a4563).
@@ -763,7 +769,15 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             })
     };
     let frozen = model_config.learning.frozen;
-    record_workflow_feedback(layout.root(), &report, outcome, duration, frozen).await;
+    record_workflow_feedback(
+        layout.root(),
+        &report,
+        outcome,
+        started_at,
+        duration,
+        frozen,
+    )
+    .await;
     Ok(report)
 }
 
@@ -856,6 +870,7 @@ fn prompt_tasks_file(
             failure_policy: None,
             workspace_rungs: None,
             verify: Vec::new(),
+            cold_verify: false,
             approval: None,
             allow_unverified,
             // A chat host's run holds what would act on the outside world
@@ -864,6 +879,7 @@ fn prompt_tasks_file(
                 .is_chat()
                 .then_some(roko_core::tool::OutboundPolicy::Stage),
             dropped_checks: Vec::new(),
+            sources: Vec::new(),
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),
@@ -1061,13 +1077,16 @@ fn task_output(snapshot: &DashboardSnapshot, plan_id: &str) -> String {
 
 /// Record the run's gate verdicts and completion through the learning
 /// feedback service, which appends them to `learn/efficiency.jsonl` and one
-/// `workflow_complete` episode to the root episode log. A `frozen` run
-/// (decision 2218) records none of it: the episode, and the knowledge
-/// outcomes the service credits for the run, are learned state (bug-dd20bd).
+/// `workflow_complete` episode to the root episode log. The episode starts at
+/// `started_at`, the clock read as the run began, and lasts `duration`
+/// (bug-41e2de). A `frozen` run (decision 2218) records none of it: the
+/// episode, and the knowledge outcomes the service credits for the run, are
+/// learned state (bug-dd20bd).
 async fn record_workflow_feedback(
     roko_dir: &Path,
     report: &WorkflowRunReport,
     outcome: String,
+    started_at: chrono::DateTime<Utc>,
     duration: std::time::Duration,
     frozen: bool,
 ) {
@@ -1092,6 +1111,7 @@ async fn record_workflow_feedback(
         outcome,
         total_cost_usd: report.cost.unwrap_or_default(),
         total_tokens: report.token_usage,
+        started_at,
         duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
     };
     for event in gate_events.chain(std::iter::once(completion)) {
@@ -1303,11 +1323,19 @@ mod tests {
     use tempfile::TempDir;
 
     /// A workspace whose agent is a fake Claude CLI that says `done` at once,
-    /// with `rungs` (TOML) after its `[gates]` table.
+    /// with `rungs` (TOML) after its `[gates]` table. Audits are on by
+    /// default (decision 7103), so the workspace runs none unless `rungs`
+    /// has an `[audit]` table of its own: a test's run never writes to the
+    /// operator's `~/.roko/audit`.
     #[cfg(unix)]
     fn fake_agent_workspace(rungs: &str) -> TempDir {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let audit = if rungs.contains("[audit]") {
+            ""
+        } else {
+            "\n[audit]\nenabled = false\n"
+        };
         let tmp = TempDir::new().expect("tempdir");
         let provider = tmp.path().join("fake-provider.sh");
         std::fs::write(
@@ -1342,7 +1370,7 @@ context_window = 200000
 
 [gates]
 sibling_settle_secs = 0
-{rungs}"#,
+{rungs}{audit}"#,
                 provider = provider.display().to_string()
             ),
         )
@@ -1380,6 +1408,7 @@ command = "test -f README.md"
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })
@@ -1554,6 +1583,7 @@ worktree_per_task = false
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1670,6 +1700,7 @@ frozen = {frozen}
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1686,6 +1717,74 @@ frozen = {frozen}
             assert_eq!(recorded, !frozen, "frozen = {frozen}: {efficiency:?}");
             assert_eq!(workflow, !frozen, "frozen = {frozen}: {episodes:?}");
         }
+    }
+
+    /// bug-41e2de: a `roko run` writes no episode that lasted a while yet
+    /// starts as it completes. The run's `workflow_complete` episode starts
+    /// as the run began, read from the clock then, and completes the run's
+    /// duration later, before `run_prompt` returns.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roko_run_episodes_start_before_they_complete() {
+        let tmp = fake_agent_workspace(
+            r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+"#,
+        );
+        let before = Utc::now();
+        let report = run_prompt(PromptRun {
+            prompt: "Say done",
+            workdir: tmp.path(),
+            tier: "focused",
+            overrides: &CliOverrides::default(),
+            max_retries: Some(0),
+            quiet: true,
+            state_hub: None,
+            run_id: None,
+            cancel: None,
+            domain: None,
+            max_usd: None,
+            origin: RunOrigin::Cli,
+            no_holdout: false,
+            no_audit: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
+        })
+        .await
+        .expect("roko run completes");
+        let after = Utc::now();
+        assert!(report.success);
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &tmp.path().join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("read the episode log");
+        for episode in &episodes {
+            assert!(
+                episode.started_at < episode.completed_at || episode.duration_secs <= 0.0,
+                "the {} episode of {} lasted {} s but starts as it completes",
+                episode.kind,
+                episode.task_id,
+                episode.duration_secs
+            );
+        }
+        let workflow = episodes
+            .iter()
+            .find(|episode| episode.kind == "workflow_complete")
+            .expect("the run's workflow_complete episode");
+        assert!(
+            before <= workflow.started_at && workflow.completed_at <= after,
+            "the run's episode, {} to {}, lies within the run, {before} to {after}",
+            workflow.started_at,
+            workflow.completed_at
+        );
+        assert_eq!(
+            (workflow.completed_at - workflow.started_at).num_milliseconds(),
+            i64::try_from(workflow.usage.wall_ms).expect("a duration")
+        );
     }
 
     /// A run with learning frozen keeps its episodes in its own run directory
@@ -1730,6 +1829,7 @@ printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1775,6 +1875,7 @@ command = "test -f README.md"
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1796,6 +1897,85 @@ command = "test -f README.md"
         }
     }
 
+    /// gap-d76b1b (decision 7103): audits run by default. A `roko run` whose
+    /// roko.toml names only its audit vault commits to a run key, draws its
+    /// green attempt in the lottery at ρ = 0.10 and reveals the key; with
+    /// `--no-audit` it draws nothing and never opens the vault.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audits_run_by_default_and_no_audit_turns_them_off() {
+        use roko_gate::audit::ledger::{AuditEvent, records};
+
+        for no_audit in [false, true] {
+            let vault_home = TempDir::new().expect("the vault's home");
+            let root = vault_home.path().join("audit");
+            let tmp = fake_agent_workspace(&format!(
+                r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+
+[audit]
+home = {root:?}
+"#,
+                root = root.display().to_string()
+            ));
+            let report = run_prompt(PromptRun {
+                prompt: "Say done",
+                workdir: tmp.path(),
+                tier: "focused",
+                overrides: &CliOverrides::default(),
+                max_retries: Some(0),
+                quiet: true,
+                state_hub: None,
+                run_id: None,
+                cancel: None,
+                domain: None,
+                max_usd: None,
+                origin: RunOrigin::Cli,
+                no_holdout: false,
+                no_audit,
+                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                title: None,
+            })
+            .await
+            .expect("roko run completes");
+            assert!(report.success, "{no_audit}: {report:?}");
+            if no_audit {
+                assert!(!root.exists(), "--no-audit opens no vault");
+                assert!(!tmp.path().join(".roko/audit/audits.jsonl").exists());
+                continue;
+            }
+            let audit = roko_core::config::audit::AuditConfig {
+                home: Some(root.clone()),
+                ..roko_core::config::audit::AuditConfig::default()
+            };
+            let vault = audit.vault(tmp.path()).expect("the run's vault");
+            let all = records(&vault.ledger_dir()).expect("the vault ledger");
+            let run_id = report.run_id.as_str();
+            let committed = all.iter().any(|record| {
+                matches!(&record.event, AuditEvent::KeyCommit { run_id: id, .. } if id == run_id)
+            });
+            let revealed = all.iter().any(|record| {
+                matches!(&record.event, AuditEvent::KeyReveal { run_id: id, .. } if id == run_id)
+            });
+            assert!(committed && revealed, "{all:?}");
+            let draws: Vec<(String, f64)> = all
+                .iter()
+                .filter_map(|record| match &record.event {
+                    AuditEvent::Selection {
+                        run_id: id,
+                        stratum,
+                        pi,
+                        ..
+                    } if id == run_id => Some((stratum.verdict.clone(), *pi)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(draws, [("passed".to_string(), 0.10)], "{all:?}");
+        }
+    }
+
     /// Run `Say done` in `workdir`, in work domain `domain`, and return the
     /// task of the one-task plan it wrote.
     #[cfg(unix)]
@@ -1814,6 +1994,7 @@ command = "test -f README.md"
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })
@@ -1902,6 +2083,11 @@ context_window = 200000
 
 [gates]
 sibling_settle_secs = 0
+
+# Audits are on by default (decision 7103), and an unverified pass is drawn
+# at π = 1: the fixture runs none, so the test writes no audit vault.
+[audit]
+enabled = false
 "#,
                 provider = provider.display().to_string()
             ),
@@ -1924,6 +2110,7 @@ sibling_settle_secs = 0
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })

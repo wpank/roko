@@ -11,8 +11,9 @@ size = "L"
 hold = "waits on Will's deferred decision(s) 3346 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK31"
 anchors = ["benchmarks/viabilitybench"]
 lane = "bench"
@@ -68,3 +69,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - On hold until Will takes the deferred decision(s) 3346 (spend or a public release); see `DECISIONS.md`.
 - Existing work items this package covers or touches: gap-154f93, gap-c33709, q-ab27d3. When its tasks are done, close those whose verify then passes.
 - Suggested model: sonnet.
+
+Checked 2026-10-27: 2026-10-26: still blocked; G0's NO-GO result since 2026-10-19 makes the spend decision less likely to flip soon.

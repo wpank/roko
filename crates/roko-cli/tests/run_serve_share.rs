@@ -41,6 +41,7 @@ fn roko(workspace: &ScriptedPlanWorkspace, port: u16, args: &[&str]) -> Output {
     for name in ["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"] {
         command.env_remove(name);
     }
+    command.env(common::AUDITS_OFF.0, common::AUDITS_OFF.1);
     // Warnings and errors on stderr, so a failure explains itself.
     command.env("ROKO_LOG", "warn");
     command.output().expect("run roko")

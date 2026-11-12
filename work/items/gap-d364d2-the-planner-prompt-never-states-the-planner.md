@@ -3,13 +3,15 @@ id = "gap-d364d2"
 kind = "gap"
 title = "The planner prompt never states the planner's turn cap, and the file budget it states can exceed what that cap allows"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "bug-09cc5f worker, 2026-10-16: the planner prompt's read budget (25 files at 200k tokens, 125 at 1M) against PLANNER_MAX_TURNS (30)"
 discovered_from = "bug-09cc5f"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::plan_task_prompt", "crates/roko-cli/src/plan_generate/pipeline.rs::PlannerBudget"]
@@ -65,3 +67,5 @@ numbers above are from the code and `roko.toml`.
 ## Notes
 
 - Found while fixing bug-09cc5f on 2026-10-16 (worktree agent-a9cb59b33b95c3f51).
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. Touched commits b155840c0 and b63de5643 changed plan_generate/pipeline.rs for unrelated reasons (gate-findings batching, base-check settlement); the prompt text itself is untouched.

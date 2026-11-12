@@ -20,19 +20,13 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 - **41/42 closed** · goal `whitepaper` · severity p1
 - open by lane: paper 1
-- next: none ready (1 unverified)
-
-## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
-
-- **27/28 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 1
-- next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
+- next: none ready (1 on hold)
 
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
 
 - **1/2 closed** · goal `golden-path` · severity p1
 - open by lane: rust-cold 1
-- next: none ready (1 unverified)
+- next: [gap-f30b8e](items/gap-f30b8e-end-to-end-acceptance-test-a-fixture.md) End-to-end acceptance test: a fixture plan runs through the ladder on real cheap models and merges green
 
 ## [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) specs a cheap model can execute
 
@@ -42,19 +36,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **58/69 closed** · goal `proof` · severity p1
-- open by lane: bench 11
-- next: [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it
-
-## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
-
-- **30/30 closed** · goal `cybernetic` · severity p2
-
-## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
-
-- **18/28 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 6, rust-cold 4
-- next: [bug-92cc56](items/bug-92cc56-the-calibration-gate-s-routed-pass-rate.md) The calibration gate's routed-pass-rate bound has no routed outcome until the self-model routes, and it routes only once the gate is eligible, so M3 can never become eligible
+- **65/82 closed** · goal `proof` · severity p1
+- open by lane: bench 17
+- next: [gap-f3944c](items/gap-f3944c-cerebras-answers-http-402-payment-required-to.md) Cerebras answers HTTP 402 payment_required to every call since 2026-10-20 15:17Z, so every gpt-oss-120b run (Pilot B's roko_fixed arm, Pilot C, LOG1) is blocked until the account has credit
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
@@ -67,6 +51,10 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - **26/27 closed** · goal `tooling` · severity p2
 - open by lane: none 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
+
+## [spec-ce1484](done/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1 (done)
+
+- **28/28 closed** · goal `whitepaper` · severity p1
 
 ## [spec-e9d7ec](done/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) honest verdicts end to end (done)
 
@@ -100,16 +88,26 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 - **14/14 closed** · goal `proof` · severity p1
 
+## [spec-6ac537](done/spec-6ac537-epic-cybernetic-core.md) cybernetic core (done)
+
+- **30/30 closed** · goal `cybernetic` · severity p2
+
+## [spec-7a71d6](done/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages (done)
+
+- **26/32 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-cold 3, rust-hot 3
+- next: [gap-398dee](items/gap-398dee-a-phase-b-audit-call-can-cost.md) A phase-B audit call can cost more than its audit has left: nothing bounds one call before it starts, and B3's brief carries the whole test-file diff
+
 ## Lanes
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 111 | 150 | 39 (28) |
-| docs | 27 | 31 | 4 (3) |
+| bench | 125 | 168 | 43 (43) |
+| docs | 31 | 34 | 3 (2) |
 | frontend | 7 | 9 | 2 (2) |
-| none | 468 | 567 | 99 (93) |
-| paper | 77 | 86 | 9 (7) |
-| rust-cold | 258 | 314 | 56 (47) |
-| rust-hot | 263 | 296 | 33 (31) |
+| none | 638 | 778 | 140 (134) |
+| paper | 79 | 87 | 8 (8) |
+| rust-cold | 267 | 321 | 54 (54) |
+| rust-hot | 282 | 310 | 28 (28) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 26 | 29 | 3 (2) |
+| tracker | 26 | 30 | 4 (4) |

@@ -25,7 +25,7 @@ use super::assign::{Arm, Assignment};
 use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptPredictionRecord,
     AttemptVerdictRecord, ContentDecisionPoint, ContentDecisionRecord, DECISION_SCHEMA,
     DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, HARNESS_POLICY_DECISION_POINT,
     HarnessPolicyDecisionRecord, PLACEBO_DECISION_POINT, PREDICTION_SCHEMA, PlaceboDecisionRecord,
@@ -79,7 +79,88 @@ pub struct RunRecords {
     pub seqs: Vec<(RunFile, u64)>,
 }
 
+/// A try whose checks changed the person's own checkout instead of its
+/// worktree, from its verdict's `checkout_written` scope findings
+/// (bug-b7d9ad).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckoutWrite {
+    /// The try's plan.
+    pub plan_id: String,
+    /// The try's task.
+    pub task_id: String,
+    /// The try's ordinal, from 1.
+    pub attempt: u32,
+    /// The paths, relative to the checkout.
+    pub paths: Vec<String>,
+}
+
+/// A task whose last try the gaming screen left `unverified`: its checks
+/// passed, but its change may pass them without doing the task, as the
+/// try's verdict says in its
+/// [`GAMING_SCREEN_RUNG`](super::records::GAMING_SCREEN_RUNG) step
+/// (find-2ba86d).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GamingFlag {
+    /// The try's plan.
+    pub plan_id: String,
+    /// The try's task.
+    pub task_id: String,
+    /// The try's ordinal, from 1.
+    pub attempt: u32,
+    /// Why, on one line: what the screen found.
+    pub reason: String,
+}
+
 impl RunRecords {
+    /// The run's tries whose checks changed the person's own checkout, in
+    /// the order their verdicts were written (bug-b7d9ad).
+    #[must_use]
+    pub fn checkout_writes(&self) -> Vec<CheckoutWrite> {
+        self.verdicts
+            .iter()
+            .map(|line| &line.record)
+            .filter_map(|verdict| {
+                let paths: Vec<String> = verdict
+                    .scope_findings
+                    .iter()
+                    .filter(|finding| finding.kind == super::records::SCOPE_CHECKOUT_WRITTEN)
+                    .map(|finding| finding.path.clone())
+                    .collect();
+                (!paths.is_empty()).then(|| CheckoutWrite {
+                    plan_id: verdict.identity.plan_id.clone(),
+                    task_id: verdict.identity.task_id.clone(),
+                    attempt: verdict.identity.attempt,
+                    paths,
+                })
+            })
+            .collect()
+    }
+
+    /// The run's tasks whose last try the gaming screen left `unverified`,
+    /// with why, in the order those tries' verdicts were written
+    /// (find-2ba86d). A task's later verdict replaces its earlier ones: a
+    /// task tried again, as a resume tries an unverified task, is listed only
+    /// when its last try was flagged too.
+    #[must_use]
+    pub fn gaming_flags(&self) -> Vec<GamingFlag> {
+        let mut flags: Vec<GamingFlag> = Vec::new();
+        for verdict in self.verdicts.iter().map(|line| &line.record) {
+            let identity = &verdict.identity;
+            flags.retain(|flag| {
+                flag.plan_id != identity.plan_id || flag.task_id != identity.task_id
+            });
+            if let Some(reason) = verdict.gaming_reason() {
+                flags.push(GamingFlag {
+                    plan_id: identity.plan_id.clone(),
+                    task_id: identity.task_id.clone(),
+                    attempt: identity.attempt,
+                    reason: reason.to_string(),
+                });
+            }
+        }
+        flags
+    }
+
     /// Parse the run files in `run_dir`. Missing files hold no lines; a line
     /// that does not parse as a record of its file is kept in
     /// [`Self::invalid`].
@@ -174,10 +255,16 @@ impl RunRecords {
             let key = line.record.identity.attempt_key.as_str();
             (ATTEMPT_OPEN_SCHEMA, key)
         });
-        let verdicts = self.verdicts.iter().map(|line| {
-            let key = line.record.identity.attempt_key.as_str();
-            (VERDICT_SCHEMA, key)
-        });
+        // A resume's `abandoned` verdict leaves its attempt abandoned
+        // (bug-b7f6a8).
+        let verdicts = self
+            .verdicts
+            .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
+            .map(|line| {
+                let key = line.record.identity.attempt_key.as_str();
+                (VERDICT_SCHEMA, key)
+            });
         AttemptTally::from_lines(opens.chain(verdicts))
     }
 }
@@ -1259,7 +1346,8 @@ mod tests {
     use crate::telemetry::census::CensusComponent;
     use crate::telemetry::records::{
         AttemptIdentity, AttemptOutcome, ContentCandidate, ContentDecisionPoint, CostSource,
-        DecisionSource, ExcludedReason, ExposureItemKind, TelemetryRecord,
+        DecisionSource, ExcludedReason, ExposureItemKind, GAMING_SCREEN_RUNG, TelemetryRecord,
+        VerifyStepVerdict,
     };
     use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
 
@@ -1345,6 +1433,65 @@ mod tests {
         }
         assert_eq!(writer.close().written, 14);
         RunRecords::load(dir.path()).expect("load the run")
+    }
+
+    /// find-2ba86d: the gaming flags are the tasks whose last try the gaming
+    /// screen left unverified, each with the reason of its verdict's
+    /// `pre_verify:gaming` step. A task tried again after a flagged try is
+    /// one only when its last try was flagged too; a try unverified without
+    /// the step is none, and so is a try with the step that did not settle
+    /// unverified.
+    #[test]
+    fn gaming_flags_are_the_tasks_whose_last_try_was_flagged() {
+        let dir = TempDir::new().expect("tempdir");
+        let writer = TelemetryWriter::spawn(dir.path(), TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        let flagged = |task: &str, attempt: u32, outcome: AttemptOutcome, reason: &str| {
+            let mut verdict = verdict(task, attempt, outcome);
+            verdict.steps = vec![
+                VerifyStepVerdict {
+                    rung: "verify:0/test".to_string(),
+                    passed: Some(true),
+                    ..VerifyStepVerdict::default()
+                },
+                VerifyStepVerdict {
+                    rung: GAMING_SCREEN_RUNG.to_string(),
+                    skipped: true,
+                    skip_reason: Some(reason.to_string()),
+                    ..VerifyStepVerdict::default()
+                },
+            ];
+            verdict
+        };
+        let unverified = AttemptOutcome::Unverified;
+        for record in [
+            flagged("T1", 1, unverified, "hidden_state `money.py`"),
+            flagged("T2", 1, unverified, "special_case `money.py`"),
+            verdict("T2", 2, AttemptOutcome::Passed),
+            flagged("T3", 1, unverified, "an earlier finding"),
+            flagged("T3", 2, unverified, "dynamic_import `loader.py`"),
+            verdict("T4", 1, unverified),
+            flagged("T5", 1, AttemptOutcome::GateFailed, "a failed try"),
+        ] {
+            assert!(writer.submit(record));
+        }
+        assert_eq!(writer.close().written, 7);
+        let run = RunRecords::load(dir.path()).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+
+        let flag = |task: &str, attempt: u32, reason: &str| GamingFlag {
+            plan_id: "loop-census".to_string(),
+            task_id: task.to_string(),
+            attempt,
+            reason: reason.to_string(),
+        };
+        assert_eq!(
+            run.gaming_flags(),
+            [
+                flag("T1", 1, "hidden_state `money.py`"),
+                flag("T3", 2, "dynamic_import `loader.py`"),
+            ]
+        );
     }
 
     #[test]

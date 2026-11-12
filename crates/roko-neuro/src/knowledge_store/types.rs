@@ -42,11 +42,14 @@ pub(crate) const CONFIRMATION_DECAY_FACTOR: f64 = 0.1;
 /// new episode, it is "resurrected" with this starter confidence and reset
 /// to Transient tier for re-validation.
 pub const RESURRECTION_CONFIDENCE: f64 = 0.6;
-/// Minimum number of shared tags for two entries to be considered similar.
+/// Minimum number of shared topical tags, the tags less the run-generic
+/// ones, for two entries to be considered similar (gap-1220c5).
 pub(crate) const MIN_TAG_OVERLAP: usize = 1;
-/// Minimum number of shared content keywords for two entries to be
-/// considered similar (applied when tag overlap meets the threshold).
-pub(crate) const MIN_KEYWORD_OVERLAP: usize = 2;
+/// The least Jaccard similarity of two entries' content words, stopwords
+/// left out, for them to be considered similar once they share a topical tag
+/// (gap-1220c5). Undertow's real repeat lessons measured 0.19 to 0.22, and
+/// the closest pair of different lessons 0.15.
+pub(crate) const MIN_CONTENT_JACCARD: f64 = 0.17;
 #[cfg(feature = "hdc")]
 pub(crate) const HDC_SIMILARITY_BASELINE: f64 = 0.5;
 /// Minimum raw HDC similarity treated as a meaningful query signal.
@@ -133,6 +136,9 @@ pub struct KnowledgeStats {
     pub source_counts: BTreeMap<String, usize>,
     /// Number of AntiKnowledge entries.
     pub anti_knowledge_count: usize,
+    /// Number of entries a person retired (bug-2ad4fa), which retrieval
+    /// skips.
+    pub retired_count: usize,
     /// Mean confidence across all entries.
     pub average_confidence: Option<f64>,
     /// Oldest entry in the store, if any.

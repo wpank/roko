@@ -21,11 +21,32 @@ use super::*;
 /// the model chosen by [`select_cheap_model_key`] and bounded by
 /// `timeouts.llm_call_secs`. On dispatch failure it returns an
 /// unsuccessful `AgentResult` so callers' built-in fallbacks activate.
+///
+/// Each call runs in an empty scratch directory of its own, removed when the
+/// call ends, never in the operator's checkout (bug-ee2752): a CLI helper
+/// model (Claude Code, Codex) brings its own tools and works in its working
+/// directory. Every prompt carries what the helper reads, so it needs no
+/// checkout. The call's immune state and learning rows stay with the
+/// workspace, as a task attempt's do.
 pub(super) struct CheapFactoryAgent {
     pub(super) factory: Arc<SharedAgentFactory>,
     pub(super) model_key: String,
-    pub(super) workdir: PathBuf,
+    /// The workspace the run serves: each call's immune root, never its
+    /// working directory.
+    pub(super) workspace_root: PathBuf,
     pub(super) timeout_ms: u64,
+    /// What its calls may spend, as an audit's allowance bounds a B3 review
+    /// (gap-d76b1b); `None` leaves a one-shot helper call unbounded.
+    pub(super) allowance: Option<Arc<dyn crate::dispatch_v2::CallAllowance>>,
+}
+
+/// The output of a helper call that never reached a provider.
+fn helper_failure(why: &str) -> roko_agent::AgentResult {
+    roko_agent::AgentResult::fail(
+        Signal::builder(Kind::AgentOutput)
+            .body(Body::text(format!("cheap-factory-agent: {why}")))
+            .build(),
+    )
 }
 
 #[async_trait::async_trait]
@@ -33,27 +54,33 @@ impl roko_agent::Agent for CheapFactoryAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> roko_agent::AgentResult {
         let prompt = match input.body.as_text() {
             Ok(text) => text.to_string(),
-            Err(_) => {
-                return roko_agent::AgentResult::fail(
-                    Signal::builder(Kind::AgentOutput)
-                        .body(Body::text("cheap-factory-agent: non-text input"))
-                        .build(),
-                );
+            Err(_) => return helper_failure("non-text input"),
+        };
+        // No scratch directory means no call: the operator's checkout is
+        // never the fallback.
+        let scratch = match tempfile::Builder::new().prefix("roko-helper-").tempdir() {
+            Ok(scratch) => scratch,
+            Err(error) => {
+                tracing::warn!(%error, "no scratch directory for a helper model call");
+                return helper_failure("no scratch directory");
             }
         };
         let request = AgentDispatchRequest {
             model_key: self.model_key.clone(),
             prompt,
             system_prompt: String::new(),
-            workdir: self.workdir.clone(),
-            immune_root: None,
+            workdir: scratch.path().to_path_buf(),
+            // Tool controls, evidence, learning rows and the price snapshot
+            // belong to the workspace, not the scratch directory.
+            immune_root: Some(self.workspace_root.clone()),
             agent_id: "cheap-factory-agent".to_string(),
             command: None,
             timeout_ms: Some(self.timeout_ms),
             mcp_config: None,
             env: vec![],
             extra_args: vec![],
-            effort: None,
+            // A short answer needs little reasoning (gap-1ba0ac).
+            effort: Some(crate::learning_helpers::HELPER_EFFORT.to_string()),
             tools: None,
             agent_contract: None,
             bare_mode: false,
@@ -62,15 +89,12 @@ impl roko_agent::Agent for CheapFactoryAgent {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
-            allowance: None,
+            allowance: self.allowance.clone(),
+            hand_off: None,
         };
         match self.factory.run_shared_agent_bridge(request).await {
             Ok(dispatch) => dispatch.result,
-            Err(_) => roko_agent::AgentResult::fail(
-                Signal::builder(Kind::AgentOutput)
-                    .body(Body::text("cheap-factory-agent: dispatch failed"))
-                    .build(),
-            ),
+            Err(_) => helper_failure("dispatch failed"),
         }
     }
 
@@ -88,30 +112,40 @@ impl roko_agent::Agent for CheapFactoryAgent {
 /// the built-in pricing table as fallback; unpriced models rank last.
 /// Embedding models, tool-less (search-only) models, and models of
 /// `routing.disabled_providers` are never chosen. Returns the `[models.*]`
-/// key so dispatch resolves exactly that profile.
-pub(super) fn select_cheap_model_key(config: &RokoConfig) -> Option<String> {
-    select_cheap_model_key_with(config, |key| config.provider_available_for_model_key(key))
+/// key so dispatch resolves exactly that profile. Only the models `allowed`
+/// names are candidates: a chat host's run allows only those roko's own
+/// tool loop runs (bug-082810).
+pub(super) fn select_cheap_model_key(
+    config: &RokoConfig,
+    allowed: impl Fn(&str) -> bool,
+) -> Option<String> {
+    select_cheap_model_key_with(config, |key| {
+        allowed(key) && config.provider_available_for_model_key(key)
+    })
 }
 
 /// The helper model that judges an attempt `executor` (a model slug) ran
 /// (9123): the cheap helper model among those of another model family, with
 /// `true`, when one is available; else the cheap helper model, with `false`.
+/// Only the models `allowed` names are candidates.
 pub(super) fn select_judge_model_key(
     config: &RokoConfig,
     executor: &str,
+    allowed: impl Fn(&str) -> bool,
 ) -> Option<(String, bool)> {
     let family = |slug: &str| roko_core::config::model_registry::model_meta(slug).family;
     let executor_family = family(executor);
     let models = config.effective_models();
     let cross_family = select_cheap_model_key_with(config, |key| {
-        config.provider_available_for_model_key(key)
+        allowed(key)
+            && config.provider_available_for_model_key(key)
             && models
                 .get(key)
                 .is_some_and(|profile| family(&profile.slug) != executor_family)
     });
     match cross_family {
         Some(key) => Some((key, true)),
-        None => select_cheap_model_key(config).map(|key| (key, false)),
+        None => select_cheap_model_key(config, allowed).map(|key| (key, false)),
     }
 }
 
@@ -613,10 +647,7 @@ mod tests {
     async fn an_unhinted_task_runs_on_its_ladder_start_rung() {
         use roko_core::config::routing::LadderRung;
 
-        let rung = |name: &str, model: &str| LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        };
+        let rung = |name: &str, model: &str| LadderRung::new(name, model);
         for (tier, slug) in [
             ("mechanical", "claude-haiku-4-5"),
             ("architectural", "claude-sonnet-4-6"),
@@ -952,5 +983,214 @@ mod tests {
         let agent = dispatcher.cheap_agent().expect("a dispatchable model");
         assert_eq!(agent.model_key, "cli-sonnet");
         assert_eq!(agent.timeout_ms, 7_000);
+    }
+
+    /// bug-ee2752: a helper call runs its provider in a scratch directory of
+    /// its own, removed when the call ends, never in the operator's
+    /// checkout; the workspace still keeps the call's learning row. The
+    /// provider, a fake Claude CLI, writes a file wherever it runs and notes
+    /// where that was.
+    #[tokio::test]
+    async fn cheap_agent_runs_its_provider_outside_the_operators_checkout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().expect("tempdir");
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir_all(&checkout).expect("create the checkout");
+        let provider = temp.path().join("fake-claude.sh");
+        std::fs::write(
+            &provider,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+pwd -P > "$(dirname -- "$0")/ran-in"
+printf 'helper\n' > helper.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"diagnosis"}}'
+printf '%s\n' '{"type":"result","session_id":"helper","model":"claude-sonnet-4-6","total_cost_usd":0.001,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#,
+        )
+        .expect("write the provider");
+        let mut permissions = std::fs::metadata(&provider)
+            .expect("provider metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&provider, permissions).expect("make the provider executable");
+        let mut config = config_with_models(vec![(
+            "cli-sonnet",
+            model("cli", "claude-sonnet-4-6", None),
+        )]);
+        config.providers.clear();
+        config.providers.insert(
+            "cli".to_string(),
+            cli_provider(&provider.display().to_string()),
+        );
+        let dispatcher = make_bare_dispatcher(config, &checkout).await;
+
+        let agent = dispatcher.cheap_agent().expect("a dispatchable model");
+        let prompt = Signal::builder(Kind::Prompt)
+            .body(Body::text("Diagnose this failure."))
+            .build();
+        let result = roko_agent::Agent::run(&agent, &prompt, &Context::now()).await;
+        assert!(result.success, "{:?}", result.output.body.as_text());
+
+        let ran_in = std::fs::read_to_string(temp.path().join("ran-in")).expect("provider ran");
+        let ran_in = Path::new(ran_in.trim());
+        let checkout = checkout.canonicalize().expect("canonical checkout");
+        assert!(
+            !ran_in.starts_with(&checkout),
+            "the provider ran in the checkout, at {}",
+            ran_in.display()
+        );
+        assert!(
+            !ran_in.exists(),
+            "the call left its scratch directory {}",
+            ran_in.display()
+        );
+        let written: Vec<String> = std::fs::read_dir(&checkout)
+            .expect("read the checkout")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != ".roko")
+            .collect();
+        assert!(
+            written.is_empty(),
+            "the call wrote {written:?} in the checkout"
+        );
+        let efficiency = std::fs::read_to_string(checkout.join(".roko/learn/efficiency.jsonl"))
+            .expect("the workspace's efficiency log");
+        assert!(
+            efficiency.contains("dispatch-v2-cheap-factory-agent"),
+            "{efficiency}"
+        );
+    }
+
+    /// bug-e33b7e, the shape of phase 4.2's run 1447385e: z.ai refused for
+    /// want of pay days ago and its quarantine has lapsed, so its circuit
+    /// routes again, yet helper calls pass over it until a call there
+    /// succeeds. A rung whose probe was refused on billing this run takes
+    /// its provider's other models out of helper calls too.
+    #[tokio::test]
+    async fn a_helper_skips_a_provider_last_seen_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        let priced = |provider: &str, slug: &str, input: f64| ModelProfile {
+            cost_input_per_m: Some(input),
+            cost_output_per_m: Some(input * 2.0),
+            ..model(provider, slug, None)
+        };
+        let mut config = config_with_models(vec![
+            ("glm", priced("zai", "glm-4.7", 0.3)),
+            ("oss", priced("cerebras", "gpt-oss-120b", 0.35)),
+            ("oss-small", priced("cerebras", "gpt-oss-20b", 0.4)),
+            ("mini", priced("openai", "gpt-5.4-mini", 0.5)),
+        ]);
+        config.providers.clear();
+        for provider in ["zai", "cerebras", "openai"] {
+            config
+                .providers
+                .insert(provider.to_string(), cli_provider("/bin/sh"));
+        }
+        crate::graph_task_dispatch::tests::fence_audits(&mut config);
+        let config = Arc::new(config);
+        let failed = [(
+            "gpt-oss-120b".to_string(),
+            "insufficient_credits: cerebras refused the request (HTTP 402)".to_string(),
+        )]
+        .into();
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .skip_failed_rungs(&failed);
+        let dispatcher =
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf());
+        let health = &dispatcher.factory.health_registry;
+        // z.ai's 1113, its quarantine over at once.
+        health.record_exhaustion("zai", 0);
+        assert!(health.is_available("zai"), "its circuit routes again");
+
+        assert_eq!(
+            dispatcher.cheap_agent().expect("a helper").model_key,
+            "mini",
+            "not glm, last seen unpaid, nor a cerebras model, its probe refused on billing"
+        );
+        let (judge, _) = dispatcher
+            .judge_model_key("claude-sonnet-4-6")
+            .expect("a judge");
+        assert_eq!(judge, "mini");
+
+        health.record_success("zai");
+        assert_eq!(
+            dispatcher.cheap_agent().expect("a helper").model_key,
+            "glm",
+            "a success shows z.ai can pay again"
+        );
+    }
+
+    /// bug-f9ca2f, the shape of run 82b7e069: the cheapest helper model's
+    /// provider answers 402 until its circuit opens, and the next one's rung
+    /// probe failed this run, so helper calls pass over both and take the
+    /// next cheapest healthy model; the judge does too. With no healthy model
+    /// left, no helper is called, and its callers keep their deterministic
+    /// fallback.
+    #[tokio::test]
+    async fn helper_model_passes_over_a_provider_with_an_open_circuit() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let temp = tempdir().expect("tempdir");
+        let priced = |provider: &str, slug: &str, input: f64| ModelProfile {
+            cost_input_per_m: Some(input),
+            cost_output_per_m: Some(input * 2.0),
+            ..model(provider, slug, None)
+        };
+        let mut config = config_with_models(vec![
+            ("oss", priced("cerebras", "gpt-oss-120b", 0.35)),
+            ("mini", priced("openai", "gpt-5.4-mini", 0.5)),
+            ("glm", priced("zai", "glm-4.7", 0.6)),
+        ]);
+        config.providers.clear();
+        for provider in ["cerebras", "openai", "zai"] {
+            config
+                .providers
+                .insert(provider.to_string(), cli_provider("/bin/sh"));
+        }
+        crate::graph_task_dispatch::tests::fence_audits(&mut config);
+        let config = Arc::new(config);
+        let failed = [(
+            "gpt-5.4-mini".to_string(),
+            "insufficient_credits: http 402".to_string(),
+        )]
+        .into();
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .skip_failed_rungs(&failed);
+        let dispatcher =
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf());
+        assert_eq!(
+            dispatcher.cheap_agent().expect("a helper").model_key,
+            "oss",
+            "the cheapest, while its provider is healthy"
+        );
+
+        let health = &dispatcher.factory.health_registry;
+        for _ in 0..3 {
+            health.record_failure("cerebras", ErrorClass::Billing);
+        }
+        assert_eq!(
+            dispatcher
+                .cheap_agent()
+                .expect("a healthy helper")
+                .model_key,
+            "glm"
+        );
+        let (judge, _) = dispatcher
+            .judge_model_key("claude-sonnet-4-6")
+            .expect("a healthy judge");
+        assert_eq!(judge, "glm");
+
+        for _ in 0..3 {
+            health.record_failure("zai", ErrorClass::Billing);
+        }
+        assert!(
+            dispatcher.cheap_agent().is_none(),
+            "no healthy helper: no call"
+        );
     }
 }

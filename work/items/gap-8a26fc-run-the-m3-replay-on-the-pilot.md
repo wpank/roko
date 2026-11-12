@@ -10,8 +10,9 @@ size = "S"
 hold = "needs the pilot records: Pilot A (gap-c33709) and Pilot B (gap-327242) haven't run"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire 6125 (blocked in wave 8, PK49)"
 discovered_from = "gap-7ec3ef"
 anchors = ["benchmarks/viabilitybench/analysis"]
@@ -55,3 +56,5 @@ The replay and the economics report run on fixtures; the pilots haven't run.
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/6125-run-the-m3-replay-on-the-pilot-matrix-and-file-it-as-a.md`.
 - Left PK49's package item at gate 8c (2026-10-03).
+
+Checked 2026-10-27: 2026-10-26 sweep: Pilot A (gap-c33709) has since closed done (commit d7c70c0d2, 2026-10-19); Pilot B (gap-327242) remains open. The hold is half-cleared but still blocking; no econ-report.json exists yet.

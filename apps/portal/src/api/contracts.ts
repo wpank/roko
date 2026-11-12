@@ -356,6 +356,36 @@ export interface WirePlanSummary {
   estimated_minutes?: number;
 }
 
+/**
+ * The run a plan's Graph checkpoint records (CheckpointRun in roko-serve's runtime.rs, bug-cbdb6b): what a
+ * resume continues, or what a run that starts the plan over sets aside.
+ */
+export interface WireCheckpointRun {
+  run_id: string;
+  /** `failed`, `interrupted`, `cancelled`, `running`, `succeeded` or `unverified`. */
+  status: string;
+  /** Tasks the checkpoint recorded as passed. */
+  passed_tasks: string[];
+  /** Tasks a resume runs. */
+  tasks_left: string[];
+  /** Whether a resume would continue the run: it stopped part way with tasks passed. */
+  resumable: boolean;
+  /** Every task passed, but the run stopped before it delivered them (bug-4fadf8). Absent when false. */
+  delivery_pending?: boolean;
+  /** Whether a resume continues the checkpoint at all (bug-b7f6a8). */
+  continues?: boolean;
+  /** Why a resume cannot continue it, when it cannot. */
+  reason?: string;
+  /** What the run spent before it stopped, in USD, when its cost ledger can be read. */
+  spent_usd?: number;
+}
+
+/** Response body from GET /api/plans/{id}: the plan's summary, with the run a resume would continue. */
+export interface WirePlanDetail extends WirePlanSummary {
+  /** The plan's last run when a resume would continue it, else null (gap-b78706); absent on older servers. */
+  resumable_run?: WireCheckpointRun | null;
+}
+
 // ---------------------------------------------------------------------------
 // Plan tasks — GET /api/plans/{id}/tasks
 // ---------------------------------------------------------------------------
@@ -490,6 +520,7 @@ export interface WireOperation {
  * - order:             plan execution order for a multi-plan run
  * - resume:            whether this resumes a prior run
  * - max_parallel_plans: effective concurrency limit for the run
+ * - set_aside:         the run a plan run that started over set aside (bug-cbdb6b)
  */
 export interface WireAccepted {
   id: string;
@@ -497,6 +528,7 @@ export interface WireAccepted {
   order?: string[];
   resume?: boolean;
   max_parallel_plans?: number;
+  set_aside?: WireCheckpointRun | null;
 }
 
 /** Response body from GET /api/status. */

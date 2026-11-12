@@ -9,6 +9,18 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn write_plan(root: &Path, plan_id: &str, tasks_toml: &str) -> PathBuf {
+    let plan_dir = write_tasks(root, plan_id, tasks_toml);
+    // The fixtures' checks run cargo, which needs a manifest: without one,
+    // `plan validate` warns that they cannot pass (PLAN_059).
+    let manifest = root.join("Cargo.toml");
+    if !manifest.exists() {
+        fs::write(manifest, "[workspace]\n").unwrap();
+    }
+    plan_dir
+}
+
+/// Write `plans/<plan_id>/tasks.toml` under `root`, and nothing else.
+fn write_tasks(root: &Path, plan_id: &str, tasks_toml: &str) -> PathBuf {
     let plan_dir = root.join("plans").join(plan_id);
     fs::create_dir_all(&plan_dir).unwrap();
     fs::write(plan_dir.join("tasks.toml"), tasks_toml).unwrap();
@@ -273,11 +285,15 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    // Each task gets two warnings: PLAN_012 for naming its model by an
+    // alias, and PLAN_041 because a `model_hint` pins the model past the
+    // routing ladder (on by default) however it is spelled; the full name
+    // clears only the first.
     assert!(
-        stdout.contains("3 diagnostics in 1 plan"),
+        stdout.contains("6 diagnostics in 1 plan"),
         "unexpected stdout: {stdout}"
     );
-    assert!(stdout.contains("PLAN_012"), "missing PLAN_012: {stdout}");
+    assert_eq!(stdout.matches("PLAN_012").count(), 3, "{stdout}");
     assert!(
         stdout.contains("uses model alias 'haiku'; prefer the full name 'claude-haiku-4-5'"),
         "missing haiku alias warning: {stdout}"
@@ -290,6 +306,16 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
         stdout.contains("uses model alias 'opus'; prefer the full name 'claude-opus-4-6'"),
         "missing opus alias warning: {stdout}"
     );
+    assert_eq!(stdout.matches("PLAN_041").count(), 3, "{stdout}");
+    for (task, alias) in [("T1", "haiku"), ("T2", "sonnet"), ("T3", "opus")] {
+        assert!(
+            stdout.contains(&format!(
+                "task '{task}' sets model_hint = '{alias}', which pins a model and bypasses the \
+                 routing ladder"
+            )),
+            "missing PLAN_041 for {task}: {stdout}"
+        );
+    }
 }
 
 #[test]
@@ -318,14 +344,24 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    // PLAN_009 for the unknown model, and PLAN_041 because the hint still
+    // pins the task's model past the routing ladder (on by default).
     assert!(
-        stdout.contains("1 diagnostics in 1 plan"),
+        stdout.contains("2 diagnostics in 1 plan"),
         "unexpected stdout: {stdout}"
     );
     assert!(stdout.contains("PLAN_009"), "missing PLAN_009: {stdout}");
     assert!(
         stdout.contains("uses model 'definitely-not-a-model' which is not configured in roko.toml"),
         "missing original mystery-model warning: {stdout}"
+    );
+    assert!(stdout.contains("PLAN_041"), "missing PLAN_041: {stdout}");
+    assert!(
+        stdout.contains(
+            "task 'T1' sets model_hint = 'definitely-not-a-model', which pins a model and \
+             bypasses the routing ladder"
+        ),
+        "missing PLAN_041 pin warning: {stdout}"
     );
 }
 
@@ -448,6 +484,13 @@ verify = [{ phase = "structural", command = "test -f docs/slug.md" }]
 verfy = [{ phase = "structural", command = "grep -q slugify docs/slug.md" }]
 "#,
     );
+    // The test module T1 reads and its check runs.
+    fs::create_dir_all(temp.path().join("tests")).unwrap();
+    fs::write(
+        temp.path().join("tests/test_slug.py"),
+        "import unittest\n\n\nclass SlugTest(unittest.TestCase):\n    def test_slug(self):\n        pass\n",
+    )
+    .unwrap();
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -1232,5 +1275,373 @@ fn five_stale_plans_pass_plan_validate() {
             tasks_toml.contains(&needle),
             "{archived_dir}/tasks.toml should set [meta] {needle}"
         );
+    }
+}
+
+/// `roko plan run` with `args` in `temp`, with the mock agents first on
+/// `PATH`, so a run that got past its checks could reach no real model.
+fn run_plan(temp: &TempDir, args: &[&str]) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("roko")
+        .unwrap()
+        .isolated()
+        .with_mock_agents()
+        .current_dir(temp.path())
+        .arg("plan")
+        .arg("run")
+        .args(args)
+        .assert()
+}
+
+/// The small Python project the specs epics' exit checks plan work in:
+/// `load_settings` in `src/config.py`, and the planner-written tests the
+/// plans' checks run, each red until its task writes the module it imports.
+const RETRY_PROJECT: [(&str, &str); 4] = [
+    (
+        "src/config.py",
+        r#"# The CLI's settings: `key = value` lines over the defaults.
+DEFAULTS = {"retries": "3"}
+
+
+def load_settings(text):
+    settings = dict(DEFAULTS)
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            settings[key.strip()] = value.strip()
+    return settings
+"#,
+    ),
+    (
+        "tests/test_retry.py",
+        r#"import unittest
+
+from src.retry import parse_retry_limit
+
+
+class ParseRetryLimitTest(unittest.TestCase):
+    def test_returns_the_limit(self):
+        self.assertEqual(parse_retry_limit(" 5 "), 5)
+
+    def test_rejects_zero(self):
+        with self.assertRaises(ValueError):
+            parse_retry_limit("0")
+"#,
+    ),
+    (
+        "tests/test_backoff.py",
+        r#"import unittest
+
+from src.backoff import backoff_delay
+
+
+class BackoffDelayTest(unittest.TestCase):
+    def test_doubles_half_a_second_per_attempt(self):
+        self.assertEqual(backoff_delay(3), 2.0)
+"#,
+    ),
+    (
+        "tests/test_config.py",
+        r#"import unittest
+
+from src.config import load_settings
+
+
+class LoadSettingsTest(unittest.TestCase):
+    def test_names_the_limit_retry_limit(self):
+        self.assertEqual(load_settings("")["retry_limit"], "3")
+"#,
+    ),
+];
+
+fn write_retry_project(root: &Path) {
+    for (path, text) in RETRY_PROJECT {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+}
+
+/// Whether a run in `root` started an attempt: dispatching a task opens its
+/// run's `attempts.jsonl`.
+fn any_attempt_started(root: &Path) -> bool {
+    fs::read_dir(root.join(".roko/runs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|run| run.path().join("attempts.jsonl").exists())
+}
+
+/// The check of 3200's exact plan: the planner's tests of both criteria.
+const RETRY_CHECK: &str = "python3 -m unittest tests.test_retry";
+
+/// 3200's exact, test-backed plan with `check` as its one check: a goal, a
+/// description that names the function and its file, observable criteria the
+/// check covers, the files to read and why, a non-goal and a size bound.
+fn exact_plan(plan: &str, check: &str) -> String {
+    format!(
+        r#"[meta]
+plan = "{plan}"
+
+[[task]]
+id = "T1"
+title = "Parse the retry limit"
+goal = "`parse_retry_limit` turns the `retries` setting into a whole number of at least 1, so a bad value stops the CLI before its first request."
+description = """Add `parse_retry_limit(text)` to src/retry.py. It strips the text, converts it with
+`int()` and returns the number when it is 1 or more. For 0, a negative number or text that is not
+a number it raises `ValueError` naming the value. The planner's tests in tests/test_retry.py check
+both criteria."""
+role = "implementer"
+tier = "focused"
+files = ["src/retry.py"]
+max_loc = 20
+depends_on = []
+non_goals = ["Do not change `load_settings` or the defaults in src/config.py"]
+acceptance = [
+  'AC1: `parse_retry_limit(" 5 ")` returns 5',
+  'AC2: `parse_retry_limit("0")` raises `ValueError`',
+]
+
+[task.context]
+read_files = [
+  {{ path = "src/config.py", why = "`load_settings` returns each setting as text" }},
+  {{ path = "tests/test_retry.py", why = "the planner's tests of both criteria" }},
+]
+
+[[task.verify]]
+phase = "test"
+command = "{check}"
+covers = ["AC1", "AC2"]
+"#
+    )
+}
+
+/// Backlog epic 3200's exit check: an exact, test-backed plan scores band B
+/// or better and passes the spec gate `roko plan run` applies before any
+/// dispatch, and `roko plan run` refuses its twin, whose one check ends in
+/// `|| true` and so cannot fail (HF2), before any agent starts, naming the
+/// rule. The gate runs in a dry run too, so the exact plan's dry run passes
+/// the gate rather than skipping it.
+#[test]
+fn spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_twin() {
+    let temp = TempDir::new().unwrap();
+    write_retry_project(temp.path());
+    write_tasks(temp.path(), "exact", &exact_plan("exact", RETRY_CHECK));
+    let vacuous = format!("{RETRY_CHECK} || true");
+    write_tasks(temp.path(), "twin", &exact_plan("twin", &vacuous));
+
+    // The exact plan validates clean, even under --strict, and scores band B
+    // or better.
+    let validated = run_validate(
+        &temp,
+        &["plans/exact", "--strict", "--spec-quality", "--json"],
+    )
+    .success();
+    let report: serde_json::Value = serde_json::from_slice(&validated.get_output().stdout).unwrap();
+    assert_eq!(report["totals"]["errors"], 0, "{report}");
+    assert_eq!(report["totals"]["warnings"], 0, "{report}");
+    let task = &report["spec_quality"]["tasks"][0];
+    assert!(matches!(task["band"].as_str(), Some("A" | "B")), "{task}");
+    assert_eq!(task["hard_fail"], serde_json::json!([]), "{task}");
+    assert_eq!(
+        task["verify_classes"],
+        serde_json::json!(["test"]),
+        "{task}"
+    );
+
+    // `plan run` lets it through the gate; the dry run stops before dispatch.
+    let passed = run_plan(&temp, &["plans/exact", "--dry-run"]).success();
+    let stdout = String::from_utf8_lossy(&passed.get_output().stdout);
+    let stderr = String::from_utf8_lossy(&passed.get_output().stderr);
+    assert!(
+        stdout.contains("Dry run: 1 plan(s), 1 task(s)"),
+        "{stdout}\n{stderr}"
+    );
+    assert!(!stderr.contains("spec gate"), "{stderr}");
+
+    // It refuses the twin, in a dry run and in a real run, before any agent
+    // starts.
+    let runs: [&[&str]; 2] = [&["plans/twin", "--dry-run"], &["plans/twin"]];
+    for args in runs {
+        let refused = run_plan(&temp, args).failure();
+        assert_eq!(refused.get_output().status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&refused.get_output().stderr);
+        assert!(
+            stderr.contains("spec gate: plan refused before dispatch"),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains("plans/twin/tasks.toml T1: HF2: step 1: ends in `|| true`"),
+            "{args:?}: {stderr}"
+        );
+    }
+    assert!(!any_attempt_started(temp.path()), "a twin's task started");
+}
+
+/// spec-e57870's four-task plan, with `t1_verify` as T1's verify steps and
+/// T3's tier and dependencies as given: T1 parses the retry limit, T2 adds
+/// the backoff delay, T3 renames the `retries` setting in four files, and T4
+/// logs each retry, checked by a pinned acceptance test whose source is the
+/// plan's `accept/test_log.py`.
+fn four_task_plan(plan: &str, t1_verify: &str, t3_tier: &str, t3_depends_on: &str) -> String {
+    format!(
+        r#"[meta]
+plan = "{plan}"
+
+[[task]]
+id = "T1"
+title = "Parse the retry limit"
+description = "Add `parse_retry_limit(text)` to src/retry.py: it returns the limit as an int and raises `ValueError` for 0."
+role = "implementer"
+files = ["src/retry.py"]
+depends_on = []
+verify = [{t1_verify}]
+
+[[task]]
+id = "T2"
+title = "Add the backoff delay"
+description = "Add `backoff_delay(attempt)` to src/backoff.py, half a second doubled per attempt, and list it in docs/settings.md."
+role = "implementer"
+files = ["src/backoff.py", "docs/settings.md"]
+depends_on = []
+verify = [{{ phase = "test", command = "python3 -m unittest tests.test_backoff" }}]
+
+[[task]]
+id = "T3"
+title = "Rename the retries setting"
+description = "Rename the `retries` setting to `retry_limit` in `load_settings`, src/cli.py, docs/settings.md and README.md."
+role = "implementer"
+tier = "{t3_tier}"
+files = ["src/config.py", "src/cli.py", "docs/settings.md", "README.md"]
+depends_on = {t3_depends_on}
+verify = [{{ phase = "test", command = "python3 -m unittest tests.test_config" }}]
+
+[[task]]
+id = "T4"
+title = "Log each retry"
+description = "Add `log_retry(attempt, delay)` to src/log.py: `log_retry(2, 0.5)` returns `retry 2 after 0.5s`."
+role = "implementer"
+files = ["src/log.py", "tests/test_log.py"]
+depends_on = []
+
+[task.accept]
+files = [
+  {{ src = "accept/test_log.py", dest = "tests/test_log.py", runner = "python3 -m unittest {{dest}}", count = 2 }},
+]
+"#
+    )
+}
+
+/// T4's pinned acceptance test, which only the fixed twin ships.
+const TEST_LOG_PY: &str = r#"import unittest
+
+from src.log import log_retry
+
+
+class LogRetryTest(unittest.TestCase):
+    def test_names_the_attempt_and_the_delay(self):
+        self.assertEqual(log_retry(2, 0.5), "retry 2 after 0.5s")
+
+    def test_counts_attempts_from_one(self):
+        self.assertEqual(log_retry(1, 0.25), "retry 1 after 0.25s")
+"#;
+
+/// The rule, task (`-` for the plan) and message of each diagnostic in a
+/// `plan validate --json` report, sorted.
+fn diagnostics(report: &serde_json::Value) -> Vec<(&str, &str, &str)> {
+    let mut found: Vec<(&str, &str, &str)> = report["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|plan| plan["diagnostics"].as_array().unwrap())
+        .map(|diagnostic| {
+            (
+                diagnostic["rule_id"].as_str().unwrap(),
+                diagnostic["task_id"].as_str().unwrap_or("-"),
+                diagnostic["message"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+/// spec-e57870's exit check: `plan validate --strict --spec-quality` rejects
+/// a weak plan, with a code for each of its four defects, and passes its
+/// fixed twin. The weak plan checks T1 with a grep alone, which a stub
+/// passes: the spec-quality rules class the step `structural` and score its
+/// verify strength (SQ04) 0.25, since find-70edcb's decision keeps such a
+/// file-scoped step a score rather than a warning. T2 and T3 can run at the
+/// same time and both write `docs/settings.md` (PLAN_CONCURRENT_OVERLAP); T3
+/// is a mechanical task that writes four files, one more than its tier
+/// allows (PLAN_TIER_SIZE); and the source of T4's pinned acceptance test is
+/// missing from the plan (PLAN_038). The fixed twin runs T1's
+/// planner-written test, has T3 wait for T2 at the focused tier, and ships
+/// T4's test.
+#[test]
+fn spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin() {
+    let temp = TempDir::new().unwrap();
+    write_retry_project(temp.path());
+    let grep =
+        r#"{ phase = "structural", command = "grep -q 'def parse_retry_limit' src/retry.py" }"#;
+    let test = r#"{ phase = "test", command = "python3 -m unittest tests.test_retry" }"#;
+    write_tasks(
+        temp.path(),
+        "weak",
+        &four_task_plan("weak", grep, "mechanical", "[]"),
+    );
+    let fixed = write_tasks(
+        temp.path(),
+        "fixed",
+        &four_task_plan("fixed", test, "focused", r#"["T2"]"#),
+    );
+    fs::create_dir_all(fixed.join("accept")).unwrap();
+    fs::write(fixed.join("accept/test_log.py"), TEST_LOG_PY).unwrap();
+    let args = |plan| [plan, "--strict", "--spec-quality", "--json"];
+
+    let weak = run_validate(&temp, &args("plans/weak")).failure();
+    assert_eq!(weak.get_output().status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&weak.get_output().stdout).unwrap();
+    let found = diagnostics(&report);
+    let codes: Vec<(&str, &str)> = found.iter().map(|(rule, task, _)| (*rule, *task)).collect();
+    assert_eq!(
+        codes,
+        [
+            ("PLAN_038", "T4"),
+            ("PLAN_CONCURRENT_OVERLAP", "-"),
+            ("PLAN_TIER_SIZE", "T3"),
+        ],
+        "{report}"
+    );
+    let messages = [
+        "task 'T4' [task.accept] src `accept/test_log.py` is missing",
+        "tasks T2 and T3 can run at the same time and both write `docs/settings.md`",
+        "mechanical task is over its tier's size limits: 4 files (limit 3)",
+    ];
+    for ((rule, _, message), expected) in found.iter().zip(messages) {
+        assert!(message.contains(expected), "{rule}: {message}");
+    }
+    let tasks = report["spec_quality"]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 4, "{report}");
+    assert_eq!(tasks[0]["task_id"], "T1");
+    assert_eq!(
+        tasks[0]["verify_classes"],
+        serde_json::json!(["structural"])
+    );
+    assert_eq!(tasks[0]["rules"]["SQ04"], 0.25);
+    for task in tasks {
+        assert_eq!(task["hard_fail"], serde_json::json!([]), "{task}");
+    }
+
+    let fixed = run_validate(&temp, &args("plans/fixed")).success();
+    let report: serde_json::Value = serde_json::from_slice(&fixed.get_output().stdout).unwrap();
+    assert!(diagnostics(&report).is_empty(), "{report}");
+    assert_eq!(report["totals"]["errors"], 0, "{report}");
+    assert_eq!(report["totals"]["warnings"], 0, "{report}");
+    let tasks = report["spec_quality"]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 4, "{report}");
+    assert_eq!(tasks[0]["verify_classes"], serde_json::json!(["test"]));
+    assert_eq!(tasks[0]["rules"]["SQ04"], 1.0);
+    for task in tasks {
+        assert_eq!(task["hard_fail"], serde_json::json!([]), "{task}");
     }
 }

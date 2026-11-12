@@ -9,9 +9,9 @@ size = "L"
 goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-14
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/tui-parity2/36-OPEN-GAPS.md#P0 — operator truth and control"
 discovered_from = "audit:tmp/tui-parity2/36-OPEN-GAPS.md#P0 — operator truth and control"
 anchors = ["crates/roko-cli/src/runner/queue_manifest.rs::QueueManifest::eligible_plans", "crates/roko-cli/src/graph_execution/plan_set.rs::outside_plan_status", "crates/roko-cli/src/graph_execution/plan_set.rs::PlanSetScheduler", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/commands/plan.rs::read_executor_state"]
@@ -163,3 +163,5 @@ How to verify: Build the 37 parity fixture against the Graph engine and record w
 Verified 2026-09-28: still unproven - queue manifests only feed `roko plan queue show/validate/init` (commands/plan.rs:1551-1658), plans run sequentially (graph_execution/plan_runner.rs:1197), per-task worktrees are opt-in (plan_runner.rs:1059), and no parity fixture test exists in crates/roko-cli/tests. runner/queue_manifest.rs and runner/merge.rs still exist under crates/roko-cli/src/runner/ (the import warning was wrong). Absorbs gap-28ee5a.
 
 Re-verified 2026-09-29 at d9e79e9d8: still unproven end to end. Change since last check: 725f21e05 added bounded parallel plan sets (graph_execution/plan_set.rs PlanSetScheduler, [conductor] max_parallel_plans, default 1), so plans are no longer strictly sequential. Still missing: queue-manifest selection and milestone unlock in plan run (QueueManifest only feeds `plan queue` subcommands), merge-back of per-task worktrees (opt-in; plan_runner.rs:840-845 rejects them with parallel plans because they are never merged back), and the 37 parity fixture test (2 milestones, conflict, kill/restart, pause/resume).
+
+Checked 2026-10-27: 2026-10-26 sweep: gap-4ec59f and bug-8208a6 (Current-state table rows 3 and 6) are now done (work/done/). bug-a3760a was already accounted for in this item's own 2026-09-29 note. Still missing, and still owned by this item: the mori_workflow_parity.rs fixture (one test per contract step 1-6) and queue-driven milestone selection in `plan run` (plan_runner.rs never reads .roko/queue.toml).

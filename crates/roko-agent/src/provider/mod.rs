@@ -415,6 +415,23 @@ pub fn create_agent_for_model(
     if options.env_passthrough.is_empty() {
         options.env_passthrough = config.agent.env_passthrough.clone();
     }
+    // A tool call gets `[timeouts] tool_execution_ms`, or what it asks for
+    // up to `tool_execution_max_ms` (bug-c22bd9).
+    if options.tool_timeout.is_none() {
+        options.tool_timeout = Some(config.timeouts.tool_execution());
+    }
+    if options.tool_timeout_max.is_none() {
+        options.tool_timeout_max = Some(config.timeouts.tool_execution_max());
+    }
+    // A model that names no reasoning effort of its own runs at the
+    // request's, else at `[agent] default_effort` (bug-29014c).
+    let effort = options
+        .effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+        .unwrap_or(&config.agent.default_effort);
+    let profile = profile.with_reasoning_effort_or(effort);
     // The CaMeL data-LLM boundary covers the tool loops roko runs itself:
     // the adapters that execute tools in process (gap-b0d514).
     if options.data_llm.is_none()
@@ -492,6 +509,9 @@ pub fn data_llm_boundary(
                 profile.provider
             ))
         })?;
+    // At `[agent] default_effort`, unless the model names its own
+    // (bug-29014c).
+    let profile = profile.with_reasoning_effort_or(&config.agent.default_effort);
     let poster = Arc::new(crate::http::ReqwestPoster::new());
     let backend = crate::tool_loop::backends::create_tool_loop_backend(
         &provider,
@@ -612,12 +632,20 @@ pub fn build_provider_tool_dispatcher(
 /// Attach `options`' per-call trace and metrics sinks and its tool
 /// correlation to a tool-loop agent, so each of its tool calls leaves a
 /// trace, a metrics record and audit lines that join back to the run
-/// (find-f489db).
+/// (find-f489db), and its tool calls' budgets (bug-c22bd9).
 #[must_use]
 pub(crate) fn with_tool_observability(
     mut agent: crate::tool_loop::ToolLoopAgent,
     options: &AgentOptions,
 ) -> crate::tool_loop::ToolLoopAgent {
+    // The tool calls' budgets ride along with their observability: every
+    // adapter that runs roko's own tool loop applies both (bug-c22bd9).
+    if let Some(timeout) = options.tool_timeout {
+        agent = agent.with_timeout(timeout);
+    }
+    if let Some(max_timeout) = options.tool_timeout_max {
+        agent = agent.with_max_timeout(max_timeout);
+    }
     if let Some(sink) = &options.trace_sink {
         agent = agent.with_trace_sink(Arc::clone(sink));
     }
@@ -1061,6 +1089,14 @@ pub struct AgentOptions {
     /// would strip them: exact names or `PREFIX*` patterns. Filled from
     /// `[agent] env_passthrough` by [`create_agent_for_model`] when empty.
     pub env_passthrough: Vec<String>,
+    /// The wall-clock budget of a tool call in roko's own tool loop that
+    /// asks for none (bug-c22bd9). Filled from `[timeouts] tool_execution_ms`
+    /// by [`create_agent_for_model`] when `None`.
+    pub tool_timeout: Option<std::time::Duration>,
+    /// The most such a call may ask for with its own `timeout_ms`. Filled
+    /// from `[timeouts] tool_execution_max_ms` by [`create_agent_for_model`]
+    /// when `None`.
+    pub tool_timeout_max: Option<std::time::Duration>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
     /// The request's extended-thinking setting, which overrides the model
@@ -1175,6 +1211,11 @@ pub struct AgentOptions {
     /// whose loop roko runs asks it before each model call and stops once it
     /// refuses one; a plan run's attempt sets it from the plan budget.
     pub turn_budget: Option<Arc<dyn crate::tool_loop::TurnBudget>>,
+    /// What this agent's tool loop asks when its model hands back, for a
+    /// provider whose loop roko runs (bug-cbbaa8): a plan attempt's
+    /// implementer whose task's checks still fail, with turns left, is sent
+    /// back to them within its try.
+    pub hand_off_check: Option<Arc<dyn crate::tool_loop::HandOffCheck>>,
     /// The most this agent's run may spend, in USD, for an agent that runs
     /// its own loop and keeps a spend limit of its own (the Claude CLI's
     /// `--max-budget-usd`). A plan run's attempt sets it from the plan budget
@@ -1186,6 +1227,9 @@ pub struct AgentOptions {
     /// prices usage itself (the Claude CLI's `priced_observation`) honours the pin instead of
     /// always re-resolving the newest snapshot file.
     pub pricing: PricingConfig,
+    /// Tools a model's tool-count cap must keep, put first in its menu: an
+    /// attempt with checks keeps `run_tests`, which runs them (gap-770cb5).
+    pub essential_tools: Vec<String>,
 }
 
 impl std::fmt::Debug for AgentOptions {
@@ -1219,6 +1263,8 @@ impl std::fmt::Debug for AgentOptions {
             .field("provenance_sink", &self.provenance_sink.is_some())
             .field("data_llm", &self.data_llm.is_some())
             .field("turn_budget", &self.turn_budget.is_some())
+            .field("hand_off_check", &self.hand_off_check.is_some())
+            .field("essential_tools", &self.essential_tools)
             .finish_non_exhaustive()
     }
 }
@@ -1457,6 +1503,19 @@ pub enum ProviderError {
     ContentPolicy,
     ContextOverflow,
     ModelNotFound,
+    /// The provider answered with an HTTP 4xx that refuses this request as it
+    /// stands: a parameter it rejects, a model it does not serve or the key
+    /// may not use (bug-35b190). Sending the same request again gets the same
+    /// answer. [`error_classify::refusal_class`] names its failure class by
+    /// `status` and the provider's words.
+    RequestRefused {
+        /// The provider that refused, as roko names it (`openai`).
+        provider: String,
+        /// The HTTP status.
+        status: u16,
+        /// The provider's own words, with the parameter or code it named.
+        message: String,
+    },
     Other(String),
 }
 
@@ -1468,8 +1527,10 @@ impl fmt::Display for ProviderError {
                 None => f.write_str("rate limited"),
             },
             Self::AuthFailure => f.write_str(error_classify::AUTH_FAILURE_MARKER),
-            Self::InsufficientCredits => f.write_str(
-                "billing error: insufficient credits or quota exceeded — will not retry",
+            Self::InsufficientCredits => write!(
+                f,
+                "{} or quota exceeded — will not retry",
+                error_classify::BILLING_REFUSAL_MARKER
             ),
             Self::ProviderExhausted { message, .. } => write!(
                 f,
@@ -1481,6 +1542,22 @@ impl fmt::Display for ProviderError {
             Self::ContentPolicy => f.write_str("content policy violation"),
             Self::ContextOverflow => f.write_str("context overflow"),
             Self::ModelNotFound => f.write_str("model not found"),
+            Self::RequestRefused {
+                provider,
+                status,
+                message,
+            } => {
+                let provider = if provider.is_empty() {
+                    "the provider"
+                } else {
+                    provider.as_str()
+                };
+                write!(
+                    f,
+                    "{provider} {} {status}): {message}",
+                    error_classify::REQUEST_REFUSED_MARKER
+                )
+            }
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -1518,6 +1595,9 @@ pub fn should_retry(error: &ProviderError) -> RetryAction {
         ProviderError::ServerError(_) => RetryAction::TryFallback,
         ProviderError::ContentPolicy => RetryAction::Skip,
         ProviderError::ContextOverflow => RetryAction::TryWithSmallerContext,
+        // The same request gets the same answer from this provider
+        // (bug-35b190).
+        ProviderError::RequestRefused { .. } => RetryAction::TryFallback,
         _ => RetryAction::TryFallback,
     }
 }
@@ -1770,6 +1850,445 @@ mod tests {
         config
     }
 
+    /// A chat server that answers `count` requests "ok", as a stream when the
+    /// request asks for one, and keeps each request's JSON body.
+    fn spawn_capturing_chat_server(
+        count: usize,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&bodies);
+        let handle = thread::spawn(move || {
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set read timeout");
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let body = loop {
+                    let n = stream.read(&mut chunk).expect("read request");
+                    assert!(n > 0, "request closed early");
+                    buf.extend_from_slice(&chunk[..n]);
+                    let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("content length");
+                    if buf.len() >= end + 4 + length {
+                        break buf[end + 4..end + 4 + length].to_vec();
+                    }
+                };
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body).expect("json request body");
+                let streamed = body["stream"] == serde_json::json!(true);
+                let model = body["model"].clone();
+                captured.lock().expect("capture lock").push(body);
+                let usage = serde_json::json!({
+                    "prompt_tokens": 11,
+                    "completion_tokens": 1,
+                    "total_tokens": 12
+                });
+                let wire = if streamed {
+                    let mut wire = String::from(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: \
+                         close\r\n\r\n",
+                    );
+                    let chunk = |choices: serde_json::Value| {
+                        serde_json::json!({
+                            "id": "c1",
+                            "object": "chat.completion.chunk",
+                            "model": model,
+                            "choices": choices,
+                        })
+                    };
+                    let mut done = chunk(serde_json::json!([]));
+                    done["usage"] = usage;
+                    for event in [
+                        chunk(serde_json::json!([{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "ok"},
+                            "finish_reason": null
+                        }])),
+                        chunk(serde_json::json!([{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }])),
+                        done,
+                    ] {
+                        wire.push_str(&format!("data: {event}\n\n"));
+                    }
+                    wire.push_str("data: [DONE]\n\n");
+                    wire
+                } else {
+                    let response = serde_json::json!({
+                        "id": "chatcmpl-test",
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": usage
+                    })
+                    .to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n{response}",
+                        response.len()
+                    )
+                };
+                stream.write_all(wire.as_bytes()).expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+        (format!("http://{addr}"), bodies, handle)
+    }
+
+    /// bug-29014c: an OpenAI reasoning model's request carries
+    /// `reasoning_effort` when it carries no function tools, as from roko's
+    /// tool-less agent: `[agent] default_effort` when the model names no
+    /// effort of its own, its own when it does, and a request's own effort
+    /// over the default. A tool-loop request, plain or streamed, carries
+    /// tools and so no effort: chat completions refuses the two together for
+    /// the GPT-5.4 family. A model outside the GPT-5 family and the o-series
+    /// gets no such field.
+    #[tokio::test]
+    async fn an_openai_reasoning_model_request_carries_reasoning_effort() {
+        use roko_core::agent::ReasoningEffort;
+
+        // Each model: its key, slug, own effort, whether it calls tools, and
+        // the effort its request asks for.
+        let models = [
+            ("gpt-5-4-mini", "gpt-5.4-mini", None, true, None),
+            (
+                "gpt-5-4",
+                "gpt-5.4",
+                Some(ReasoningEffort::High),
+                true,
+                None,
+            ),
+            ("text-mini", "gpt-5.4-mini", None, false, None),
+            ("text", "gpt-5.4", Some(ReasoningEffort::High), false, None),
+            ("text-nano", "gpt-5.4-nano", None, false, Some("low")),
+            ("glm-text", "glm-4.7", None, false, None),
+        ];
+        // Each run: the model, whether it streams, the effort sent.
+        let runs = [
+            ("gpt-5-4-mini", false, None),
+            ("gpt-5-4-mini", true, None),
+            ("gpt-5-4", false, None),
+            ("gpt-5-4", true, None),
+            ("text-mini", false, Some("medium")),
+            ("text", false, Some("high")),
+            ("text-nano", false, Some("low")),
+            ("glm-text", false, None),
+        ];
+        let (base_url, bodies, server) = spawn_capturing_chat_server(runs.len());
+        let mut config = RokoConfig::default();
+        config.agent.default_effort = "medium".to_string();
+        // Its own provider id: the process-wide rate limiter is shared.
+        config.providers.insert(
+            "effort-openai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(format!("{base_url}/v1")),
+                api_key_env: Some("PATH".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        for (key, slug, reasoning_effort, supports_tools, _) in models {
+            config.models.insert(
+                key.to_string(),
+                ModelProfile {
+                    provider: "effort-openai".to_string(),
+                    slug: slug.to_string(),
+                    context_window: 128_000,
+                    max_output: Some(1_024),
+                    supports_tools,
+                    tool_format: "openai_json".to_string(),
+                    reasoning_effort,
+                    ..ModelProfile::default()
+                },
+            );
+        }
+        let workdir = tempdir().expect("tempdir");
+
+        for (key, streamed, _) in runs {
+            let (_, _, _, _, effort) = models
+                .iter()
+                .find(|model| model.0 == key)
+                .expect("a configured model");
+            let options = AgentOptions {
+                timeout_ms: Some(5_000),
+                name: "effort-agent".to_string(),
+                effort: effort.map(str::to_string),
+                working_dir: Some(workdir.path().to_path_buf()),
+                immune_root: Some(workdir.path().to_path_buf()),
+                ..AgentOptions::default()
+            };
+            let agent = create_agent_for_model(&config, key, options).expect("create agent");
+            let result = if streamed {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                result
+            } else {
+                agent.run(&prompt("hello"), &Context::now()).await
+            };
+            assert!(
+                result.success,
+                "{key} (streamed: {streamed}): {}",
+                result.output.body.as_text().unwrap_or_default()
+            );
+        }
+        server.join().expect("server thread");
+
+        let bodies = bodies.lock().expect("capture lock");
+        assert_eq!(bodies.len(), runs.len());
+        for ((key, streamed, sent), body) in runs.iter().zip(bodies.iter()) {
+            assert_eq!(
+                body["stream"].as_bool().unwrap_or(false),
+                *streamed,
+                "{key}: {body}"
+            );
+            let calls_tools = models.iter().any(|model| model.0 == *key && model.3);
+            assert_eq!(body.get("tools").is_some(), calls_tools, "{key}: {body}");
+            assert_eq!(
+                body.get("reasoning_effort")
+                    .and_then(serde_json::Value::as_str),
+                *sent,
+                "{key} (streamed: {streamed}): {body}"
+            );
+        }
+    }
+
+    /// A server that answers `count` OpenAI Responses requests "ok", after
+    /// encrypted reasoning, as one JSON answer or as a stream, as each asks,
+    /// and keeps each request's path and body.
+    fn spawn_capturing_responses_server(
+        count: usize,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set read timeout");
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut chunk).expect("read request");
+                    assert!(n > 0, "request closed early");
+                    buf.extend_from_slice(&chunk[..n]);
+                    let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("content length");
+                    if buf.len() >= end + 4 + length {
+                        break (head, buf[end + 4..end + 4 + length].to_vec());
+                    }
+                };
+                let path = head
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body).expect("json request body");
+                let streamed = body["stream"] == serde_json::json!(true);
+                captured
+                    .lock()
+                    .expect("capture lock")
+                    .push((path, body.clone()));
+
+                let reasoning = serde_json::json!({
+                    "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc",
+                });
+                let message = serde_json::json!({
+                    "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                    "content": [{ "type": "output_text", "text": "ok", "annotations": [] }],
+                });
+                let answer = serde_json::json!({
+                    "id": "resp_1", "object": "response", "status": "completed",
+                    "model": body["model"], "output": [reasoning, message],
+                    "usage": {
+                        "input_tokens": 11, "output_tokens": 9,
+                        "output_tokens_details": { "reasoning_tokens": 8 },
+                    },
+                });
+                let wire = if streamed {
+                    let mut wire = String::from(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: \
+                         close\r\n\r\n",
+                    );
+                    for event in [
+                        serde_json::json!({ "type": "response.created",
+                                            "response": { "id": "resp_1" } }),
+                        serde_json::json!({ "type": "response.in_progress",
+                                            "response": { "id": "resp_1" } }),
+                        serde_json::json!({ "type": "response.output_item.added",
+                                            "item": { "type": "reasoning", "id": "rs_1" } }),
+                        serde_json::json!({ "type": "response.output_item.done",
+                                            "item": reasoning }),
+                        serde_json::json!({ "type": "response.output_item.added", "item": {
+                            "type": "message", "id": "msg_1", "role": "assistant",
+                            "content": [] } }),
+                        serde_json::json!({ "type": "response.output_text.delta",
+                                            "item_id": "msg_1", "delta": "ok" }),
+                        serde_json::json!({ "type": "response.output_item.done",
+                                            "item": message }),
+                        serde_json::json!({ "type": "response.completed", "response": answer }),
+                    ] {
+                        let kind = event["type"].as_str().unwrap_or_default().to_string();
+                        wire.push_str(&format!("event: {kind}\ndata: {event}\n\n"));
+                    }
+                    wire
+                } else {
+                    let answer = answer.to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                };
+                stream.write_all(wire.as_bytes()).expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+        (format!("http://{addr}"), requests, handle)
+    }
+
+    /// gap-1ba0ac: a model whose `[models.*] api` is `responses` is called
+    /// through OpenAI's Responses API, answered and streamed: statelessly,
+    /// with its effort as `reasoning.effort` beside its function tools, and
+    /// its answer, reasoning tokens and all, reads as any other.
+    #[tokio::test]
+    async fn a_gpt5_tool_loop_reasons_on_the_responses_api() {
+        use roko_core::config::schema::OpenAiApi;
+
+        let (base_url, requests, server) = spawn_capturing_responses_server(2);
+        let mut config = RokoConfig::default();
+        config.agent.default_effort = "medium".to_string();
+        // Its own provider id: the process-wide rate limiter is shared.
+        config.providers.insert(
+            "responses-openai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(format!("{base_url}/v1")),
+                api_key_env: Some("PATH".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "gpt-5-4-mini".to_string(),
+            ModelProfile {
+                provider: "responses-openai".to_string(),
+                slug: "gpt-5.4-mini".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                api: Some(OpenAiApi::Responses),
+                ..ModelProfile::default()
+            },
+        );
+        let workdir = tempdir().expect("tempdir");
+
+        for streamed in [false, true] {
+            let options = AgentOptions {
+                timeout_ms: Some(5_000),
+                name: "responses-agent".to_string(),
+                working_dir: Some(workdir.path().to_path_buf()),
+                immune_root: Some(workdir.path().to_path_buf()),
+                ..AgentOptions::default()
+            };
+            let agent =
+                create_agent_for_model(&config, "gpt-5-4-mini", options).expect("create agent");
+            let result = if streamed {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                let result = agent
+                    .run_streaming(&prompt("hello"), &Context::now(), tx)
+                    .await;
+                drain.await.expect("drain events");
+                result
+            } else {
+                agent.run(&prompt("hello"), &Context::now()).await
+            };
+            let text = result.output.body.as_text().unwrap_or_default();
+            assert!(result.success, "streamed: {streamed}: {text}");
+            assert_eq!(text, "ok", "streamed: {streamed}");
+            assert_eq!(
+                (result.usage.output_tokens, result.usage.reasoning_tokens),
+                (9, 8),
+                "streamed: {streamed}"
+            );
+        }
+        server.join().expect("server thread");
+
+        let requests = requests.lock().expect("capture lock");
+        assert_eq!(requests.len(), 2);
+        for ((path, body), streamed) in requests.iter().zip([false, true]) {
+            assert_eq!(path, "/v1/responses");
+            assert_eq!(
+                body["stream"].as_bool().unwrap_or(false),
+                streamed,
+                "{body}"
+            );
+            assert_eq!(body["store"], false, "{body}");
+            assert_eq!(
+                body["reasoning"],
+                serde_json::json!({ "effort": "medium" }),
+                "{body}"
+            );
+            let tools = body["tools"].as_array().expect("function tools");
+            assert!(!tools.is_empty(), "{body}");
+            for tool in tools {
+                assert_eq!(tool["type"], "function", "{tool}");
+                assert_eq!(tool["strict"], false, "{tool}");
+                assert!(tool.get("function").is_none(), "{tool}");
+            }
+            for chat_only in ["messages", "reasoning_effort", "stream_options"] {
+                assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+            }
+        }
+    }
+
     /// gap-b0d514: `[agent.data_llm]` builds its boundary from a model roko
     /// calls over an API, and refuses a model it does not know or cannot call.
     #[test]
@@ -1837,6 +2356,7 @@ mod tests {
                 provider: "perplexity".to_string(),
                 slug: model_slug.to_string(),
                 context_window: 127_072,
+                compact_at_tokens: None,
                 max_output: Some(8_192),
                 supports_tools: false,
                 supports_thinking: false,
@@ -1869,6 +2389,8 @@ mod tests {
                 tier: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
+                api: None,
             },
         );
         config

@@ -19,6 +19,7 @@
 // ── Public modules ──────────────────────────────────────────────────────
 pub mod agent_stream;
 pub mod conductor_adapter;
+pub mod eta;
 pub mod extension_loader;
 pub mod extension_registry;
 pub mod gate_dispatch;

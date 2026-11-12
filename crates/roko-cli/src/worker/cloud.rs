@@ -685,6 +685,7 @@ pub async fn run_code_implementer_cloud(
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         };

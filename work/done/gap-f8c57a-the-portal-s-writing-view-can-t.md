@@ -2,15 +2,16 @@
 id = "gap-f8c57a"
 kind = "gap"
 title = "The portal's writing view can't stop a write or show what it has spent, and the plan list loses a write in progress: no stop key, TIME is the only reading on its glass, and a plan being written has no row, so closing the box loses sight of it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "M"
 subsystem = ["apps/portal"]
 created = 2026-11-12
-updated = 2026-11-12
-last_verified = 2026-11-12
+updated = 2026-11-13
+last_verified = 2026-11-13
+last_verified_rev = "c4ba942b0"
 source = "round v8 portal-v8, the lead's ask (2026-11-12)"
 discovered_from = "agent:portal-v8 (round v8)"
 anchors = ["apps/portal/src/components/stage/PromptPanel.tsx::PromptPanel", "apps/portal/src/lib/operation.ts::waitForOperation", "apps/portal/src/components/plans/PlanList.tsx"]
@@ -18,6 +19,15 @@ links = { depends_on = ["bug-36ce72", "gap-6774b5"], blocks = [], related = ["ga
 
 [[verify]]
 command = "cd apps/portal && npx vitest run src/components/stage/writing.accept.test.tsx"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-12T23:32:49Z"
+commit = "c4ba942b0"
+by = "portal-v8 (round v8)"
+executor = "unknown"
+forced = false
+evidence = "The writing view (Writing) shows TIME and SPENT on glass (the write's settled calls against its cap, nothing guessed before serve answers) and a plain stop key that posts POST /api/plans/{operation id}/cancel; a stopped write gives the request back with 'Stopped. Writing the plan spent $0.04.'; a write already written shows its plan; an older serve says it can't stop a write, no key. The plan list reads ?writing=true (every 2 s while a write runs, and on plan_generate events): a writing row at the top that opens the writing view. The first-run box stays while its write ends (the browser check's first pass found it unmounting when the plan landed first). Red first at e841a69ef (the writing module missing). At c4ba942b0's tree in roko-work-gap-f8c57a: tsc clean, vitest 745/745 (writing.accept 9), orphans none, build:export OK, plan validate over the 18 portal plans without errors, the CI browser check PASS 39 of 39 on roko-8ab71fb3f (its new stop-write step and the SSE check for plan_generate.cancelled included)."
 +++
 
 ## Problem

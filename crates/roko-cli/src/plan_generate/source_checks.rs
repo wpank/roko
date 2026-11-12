@@ -1275,10 +1275,26 @@ pub(super) fn attach_runs(checks: &mut [SourceCheck], workdir: &Path, probe: &Pr
 }
 
 /// The one command `text` quotes in a code span (bug-3cdc58); `None` when no
-/// span is a command ([`is_command`]), or more than one is.
+/// span is a command ([`is_command`]), or more than one is. A table row's
+/// command cell, a cell that is one code span quoting a command, is its
+/// command when no other cell is one, whatever its prose quotes (bug-0a5417):
+/// `| P1.16 | `tools/spec.sh 1 plugin` | … `tools/install.sh --dest` installs
+/// those three |`.
 fn quoted_command(text: &str, workdir: &Path, probe: &Probe) -> Option<String> {
     static SPAN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"`([^`]+)`").expect("valid code span regex"));
+    let mut cells = text
+        .split(" | ")
+        .filter_map(|cell| {
+            let inner = cell.trim().strip_prefix('`')?.strip_suffix('`')?;
+            (!inner.contains('`')).then(|| inner.trim())
+        })
+        .filter(|span| is_command(span, workdir, probe));
+    if text.contains(" | ")
+        && let (Some(command), None) = (cells.next(), cells.next())
+    {
+        return Some(command.to_string());
+    }
     let mut commands = SPAN
         .captures_iter(text)
         .filter_map(|captures| captures.get(1))

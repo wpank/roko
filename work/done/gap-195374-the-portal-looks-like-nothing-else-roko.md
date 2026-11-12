@@ -2,14 +2,16 @@
 id = "gap-195374"
 kind = "gap"
 title = "The portal looks like nothing else roko makes and tells a first-time user nothing: ROSEDUST dark only, and an empty project shows PLANS 0 beside an enabled Run all and the same sentence twice; move it to roko's design system (day and night tokens, self-hosted Archivo and Martian Mono, the kit as components) with a top bar, a plan list, an empty-project intro, a new-plan box, offline and sign-in pages and a phone layout"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "visibility"
 size = "L"
 subsystem = ["apps/portal"]
 created = 2026-11-12
 updated = 2026-11-12
+last_verified = 2026-11-12
+last_verified_rev = "862646e54"
 source = "round v8 portal-v8 audit (tmp/hermes-roko-v8/design/portal/before, main bd93521ee), the lead's approved proposal (tmp/hermes-roko-v8/design/portal/README.md, 2026-11-12)"
 discovered_from = "agent:portal-v8 (round v8, bd93521ee)"
 anchors = ["apps/portal/src/styles/rosedust.css", "apps/portal/src/app/layout.tsx::RootLayout", "apps/portal/src/components/shell/Workspace.tsx::Workspace", "apps/portal/src/components/rail/PlanRail.tsx::PlanRail", "apps/portal/src/components/stage/Stage.tsx::Stage"]
@@ -17,6 +19,19 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF 'an empty project says what roko is and asks for a request' apps/portal/src && test -f apps/portal/public/fonts/OFL-Archivo.txt && (cd apps/portal && npx vitest run src/components/shell/look.accept.test.tsx)"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T12:11:45Z"
+commit = "862646e54"
+by = "portal-v8 (round v8)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+size = "L"
+claimed_at = "2026-11-12T11:18:00Z"
+forced = false
+evidence = "apps/portal moves to roko's design system: roko-tokens.css and roko-kit.css with aliases for the plan view, Archivo and Martian Mono self-hosted (OFL), the kit as components (DotMatrix, Key, Led, Strip, Wordmark, ThemeSwitch), TopBar with the status chip, PlanList, Intro and HowItWorks, SignIn, the phone picker. Checks at 862646e54 in roko-work-gap-195374: tsc clean, vitest 809/809 (look.accept 11 cases, planList.accept 10, roko.accept, words, planWords, statusChip, dots), orphans none, build:export OK. Round serve shots, day and night, desktop and phone: tmp/hermes-roko-v8/design/portal/item1/."
 +++
 
 ## Problem

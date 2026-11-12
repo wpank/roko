@@ -580,7 +580,7 @@ pub(super) fn sized<R>(
 
 /// The texts of the documents of `plan`'s `[meta] sources`, read from
 /// `workdir`; a document that cannot be read is left out.
-fn source_texts(plan: &TasksFile, workdir: &Path) -> Vec<String> {
+pub(super) fn source_texts(plan: &TasksFile, workdir: &Path) -> Vec<String> {
     plan.meta
         .sources
         .iter()

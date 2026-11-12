@@ -6,6 +6,7 @@
 //! v7's phase-2 planner made all four tasks architectural, though the notes
 //! sized the engine task at about 80 lines.
 
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -314,6 +315,76 @@ pub(super) fn raise_tiers_for(
     raised
 }
 
+/// A task the notes for the planner of a source give a tier whose line
+/// budget the size they state for it is over (gap-29c1e8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TierOverSize {
+    /// The task as the notes name it, `task 3 (The presets)`, or the words
+    /// that give its tier and size.
+    task: String,
+    /// The tier the notes give it.
+    tier: TaskTier,
+    /// The lines the notes say it takes.
+    lines: u32,
+}
+
+impl TierOverSize {
+    /// The smallest tier whose line budget covers the task's size; `None`
+    /// when it is over every tier's.
+    fn needs(&self) -> Option<TaskTier> {
+        TaskTier::ALL
+            .into_iter()
+            .find(|tier| tier.max_loc() >= self.lines)
+    }
+}
+
+/// Each task the notes for the planner of `sources` give a tier whose line
+/// budget its stated size is over (gap-29c1e8).
+fn tiers_under_sizes(_sources: &[&str]) -> Vec<TierOverSize> {
+    Vec::new()
+}
+
+/// The PLAN_064 warning for `plan` (gap-29c1e8): the tasks its sources, read
+/// from `workdir`, give a tier their stated size is over
+/// ([`tiers_under_sizes`]), each with the tier its size needs. `None` when
+/// each tier they give covers its task's size.
+#[must_use]
+pub fn tiers_under_sizes_line(plan: &TasksFile, workdir: &Path) -> Option<String> {
+    let texts = super::named_files::source_texts(plan, workdir);
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let tasks: Vec<String> = tiers_under_sizes(&texts)
+        .iter()
+        .map(|task| {
+            let needs = task.needs().map_or_else(
+                || "more than any tier covers".to_string(),
+                |tier| format!("which needs {}", tier.label()),
+            );
+            format!(
+                "{} is {} at about {} lines, {needs}",
+                task.task,
+                task.tier.label(),
+                task.lines
+            )
+        })
+        .collect();
+    if tasks.is_empty() {
+        return None;
+    }
+    let budgets: Vec<String> = TaskTier::ALL
+        .into_iter()
+        .map(|tier| format!("{} ({})", tier.max_loc(), tier.label()))
+        .collect();
+    let (last, others) = budgets.split_last()?;
+    Some(format!(
+        "the documents this plan is written from ([meta] sources) give tasks a tier too small \
+         for the size they state: {}. A tier covers at most {} or {last} lines, and a task's \
+         tier picks the model it starts on: give each the tier its size needs, or split it to \
+         fit the tier it names",
+        tasks.join("; "),
+        others.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +597,119 @@ mod tests {
             ]),
             None
         );
+    }
+
+    /// The notes for the planner of a round-v8 phase spec (Undertow 8945b3c).
+    fn phase_notes(phase: &str) -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/tier_words")
+                .join(format!("{phase}.md")),
+        )
+        .expect("a phase's notes for the planner")
+    }
+
+    /// gap-29c1e8: round v8's phase specs give each task a tier and a size.
+    /// Phase 5 calls its presets task "Focused: about 90 lines", which
+    /// focused's 50 lines do not cover; phase 6 sizes each task it sizes over
+    /// its tier, three of them over the 300 lines any tier covers; phase 1
+    /// calls its core task "Architectural: about 350 lines written". Phases 2
+    /// to 4 agree with their tiers, phase 3's "Integrative: about 50 lines"
+    /// too: a tier with room to spare is no mismatch. Round v7's order
+    /// ("About 200 lines, so architectural") is read the same, and a tier
+    /// word outside the notes states nothing.
+    #[test]
+    fn a_tier_word_too_small_for_its_size_is_found() {
+        let found = |notes: &str| -> Vec<String> {
+            tiers_under_sizes(&[notes])
+                .iter()
+                .map(|task| {
+                    let needs = task.needs().map_or("no tier", TaskTier::label);
+                    format!(
+                        "{}: {} at {} lines needs {needs}",
+                        task.task,
+                        task.tier.label(),
+                        task.lines
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            found(&phase_notes("phase-5-sound")),
+            ["task 3 (The presets): focused at 90 lines needs integrative"]
+        );
+        assert_eq!(
+            found(&phase_notes("phase-6-window")),
+            [
+                "task 1 (The spectrum and the scope): integrative at 170 lines needs architectural",
+                "task 2 (The frame): architectural at 450 lines needs no tier",
+                "task 3 (The controls): integrative at 420 lines needs no tier",
+                "task 4 (The step cells): integrative at 250 lines needs architectural",
+                "task 5 (The console): architectural at 420 lines needs no tier",
+            ]
+        );
+        assert_eq!(
+            found(&phase_notes("phase-1-foundation")),
+            ["task 1 (The core re-keyed): architectural at 350 lines needs no tier"]
+        );
+        for phase in ["phase-2-sources", "phase-3-voice", "phase-4-sequencer"] {
+            assert_eq!(found(&phase_notes(phase)), Vec::<String>::new(), "{phase}");
+        }
+        let v7 = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p2_sizes/request.md"),
+        )
+        .expect("round v7's phase-2 spec");
+        assert_eq!(found(&v7), Vec::<String>::new());
+        assert_eq!(
+            found("## Notes for the planner\n\n1. **The rumble.** About 200 lines, so integrative.\n"),
+            ["task 1 (The rumble): integrative at 200 lines needs architectural"]
+        );
+        assert_eq!(
+            found("## Design\n\nFocused: about 90 lines.\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    /// gap-29c1e8: `plan validate` gives a plan written from phase 5's spec
+    /// one PLAN_064, naming its presets task and the tier its size needs, and
+    /// a plan written from phase 4's none.
+    #[test]
+    fn a_tier_word_too_small_for_its_size_is_warned_about() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let plan_dir = root.join("plans/p5-sound");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::create_dir_all(root.join("docs/specs")).expect("the specs directory");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"p5-sound\"\ntotal = 1\nstatus = \"ready\"\n\
+             sources = [\"docs/specs/phase.md\"]\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"The presets\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"integrative\"\nfiles = [\"core/src/presets.cpp\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"test -f core/src/presets.cpp\"\n",
+        )
+        .expect("the plan");
+        let warned = |phase: &str| {
+            std::fs::write(root.join("docs/specs/phase.md"), phase_notes(phase)).expect("the spec");
+            crate::plan_validate::validate_plans_dir_with_workdir(&plan_dir, None, Some(root))
+                .expect("validate")
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diagnostic| diagnostic.rule_id == "PLAN_064")
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect::<Vec<_>>()
+        };
+        let five = warned("phase-5-sound");
+        assert_eq!(five.len(), 1, "{five:?}");
+        assert!(
+            five[0].contains(
+                "a tier too small for the size they state: task 3 (The presets) is focused at \
+                 about 90 lines, which needs integrative. A tier covers at most 20 (mechanical), \
+                 50 (focused), 150 (integrative) or 300 (architectural) lines"
+            ),
+            "{five:?}"
+        );
+        assert_eq!(warned("phase-4-sequencer"), Vec::<String>::new());
     }
 }

@@ -2,7 +2,7 @@
 id = "gap-ea1576"
 kind = "gap"
 title = "roko learn all overstates what roko learned: it counts retired knowledge as durable (Undertow's 62 entries include 12 retired), its router header and rows count different things (25 observations against 32 trials), its Compounding block mixes the provider's prompt cache and the first model's pass rate in with learning rates and shows an error-dedup rate that no record can feed, and its reflex line says run tasks while reflexes are off"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands", "roko-learn/aggregate"]
 created = 2026-11-12
 updated = 2026-11-12
 last_verified = 2026-11-12
+last_verified_rev = "40bb8c362"
 source = "round-v8 roko-learnguard survey ($V8/roko-learnguard/survey, roko a0089c19c, a copy of Undertow's .roko)"
 discovered_from = "agent:roko-learnguard (round v8)"
 anchors = ["crates/roko-cli/src/commands/learn.rs::print_learn_router", "crates/roko-cli/src/commands/learn.rs::format_compounding_metrics", "crates/roko-learn/src/aggregate.rs::compute_compounding_metrics"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-f8655e", "bug-dd5dca", "
 
 [[verify]]
 command = "grep -rqw 'fn learn_all_says_what_it_measures' crates/roko-cli/src && cargo test -p roko-cli learn_all_says_what_it_measures"
+
+[closed]
+at = 2026-11-12
+at_ts = "2026-11-12T11:59:48Z"
+commit = "40bb8c362"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-11-12T11:25:26Z"
+forced = false
+evidence = "40bb8c362. crates/roko-cli learn.rs: knowledge counts live and retired entries apart (LearnJsonKnowledge::of; tier, source and average over live entries; a line for entries at confidence 0; --json gains live_entries, retired_entries, zero_confidence_entries); the router says its stage in words or its stage changes, that the model ladder routes Graph tasks with the router's pick recorded beside it, and its outcomes by model with the models that have none on one line (router_detail_lines); the Compounding rates are named for what they measure, the repeat-failure rate reads n/a without a failure signature (roko-learn aggregate.rs, AutocatalyticMetrics::failure_signatures) and the prompt cache is labelled as the provider's; reflexes that are off say so. Not done: the path lines stay (each header names its file). No red: the new test exercises the functions the fix adds; the old output is tmp/hermes-roko-v8/roko-learnguard/survey/undertow/all.out. Green: learn_all_says_what_it_measures and the learn tests pass; learn_paths_fixture 2/0 and reflexes_cli 3/0 with the new text; lib suites roko-cli 4108/0 (bins 10/0, 481/0), roko-learn 1413/0, roko-serve 1091/0; clippy -D warnings and nightly fmt clean (tmp/hermes-roko-v8/roko-learnguard/logs/ea1576-chain.log)."
 +++
 
 ## Problem

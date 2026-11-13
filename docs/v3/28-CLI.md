@@ -970,7 +970,16 @@ roko plan budget raise <plan-id> --to <usd> [--workdir <path>]
 
 Show lightweight runner status from `.roko/state/status.json`. With a plan directory, it shows that plan in the
 run view's style:
-- how its last run ended, when, the tasks that passed, and what it spent;
+- how its last run ended and when;
+- the run's four readings, by the rule every surface shares (the round's design system, §4.8):
+  - its tasks, `3/3 tasks`;
+  - TIME, from the run's start, when roko accepted it, in whole seconds rounded down; once the run ended, its own
+    `run_completed.duration_ms`;
+  - SPENT, what its calls have cost so far, including a try under way (its latest call), with the run's cap when
+    its manifest records one;
+  - CHECKS, every check the plan has, fixed from the start (each task's verify steps, the workspace's rungs on each
+    task when the plan runs them, and the plan's own checks), and how many passed, once each, on each task's last
+    try;
 - each task as the run left it, read from the run rather than from `tasks.toml`: its tries, time and spend, and
   the check a failed task failed;
 - the plan check;
@@ -988,7 +997,8 @@ while a run goes.
 
 ```text
 ◆ roko  plan greeting
-  plans/greeting · done just now · 3/3 tasks · $0.44
+  plans/greeting · done just now
+  3/3 tasks · 22s · $0.44 of $3.00 · 4/4 checks
 
   ✓ task 1  Write the greeting module         1 try       5.4s  $0.10
   ✓ task 2  Add the command-line entry point  1 try       4.7s  $0.10

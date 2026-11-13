@@ -144,6 +144,10 @@ pub struct DiagnoseReport {
     /// Not in `--json`.
     #[serde(skip)]
     pub plan_check_running: Option<RunningPlanCheck>,
+    /// The run's readings, as every surface shows them (gap-9bfb4e); `None`
+    /// for a report without a Graph run. Not in `--json`.
+    #[serde(skip)]
+    pub readings: Option<RunReadings>,
 }
 
 /// Where a report's run state came from.
@@ -362,6 +366,32 @@ pub struct RunningPlanCheck {
     pub command: String,
 }
 
+/// A run's readings by the rule every surface shares, the design system's
+/// §4.8 (gap-9bfb4e): TIME, SPENT of its cap, and CHECKS. Its tasks are in
+/// the report's run state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunReadings {
+    /// From the run's start, when roko accepted it, to its end
+    /// (`run_completed.duration_ms`), or until now while it runs; `None`
+    /// when its event index does not say.
+    pub time: Option<Duration>,
+    /// What its calls have cost so far: its committed spend and, while it
+    /// runs, what each try that has not settled has spent (its latest
+    /// `call_cost`). `None` when its cost ledger cannot be read.
+    pub spent_usd: Option<f64>,
+    /// What it may spend, when its manifest says.
+    pub cap_usd: Option<f64>,
+    /// The checks its tasks passed, once each, on each task's last try.
+    pub checks_passed: u32,
+    /// Every check the plan has, fixed from the start: its tasks' verify
+    /// steps, the workspace's rungs on each when the plan runs them, and the
+    /// plan's own checks.
+    pub checks_total: u32,
+    /// The plan's own checks (`[meta] verify`), which pass with the plan's
+    /// check.
+    pub plan_checks: u32,
+}
+
 /// One try at a task (gap-5043c6, bug-649557): its settled verdict in the
 /// run's `attempts.jsonl` (for a run without verdicts, its provider call in
 /// `costs.jsonl`), with the check failure recorded in its time.
@@ -389,6 +419,9 @@ pub struct TryInfo {
     pub output: Option<String>,
     /// Whether it ran out of time.
     pub timed_out: bool,
+    /// How many of its checks passed, when its verdict lists them
+    /// (gap-9bfb4e).
+    pub checks_passed: Option<u32>,
 }
 
 /// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
@@ -671,36 +704,217 @@ fn recorded_open_tries(
     open
 }
 
-/// The plan check step `plan_id`'s run `run_id` started last, when no
-/// `plan_check_finished` followed it: the run's event index
-/// (`.roko/events-by-run/`) records both as they happen (bug-addd24). It only
-/// reads.
-fn running_plan_check(workdir: &Path, plan_id: &str, run_id: &str) -> Option<RunningPlanCheck> {
-    let log = RokoLayout::for_project(workdir).events_jsonl_path();
-    let index = roko_fs::run_index::run_index_path(&log, run_id).ok()?;
-    let file = roko_fs::run_index::open_existing_run_index(&index).ok()?;
-    let mut running = None;
-    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-        if !line.contains("\"plan_check_") {
-            continue;
+/// What a run's event index (`.roko/events-by-run/`) says of plan `plan_id`
+/// while and after it runs. Plan checks, calls and the run's end are
+/// lifecycle or prompt events there, flushed as they happen.
+#[derive(Debug, Default)]
+struct RunIndex {
+    /// The plan check step started last, when no `plan_check_finished`
+    /// followed it (bug-addd24).
+    plan_check_running: Option<RunningPlanCheck>,
+    /// What each try has spent so far, by task and attempt: its latest
+    /// `call_cost`'s `attempt_cost_usd` (bug-7a62d9).
+    attempt_costs: BTreeMap<(String, u32), f64>,
+    /// When this process's part of the run started: its first event, after
+    /// the run's last `run_completed` when an earlier process ended (a
+    /// resume).
+    started_ms: Option<i64>,
+    /// How long the run took, when it ended last: its `run_completed`'s
+    /// `duration_ms`, from the run's start, when roko accepted it.
+    duration_ms: Option<u64>,
+}
+
+impl RunIndex {
+    /// Read run `run_id`'s event index in `workdir` for plan `plan_id`. It
+    /// only reads; an index that cannot be read says nothing.
+    fn read(workdir: &Path, plan_id: &str, run_id: &str) -> Self {
+        let mut index = Self::default();
+        let log = RokoLayout::for_project(workdir).events_jsonl_path();
+        let Ok(path) = roko_fs::run_index::run_index_path(&log, run_id) else {
+            return index;
+        };
+        let Ok(file) = roko_fs::run_index::open_existing_run_index(&path) else {
+            return index;
+        };
+        let mut ended = false;
+        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+            if index.started_ms.is_none() {
+                index.started_ms = ts_millis(&line);
+            }
+            let interesting = [
+                "\"plan_check_",
+                "\"call_cost\"",
+                "\"run_completed\"",
+                "\"spec_gate_started\"",
+                "\"plan_set_loaded\"",
+            ]
+            .iter()
+            .any(|kind| line.contains(kind));
+            if !interesting {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match event["type"].as_str() {
+                Some("run_completed") => {
+                    index.duration_ms = event["duration_ms"].as_u64();
+                    ended = true;
+                }
+                // A resume: the run starts again after it ended.
+                Some("spec_gate_started" | "plan_set_loaded") if ended => {
+                    index.started_ms = event["ts_millis"].as_i64();
+                    index.duration_ms = None;
+                    ended = false;
+                }
+                _ if event["plan_id"].as_str() != Some(plan_id) => {}
+                Some("plan_check_started") => {
+                    index.plan_check_running = Some(RunningPlanCheck {
+                        command: event["command"].as_str().unwrap_or_default().to_string(),
+                    });
+                }
+                Some("plan_check_finished") => index.plan_check_running = None,
+                Some("call_cost") => {
+                    let task = event["task_id"].as_str().unwrap_or_default().to_string();
+                    let attempt = event["attempt"]
+                        .as_u64()
+                        .and_then(|attempt| u32::try_from(attempt).ok())
+                        .unwrap_or(0);
+                    if let Some(cost) = event["attempt_cost_usd"].as_f64() {
+                        index.attempt_costs.insert((task, attempt), cost);
+                    }
+                }
+                _ => {}
+            }
         }
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+        index
+    }
+}
+
+/// The run's readings by the rule every surface shares (gap-9bfb4e): TIME
+/// from the run's start, when roko accepted it, to its end
+/// (`run_completed.duration_ms`), or until now while it runs; SPENT, the
+/// run's committed spend and, while it runs, what each open try has spent so
+/// far; its cap, from its manifest; and its checks.
+fn run_readings(
+    workdir: &Path,
+    checkpoint: &CheckpointInspection,
+    definition: Option<&PlanDefinition>,
+    tasks: &[TaskDiagnosis],
+    records: &RunRecords,
+    index: &RunIndex,
+    running: bool,
+) -> RunReadings {
+    let time = if running {
+        index.started_ms.map(|started| {
+            let now = Utc::now().timestamp_millis();
+            Duration::from_millis(u64::try_from(now.saturating_sub(started)).unwrap_or(0))
+        })
+    } else {
+        index.duration_ms.map(Duration::from_millis)
+    };
+    let live_usd: f64 = if running {
+        records
+            .open_tries
+            .iter()
+            .filter_map(|(task, open)| index.attempt_costs.get(&(task.clone(), open.number)))
+            .sum()
+    } else {
+        0.0
+    };
+    let spent_usd = checkpoint
+        .spent_micro_usd
+        .map(|spent| micro_to_usd(spent) + live_usd);
+    let run_dir = RokoLayout::for_project(workdir).run_dir(&checkpoint.manifest.run_id);
+    let cap_usd = roko_learn::telemetry::RunProvenanceManifest::load(&run_dir)
+        .ok()
+        .flatten()
+        .and_then(|manifest| run_cap_usd(&manifest, &checkpoint.manifest.plan_id));
+    let (checks_passed, checks_total, plan_checks) = match definition {
+        Some(definition) => task_checks(workdir, definition, tasks),
+        None => (0, 0, 0),
+    };
+    RunReadings {
+        time,
+        spent_usd,
+        cap_usd,
+        checks_passed,
+        checks_total,
+        plan_checks,
+    }
+}
+
+/// What run `manifest` may spend on plan `plan_id`: the cap its latest
+/// invocation ran under, raised by `roko plan budget raise` since. `None`
+/// when it ran uncapped or its manifest predates the cap.
+fn run_cap_usd(
+    manifest: &roko_learn::telemetry::RunProvenanceManifest,
+    plan_id: &str,
+) -> Option<f64> {
+    let latest = manifest.invocations.iter().max_by_key(|inv| inv.inv)?;
+    let cap = latest.cap_micro_usd.map(micro_to_usd)?;
+    let raised = manifest
+        .budget_raises
+        .iter()
+        .filter(|raise| raise.plan_id == plan_id && raise.at >= latest.started_at)
+        .map(|raise| raise.to_usd)
+        .next_back();
+    Some(raised.unwrap_or(cap)).filter(|cap| *cap > 0.0)
+}
+
+/// The plan's checks, by the shared rule (the design system's §4.8): every
+/// check it has, fixed from the start (each task's verify steps, the
+/// workspace's rungs on each task when the plan runs them, and the plan's
+/// own checks), and those that passed, each once, on each task's last try.
+/// Returns (passed by the tasks, all, the plan's own); the plan's own count
+/// once its check passed, which the delivery records.
+fn task_checks(
+    workdir: &Path,
+    definition: &PlanDefinition,
+    tasks: &[TaskDiagnosis],
+) -> (u32, u32, u32) {
+    let rungs = if definition.tasks.meta.runs_workspace_rungs() {
+        roko_core::config::loader::load_config_unified(workdir)
+            .map(|config| config.gates.required_rungs().count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let mut passed = 0;
+    let mut all = 0;
+    for task in &definition.tasks.tasks {
+        let checks = count(task.verify.len() + rungs);
+        all += checks;
+        let Some(diagnosis) = tasks.iter().find(|diagnosis| diagnosis.task_id == task.id) else {
             continue;
         };
-        if event["plan_id"].as_str() != Some(plan_id) {
+        // An open try's checks have not run.
+        if diagnosis.open_try.is_some() {
             continue;
         }
-        match event["type"].as_str() {
-            Some("plan_check_started") => {
-                running = Some(RunningPlanCheck {
-                    command: event["command"].as_str().unwrap_or_default().to_string(),
-                });
-            }
-            Some("plan_check_finished") => running = None,
-            _ => {}
-        }
+        let last = diagnosis.tries.last().and_then(|entry| entry.checks_passed);
+        passed += match (diagnosis.state, last) {
+            (_, Some(ran)) => ran.min(checks),
+            // A task a resume kept, or one recorded before tries counted
+            // their checks: it passed them all.
+            (TaskState::Completed, None) => checks,
+            _ => 0,
+        };
     }
-    running
+    let plan_checks = count(definition.tasks.meta.verify.len());
+    (passed, all + plan_checks, plan_checks)
+}
+
+/// The `ts_millis` an event index line carries, read without parsing it.
+fn ts_millis(line: &str) -> Option<i64> {
+    let rest = &line[line.find("\"ts_millis\":")? + "\"ts_millis\":".len()..];
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 /// Whether cost record `record` is the spend of writing or revising its
@@ -922,6 +1136,18 @@ fn build_graph_report(
         failed_tasks,
     };
 
+    let running = status == GraphCheckpointStatus::Running;
+    let index = RunIndex::read(workdir, plan_id, run_id);
+    let readings = run_readings(
+        workdir,
+        checkpoint,
+        definition.as_ref(),
+        &tasks,
+        &records,
+        &index,
+        running,
+    );
+
     let git_state = collect_git_state(workdir, plan_id);
     let suggested_recovery =
         graph_recovery_suggestions(status, &tasks, resume.as_ref(), git_state.as_ref());
@@ -960,9 +1186,8 @@ fn build_graph_report(
         notes,
         total_cost_usd: collect_total_cost_usd(workdir, plan_id),
         plan_check_failure: crate::graph_checkpoint::recorded_plan_check_failure(workdir, plan_id),
-        plan_check_running: (status == GraphCheckpointStatus::Running)
-            .then(|| running_plan_check(workdir, plan_id, run_id))
-            .flatten(),
+        plan_check_running: index.plan_check_running.filter(|_| running),
+        readings: Some(readings),
     }
 }
 
@@ -1301,6 +1526,15 @@ fn task_tries(
                     output: None,
                     timed_out: record.outcome == AttemptOutcome::Timeout
                         || record.steps.iter().any(|step| step.timed_out),
+                    checks_passed: (!record.steps.is_empty())
+                        .then(|| {
+                            record
+                                .steps
+                                .iter()
+                                .filter(|step| step.passed == Some(true))
+                                .count()
+                        })
+                        .and_then(|passed| u32::try_from(passed).ok()),
                 };
                 if !passed {
                     match failure_in(from, to) {
@@ -1334,6 +1568,7 @@ fn task_tries(
                 error: None,
                 output: None,
                 timed_out: attempt.timed_out,
+                checks_passed: None,
             };
             if !attempt.success {
                 match failure_in(from, to) {
@@ -1986,6 +2221,7 @@ fn build_legacy_report(
         total_cost_usd,
         plan_check_failure: None,
         plan_check_running: None,
+        readings: None,
     })
 }
 
@@ -3311,6 +3547,7 @@ warning: unused variable: `x`";
             total_cost_usd: None,
             plan_check_failure: None,
             plan_check_running: None,
+            readings: None,
         }
     }
 

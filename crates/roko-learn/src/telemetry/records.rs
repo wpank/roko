@@ -1891,6 +1891,12 @@ pub struct RunInvocation {
     /// The configuration fingerprint this invocation ran with; `None` in
     /// manifests written before invocations recorded their own.
     pub config: Option<ConfigHashProvenance>,
+    /// The plan budget ceiling this invocation ran under, in millionths of
+    /// one USD: the run's own cap, else `[budget] max_plan_usd`. `None` when
+    /// it ran uncapped, and in manifests written before invocations recorded
+    /// it (gap-9bfb4e).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap_micro_usd: Option<u64>,
 }
 
 /// The harness build behind a run.

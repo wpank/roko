@@ -69,6 +69,9 @@ pub struct RunManifests {
     /// Records an earlier close of a run counted as dropped, per run this
     /// process reopened: its close adds them to its own.
     carried_drops: parking_lot::Mutex<HashMap<String, u64>>,
+    /// The plan budget ceiling this process's runs run under, in millionths
+    /// of one USD, which each invocation records; `None` when uncapped.
+    cap_micro_usd: Option<u64>,
 }
 
 impl RunManifests {
@@ -119,7 +122,16 @@ impl RunManifests {
             ablation_flags,
             price_snapshot_id,
             carried_drops: parking_lot::Mutex::default(),
+            cap_micro_usd: None,
         }
+    }
+
+    /// Record the plan budget ceiling, in USD, that this process's runs run
+    /// under; `0` is none. Each invocation's manifest entry keeps it, so a
+    /// view of the run can say what it may spend (gap-9bfb4e).
+    pub fn set_plan_cap(&mut self, cap_usd: f64) {
+        self.cap_micro_usd =
+            (cap_usd.is_finite() && cap_usd > 0.0).then(|| (cap_usd * 1e6).round() as u64);
     }
 
     /// Record the digest of the θ M1 dispatches with at run open, which
@@ -176,6 +188,7 @@ impl RunManifests {
             args_sha256: Some(self.args_sha256.clone()),
             harness: Some(self.harness.clone()),
             config: Some(self.config.clone()),
+            cap_micro_usd: self.cap_micro_usd,
         });
         if manifest.mixed_provenance && !was_mixed {
             tracing::warn!(

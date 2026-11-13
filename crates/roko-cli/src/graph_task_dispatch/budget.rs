@@ -1838,7 +1838,7 @@ mod tests {
         FIXTURE_HANG_GUARD_SECS, STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD,
         VERIFY_PROVIDER, batch_ctx, cli_provider, final_turn, jsonl_rows_where,
         make_bare_dispatcher, make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec,
-        make_task_def, model, recording_feedback, spawn_openai_mock, tool_call_turn,
+        make_task_def, model, recording_feedback, spawn_openai_mock, tool_call_turn, verify_step,
     };
     use crate::state_hub::StateHub;
 
@@ -3786,6 +3786,165 @@ exit 1
             "{again:?}"
         );
         assert_eq!(requests.lock().len(), 2, "and no model call is made");
+    }
+
+    /// A try under a $0.05 cap whose scripted calls cost $0.011 and $0.021
+    /// (`turns`, in order): the plan's budget refuses a third call like the
+    /// second. `check.sh` passes once `src/voice.cpp` returns 1.
+    async fn budget_stopped_try(
+        temp: &Path,
+        turns: Vec<serde_json::Value>,
+    ) -> (
+        GraphTaskDispatcher,
+        TaskExecutionSpec,
+        Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        std::fs::write(temp.join("check.sh"), "grep -q 'return 1' src/voice.cpp\n")
+            .expect("check.sh");
+        let turns = turns
+            .into_iter()
+            .zip(1_u32..)
+            .map(|(mut turn, call)| {
+                turn["usage"] = serde_json::json!({
+                    "prompt_tokens": 10_000 * call,
+                    "completion_tokens": 500
+                });
+                turn
+            })
+            .chain(std::iter::once(final_turn("done")))
+            .collect();
+        let (base_url, requests) = spawn_openai_mock(turns);
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp)
+            .await
+            .with_plan_budget(0.05, 0.0, false)
+            .with_feedback(recording_feedback(temp));
+        let task = TaskDef {
+            id: "T05".to_string(),
+            title: "The console".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("test", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        (dispatcher, make_spec(&task), requests)
+    }
+
+    /// bug-3e04a6: phase 6's T5 try 2 ran its task's check green three
+    /// seconds before the plan's budget stopped it, at the call that would
+    /// have handed it back, and was thrown away. The task's checks now judge
+    /// the work a try the budget stopped left, with no model call: they pass,
+    /// so the try passes and its verdict names the bound, and the plan still
+    /// starts no further task.
+    #[tokio::test]
+    async fn a_try_the_budget_stopped_passes_when_its_checks_pass() {
+        let temp = tempdir().expect("tempdir");
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let checks = serde_json::json!({ "build": "checks" });
+        let (dispatcher, spec, requests) = budget_stopped_try(
+            temp.path(),
+            vec![
+                tool_call_turn("c1", "write_file", fix),
+                tool_call_turn("c2", "run_tests", checks),
+            ],
+        )
+        .await;
+        let ctx = CellContext::new()
+            .with_cell_id("T05".to_string())
+            .with_run_id("capped".to_string());
+
+        let outputs = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("its checks pass on the work it left");
+
+        assert_eq!(
+            requests.lock().len(),
+            2,
+            "the hand-off is never made, and no check calls a model"
+        );
+        let said = outputs[0].body.as_text().unwrap_or_default().to_string();
+        assert!(
+            said.contains("the task's checks passed on the work it left"),
+            "{said}"
+        );
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(verdicts[0]["outcome"], "passed", "{}", verdicts[0]);
+        assert_eq!(verdicts[0]["bound"], "budget", "{}", verdicts[0]);
+        let stop = dispatcher
+            .plan_dispatch_stop(&spec.plan_id)
+            .expect("the plan starts no further task");
+        assert!(stop.starts_with("plan budget exhausted"), "{stop}");
+    }
+
+    /// bug-3e04a6: a try the budget stopped whose checks fail on the work it
+    /// left stays budget_exhausted, the harness's stop and never the agent's
+    /// failure, with the steps its checks ran; and no model call diagnoses
+    /// them.
+    #[tokio::test]
+    async fn a_try_the_budget_stopped_whose_checks_fail_stays_budget_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("src")).expect("src");
+        std::fs::write(temp.path().join("src/voice.cpp"), "int voice();\n").expect("voice.cpp");
+        let half = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 0; }\n"
+        });
+        let read = serde_json::json!({ "path": "src/voice.cpp" });
+        let (dispatcher, spec, requests) = budget_stopped_try(
+            temp.path(),
+            vec![
+                tool_call_turn("c1", "write_file", half),
+                tool_call_turn("c2", "read_file", read),
+            ],
+        )
+        .await;
+        let ctx = CellContext::new()
+            .with_cell_id("T05".to_string())
+            .with_run_id("capped".to_string());
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("its checks fail");
+
+        assert!(
+            matches!(
+                error,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    ..
+                }
+            ),
+            "a budget stop the task executor does not retry: {error:?}"
+        );
+        assert_eq!(
+            requests.lock().len(),
+            2,
+            "no model call diagnoses the failed check"
+        );
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(
+            verdicts[0]["outcome"], "budget_exhausted",
+            "{}",
+            verdicts[0]
+        );
+        assert_eq!(verdicts[0]["steps"][0]["passed"], false, "{}", verdicts[0]);
+        assert!(dispatcher.plan_dispatch_stop(&spec.plan_id).is_some());
     }
 
     /// gap-8548e3: a run held to a budget cap never calls a model roko has no

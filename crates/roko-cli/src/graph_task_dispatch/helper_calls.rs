@@ -8,7 +8,9 @@
 //! them and accounts every call like a dispatch
 //! ([`GraphTaskDispatcher::settle_helper_calls`]): its spend on the task and
 //! plan budgets, a cost row and an efficiency row keyed by the attempt, and
-//! their totals on the attempt's verdict and episode.
+//! their totals on the attempt's verdict and episode. A try the plan's budget
+//! stopped is checked with no helper call at all ([`HelperCalls::local_only`],
+//! bug-3e04a6): nothing is left to pay for one.
 //!
 //! An audit worker's model calls write the same two rows, keyed by the
 //! attempt they audit ([`GraphTaskDispatcher::audit_call_log`],
@@ -199,6 +201,9 @@ struct HelperCallsState {
     ledger: parking_lot::Mutex<HelperLedger>,
     /// Signalled when the last helper agent out is dropped.
     idle: tokio::sync::Notify,
+    /// Whether the verify steps may call no model: those of a try the plan's
+    /// budget stopped (bug-3e04a6).
+    local_only: bool,
 }
 
 #[derive(Default)]
@@ -212,6 +217,22 @@ impl HelperCalls {
     /// creates counting their calls here.
     pub(super) async fn scope<F: std::future::Future>(&self, future: F) -> F::Output {
         HELPER_CALLS.scope(self.clone(), future).await
+    }
+
+    /// The helper calls of a try the plan's budget stopped, whose verify
+    /// steps call no model (bug-3e04a6): no helper agent is made for them
+    /// ([`Self::model_calls_allowed`]).
+    pub(super) fn local_only() -> Self {
+        Self(Arc::new(HelperCallsState {
+            local_only: true,
+            ..HelperCallsState::default()
+        }))
+    }
+
+    /// Whether the verify steps settling now may call a model: not those of
+    /// a try the plan's budget stopped (bug-3e04a6).
+    pub(super) fn model_calls_allowed() -> bool {
+        Self::current().is_none_or(|calls| !calls.0.local_only)
     }
 
     /// The helper calls of the attempt being verified, when there is one.

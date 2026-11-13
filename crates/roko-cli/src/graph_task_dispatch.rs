@@ -878,8 +878,12 @@ impl GraphTaskDispatcher {
     /// or `None` when no such model is dispatchable: its callers then fall
     /// back as they do with no model configured. Used for best-effort error
     /// enrichment, quality judgment and gate reflection calls, which count
-    /// toward the attempt being verified ([`HelperAgent`]).
+    /// toward the attempt being verified ([`HelperAgent`]). `None` while a
+    /// try the plan's budget stopped is checked (bug-3e04a6).
     fn cheap_agent(&self) -> Option<HelperAgent> {
+        if !HelperCalls::model_calls_allowed() {
+            return None;
+        }
         let models = self.side_call_models();
         select_cheap_model_key(&self.config, |key| {
             models.allow(key) && self.helper_healthy(key)
@@ -889,8 +893,12 @@ impl GraphTaskDispatcher {
 
     /// The helper model that judges an attempt `executor` (a model slug) ran
     /// ([`routing_context::select_judge_model_key`], 9123), among the models
-    /// the run's side calls may use that are healthy.
+    /// the run's side calls may use that are healthy. `None` while a try the
+    /// plan's budget stopped is checked (bug-3e04a6).
     fn judge_model_key(&self, executor: &str) -> Option<(String, bool)> {
+        if !HelperCalls::model_calls_allowed() {
+            return None;
+        }
         let models = self.side_call_models();
         routing_context::select_judge_model_key(&self.config, executor, |key| {
             models.allow(key) && self.helper_healthy(key)
@@ -1941,15 +1949,20 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
         // A try that ended at its rung's bound, its turns or its spend used
         // up, is judged by the task's checks on the work it left, as a
-        // finished try is (gap-2c9412). The plan's budget and a stopping run
-        // still end a try unchecked.
+        // finished try is (gap-2c9412), and so is one the plan's budget
+        // stopped, with no model call (bug-3e04a6), when the task has checks
+        // to judge it by. A stopping run still ends a try unchecked.
+        let checked = !self.verify_steps(spec, &task).is_empty();
+        let judged = |stop: &BoundedStop| checked || stop.budget_reason().is_none();
         let mut bounded: Option<BoundedStop> = None;
         let interrupted_at_bound = match &dispatch_result {
             Err(error) => self.interrupted_at_bound(
                 &spec.plan_id,
                 &task.id,
                 error,
-                ended_by.as_ref(),
+                ended_by.as_ref().filter(|ended| {
+                    checked || !matches!(ended, watchdog::AttemptInterrupted::BudgetExhausted(_))
+                }),
                 &progress,
                 u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
             ),
@@ -2139,21 +2152,23 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         if bounded.is_none() && !dispatch.result.success {
-            bounded = self.bounded_stop(
-                &spec.plan_id,
-                &task.id,
-                &dispatch,
-                allowance.as_deref(),
-                rung_allowance.as_ref(),
-                max_turns,
-            );
+            bounded = self
+                .bounded_stop(
+                    &spec.plan_id,
+                    &task.id,
+                    &dispatch,
+                    allowance.as_deref(),
+                    rung_allowance.as_ref(),
+                    max_turns,
+                )
+                .filter(judged);
         }
         if let Some(stop) = &bounded {
             tracing::info!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
                 bound = %stop.describe(),
-                "the try ended at its rung's bound; the task's checks judge the work it left"
+                "the try ended at its bound; the task's checks judge the work it left"
             );
         }
 
@@ -2300,7 +2315,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // workdir (worktree if isolated). A failure fails this attempt so the
         // Graph engine can retry or abort; it is never force-accepted.
         let attempt_key = attempt.key.attempt_key();
-        let helper_calls = HelperCalls::default();
+        // The checks of a try the plan's budget stopped call no model
+        // (bug-3e04a6).
+        let budget_bound = bounded
+            .as_ref()
+            .and_then(BoundedStop::budget_reason)
+            .map(str::to_string);
+        let helper_calls = if budget_bound.is_some() {
+            HelperCalls::local_only()
+        } else {
+            HelperCalls::default()
+        };
         attempt.verify_started();
         let report = helper_calls
             .scope(self.settle_task_verification(
@@ -2341,8 +2366,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
         //
         // Settled after the gate so episodes, routing, playbooks, affect, and
         // experiments learn from the verified outcome rather than from the
-        // provider dispatch result.
-        let settlement = Settlement::verified(&verification);
+        // provider dispatch result. A try the plan's budget stopped whose
+        // checks fail stays the harness's stop (bug-3e04a6).
+        let budget_stopped = budget_bound.filter(|_| verification.is_err());
+        let settlement = match &budget_stopped {
+            Some(reason) => Settlement::budget_exhausted(reason),
+            None => Settlement::verified(&verification),
+        };
         if let Some(stop) = &bounded {
             attempt.ended_at_bound(stop.kind());
         }
@@ -2362,8 +2392,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let verdict = match verification {
             Ok(verdict) => verdict,
             Err(error) => {
-                // A try that ended at its rung's bound and failed its checks
-                // resumes its work on its next try (gap-2c9412).
+                // A try that ended at a bound and failed its checks resumes
+                // its work on its next try (gap-2c9412, bug-3e04a6).
                 if let Some(stop) = &bounded {
                     self.keep_bounded_stop(&spec.plan_id, &task.id, stop);
                 }
@@ -2381,6 +2411,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // A rejection is never retried: the person has to act.
                 if let blocked::BlockedTry::Stop { reason, .. } = blocked_try {
                     return Err(RokoError::Rejected(reason));
+                }
+                // Nor is a try the plan's budget stopped: no retry can pay
+                // for its next call either (bug-3e04a6).
+                if let Some(reason) = budget_stopped {
+                    return Err(RokoError::gateway("budget", false, reason));
                 }
                 return Err(error);
             }

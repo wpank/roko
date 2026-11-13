@@ -507,7 +507,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             None => own_stop.map(TryStop::Plan),
         };
         // A try that ended at its rung's bound is judged by the task's checks
-        // on the work it left, as on the batch path (gap-2c9412).
+        // on the work it left, as on the batch path (gap-2c9412), and so is
+        // one the plan's budget stopped, when the task has checks (bug-3e04a6).
+        let checked = !self.verify_steps(spec, &task).is_empty();
         let bounded = match &dispatch_result {
             Ok(dispatch) if !dispatch.result.success && pinned_model_substituted.is_none() => self
                 .bounded_stop(
@@ -519,7 +521,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     max_turns,
                 ),
             _ => None,
-        };
+        }
+        .filter(|stop| checked || stop.budget_reason().is_none());
+        let budget_bound = bounded.as_ref().and_then(BoundedStop::budget_reason);
         let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -550,8 +554,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // ── Verify steps (streaming) ─────────────────────────────
                 //
                 // Same verdict logic as the batch path; gates run in the lease
-                // path and progress streams through the event channel.
-                let helper_calls = HelperCalls::default();
+                // path and progress streams through the event channel. The
+                // checks of a try the plan's budget stopped call no model
+                // (bug-3e04a6).
+                let helper_calls = if budget_bound.is_some() {
+                    HelperCalls::local_only()
+                } else {
+                    HelperCalls::default()
+                };
                 let verification = if (dispatch.result.success || bounded.is_some())
                     && pinned_model_substituted.is_none()
                 {
@@ -587,13 +597,16 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // ── Learning/feedback pipeline (streaming) ───────────────
                 //
                 // Settled after the gate so learning sees the verified outcome.
-                let settlement = match (&verification, &pinned_model_substituted) {
-                    (Some(verification), _) => Settlement::verified(verification),
-                    (None, Some(error)) => Settlement::provider_failure(
+                let settlement = match (&verification, &pinned_model_substituted, budget_bound) {
+                    // A try the plan's budget stopped whose checks fail stays
+                    // the harness's stop (bug-3e04a6).
+                    (Some(Err(_)), _, Some(reason)) => Settlement::budget_exhausted(reason),
+                    (Some(verification), _, _) => Settlement::verified(verification),
+                    (None, Some(error), _) => Settlement::provider_failure(
                         &error.to_string(),
                         first_token_seen(&dispatch),
                     ),
-                    (None, None) => match &budget_stop {
+                    (None, None, _) => match &budget_stop {
                         Some(TryStop::Plan(reason)) => Settlement::budget_exhausted(reason),
                         Some(TryStop::Rung(reason) | TryStop::Time { reason, .. }) => {
                             Settlement::allowance_spent(reason)
@@ -740,9 +753,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         if let Some(error) = pinned_model_substituted {
             return Err(error);
         }
-        // A try its checks judged ends as they say, a bounded one included.
+        // A try its checks judged ends as they say, a bounded one included;
+        // one the plan's budget stopped is never retried (bug-3e04a6).
         let verified = verification.is_some();
         if let Some(Err(error)) = verification {
+            if let Some(reason) = budget_bound {
+                return Err(RokoError::gateway("budget", false, reason.to_string()));
+            }
             return Err(error);
         }
         if let Some(denial) = denial {

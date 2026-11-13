@@ -95,3 +95,12 @@ checks, but its plan item 3 kept "a try the plan's budget stopped … is not ver
 - The audit lottery is unchanged. A green try draws its ticket as any does, and audits have their own budget,
   outside the plan's cap.
 - Related: gap-2c9412, bug-4fabd0, gap-ca1c92.
+- **Decision change, approved by the lead (round v8, 2026-11-13).** bug-3e04a6 amends gap-2c9412's plan item 3, "a
+  try the plan's budget stopped … is not verified", for the plan's budget only.
+  - Such a try is judged by its task's local checks on the tree it left, with no model call: no diagnosis and no LLM
+    judge.
+  - The plan starts no further task, so the budget's intent, no more model money, holds.
+  - The lead's condition: a try whose task has model checks that this skips may not read plain "passed". It settles
+    as not fully checked, with the reason in its record ("model checks skipped: the plan's budget was spent"). A try
+    whose checks are all local, as all of Undertow's are, is a real pass. The merged code (48456be7c) reads such a
+    try "passed"; bug-b364d9 adds the condition and its test.

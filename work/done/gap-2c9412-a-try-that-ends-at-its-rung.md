@@ -64,6 +64,10 @@ retry feedback. And cheap work that passes its checks must not be thrown away an
 2. The next try still gets the resume note: its bound and its work on disk.
 3. The run's cap keeps the last word. A try the plan's budget stopped, or one that ended while the run was stopping,
    is not verified.
+   - Amended by bug-3e04a6, approved by the lead (round v8, 2026-11-13), for the plan's budget only. A try the
+     budget stopped is judged by its task's local checks on the tree it left, with no model call, and the plan
+     starts no further task. A try that skipped model checks is settled not fully checked (bug-b364d9). A try that
+     ended while the run was stopping is still not verified.
 4. The top rung, and a pinned model, keep the tier's cap and its raise after a turn-cap stop, unchanged.
 
 ## Done when

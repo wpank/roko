@@ -23,7 +23,7 @@ import {
   useGateRungs,
   usePlanCap,
   usePlanDetail,
-  useRunCap,
+  useRunFacts,
   usePlanTasks,
   useRunResult,
   useValidation,
@@ -89,9 +89,9 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   );
 
   const running = run.plans[plan.id]?.phase === 'running';
-  // SPENT's cap: the one the run's request set (a chat host's max_usd), which only the plan's detail names, else the
-  // plan's budget; with neither, the glass shows the spend alone (gap-acfe4b).
-  const { data: runCap } = useRunCap(
+  // What only the plan's detail names of its run (gap-acfe4b, gap-c1726f): the cap its request set, which SPENT
+  // counts against before the plan's budget, and when roko accepted it, which TIME counts from.
+  const { data: runFacts } = useRunFacts(
     plan.id,
     running,
     `${run.plans[plan.id]?.startedAtMs ?? 0}:${detailStamp(run, plan.id)}`,
@@ -105,12 +105,15 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
         plan,
         tasks: tasksData?.tasks ?? [],
         run,
-        rungs: rungs ?? [],
-        capUsd: runCap ?? capUsd ?? null,
+        // A plan that opts out of the workspace's rungs runs none (gap-c1726f).
+        rungs: tasksData?.workspace_rungs === false ? [] : (rungs ?? []),
+        planChecks: tasksData?.plan_checks?.length ?? 0,
+        capUsd: runFacts?.capUsd ?? capUsd ?? null,
+        runStartedMs: runFacts?.startedAtMs ?? null,
         nowMs,
         problems: problemLines,
       }),
-    [plan, tasksData, run, rungs, runCap, capUsd, nowMs, problemLines],
+    [plan, tasksData, run, rungs, runFacts, capUsd, nowMs, problemLines],
   );
   const cantRun = card.state === 'cant-run';
   const primary = usePrimaryAction(plan.id, { onError: onRequestError });

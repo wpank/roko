@@ -115,6 +115,8 @@ export interface PlanRun {
   generation?: number;
   /** The plan's own check on its delivered work, once it ran. */
   planCheck?: { passed: boolean; name: string | null } | null;
+  /** What earlier processes of a resumed run spent, which its SPENT counts with this process's (gap-c1726f). */
+  carriedUsd?: number;
 }
 
 export interface AgentRun {
@@ -155,6 +157,11 @@ export interface RunState {
   /** Everything the server has recorded since it started; see `runCostUsd` for a run's cost. */
   totals: { costUsd: number; inputTokens: number; outputTokens: number };
   usage: { atMs: number; tokens: number }[];
+  /**
+   * What a resume carried, by plan, waiting for the plan's start: roko says it just before `plan_started`, which
+   * begins the plan's run afresh (gap-c1726f).
+   */
+  carried?: Record<string, number>;
 }
 
 // ── Terminal statuses ──────────────────────────────────────────────────────────
@@ -617,12 +624,19 @@ export function applyEvent(
         ? state.run
         : { startedAtMs: nowMs, durationMs: null, outcome: null };
 
+      // A resume carries what the run's earlier processes spent (gap-c1726f).
+      const carriedUsd = state.carried?.[event.plan_id];
+      if (carriedUsd !== undefined) plan = { ...plan, carriedUsd };
+      const carried = carriedUsd !== undefined ? { ...state.carried } : state.carried;
+      if (carried && carriedUsd !== undefined) delete carried[event.plan_id];
+
       return {
         ...state,
         plans: { ...state.plans, [event.plan_id]: plan },
         tasks: newTasks,
         transcripts: newTranscripts,
         run: newRun,
+        ...(carried !== state.carried ? { carried } : {}),
       };
     }
 
@@ -1256,6 +1270,16 @@ export function applyEvent(
         ...state,
         tasks: { ...state.tasks, [key]: { ...task, tries, attempts: Math.max(task.attempts, tries.length) } },
       };
+    }
+
+    // ── budget_carried ─────────────────────────────────────────────────────────
+    case 'budget_carried': {
+      // Said just before the resumed plan starts; a plan already running takes it at once (gap-c1726f).
+      const plan = state.plans[event.plan_id];
+      if (plan?.phase === 'running') {
+        return { ...state, plans: { ...state.plans, [event.plan_id]: { ...plan, carriedUsd: event.carried_usd } } };
+      }
+      return { ...state, carried: { ...state.carried, [event.plan_id]: event.carried_usd } };
     }
 
     // ── plan_check_finished ────────────────────────────────────────────────────

@@ -173,6 +173,8 @@ impl CliRuntime for RecordingRuntime {
             tasks,
             title: None,
             max_parallel: 1,
+            plan_checks: Vec::new(),
+            workspace_rungs: true,
         }))
     }
 
@@ -2409,6 +2411,7 @@ async fn rest_pause_holds_the_run_without_cancelling() {
         handle,
         cancel: cancel.clone(),
         max_usd: None,
+        started_at: chrono::Utc::now(),
     };
     state
         .active_plans
@@ -2855,6 +2858,8 @@ async fn plan_list_and_detail_carry_the_summary_fields() {
                     tasks: vec![],
                     title: None,
                     max_parallel: 1,
+                    plan_checks: Vec::new(),
+                    workspace_rungs: true,
                 }))
             } else {
                 Ok(None)
@@ -3027,6 +3032,7 @@ async fn put_plan_source_returns_409_when_run_is_active() {
         handle,
         cancel,
         max_usd: None,
+        started_at: chrono::Utc::now(),
     };
     state
         .active_plans

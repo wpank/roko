@@ -123,6 +123,20 @@ pub struct PlanTasksDto {
     /// Maximum number of tasks that can run in parallel for this plan.
     #[serde(default)]
     pub max_parallel: u32,
+    /// The plan's own checks (`[meta] verify`), run on its integrated work
+    /// once every task has passed (gap-c1726f). A surface counts them with
+    /// the tasks' checks from the start.
+    #[serde(default)]
+    pub plan_checks: Vec<PlanTaskVerifyDto>,
+    /// Whether the plan's tasks run the workspace's required rungs after
+    /// their own steps (`[meta] workspace_rungs`, unset runs them).
+    #[serde(default = "workspace_rungs_default")]
+    pub workspace_rungs: bool,
+}
+
+/// A plan runs the workspace's rungs unless it opts out.
+fn workspace_rungs_default() -> bool {
+    true
 }
 
 /// Wire-format representation of a plan's raw TOML source.

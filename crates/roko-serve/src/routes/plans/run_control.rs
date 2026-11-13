@@ -976,6 +976,7 @@ fn launch_single_plan_run(
         handle,
         cancel,
         max_usd: spec.max_usd,
+        started_at: chrono::Utc::now(),
     };
     active.insert(spec.key, plan_handle);
 }
@@ -1067,6 +1068,7 @@ fn launch_plan_set_run(
         handle,
         cancel,
         max_usd: spec.max_usd,
+        started_at: chrono::Utc::now(),
     };
     active.insert(spec.key, plan_handle);
 }
@@ -1474,6 +1476,7 @@ fn cancel_queued_run(
         handle: tokio::spawn(async {}),
         cancel: CancelToken::new(),
         max_usd: spec.max_usd,
+        started_at: chrono::Utc::now(),
     };
     active.insert(spec.run_id.clone(), plan_handle);
     // The run never started, so nothing else will say it ended.

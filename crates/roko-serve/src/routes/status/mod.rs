@@ -459,6 +459,7 @@ mod tests {
             handle: tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(30))),
             cancel: roko_runtime::cancel::CancelToken::new(),
             max_usd: None,
+            started_at: chrono::Utc::now(),
         };
         state
             .active_plans

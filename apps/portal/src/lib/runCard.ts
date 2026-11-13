@@ -111,6 +111,10 @@ export interface CardInput {
   rungs: readonly string[];
   /** The plan's spending cap in USD, or null when it has none or it is unknown. */
   capUsd: number | null;
+  /** How many checks of its own the plan runs once its tasks pass (`[meta] verify`, gap-c1726f). */
+  planChecks?: number;
+  /** When roko accepted the plan's run, in ms, when roko serve says (gap-c1726f): TIME counts from it. */
+  runStartedMs?: number | null;
   nowMs: number;
   /** The plan's problems in words (lib/planProblems.ts); any error keeps a plan that hasn't run from running. */
   problems?: readonly Problem[];
@@ -324,8 +328,19 @@ export function buildCard(input: CardInput): Card {
     pips: taskPips,
   };
 
-  const startedAt = live?.startedAtMs ?? null;
-  const elapsed = ran && startedAt !== null ? (live!.finishedAtMs ?? nowMs) - startedAt : null;
+  // TIME runs from when roko accepted the run, which only roko serve knows, else from when the plan's tasks began;
+  // once the run has ended, it is the run's own duration, as roko counted it (gap-c1726f).
+  const startedAt = ran ? (input.runStartedMs ?? live?.startedAtMs ?? null) : null;
+  // The run's duration is this plan's only when the run held this plan alone.
+  const aloneInRun = run.planSet
+    ? run.planSet.planIds.length === 1 && run.planSet.planIds[0] === plan.id
+    : run.run.startedAtMs !== null && run.run.startedAtMs === live?.startedAtMs;
+  const runEnded = ran && live?.finishedAtMs != null && run.run.durationMs !== null && aloneInRun;
+  const elapsed = runEnded
+    ? run.run.durationMs
+    : ran && startedAt !== null
+      ? (live!.finishedAtMs ?? nowMs) - startedAt
+      : null;
   const retried = rows.find((r) => (liveTask(r.id)?.tries?.length ?? r.attempts) > 1);
   const timeNote =
     state === 'running' && startedAt !== null
@@ -344,7 +359,8 @@ export function buildCard(input: CardInput): Card {
     note: timeNote,
   };
 
-  const spent = live?.costUsd ?? 0;
+  // The whole run's spend: on a resume, what its earlier processes spent too (gap-c1726f).
+  const spent = (live?.costUsd ?? 0) + (live?.carriedUsd ?? 0);
   const share = capUsd && capUsd > 0 ? spent / capUsd : 0;
   // An unknown cap isn't no cap (gap-acfe4b): without one the reading is the spend alone, with no meter.
   const spentReading: Reading = {
@@ -362,7 +378,11 @@ export function buildCard(input: CardInput): Card {
       : {}),
   };
 
-  const checkStates: Signal[] = rows.flatMap((r) => checkSignals(r, liveTask(r.id)?.checks ?? [], rungs));
+  // Every check roko runs on the work it keeps: each task's steps and rungs, then the plan's own (gap-c1726f).
+  const checkStates: Signal[] = [
+    ...rows.flatMap((r) => checkSignals(r, liveTask(r.id)?.checks ?? [], rungs, pads.get(r.id)!.state === 'pass')),
+    ...planCheckSignals(input.planChecks ?? 0, live?.planCheck ?? null),
+  ];
   const checksPassed = checkStates.filter((s) => s === 'pass').length;
   const checksReading: Reading = {
     text: `${checksPassed}/${checkStates.length}`,
@@ -415,19 +435,42 @@ function padSignal(state: PadState): Signal {
  * A task's checks as signals: its own declared checks, then the project's, each passed, failed, running or
  * waiting; checks the run reported beyond those count too.
  */
-function checkSignals(row: TaskRowModel, checks: readonly CheckRun[], rungs: readonly string[]): Signal[] {
+function checkSignals(
+  row: TaskRowModel,
+  checks: readonly CheckRun[],
+  rungs: readonly string[],
+  passed = false,
+): Signal[] {
+  // A task that passed with no results here passed in an earlier process of the run, which a resume kept: its
+  // checks passed then (gap-c1726f).
+  if (passed && checks.length === 0) return [...row.verify, ...rungs].map((): Signal => 'pass');
   const seen = new Set<string>();
   const signalOf = (c: CheckRun | undefined): Signal =>
     !c ? 'waiting' : c.status === 'passed' ? 'pass' : c.status === 'failed' ? 'fail' : 'live';
-  const find = (word: string) => checks.find((c) => checkWord(c.phase || c.name) === word || checkWord(c.name) === word);
-  const out: Signal[] = [];
-  for (const word of [...row.verify.map((v) => v.phase), ...rungs]) {
-    const c = find(word);
+  const take = (c: CheckRun | undefined) => {
     if (c) seen.add(c.name);
-    out.push(signalOf(c));
+    return signalOf(c);
+  };
+  // A task's own steps by their place, as roko names them (`verify[<i>:<phase>]`), so steps that share a phase word
+  // count once each (gap-c1726f); a result with no place is matched by its word, as older runs named them.
+  const out: Signal[] = row.verify.map((v, i) =>
+    take(
+      checks.find((c) => !seen.has(c.name) && c.index === i) ??
+        checks.find((c) => !seen.has(c.name) && c.index === null && checkWord(c.phase || c.name) === checkWord(v.phase)),
+    ),
+  );
+  for (const rung of rungs) {
+    out.push(take(checks.find((c) => !seen.has(c.name) && c.index === null && checkWord(c.name) === rung)));
   }
   for (const c of checks) if (!seen.has(c.name)) out.push(signalOf(c));
   return out;
+}
+
+/** The plan's own checks as signals: waiting until the plan check reports, then passed or failed together. */
+function planCheckSignals(count: number, result: { passed: boolean } | null): Signal[] {
+  const n = Math.max(count, result ? 1 : 0);
+  const signal: Signal = !result ? 'waiting' : result.passed ? 'pass' : 'fail';
+  return Array.from({ length: n }, () => signal);
 }
 
 /** What a running task does now, from its checks and its transcript's latest tool step on this try. */

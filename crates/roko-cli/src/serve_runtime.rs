@@ -668,6 +668,10 @@ impl CliRuntime for RokoCliRuntime {
             // The listing's title, not `[meta].plan`, which is the plan id (bug-e0624e).
             title: Some(crate::plan::plan_title(&plan_info)),
             max_parallel: crate::plan_policy::plan_max_parallel(&tasks_file),
+            // What else roko checks, so a surface counts every check from the
+            // start (gap-c1726f).
+            plan_checks: tasks_file.meta.verify.iter().map(verify_to_dto).collect(),
+            workspace_rungs: tasks_file.meta.runs_workspace_rungs(),
         }))
     }
 
@@ -2078,20 +2082,21 @@ pub(crate) fn task_to_dto(task: &crate::task_parser::TaskDef) -> PlanTaskDto {
         verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
         model_hint: task.model_hint.clone(),
         estimated_minutes: task.estimated_minutes,
-        verify: task
-            .verify
-            .iter()
-            .map(|v| PlanTaskVerifyDto {
-                phase: v.phase.clone(),
-                command: v.command.clone(),
-                fail_msg: v.fail_msg.clone(),
-                timeout_ms: if v.timeout_ms == 0 {
-                    None
-                } else {
-                    Some(v.timeout_ms)
-                },
-            })
-            .collect(),
+        verify: task.verify.iter().map(verify_to_dto).collect(),
+    }
+}
+
+/// A verify step as the plan API gives it.
+fn verify_to_dto(step: &crate::task_parser::VerifyStep) -> PlanTaskVerifyDto {
+    PlanTaskVerifyDto {
+        phase: step.phase.clone(),
+        command: step.command.clone(),
+        fail_msg: step.fail_msg.clone(),
+        timeout_ms: if step.timeout_ms == 0 {
+            None
+        } else {
+            Some(step.timeout_ms)
+        },
     }
 }
 
@@ -2254,6 +2259,61 @@ mod tests {
             result, plan_dir,
             "a plan directory must run in place; got a different path"
         );
+    }
+
+    /// gap-c1726f: a plan's tasks say what else roko checks, so a surface
+    /// counts every check from the start: the plan's own checks (`[meta]
+    /// verify`) as `plan_checks`, and whether its tasks run the workspace's
+    /// rungs (`workspace_rungs`).
+    #[tokio::test]
+    async fn plan_tasks_list_the_plans_own_checks() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plan_dir = workdir.path().join("plans").join("checked");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"checked\"\nworkspace_rungs = false\n\n\
+             [[meta.verify]]\nphase = \"plan\"\ncommand = \"tools/check.sh --plugin\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"One\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let dto = runtime
+            .load_plan_tasks(workdir.path(), "checked")
+            .await
+            .unwrap()
+            .expect("the plan is found");
+        let dto = serde_json::to_value(&dto).unwrap();
+        // The step as a task's is given: its phase and command, and the timeout
+        // a plan check gets by default.
+        assert_eq!(
+            dto["plan_checks"].as_array().map(Vec::len),
+            Some(1),
+            "{dto}"
+        );
+        assert_eq!(dto["plan_checks"][0]["phase"], "plan", "{dto}");
+        assert_eq!(
+            dto["plan_checks"][0]["command"], "tools/check.sh --plugin",
+            "{dto}"
+        );
+        assert_eq!(dto["workspace_rungs"], false, "{dto}");
+
+        // A plan that says neither has no checks of its own, and runs the rungs.
+        let plain = workdir.path().join("plans").join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(
+            plain.join("tasks.toml"),
+            "[meta]\nplan = \"plain\"\n\n[[task]]\nid = \"T1\"\ntitle = \"One\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+        let dto = runtime
+            .load_plan_tasks(workdir.path(), "plain")
+            .await
+            .unwrap()
+            .expect("the plan is found");
+        let dto = serde_json::to_value(&dto).unwrap();
+        assert_eq!(dto["plan_checks"], serde_json::json!([]), "{dto}");
+        assert_eq!(dto["workspace_rungs"], true, "{dto}");
     }
 
     /// bug-9f340c: the plan API counts a task as completed exactly when the

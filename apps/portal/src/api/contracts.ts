@@ -165,6 +165,15 @@ export type WireDashboardEvent =
     }
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
   | {
+      /** A resumed plan's run carried what its earlier processes spent (BudgetCarried in roko-core, bug-b7f6a8). */
+      type: 'budget_carried';
+      plan_id: string;
+      carried_usd: number;
+      settled_usd?: number;
+      ceiling_usd?: number | null;
+      detail?: string;
+    }
+  | {
       /** A line of roko serve's event log: `plan_generate.started`, `.completed`, `.failed`, `.cancelled`, … */
       type: 'event_log_entry';
       event_type: string;
@@ -440,6 +449,11 @@ export interface WireCheckpointRun {
    * (gap-acfe4b); absent when it set none, and on older servers.
    */
   max_usd?: number;
+  /**
+   * When roko accepted the run, RFC 3339, while serve holds it (gap-c1726f): TIME counts from it, as roko's own
+   * `run_completed.duration_ms` does.
+   */
+  started_at?: string;
 }
 
 /** Response body from GET /api/plans/{id}: the plan's summary, with its last run and the run a resume would continue. */
@@ -544,6 +558,10 @@ export interface WirePlanTasks {
   tasks: WirePlanTask[];
   title?: string;
   max_parallel?: number;
+  /** The plan's own checks (`[meta] verify`), run once every task has passed (gap-c1726f); absent on older servers. */
+  plan_checks?: WireVerifyStep[];
+  /** Whether the plan's tasks run the workspace's rungs after their own steps; absent on older servers. */
+  workspace_rungs?: boolean;
 }
 
 // ---------------------------------------------------------------------------

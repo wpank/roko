@@ -52,7 +52,7 @@ export const queryKeys = {
   runSummary: (runId: string, stamp: string) => ['runs', runId, 'summary', stamp] as const,
   runDiff: (runId: string) => ['runs', runId, 'diff'] as const,
   planCosts: (id: string) => ['plans', id, 'costs'] as const,
-  runCap: (id: string, stamp: string) => ['plans', id, 'run-cap', stamp] as const,
+  runFacts: (id: string, stamp: string) => ['plans', id, 'run-facts', stamp] as const,
   gateRungs: ['config', 'gates', 'rungs'] as const,
   workspace: ['workspace'] as const,
 };
@@ -292,18 +292,32 @@ export function useTaskDiff(id: string, taskId: string, enabled = true) {
  * A plan's detail: its last run and the run a resume would continue. `stamp` names the live run state it goes
  * with (when the plan and its run last ended), so the detail is read again once a run ends.
  */
+/** What the plan's detail says of its run that only the run's request and roko serve know. */
+export interface RunFacts {
+  /** What the run may spend: the cap its request set (gap-acfe4b), or null when it named none. */
+  capUsd: number | null;
+  /** When roko accepted the run, in ms (gap-c1726f), or null when serve doesn't say. */
+  startedAtMs: number | null;
+}
+
 /**
- * What the plan's run may spend (gap-acfe4b): the cap its request set, which the plan's detail names as
- * `last_run.max_usd`, or null when it names none. `stamp` changes when the run starts and ends, so it is read then;
- * while the run is `live` and its cap isn't named yet (the run's checkpoint comes a moment after it starts), it is
- * read again every 5 s.
+ * What the plan's detail names of its run (`last_run.max_usd` and `last_run.started_at`). `stamp` changes when the
+ * run starts and ends, so it is read then; while the run is `live` and the detail doesn't name its start yet (the
+ * run's checkpoint comes a moment after it starts), it is read again every 5 s.
  */
-export function useRunCap(id: string, live: boolean, stamp: string) {
-  return useQuery<number | null>({
-    queryKey: queryKeys.runCap(id, stamp),
-    queryFn: () => fetchPlanDetail(id).then((detail) => detail.last_run?.max_usd ?? null),
+export function useRunFacts(id: string, live: boolean, stamp: string) {
+  return useQuery<RunFacts>({
+    queryKey: queryKeys.runFacts(id, stamp),
+    queryFn: () =>
+      fetchPlanDetail(id).then((detail) => {
+        const started = detail.last_run?.started_at ? Date.parse(detail.last_run.started_at) : Number.NaN;
+        return {
+          capUsd: detail.last_run?.max_usd ?? null,
+          startedAtMs: Number.isFinite(started) ? started : null,
+        };
+      }),
     retry: false,
-    refetchInterval: (query) => (live && query.state.data == null ? 5_000 : false),
+    refetchInterval: (query) => (live && query.state.data?.startedAtMs == null ? 5_000 : false),
   });
 }
 

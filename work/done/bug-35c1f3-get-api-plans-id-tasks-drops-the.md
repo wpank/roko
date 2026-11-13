@@ -2,7 +2,7 @@
 id = "bug-35c1f3"
 kind = "bug"
 title = "GET /api/plans/{id}/tasks drops the plan's own checks: gap-c1726f's plan_checks and workspace_rungs reach the runtime's record but not the route, which builds its JSON from five named fields, so the portal read CHECKS '0 of 10' on 7.2 where the definition says 11"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/plans"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
+last_verified_rev = "bec6e4deb"
 source = "round v8 portal-v8, phase 7.2's capture (2026-11-13)"
 discovered_from = "agent:portal-v8 (round v8)"
 anchors = ["crates/roko-serve/src/routes/plans/reads.rs::plan_tasks"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-c1726f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn plan_tasks_route_names_the_plans_own_checks' crates/roko-serve/src && cargo test -p roko-serve --lib plan_tasks_route_names_the_plans_own_checks"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-13T01:22:33Z"
+commit = "bec6e4deb"
+by = "portal-v8 (round v8)"
+executor = "unknown"
+forced = false
+evidence = "plan_tasks now sends plan_checks and workspace_rungs from the runtime's PlanTasksDto. plan_tasks_route_names_the_plans_own_checks (roko-serve lib, through the route) was red at f72e3f8f6 ({max_parallel:1, plan_id:demo, task_count:0, tasks:[], title:null}) and passes at bec6e4deb in roko-work-bug-36ce72 (heavy.sh, CARGO_INCREMENTAL=0): fmt clean, roko-serve lib filtered plan_tasks|plan_detail|list_plans 5/5 (plan_detail_names_its_runs_cap and plan_detail_names_when_its_run_started included), clippy -D warnings clean."
 +++
 
 ## Problem

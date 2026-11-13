@@ -355,6 +355,9 @@ impl GraphTaskDispatcher {
         }
         let chosen = self.judge_model_key(judged.executor);
         let Some((model_key, cross_family)) = chosen else {
+            // A try the plan's budget stopped is not judged, and its verdict
+            // says so (bug-b364d9).
+            HelperCalls::skip_model_check(&label);
             return Verdict::skip(&label, "no helper model can judge");
         };
         let diff = match self

@@ -3790,10 +3790,12 @@ exit 1
 
     /// A try under a $0.05 cap whose scripted calls cost $0.011 and $0.021
     /// (`turns`, in order): the plan's budget refuses a third call like the
-    /// second. `check.sh` passes once `src/voice.cpp` returns 1.
+    /// second. `check.sh` passes once `src/voice.cpp` returns 1. With `judge`,
+    /// `[gates] llm_judge` is on, a check that calls a model.
     async fn budget_stopped_try(
         temp: &Path,
         turns: Vec<serde_json::Value>,
+        judge: bool,
     ) -> (
         GraphTaskDispatcher,
         TaskExecutionSpec,
@@ -3814,7 +3816,9 @@ exit 1
             .chain(std::iter::once(final_turn("done")))
             .collect();
         let (base_url, requests) = spawn_openai_mock(turns);
-        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp)
+        let mut config = priced_api_config(base_url);
+        config.gates.llm_judge = judge;
+        let dispatcher = make_bare_dispatcher(config, temp)
             .await
             .with_plan_budget(0.05, 0.0, false)
             .with_feedback(recording_feedback(temp));
@@ -3850,6 +3854,7 @@ exit 1
                 tool_call_turn("c1", "write_file", fix),
                 tool_call_turn("c2", "run_tests", checks),
             ],
+            false,
         )
         .await;
         let ctx = CellContext::new()
@@ -3905,6 +3910,7 @@ exit 1
                 tool_call_turn("c1", "write_file", half),
                 tool_call_turn("c2", "read_file", read),
             ],
+            false,
         )
         .await;
         let ctx = CellContext::new()
@@ -3945,6 +3951,60 @@ exit 1
         );
         assert_eq!(verdicts[0]["steps"][0]["passed"], false, "{}", verdicts[0]);
         assert!(dispatcher.plan_dispatch_stop(&spec.plan_id).is_some());
+    }
+
+    /// bug-b364d9, the lead's condition on bug-3e04a6: a try the plan's
+    /// budget stopped whose task has a check that calls a model, here
+    /// `[gates] llm_judge`, which its local-only checks skip, is not fully
+    /// checked. It settles unverified, its record naming the reason and the
+    /// check, and no model call judges it. A try whose checks are all local
+    /// passes ([`a_try_the_budget_stopped_passes_when_its_checks_pass`]).
+    #[tokio::test]
+    async fn a_try_the_budget_stopped_with_model_checks_skipped_is_not_fully_checked() {
+        let temp = tempdir().expect("tempdir");
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let checks = serde_json::json!({ "build": "checks" });
+        let (dispatcher, spec, requests) = budget_stopped_try(
+            temp.path(),
+            vec![
+                tool_call_turn("c1", "write_file", fix),
+                tool_call_turn("c2", "run_tests", checks),
+            ],
+            true,
+        )
+        .await;
+        let ctx = CellContext::new()
+            .with_cell_id("T05".to_string())
+            .with_run_id("capped".to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("its local checks pass on the work it left");
+
+        assert_eq!(requests.lock().len(), 2, "no model call judges it");
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(verdicts[0]["gate_verdict"], "unverified", "{}", verdicts[0]);
+        let skipped = verdicts[0]["steps"]
+            .as_array()
+            .and_then(|steps| {
+                steps
+                    .iter()
+                    .find(|step| step["rung"] == "budget:model_checks")
+            })
+            .unwrap_or_else(|| panic!("a step names the skipped checks: {}", verdicts[0]));
+        assert_eq!(
+            skipped["skip_reason"], "model checks skipped: the plan's budget was spent (llm-judge)",
+            "{skipped}"
+        );
     }
 
     /// gap-8548e3: a run held to a budget cap never calls a model roko has no

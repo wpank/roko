@@ -121,6 +121,7 @@ impl GraphTaskDispatcher {
                 ..VerifyStepVerdict::default()
             });
         }
+        let result = not_fully_checked(result, &mut steps);
         VerificationReport {
             result,
             steps,
@@ -1454,6 +1455,42 @@ pub(super) async fn verify_compile_permit(
         tracing::warn!(%error, "running the cargo verify step without the compile lock");
     })
     .ok()
+}
+
+/// The rung of the step that names the checks that call a model which a try
+/// the plan's budget stopped skipped (bug-b364d9).
+pub(super) const MODEL_CHECKS_SKIPPED_RUNG: &str = "budget:model_checks";
+
+/// `result`, a try's verdict, unverified when its checks passed but the
+/// checks of its task that call a model were skipped, its plan's budget being
+/// spent (bug-b364d9): `steps` gains [`MODEL_CHECKS_SKIPPED_RUNG`], a step that
+/// reached no pass, naming them, as a self-checked step names its run. A try
+/// whose checks are all local keeps its pass.
+fn not_fully_checked(
+    result: Result<TaskGateVerdict>,
+    steps: &mut Vec<VerifyStepVerdict>,
+) -> Result<TaskGateVerdict> {
+    let skipped = HelperCalls::skipped_model_checks();
+    let passed = matches!(
+        result,
+        Ok(TaskGateVerdict::Passed
+            | TaskGateVerdict::PassedWithPreexistingFailures
+            | TaskGateVerdict::AlreadySatisfied)
+    );
+    if skipped.is_empty() || !passed {
+        return result;
+    }
+    steps.push(VerifyStepVerdict {
+        rung: MODEL_CHECKS_SKIPPED_RUNG.to_string(),
+        passed: None,
+        skipped: true,
+        skip_reason: Some(format!(
+            "model checks skipped: the plan's budget was spent ({})",
+            skipped.join(", ")
+        )),
+        ..VerifyStepVerdict::default()
+    });
+    Ok(TaskGateVerdict::Unverified)
 }
 
 /// Run a verify step's gate while holding the compile lock its command needs

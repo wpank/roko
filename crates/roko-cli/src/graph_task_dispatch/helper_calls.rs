@@ -10,7 +10,9 @@
 //! plan budgets, a cost row and an efficiency row keyed by the attempt, and
 //! their totals on the attempt's verdict and episode. A try the plan's budget
 //! stopped is checked with no helper call at all ([`HelperCalls::local_only`],
-//! bug-3e04a6): nothing is left to pay for one.
+//! bug-3e04a6): nothing is left to pay for one. The model checks that leaves
+//! out are noted ([`HelperCalls::skip_model_check`]), and a try that passed
+//! without them is not fully checked (bug-b364d9).
 //!
 //! An audit worker's model calls write the same two rows, keyed by the
 //! attempt they audit ([`GraphTaskDispatcher::audit_call_log`],
@@ -210,6 +212,9 @@ struct HelperCallsState {
 struct HelperLedger {
     agents_out: usize,
     completed: Vec<SideCall>,
+    /// The checks that call a model which a local-only scope's verify steps
+    /// skipped, each once (bug-b364d9).
+    skipped_checks: Vec<String>,
 }
 
 impl HelperCalls {
@@ -233,6 +238,27 @@ impl HelperCalls {
     /// a try the plan's budget stopped (bug-3e04a6).
     pub(super) fn model_calls_allowed() -> bool {
         Self::current().is_none_or(|calls| !calls.0.local_only)
+    }
+
+    /// Note that the verify steps settling now skipped `check`, which calls a
+    /// model, because they may call none (bug-b364d9). Nothing outside a
+    /// local-only scope.
+    pub(super) fn skip_model_check(check: &str) {
+        let Some(calls) = Self::current().filter(|calls| calls.0.local_only) else {
+            return;
+        };
+        let mut ledger = calls.0.ledger.lock();
+        if !ledger.skipped_checks.iter().any(|skipped| skipped == check) {
+            ledger.skipped_checks.push(check.to_string());
+        }
+    }
+
+    /// The checks that call a model which the verify steps settling now
+    /// skipped (bug-b364d9).
+    pub(super) fn skipped_model_checks() -> Vec<String> {
+        Self::current()
+            .map(|calls| calls.0.ledger.lock().skipped_checks.clone())
+            .unwrap_or_default()
     }
 
     /// The helper calls of the attempt being verified, when there is one.

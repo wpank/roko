@@ -137,24 +137,34 @@ pub(super) async fn get_plan(
         });
     v["resumable_run"] = json!(last_run.as_ref().filter(|run| run.resumable));
     v["last_run"] = json!(last_run);
-    // What the run may spend, which only its request said (gap-acfe4b): the
-    // plan's live run, else its newest ended one serve still holds. A resume
-    // continues the run the checkpoint records, and its cap counts the whole
-    // run, so it belongs to `last_run` too.
+    // What only the run's request and its handle know, from the plan's live
+    // run, else its newest ended one serve still holds: what it may spend
+    // (gap-acfe4b) and when it started (gap-c1726f). A resume continues the
+    // run the checkpoint records, and its cap counts the whole run, so they
+    // belong to `last_run` too.
     if v["last_run"].is_object()
-        && let Some(max_usd) = run_cap(&state, &id).await
+        && let Some((max_usd, started_at)) = run_facts(&state, &id).await
     {
-        v["last_run"]["max_usd"] = json!(max_usd);
+        if let Some(max_usd) = max_usd {
+            v["last_run"]["max_usd"] = json!(max_usd);
+        }
+        v["last_run"]["started_at"] =
+            json!(started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     }
     Ok(Json(v))
 }
 
-/// The cap the request of plan `id`'s live run set, else that of its newest
-/// ended run serve still holds; `None` when that run set none (gap-acfe4b).
-async fn run_cap(state: &AppState, id: &str) -> Option<f64> {
+/// The cap the request of plan `id`'s live run set, and when the run started,
+/// else those of its newest ended run serve still holds (gap-acfe4b,
+/// gap-c1726f); `None` when serve holds no run of the plan.
+async fn run_facts(
+    state: &AppState,
+    id: &str,
+) -> Option<(Option<f64>, chrono::DateTime<chrono::Utc>)> {
     let active = state.active_plans.read().await;
     let key = active_run_for(&active, id).or_else(|| finished_run_for(&active, id))?;
-    active.get(&key)?.max_usd
+    let handle = active.get(&key)?;
+    Some((handle.max_usd, handle.started_at))
 }
 
 /// `GET /api/plans/:id/tasks` — return the task list for a specific plan.

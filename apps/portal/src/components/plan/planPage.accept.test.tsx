@@ -129,7 +129,8 @@ describe('after a run', () => {
     expect(textOf(document.querySelector('[data-region="run-summary"]'))).toBe(
       'All 3 tasks passed their checks, and so did the plan’s own check.',
     );
-    expect(readingLabel('checks')).toBe('checks: 6 of 6 checks passed');
+    // Each task's check and the project's compile check, and the plan's own check (gap-c1726f).
+    expect(readingLabel('checks')).toBe('checks: 7 of 7 checks passed');
     const rows = [...document.querySelectorAll('[data-fold="plan"] tbody tr')].map((tr) => textOf(tr));
     expect(rows[2]).toContain('03 Document how to run it');
     expect(rows[2]).toContain('glm-4.7');

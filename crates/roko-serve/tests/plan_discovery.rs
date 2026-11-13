@@ -85,6 +85,8 @@ impl PlanDiscoveryRuntime {
             tasks: vec![task],
             title: None,
             max_parallel: 1,
+            plan_checks: Vec::new(),
+            workspace_rungs: true,
         };
 
         Self {

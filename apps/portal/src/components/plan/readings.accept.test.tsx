@@ -92,6 +92,29 @@ describe('CHECKS', () => {
   });
 });
 
+describe('a resumed run', () => {
+  it('counts the whole run: what earlier processes spent, and the checks of the tasks it kept', () => {
+    stubFetch([{ path: '/api/plans/p7-ship', body: detail(Date.now() - 60_000) }]);
+    renderPlanPage(
+      PLAN,
+      TASKS,
+      [
+        // roko says what the run's earlier processes spent just before the plan starts again.
+        { type: 'budget_carried', plan_id: 'p7-ship', carried_usd: 3, ceiling_usd: 9, detail: '' },
+        { type: 'plan_started', plan_id: 'p7-ship', tasks_total: 2 },
+        // T1 passed in an earlier process: the resume keeps it, with no results of its own here.
+        { type: 'task_completed', plan_id: 'p7-ship', task_id: 'T1', outcome: 'passed' },
+        { type: 'task_started', plan_id: 'p7-ship', task_id: 'T2', phase: 'implement' },
+        { type: 'efficiency_event', plan_id: 'p7-ship', task_id: 'T2', metric: 'cost_usd', value: 0.22 },
+        gate('T2', 0), gate('T2', 1),
+      ],
+      seed,
+    );
+    expect(label('spent')).toMatch(/^spent: \$3\.22/);
+    expect(label('checks')).toBe('checks: 6 of 8 checks passed');
+  });
+});
+
 describe('TIME', () => {
   it('runs from when roko accepted the run, not from when its tasks began', async () => {
     const now = Date.now();

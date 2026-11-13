@@ -3150,7 +3150,10 @@ mod tests {
         assert_eq!(answer["result"]["isError"], false, "{answer}");
         plan_runs_started(&runtime, 1).await;
         let at = started(router.clone()).await.expect("while the run goes");
-        assert!(at >= before - chrono::Duration::seconds(1), "{at} before {before}");
+        assert!(
+            at >= before - chrono::Duration::seconds(1),
+            "{at} before {before}"
+        );
         assert!(at <= chrono::Utc::now(), "{at}");
 
         runtime.gate.add_permits(1);
@@ -3167,6 +3170,10 @@ mod tests {
         })
         .await
         .expect("the run ends");
-        assert_eq!(started(router.clone()).await, Some(at), "once the run has ended");
+        assert_eq!(
+            started(router.clone()).await,
+            Some(at),
+            "once the run has ended"
+        );
     }
 }

@@ -261,6 +261,10 @@ pub struct PlanHandle {
     /// nothing else records, so a host can show spend against it
     /// (gap-acfe4b). `None` when the request set none.
     pub max_usd: Option<f64>,
+    /// When the run started: roko accepted it and its task began
+    /// (gap-c1726f). A host counts the run's time from it, as the run's own
+    /// `run_completed.duration_ms` does.
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl PlanHandle {

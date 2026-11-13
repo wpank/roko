@@ -668,6 +668,10 @@ impl CliRuntime for RokoCliRuntime {
             // The listing's title, not `[meta].plan`, which is the plan id (bug-e0624e).
             title: Some(crate::plan::plan_title(&plan_info)),
             max_parallel: crate::plan_policy::plan_max_parallel(&tasks_file),
+            // What else roko checks, so a surface counts every check from the
+            // start (gap-c1726f).
+            plan_checks: tasks_file.meta.verify.iter().map(verify_to_dto).collect(),
+            workspace_rungs: tasks_file.meta.runs_workspace_rungs(),
         }))
     }
 
@@ -2078,20 +2082,21 @@ pub(crate) fn task_to_dto(task: &crate::task_parser::TaskDef) -> PlanTaskDto {
         verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
         model_hint: task.model_hint.clone(),
         estimated_minutes: task.estimated_minutes,
-        verify: task
-            .verify
-            .iter()
-            .map(|v| PlanTaskVerifyDto {
-                phase: v.phase.clone(),
-                command: v.command.clone(),
-                fail_msg: v.fail_msg.clone(),
-                timeout_ms: if v.timeout_ms == 0 {
-                    None
-                } else {
-                    Some(v.timeout_ms)
-                },
-            })
-            .collect(),
+        verify: task.verify.iter().map(verify_to_dto).collect(),
+    }
+}
+
+/// A verify step as the plan API gives it.
+fn verify_to_dto(step: &crate::task_parser::VerifyStep) -> PlanTaskVerifyDto {
+    PlanTaskVerifyDto {
+        phase: step.phase.clone(),
+        command: step.command.clone(),
+        fail_msg: step.fail_msg.clone(),
+        timeout_ms: if step.timeout_ms == 0 {
+            None
+        } else {
+            Some(step.timeout_ms)
+        },
     }
 }
 
@@ -2279,9 +2284,16 @@ mod tests {
             .unwrap()
             .expect("the plan is found");
         let dto = serde_json::to_value(&dto).unwrap();
+        // The step as a task's is given: its phase and command, and the timeout
+        // a plan check gets by default.
         assert_eq!(
-            dto["plan_checks"],
-            serde_json::json!([{ "phase": "plan", "command": "tools/check.sh --plugin" }]),
+            dto["plan_checks"].as_array().map(Vec::len),
+            Some(1),
+            "{dto}"
+        );
+        assert_eq!(dto["plan_checks"][0]["phase"], "plan", "{dto}");
+        assert_eq!(
+            dto["plan_checks"][0]["command"], "tools/check.sh --plugin",
             "{dto}"
         );
         assert_eq!(dto["workspace_rungs"], false, "{dto}");

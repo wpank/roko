@@ -617,11 +617,12 @@ pub fn handback_feedback(
         failure.command,
         excerpt(&failure.output, &files)
     );
-    // The raw output is the feedback: the parsed lists would hide it.
+    // The raw output is the feedback: parsed compile errors would hide it,
+    // and warnings would bury it. The failing tests it quotes stay, over it
+    // and in the retry's event (bug-eff5fa).
     GateFeedback::from_raw(&raw).map(|feedback| {
         GateFeedback {
             compile_errors: Vec::new(),
-            test_failures: Vec::new(),
             clippy_warnings: Vec::new(),
             ..feedback
         }
@@ -835,6 +836,33 @@ The following tests FAILED:
 1 warning generated.
 Errors while running CTest
 ";
+
+    /// bug-eff5fa: a hand-back keeps the failing tests its excerpt quotes, so
+    /// the try's prompt lists them over the excerpt and its `retry_feedback`
+    /// event names them. The excerpt stays, since only compile errors hide it.
+    #[test]
+    fn a_hand_back_keeps_the_failing_tests_it_quotes() {
+        let failure = FailedPlanCheck::new("tools/check.sh --plugin", PHASE_4_CHECK);
+        let implicated = Implicated {
+            files: owners_of(&[("plugin/ui/Look.cpp", "T5")]),
+            runners: vec!["T5".to_string()],
+            tasks: vec!["T5".to_string()],
+        };
+
+        let feedback = handback_feedback(&failure, &implicated).expect("feedback");
+
+        let failing = "display_test.cpp:57: ERROR: CHECK( idle.bone <= idle.pixels / 10000 ) is NOT \
+                       correct!";
+        assert!(
+            feedback
+                .test_failures
+                .iter()
+                .any(|line| line.contains(failing)),
+            "{feedback:?}"
+        );
+        assert!(feedback.compile_errors.is_empty(), "{feedback:?}");
+        assert!(feedback.raw_output.contains(failing), "{feedback:?}");
+    }
 
     /// bug-fc05a3: the excerpt leads with the failure, not with the first
     /// line that names a handed-back file, which was a warning written after

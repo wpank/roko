@@ -237,7 +237,11 @@ impl RetryFeedbackBook {
     }
 
     /// Number the dispatch of `task_id` that is attempt `attempt_in_run` of
-    /// this process, and return the feedback it starts with.
+    /// this process, and return the feedback it starts with. A dispatch that
+    /// starts with feedback is a retry, at least the attempt the feedback was
+    /// left for, though this process may not have dispatched the task before:
+    /// a plan-check hand-back's try after a resume (bug-eff5fa). The prompt
+    /// carries the feedback of a retry only.
     pub(crate) fn next_attempt(
         &self,
         plan_id: &str,
@@ -247,9 +251,11 @@ impl RetryFeedbackBook {
         let key = (plan_id.to_string(), task_id.to_string());
         let state = self.state.lock();
         let earlier = state.earlier_attempts.get(&key).copied().unwrap_or(0);
+        let counted = earlier.saturating_add(attempt_in_run);
+        let pending = state.pending.get(&key);
         NextAttempt {
-            attempt: earlier.saturating_add(attempt_in_run),
-            feedback: state.pending.get(&key).map(|entry| entry.feedback.clone()),
+            attempt: pending.map_or(counted, |entry| counted.max(entry.next_attempt).max(1)),
+            feedback: pending.map(|entry| entry.feedback.clone()),
         }
     }
 
@@ -801,6 +807,25 @@ mod tests {
         );
         // The engine retries within the resumed run: numbering keeps going.
         assert_eq!(resumed.next_attempt("plan-a", "T05", 1).attempt, 4);
+    }
+
+    /// bug-eff5fa: a plan-check hand-back after a resume leaves feedback for a
+    /// task this process never dispatched. Its next dispatch is a retry
+    /// (attempt 1 or more, since the prompt carries the feedback of a retry
+    /// only), and it starts with the feedback.
+    #[test]
+    fn feedback_left_before_a_tasks_first_dispatch_makes_it_a_retry() {
+        let book = RetryFeedbackBook::default();
+        book.record(
+            "plan-a",
+            "T4",
+            feedback("steps_test.cpp:111: ERROR: CHECK( lit ) is NOT correct!"),
+            0,
+        );
+
+        let next = book.next_attempt("plan-a", "T4", 0);
+        assert!(next.feedback.is_some());
+        assert_eq!(next.attempt, 1);
     }
 
     #[test]

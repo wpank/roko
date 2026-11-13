@@ -2,7 +2,7 @@
 id = "bug-eff5fa"
 kind = "bug"
 title = "A plan-check hand-back can reach its try without the check's failing lines: after a resume the try is numbered attempt 0 and the prompt drops retry feedback on attempt 0, and the hand-back clears the failing tests it parsed, so its retry_feedback event lists no errors"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
+last_verified_rev = "6f5003fb2"
 source = "round v8 lead: phase 6's T4 hand-back (Undertow p6-the-window, run 23837ede, invocation ede1f9a7)"
 discovered_from = "agent:roko-recovery (round v8)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::RetryFeedbackBook", "crates/roko-cli/src/graph_execution/plan_handback.rs::handback_feedback"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-59ed90"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn feedback_left_before_a_tasks_first_dispatch_makes_it_a_retry' crates/roko-cli/src && grep -rqw 'fn a_hand_back_keeps_the_failing_tests_it_quotes' crates/roko-cli/src && cargo test -p roko-cli --lib -- feedback_left_before_a_tasks_first_dispatch_makes_it_a_retry a_hand_back_keeps_the_failing_tests_it_quotes"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-13T01:22:11Z"
+commit = "6f5003fb2"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-13T00:32:38Z"
+forced = false
+evidence = "6f5003fb2 on work/bug-eff5fa: a plan-check hand-back's try gets the check's failing lines also after a resume. Cause 1 (phase 6's T4, invocation ede1f9a7): the prompt adds retry feedback only when ctx.attempt > 0, and RetryFeedbackBook::next_attempt numbered the hand-back's try 0 (the task's earlier attempts were cleared when it passed, and the resumed process had not dispatched it), so its prompt dropped the feedback. A dispatch that starts with pending feedback is now a retry: at least attempt 1 and at least the attempt the feedback was left for; in one process nothing changes. Cause 2: handback_feedback emptied the failing tests it parsed (only compile errors hide the raw excerpt, bug-59ed90), so the retry_feedback event's errors were empty; the failing tests now stay. Red first on 4816a2cce: feedback_left_before_a_tasks_first_dispatch_makes_it_a_retry (attempt 0, expected 1) and a_hand_back_keeps_the_failing_tests_it_quotes (test_failures [] with P4.06's ERROR line in the excerpt); both pass now. Branch checks: nightly fmt; roko-cli lib 4158 passed, 0 failed (the plan_runner hand-back tests included); bin tests (plan, status, diagnose) 65 passed; workspace clippy -D warnings clean."
 +++
 
 ## Problem

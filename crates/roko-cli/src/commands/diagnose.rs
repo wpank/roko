@@ -140,6 +140,10 @@ pub struct DiagnoseReport {
     /// it as the run's table does (gap-5043c6). Not in `--json`.
     #[serde(skip)]
     pub plan_check_failure: Option<String>,
+    /// The plan check step running now, while the run goes (bug-addd24).
+    /// Not in `--json`.
+    #[serde(skip)]
+    pub plan_check_running: Option<RunningPlanCheck>,
 }
 
 /// Where a report's run state came from.
@@ -334,6 +338,28 @@ pub struct TaskDiagnosis {
     /// in `--json`, whose `attempts` are its provider calls.
     #[serde(skip)]
     pub tries: Vec<TryInfo>,
+    /// The try it has open, when one started and has not settled
+    /// (bug-addd24). Not in `--json`.
+    #[serde(skip)]
+    pub open_try: Option<OpenTry>,
+}
+
+/// A try that started and has not settled: the run's `attempts.jsonl` has
+/// its open line and no verdict for it (bug-addd24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenTry {
+    /// Which try of its task it is, from 1.
+    pub number: u32,
+    /// How long it has run, when its open line says when it started.
+    pub running_for: Option<Duration>,
+}
+
+/// A plan check step the run started and has not finished, from the run's
+/// event index (bug-addd24).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningPlanCheck {
+    /// The step's command.
+    pub command: String,
 }
 
 /// One try at a task (gap-5043c6, bug-649557): its settled verdict in the
@@ -528,6 +554,9 @@ struct RunRecords {
     /// The plan's settled verdicts in the run's `attempts.jsonl`, one per
     /// try (gap-5043c6).
     verdicts: Vec<AttemptVerdictRecord>,
+    /// Each task's latest try that the run's `attempts.jsonl` opened and has
+    /// no verdict for (bug-addd24).
+    open_tries: BTreeMap<String, OpenTry>,
 }
 
 impl RunRecords {
@@ -583,6 +612,7 @@ impl RunRecords {
                 .filter(|record| record.identity.plan_id == plan_id)
                 .cloned()
                 .collect(),
+            open_tries: recorded_open_tries(&run, plan_id),
         }
     }
 
@@ -602,8 +632,75 @@ impl RunRecords {
                     .iter()
                     .map(|record| record.identity.task_id.as_str()),
             )
+            .chain(self.open_tries.keys().map(String::as_str))
             .filter(|task_id| !task_id.is_empty())
     }
+}
+
+/// Each task's latest try that `plan_id`'s run opened and never settled: its
+/// open line in the run's `attempts.jsonl`, with no verdict of the same
+/// attempt key (bug-addd24).
+fn recorded_open_tries(
+    run: &roko_learn::telemetry::report::RunRecords,
+    plan_id: &str,
+) -> BTreeMap<String, OpenTry> {
+    let settled: HashSet<&str> = run
+        .verdicts
+        .iter()
+        .map(|verdict| verdict.record.identity.attempt_key.as_str())
+        .collect();
+    let now_ms = Utc::now().timestamp_millis();
+    let mut open: BTreeMap<String, OpenTry> = BTreeMap::new();
+    for line in &run.opens {
+        let identity = &line.record.identity;
+        if identity.plan_id != plan_id || settled.contains(identity.attempt_key.as_str()) {
+            continue;
+        }
+        let running_for = line.record.attempt_started_at.map(|started| {
+            Duration::from_millis(u64::try_from(now_ms.saturating_sub(started)).unwrap_or(0))
+        });
+        let started = OpenTry {
+            number: identity.attempt,
+            running_for,
+        };
+        let latest = open.entry(identity.task_id.clone()).or_insert(started);
+        if started.number >= latest.number {
+            *latest = started;
+        }
+    }
+    open
+}
+
+/// The plan check step `plan_id`'s run `run_id` started last, when no
+/// `plan_check_finished` followed it: the run's event index
+/// (`.roko/events-by-run/`) records both as they happen (bug-addd24). It only
+/// reads.
+fn running_plan_check(workdir: &Path, plan_id: &str, run_id: &str) -> Option<RunningPlanCheck> {
+    let log = RokoLayout::for_project(workdir).events_jsonl_path();
+    let index = roko_fs::run_index::run_index_path(&log, run_id).ok()?;
+    let file = roko_fs::run_index::open_existing_run_index(&index).ok()?;
+    let mut running = None;
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        if !line.contains("\"plan_check_") {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if event["plan_id"].as_str() != Some(plan_id) {
+            continue;
+        }
+        match event["type"].as_str() {
+            Some("plan_check_started") => {
+                running = Some(RunningPlanCheck {
+                    command: event["command"].as_str().unwrap_or_default().to_string(),
+                });
+            }
+            Some("plan_check_finished") => running = None,
+            _ => {}
+        }
+    }
+    running
 }
 
 /// Whether cost record `record` is the spend of writing or revising its
@@ -863,6 +960,9 @@ fn build_graph_report(
         notes,
         total_cost_usd: collect_total_cost_usd(workdir, plan_id),
         plan_check_failure: crate::graph_checkpoint::recorded_plan_check_failure(workdir, plan_id),
+        plan_check_running: (status == GraphCheckpointStatus::Running)
+            .then(|| running_plan_check(workdir, plan_id, run_id))
+            .flatten(),
     }
 }
 
@@ -1041,6 +1141,9 @@ fn diagnose_tasks(
                     .unwrap_or_default(),
                 gaming_flagged,
                 tries,
+                open_try: (state != TaskState::Completed)
+                    .then(|| records.open_tries.get(task_id).copied())
+                    .flatten(),
             };
             diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
             diagnosis
@@ -1882,6 +1985,7 @@ fn build_legacy_report(
         notes: Vec::new(),
         total_cost_usd,
         plan_check_failure: None,
+        plan_check_running: None,
     })
 }
 
@@ -2460,6 +2564,8 @@ pub fn run_model(report: &DiagnoseReport, now: Instant) -> RunModel {
             .sum::<Duration>();
         let elapsed = (!tries.is_empty()).then_some(elapsed);
         let count = u32::try_from(tries.len()).unwrap_or(u32::MAX);
+        // A try that is open is the task's latest (bug-addd24).
+        let count = task.open_try.map_or(count, |open| count.max(open.number));
         row.set_recorded(state, count, elapsed, spent, now);
         let first_failed = tries.iter().find(|entry| !entry.passed);
         let last_failed = tries.iter().rev().find(|entry| !entry.passed);
@@ -2488,11 +2594,30 @@ pub fn run_model(report: &DiagnoseReport, now: Instant) -> RunModel {
                     term_style::listed(&by)
                 ));
             }
-            RowState::Running => row.activity = Some("running".to_string()),
+            // How long its open try has run (bug-addd24).
+            RowState::Running => {
+                row.activity = Some(match task.open_try.and_then(|open| open.running_for) {
+                    Some(running_for) => {
+                        format!("running · {}", term_style::duration(running_for))
+                    }
+                    None => "running".to_string(),
+                });
+            }
             _ => {}
         }
     }
-    if let Some(reason) = &report.plan_check_failure {
+    // The plan check running now supersedes one that failed before it
+    // (bug-addd24).
+    if let Some(check) = &report.plan_check_running {
+        model.plan_checks.push(PlanCheckRow::recorded(
+            &report.plan_id,
+            "plan check",
+            &check.command,
+            RowState::Running,
+            None,
+            None,
+        ));
+    } else if let Some(reason) = &report.plan_check_failure {
         model.plan_checks.push(PlanCheckRow::recorded(
             &report.plan_id,
             "plan check",
@@ -3185,6 +3310,7 @@ warning: unused variable: `x`";
             notes: Vec::new(),
             total_cost_usd: None,
             plan_check_failure: None,
+            plan_check_running: None,
         }
     }
 

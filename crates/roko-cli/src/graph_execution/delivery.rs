@@ -927,14 +927,21 @@ async fn verified_commit(
     Ok(verified)
 }
 
-/// Whether `ancestor` is `descendant` or one of its ancestors.
+/// Whether `ancestor` is `descendant` or one of its ancestors. It only reads,
+/// so `roko plan status` can ask it (bug-62760a).
 pub(super) async fn is_ancestor(
     workdir: &Path,
     ancestor: &str,
     descendant: &str,
 ) -> Result<bool, String> {
     let output = git_command(workdir)
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .args([
+            "--no-optional-locks",
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant,
+        ])
         .output()
         .await
         .map_err(|e| format!("failed to spawn git merge-base: {e}"))?;

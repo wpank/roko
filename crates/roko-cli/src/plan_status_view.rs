@@ -223,8 +223,8 @@ mod tests {
     use roko_fs::RokoLayout;
     use roko_graph::cells::task_executor::TaskGateVerdict;
     use roko_learn::telemetry::{
-        AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
-        TelemetryWriterConfig, VerifyStepVerdict,
+        AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+        TelemetryWriter, TelemetryWriterConfig, VerifyStepVerdict,
     };
 
     use crate::graph_checkpoint::start_plan_checkpoint;
@@ -392,6 +392,155 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         assert!(text.ends_with("\n  Next  roko run plans/demo"), "{text}");
     }
 
+    /// A run of plan `demo` that is still going, holding the runner lock as a
+    /// live run does: each task in `passed` passed on one try. Returns the
+    /// run's id and the lock.
+    fn running_run(
+        passed: &[&str],
+    ) -> (
+        tempfile::TempDir,
+        String,
+        crate::workspace_lock::WorkspaceLockGuard,
+    ) {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let root = workspace.path();
+        let dir = root.join("plans/demo");
+        std::fs::create_dir_all(&dir).expect("plan dir");
+        std::fs::write(dir.join("tasks.toml"), TASKS).expect("tasks.toml");
+        let plan = Plan {
+            id: "demo".to_string(),
+            tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
+            dir,
+        };
+        let mut checkpoint = start_plan_checkpoint(root, &plan).expect("checkpoint");
+        let mut recorder = checkpoint.take_recorder();
+        for task in passed {
+            let mut output = vec![
+                Signal::builder(Kind::AgentOutput)
+                    .body(Body::text("done"))
+                    .build(),
+            ];
+            TaskGateVerdict::Passed.stamp(&mut output);
+            recorder.record("demo", task, 0, output).expect("record");
+        }
+        drop(recorder);
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Running)
+            .expect("commit the checkpoint");
+        let run_id = checkpoint.run_id().to_string();
+        let writer = TelemetryWriter::spawn(
+            &RokoLayout::for_project(root).run_dir(&run_id),
+            TelemetryWriterConfig::default(),
+        )
+        .expect("spawn writer");
+        for &task in passed {
+            let key = AttemptKey::new(run_id.as_str(), "demo", task, 1);
+            let verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::Passed,
+                true,
+            );
+            assert!(writer.submit(verdict));
+        }
+        writer.close();
+        let lock = crate::workspace_lock::acquire_runner_lock(&root.join(".roko"))
+            .expect("the runner lock");
+        (workspace, run_id, lock)
+    }
+
+    /// bug-addd24: while the run goes, a task whose try started reads
+    /// running, with how long it has run, though nothing of the try has
+    /// settled; a later try says which it is. Once every task passed, the
+    /// plan check the run started reads checking until it finishes.
+    #[tokio::test]
+    async fn plan_status_shows_what_is_running() {
+        let (workspace, run_id, _lock) = running_run(&["T1"]);
+        let root = workspace.path();
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let open = |task: &str, attempt: u32, ago_ms: i64| {
+            let key = AttemptKey::new(run_id.as_str(), "demo", task, attempt);
+            let started = chrono::Utc::now().timestamp_millis() - ago_ms;
+            let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+                .expect("spawn writer");
+            assert!(writer.submit(AttemptOpenRecord::new(AttemptIdentity::new(&key), started)));
+            writer.close();
+        };
+        open("T2", 1, 40_000);
+        let text = text_of(&status_of(root).await);
+        assert!(text.contains("running · 1/3 tasks"), "{text}");
+        assert!(text.contains("\n  ✓ task 1  Write the parser "), "{text}");
+        let row = |text: &str, label: &str| {
+            text.lines()
+                .find(|line| line.contains(label))
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("no row for {label}: {text}"))
+        };
+        let task2 = row(&text, "task 2");
+        assert!(task2.contains("Wire the parser"), "{text}");
+        assert!(task2.contains("running · 4"), "{text}");
+        assert!(!task2.contains("try"), "{text}");
+        let task3 = row(&text, "task 3");
+        assert!(task3.contains("○ task 3  Document the parser"), "{text}");
+        assert!(task3.ends_with("waiting"), "{text}");
+        assert!(!text.contains("plan check"), "{text}");
+
+        // Its first try settled as failed; the second is open.
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        let key = AttemptKey::new(run_id.as_str(), "demo", "T2", 1);
+        let failed = AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            AttemptOutcome::GateFailed,
+            true,
+        );
+        assert!(writer.submit(failed));
+        writer.close();
+        open("T2", 2, 5_000);
+        let text = text_of(&status_of(root).await);
+        assert!(
+            row(&text, "task 2").contains("try 2 · running · "),
+            "{text}"
+        );
+
+        // Every task passed and the plan check runs, then finishes.
+        let (workspace, run_id, _lock) = running_run(&["T1", "T2", "T3"]);
+        let root = workspace.path();
+        let paths = crate::runner::persist::PersistPaths::from_workdir(root).expect("paths");
+        let event = |kind: &str| {
+            let mut event = serde_json::json!({
+                "type": kind,
+                "plan_id": "demo",
+                "stage": "regression",
+                "step": 1,
+                "steps": 1,
+                "name": "grep",
+                "scope": "command",
+                "run_id": run_id,
+                "ts_millis": chrono::Utc::now().timestamp_millis(),
+            });
+            if kind == "plan_check_started" {
+                event["command"] = serde_json::json!("grep -q parser README.md");
+                event["source"] = serde_json::json!("authored");
+            } else {
+                event["passed"] = serde_json::json!(true);
+                event["exit_code"] = serde_json::json!(0);
+                event["elapsed_ms"] = serde_json::json!(1_200);
+            }
+            crate::runner::persist::append_run_index_event(&paths, &run_id, &event, true)
+                .expect("append to the run's event index");
+        };
+        event("plan_check_started");
+        let text = text_of(&status_of(root).await);
+        assert!(text.contains("running · 3/3 tasks"), "{text}");
+        let check = row(&text, "plan check");
+        assert!(check.contains("grep -q parser README.md"), "{text}");
+        assert!(check.ends_with("checking"), "{text}");
+
+        event("plan_check_finished");
+        let text = text_of(&status_of(root).await);
+        assert!(!text.contains("checking"), "{text}");
+    }
+
     /// The records roko keeps of writing plan `demo` before it ran: the
     /// planner call's spend, under the pseudo task `generate`, and its
     /// episode, `plan:generate:demo`.
@@ -451,28 +600,40 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         assert_eq!(run_state.total_tokens_in, 0, "{run_state:?}");
     }
 
-    /// Every file under `root`, `.git` included, with its bytes.
-    fn files_under(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
-        let mut files = std::collections::BTreeMap::new();
+    /// What a write would change: each file's bytes, and each file's and
+    /// directory's inode and modified time.
+    type Entry = (Option<Vec<u8>>, u64, std::time::SystemTime);
+
+    /// Every file and directory under `root`, `.git` included. A file
+    /// rewritten with the same bytes has a new inode or time; a file created
+    /// or removed changes its directory's time.
+    fn files_under(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Entry> {
+        use std::os::unix::fs::MetadataExt;
+
+        let mut entries = std::collections::BTreeMap::new();
         let mut dirs = vec![root.to_path_buf()];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(&dir).expect("read dir") {
                 let path = entry.expect("dir entry").path();
-                if path.is_dir() {
-                    dirs.push(path);
+                let metadata = std::fs::symlink_metadata(&path).expect("metadata");
+                let modified = metadata.modified().expect("modified time");
+                let bytes = if metadata.is_dir() {
+                    dirs.push(path.clone());
+                    None
                 } else {
-                    let bytes = std::fs::read(&path).expect("read file");
-                    files.insert(path, bytes);
-                }
+                    Some(std::fs::read(&path).expect("read file"))
+                };
+                entries.insert(path, (bytes, metadata.ino(), modified));
             }
         }
-        files
+        entries
     }
 
     /// bug-62760a: `roko plan status` only reads (bug-399240's rule: a view
     /// never writes). The checkout's index holds stale stat data for
     /// `tasks.toml`, which `git status` would refresh and write back; every
-    /// byte under the workspace, `.git/index` included, stays as it was.
+    /// file under the workspace, `.git/index` included, keeps its bytes, its
+    /// inode and its time, and no file comes or goes.
     #[tokio::test]
     async fn plan_status_writes_nothing() {
         let workspace = demo_run(GraphCheckpointStatus::Interrupted, 1);
@@ -515,7 +676,7 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         let after = files_under(root);
         let changed: Vec<String> = after
             .iter()
-            .filter(|(path, bytes)| before.get(*path) != Some(*bytes))
+            .filter(|(path, entry)| before.get(*path) != Some(*entry))
             .map(|(path, _)| path)
             .chain(before.keys().filter(|path| !after.contains_key(*path)))
             .map(|path| {

@@ -2,7 +2,7 @@
 id = "bug-addd24"
 kind = "bug"
 title = "roko plan status shows a working task as waiting until its try settles, and nothing shows the plan check while it runs: the report ignores attempt-open lines and the run's plan_check_started events"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
+last_verified_rev = "24871a613"
 source = "round v8 lead and guide-v8: phase 7's live terminal frames (Undertow p7-ship, run 31e52490)"
 discovered_from = "agent:guide-v8 (round v8)"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::diagnose_tasks", "crates/roko-cli/src/plan_status_view.rs::PlanStatus"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-2e5023"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn plan_status_shows_what_is_running' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_shows_what_is_running"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-13T00:24:13Z"
+commit = "24871a613"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-12T23:32:59Z"
+forced = false
+evidence = "24871a613 on work/bug-addd24: roko plan status and roko diagnose show a run in progress as it is. A task whose try started reads running: the report reads the run's attempt-open lines, and an open line with no verdict of the same attempt key is the task's open try ('running · 40s', 'try 2 · running · 5s' from the second try). While the run goes, the report reads the run's event index for a plan_check_started with no plan_check_finished, and the table adds 'plan check <command> checking'. Red first: plan_status_shows_what_is_running failed on 134dc0467 with '○ task 2  Wire the parser  waiting' while its try was open, as in guide-v8's phase 7 frames; it passes now. Also: is_ancestor's merge-base takes --no-optional-locks, and plan_status_writes_nothing compares inodes and times too. On an APFS copy of Undertow's phases 5-7 (git behind a logging shim), roko-item10a's finished-run screens equal roko-item8a's apart from times, no index's inode or mtime changed, and every git call passed --no-optional-locks (repro/item10-vs-item8a.txt). Branch checks: nightly fmt; roko-cli lib 4153 passed, 0 failed; bin tests (diagnose, plan_status, status) 21 passed; workspace clippy -D warnings clean; the binary builds (bin/roko-item10a)."
 +++
 
 ## Problem

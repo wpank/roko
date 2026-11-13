@@ -117,6 +117,64 @@ impl PlanStatus {
         model
     }
 
+    /// The run's four readings by the rule every surface shares, the design
+    /// system's §4.8 (gap-9bfb4e): its tasks, TIME, SPENT of its cap, and
+    /// CHECKS, `2/5 tasks · 4m 05s · $0.84 of $3.00 · 7/14 checks`. `None`
+    /// for a plan that never ran.
+    fn readings(&self, style: Style) -> Option<String> {
+        let report = self.run.as_ref()?;
+        let run = report.graph_run.as_ref()?;
+        let readings = report.readings.as_ref();
+        let mut parts = Vec::new();
+        if let Some(state) = &report.run_state {
+            let (done, all) = (state.tasks_completed, state.tasks_total);
+            parts.push(format!(
+                "{} {}",
+                style.bold(format!("{done}/{all}")),
+                if all == 1 { "task" } else { "tasks" }
+            ));
+        }
+        if let Some(time) = readings.and_then(|readings| readings.time) {
+            parts.push(style.bold(run_time(time)));
+        }
+        if let Some(spent) = readings
+            .and_then(|readings| readings.spent_usd)
+            .or(run.spent_usd)
+        {
+            let money = style.bold(term_style::money(spent));
+            parts.push(match readings.and_then(|readings| readings.cap_usd) {
+                Some(cap) => format!("{money} of {}", term_style::money(cap)),
+                None => money,
+            });
+        }
+        if let Some(readings) = readings {
+            // The plan's own checks count once its check reports; a plan
+            // with none written has the one its delivery ran.
+            let checks = self
+                .delivery
+                .as_ref()
+                .map_or(&[][..], |delivery| delivery.checks.as_slice());
+            let own = if checks.is_empty() {
+                readings.plan_checks
+            } else {
+                readings.plan_checks.max(1)
+            };
+            let all = readings.checks_total - readings.plan_checks + own;
+            let own_passed =
+                !checks.is_empty() && checks.iter().all(|check| check.exit_code == Some(0));
+            let passed = readings.checks_passed + if own_passed { own } else { 0 };
+            if all > 0 {
+                parts.push(format!(
+                    "{} {}",
+                    style.bold(format!("{passed}/{all}")),
+                    if all == 1 { "check" } else { "checks" }
+                ));
+            }
+        }
+        let dot = format!(" {} ", style.glyph(Glyph::Dot));
+        (!parts.is_empty()).then(|| parts.join(&dot))
+    }
+
     /// The one thing to do next: diagnose a failure, carry on after a stop,
     /// merge delivered work, or run a plan that never ran.
     #[must_use]
@@ -132,6 +190,17 @@ impl PlanStatus {
             }
             Some(GraphCheckpointStatus::Running) => Some("roko dashboard".to_string()),
         }
+    }
+}
+
+/// A run's TIME in whole seconds, rounded down (gap-9bfb4e): `42s`, then
+/// `4m 05s` and `1h 12m`.
+fn run_time(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        term_style::duration(std::time::Duration::from_secs(secs))
     }
 }
 
@@ -161,16 +230,6 @@ pub fn lines(status: &PlanStatus, style: Style, now_ms: i64) -> Vec<String> {
                 }
                 _ => state.to_string(),
             });
-            if let Some(run_state) = status.run.as_ref().and_then(|run| run.run_state.as_ref()) {
-                let (done, all) = (run_state.tasks_completed, run_state.tasks_total);
-                facts.push(format!(
-                    "{done}/{all} {}",
-                    if all == 1 { "task" } else { "tasks" }
-                ));
-            }
-            if let Some(spent) = run.spent_usd {
-                facts.push(term_style::money(spent));
-            }
         }
         None => {
             facts.push("not run yet".to_string());
@@ -179,6 +238,11 @@ pub fn lines(status: &PlanStatus, style: Style, now_ms: i64) -> Vec<String> {
     }
     let title = format!("plan {}", style.bold(&status.plan_id));
     let mut out = term_style::header(style, &title, &facts.join(&dot));
+    // The run's four readings, under the header, as the glass shows them
+    // (gap-9bfb4e).
+    if let Some(readings) = status.readings(style) {
+        out.insert(2, format!("  {readings}"));
+    }
     let now = Instant::now();
     out.extend(run_view::table_lines(
         &status.model(now),
@@ -402,6 +466,18 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         String,
         crate::workspace_lock::WorkspaceLockGuard,
     ) {
+        run_of(passed, GraphCheckpointStatus::Running)
+    }
+
+    /// [`running_run`], its checkpoint left `status`, with $0.15 committed.
+    fn run_of(
+        passed: &[&str],
+        status: GraphCheckpointStatus,
+    ) -> (
+        tempfile::TempDir,
+        String,
+        crate::workspace_lock::WorkspaceLockGuard,
+    ) {
         let workspace = tempfile::tempdir().expect("tempdir");
         let root = workspace.path();
         let dir = root.join("plans/demo");
@@ -425,7 +501,11 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         }
         drop(recorder);
         checkpoint
-            .finish_with_status(GraphCheckpointStatus::Running)
+            .take_cost_ledger()
+            .persist(150_000, 0, Vec::new())
+            .expect("cost ledger");
+        checkpoint
+            .finish_with_status(status)
             .expect("commit the checkpoint");
         let run_id = checkpoint.run_id().to_string();
         let writer = TelemetryWriter::spawn(
@@ -467,7 +547,10 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         };
         open("T2", 1, 40_000);
         let text = text_of(&status_of(root).await);
-        assert!(text.contains("running · 1/3 tasks"), "{text}");
+        assert!(
+            text.contains("plans/demo · running\n  1/3 tasks · "),
+            "{text}"
+        );
         assert!(text.contains("\n  ✓ task 1  Write the parser "), "{text}");
         let row = |text: &str, label: &str| {
             text.lines()
@@ -531,7 +614,10 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         };
         event("plan_check_started");
         let text = text_of(&status_of(root).await);
-        assert!(text.contains("running · 3/3 tasks"), "{text}");
+        assert!(
+            text.contains("plans/demo · running\n  3/3 tasks · "),
+            "{text}"
+        );
         let check = row(&text, "plan check");
         assert!(check.contains("grep -q parser README.md"), "{text}");
         assert!(check.ends_with("checking"), "{text}");
@@ -539,6 +625,87 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         event("plan_check_finished");
         let text = text_of(&status_of(root).await);
         assert!(!text.contains("checking"), "{text}");
+    }
+
+    /// gap-9bfb4e, bug-7a62d9: the header gives the run's four readings as the glass
+    /// does, by the rule every surface shares: its tasks; TIME from the run's
+    /// start, when roko accepted it; SPENT, which counts what an open try has
+    /// spent so far (its latest call), of the run's cap; and CHECKS, every
+    /// check the plan has, fixed from the start, of which those passed. Once
+    /// the run ends, TIME is its `run_completed.duration_ms`.
+    #[tokio::test]
+    async fn plan_status_reads_like_the_glass() {
+        let (workspace, run_id, _lock) = running_run(&["T1"]);
+        let root = workspace.path();
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let now = chrono::Utc::now().timestamp_millis();
+        // The run's manifest says what it may spend.
+        let manifest = serde_json::json!({
+            "schema_version": "roko.run_manifest/1",
+            "run_id": run_id,
+            "kind": "plan_run",
+            "plan_ids": ["demo"],
+            "invocations": [{
+                "inv": 1,
+                "started_at": chrono::Utc::now().to_rfc3339(),
+                "pid": 0,
+                "host": "elsewhere",
+                "cap_micro_usd": 3_000_000,
+            }],
+        });
+        std::fs::write(run_dir.join("manifest.json"), manifest.to_string()).expect("manifest");
+        // T2's try started 40 s ago; its calls have cost $0.69 so far.
+        let key = AttemptKey::new(run_id.as_str(), "demo", "T2", 1);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(AttemptOpenRecord::new(
+            AttemptIdentity::new(&key),
+            now - 40_000
+        )));
+        writer.close();
+        let paths = crate::runner::persist::PersistPaths::from_workdir(root).expect("paths");
+        let index = |event: serde_json::Value| {
+            crate::runner::persist::append_run_index_event(&paths, &run_id, &event, true)
+                .expect("append to the run's event index");
+        };
+        index(serde_json::json!({
+            "type": "plan_set_loaded", "plans": [], "run_id": run_id, "ts_millis": now - 125_400,
+        }));
+        for (call, cost) in [(1, 0.31), (2, 0.69)] {
+            index(serde_json::json!({
+                "type": "call_cost", "plan_id": "demo", "task_id": "T2", "attempt": 1,
+                "call": call, "cost_usd": 0.3, "attempt_cost_usd": cost, "run_id": run_id,
+                "ts_millis": now - 10_000,
+            }));
+        }
+
+        let text = text_of(&status_of(root).await);
+        let readings = text.lines().nth(2).expect("the readings line");
+        assert!(readings.starts_with("  1/3 tasks · 2m 0"), "{text}");
+        assert!(readings.contains(" · $0.84 of $3.00 · "), "{text}");
+        assert!(readings.ends_with(" · 1/3 checks"), "{text}");
+
+        // Every task passed and the run ended: TIME is the run's own.
+        let (workspace, run_id, _lock) =
+            run_of(&["T1", "T2", "T3"], GraphCheckpointStatus::Succeeded);
+        let root = workspace.path();
+        let paths = crate::runner::persist::PersistPaths::from_workdir(root).expect("paths");
+        crate::runner::persist::append_run_index_event(
+            &paths,
+            &run_id,
+            &serde_json::json!({
+                "type": "run_completed", "duration_ms": 379_014, "outcome": "succeeded",
+                "run_id": run_id, "ts_millis": now,
+            }),
+            true,
+        )
+        .expect("append to the run's event index");
+        let text = text_of(&status_of(root).await);
+        let readings = text.lines().nth(2).expect("the readings line");
+        assert_eq!(
+            readings, "  3/3 tasks · 6m 19s · $0.15 · 3/3 checks",
+            "{text}"
+        );
     }
 
     /// The records roko keeps of writing plan `demo` before it ran: the

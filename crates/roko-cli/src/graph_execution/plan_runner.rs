@@ -1458,6 +1458,7 @@ async fn run_graph_plan_body(
     // S01 P0-2: the harness build and config fingerprint every checkpoint
     // run's manifest records.
     let mut run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
+    run_manifests.set_plan_cap(plan_budget_ceiling);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
     // `--no-cascade`: the router picks no model; the run's feedback still
     // trains it.

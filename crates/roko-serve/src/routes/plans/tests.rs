@@ -3973,3 +3973,72 @@ async fn the_plan_list_shows_a_plan_being_written() {
     let (_, listed) = route_json(&state, "GET", "/api/plans?writing=true").await;
     assert_eq!(listed, json!([]));
 }
+
+/// A runtime whose plan has one check of its own and opts out of the
+/// workspace's rungs (bug-35c1f3).
+struct PlanChecksRuntime;
+
+#[async_trait::async_trait]
+impl CliRuntime for PlanChecksRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("a plan with checks of its own runs nothing here")
+    }
+
+    async fn load_plan_tasks(
+        &self,
+        _workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanTasksDto>> {
+        Ok(Some(crate::plan_types::PlanTasksDto {
+            plan_id: plan_id.to_string(),
+            task_count: 0,
+            tasks: Vec::new(),
+            title: None,
+            max_parallel: 1,
+            plan_checks: vec![crate::plan_types::PlanTaskVerifyDto {
+                phase: "plan".to_string(),
+                command: "tools/check.sh".to_string(),
+                fail_msg: None,
+                timeout_ms: None,
+            }],
+            workspace_rungs: false,
+        }))
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// bug-35c1f3: `GET /api/plans/{id}/tasks` says what else roko checks, as
+/// the plan's tasks record does (gap-c1726f): the plan's own checks
+/// (`plan_checks`), and whether its tasks run the workspace's rungs.
+#[tokio::test]
+async fn plan_tasks_route_names_the_plans_own_checks() {
+    let (_dir, state) = test_state_with_runtime(Arc::new(PlanChecksRuntime));
+    let (status, body) = route_json(&state, "GET", "/api/plans/demo/tasks").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(
+        body["plan_checks"],
+        json!([{ "phase": "plan", "command": "tools/check.sh" }]),
+        "{body}"
+    );
+    assert_eq!(body["workspace_rungs"], false, "{body}");
+}

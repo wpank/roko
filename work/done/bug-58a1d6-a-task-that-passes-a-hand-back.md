@@ -2,7 +2,7 @@
 id = "bug-58a1d6"
 kind = "bug"
 title = "A task that passes a hand-back of the plan's check is reported unverified, and so is its run: the hand-back's watch reports the try's node with no verdict, so phase 6 read \"unverified\" though T4's try passed and the plan check then passed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
-last_verified_rev = "85a96423d"
+last_verified_rev = "b3e4a8d8e"
 source = "round v8 hermes-pilot-v8 and run-analyst-v8: phase 6 run 23837ede invocation 3 (Undertow 8945b3c, roko e722f0e1f), T4 try 3; the lead asked roko-planner-v8 to decide and fix"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::rerun_handed_back_tasks", "crates/roko-cli/src/graph_execution/plan_runner.rs::FlowWatch"]
@@ -20,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["find-5bcba7", "bug-7e1b6b", 
 
 [[verify]]
 command = "grep -rq 'a hand-back.s try is reported as its verdict says' crates/roko-cli/src/graph_execution/plan_runner.rs && cargo test -p roko-cli --lib a_failed_plan_check_goes_back_to_the_task_whose_file_it_names"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-12T23:44:44Z"
+commit = "b3e4a8d8e"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "S"
+forced = false
+evidence = "The hand-back's live watch published its try's node with no verdicts (BTreeMap::new), so a passing try read unverified (bug-7e1b6b's rule) and so did the run; it now holds a completed node back (FlowWatch::holding_completions, hold_back) until the graph's output gives its verdict. Self-checked steps were not the cause (T5 and T6 passed on them). Red first (201274c22 on main 85a96423d): a_failed_plan_check_goes_back_to_the_task_whose_file_it_names saw T1's task_completed outcomes [passed, unverified]; now [passed, passed]. Green on the trial 0083d6ffa (main 2d44b5c79 + work/bug-3e04a6 + work/bug-58a1d6): 61 targeted tests pass (both items' tests, graph_task_dispatch budget, try_allowance, helper_calls and verify_depth), roko-cli lib 4154 passed 0 failed, roko-learn lib 1415 passed, integration suites graph_budget_resume, honest_verdicts_canary, graph_plan_callers, default_engine, runner_facades_e2e and tier_ladder_canary 9 passed, cargo clippy --workspace --no-deps -D warnings and nightly fmt --check clean."
 +++
 
 ## Problem

@@ -981,8 +981,10 @@ run view's style:
 `--json` prints the plan's status, its delivery and its tasks as before.
 
 It lists the plan's tasks and nothing else. The records roko keeps of writing the plan (the planner call's spend and
-episode) are not tasks. It only reads: its git calls take no optional locks, so it never writes the checkout's
-`.git/index`, and it is safe to run over and over while a run goes.
+episode) are not tasks. While the run goes, a task whose try has started reads running, with how long the try has
+run (and which try it is, from the second on), and the plan check reads checking while it runs. It only reads: its
+git calls take no optional locks, so it never writes the checkout's `.git/index`, and it is safe to run over and over
+while a run goes.
 
 ```text
 ◆ roko  plan greeting

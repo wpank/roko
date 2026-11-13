@@ -202,6 +202,10 @@ pub(super) async fn plan_tasks(
         "title": dto.title,
         "max_parallel": dto.max_parallel,
         "tasks": tasks,
+        // What else roko checks, so a surface counts every check from the
+        // start (gap-c1726f, bug-35c1f3).
+        "plan_checks": dto.plan_checks,
+        "workspace_rungs": dto.workspace_rungs,
     })))
 }
 

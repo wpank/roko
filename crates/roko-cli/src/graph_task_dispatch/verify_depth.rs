@@ -596,6 +596,7 @@ impl GraphTaskDispatcher {
         // The checks of a try the plan's budget stopped call no model
         // (bug-3e04a6).
         if matches!(check, Check::B1 | Check::B3) && !HelperCalls::model_calls_allowed() {
+            HelperCalls::skip_model_check(check.name());
             return Checked::Skipped(NO_MODEL_CALL.to_string());
         }
         let phase_b = self.audit_phase_b();

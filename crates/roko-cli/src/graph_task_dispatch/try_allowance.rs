@@ -13,6 +13,8 @@
 //! first, and a stop for it stays the harness's. The task's checks judge the
 //! work such a try left too, with no model call (bug-3e04a6): it passes when
 //! they pass, and otherwise ends budget-exhausted, never the agent's failure.
+//! A pass that skipped the task's checks that call a model is unverified, its
+//! record naming them (bug-b364d9).
 //!
 //! A try's time runs while its provider call does, less any wait for the
 //! provider's concurrency permit. Once it has run its time, the watchdog

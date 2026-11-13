@@ -2,7 +2,7 @@
 id = "gap-9bfb4e"
 kind = "gap"
 title = "roko plan status's header gives the glass's four readings by the shared rule (design system §4.8): tasks x/y, TIME from the run's start (run_completed.duration_ms once ended), SPENT of the run's cap (recorded per invocation in the run manifest), CHECKS x of y fixed from the start"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
+last_verified_rev = "6e250f899"
 source = "round v8 lead: the terminal couldn't join the matched figure on 7.2 (it read 5/5 tasks · $1.32)"
 discovered_from = "agent:team-lead (round v8)"
 anchors = ["crates/roko-cli/src/plan_status_view.rs::PlanStatus", "crates/roko-learn/src/telemetry/records.rs::RunInvocation"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn plan_status_reads_like_the_glass' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_reads_like_the_glass"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-13T02:39:30Z"
+commit = "d8847c331"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-13T01:42:48Z"
+forced = false
+evidence = "d8847c331 on work/gap-9bfb4e (merged 6e250f899): roko plan status's header gives the run's four readings by the shared rule (design system §4.8), on the line under the plan's directory and state: tasks x/y; TIME from the run's start, whole seconds rounded down (the first event of the run's current part in its event index while it runs, run_completed.duration_ms once ended); SPENT of the run's cap, which each run manifest invocation now records (RunInvocation.cap_micro_usd, set by the plan runner; a budget raise since moves it; older runs show SPENT alone); CHECKS x/y with y fixed from the start (verify steps, rungs when run, the plan's own checks) and x once each on each task's last try. Red first on d536ce205: plan_status_reads_like_the_glass read 'running · 1/3 tasks · $0.15'; it passes now ('1/3 tasks · 2m 05s · $0.84 of $3.00 · 1/3 checks' running, '3/3 tasks · 6m 19s · $0.15 · 3/3 checks' ended). On a clone of Undertow: p7-ship reads 2/2 tasks · 6m 19s · $0.01 · 8/8 checks (the matched 6:19 and 8/8), p7-2 5/5 · 22m 13s · $1.32 · 11/11. Branch checks: nightly fmt; roko-cli lib 4159 passed (plan_status_failed snapshot moves the figures to the readings line); roko-learn telemetry 53 and roko-serve interrupted_runs/runs 57 passed; bin 65 passed; workspace clippy -D warnings clean; bin/roko-item13a."
 +++
 
 ## Problem

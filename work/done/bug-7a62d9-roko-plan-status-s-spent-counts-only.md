@@ -2,7 +2,7 @@
 id = "bug-7a62d9"
 kind = "bug"
 title = "roko plan status's SPENT counts only settled tries: a try under way, whose calls have cost most of the run's spend (its latest call_cost.attempt_cost_usd, serve's live_cost_usd), is left out, so 7.2 read $0.15 against Hermes' $0.84"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
+last_verified_rev = "6e250f899"
 source = "round v8 lead: phase 7.2's live terminal frames, the shared readings rule (design system §4.8)"
 discovered_from = "agent:team-lead (round v8)"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::RunRecords", "crates/roko-cli/src/plan_status_view.rs::PlanStatus"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-addd24", "gap-9bfb4e"], 
 
 [[verify]]
 command = "grep -rqw 'fn plan_status_reads_like_the_glass' crates/roko-cli/src && cargo test -p roko-cli --lib plan_status_reads_like_the_glass"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-13T02:39:31Z"
+commit = "d8847c331"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-13T01:42:59Z"
+forced = false
+evidence = "d8847c331 on work/gap-9bfb4e (merged 6e250f899): while a run goes, roko plan status's SPENT is the committed spend plus each open try's latest call_cost.attempt_cost_usd from the run's event index (serve's live_cost_usd). Red first on d536ce205: plan_status_reads_like_the_glass, with $0.15 committed and an open try whose latest call says $0.69, read '$0.15'; it reads '$0.84 of $3.00' now. Branch checks: roko-cli lib 4159 passed, bin 65 passed, clippy clean."
 +++
 
 ## Problem

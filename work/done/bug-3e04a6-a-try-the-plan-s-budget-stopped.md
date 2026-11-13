@@ -2,16 +2,16 @@
 id = "bug-3e04a6"
 kind = "bug"
 title = "A try the plan's budget stopped is never checked, so phase 6's T5 try 2, whose own check had passed 3 s before the stop, was thrown away and paid for again: at a budget stop roko should run the task's local checks on the work it left, with no model call, and pass the task when they pass"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-11-12
-updated = 2026-11-12
-last_verified = 2026-11-12
-last_verified_rev = "e1687649e"
+updated = 2026-11-13
+last_verified = 2026-11-13
+last_verified_rev = "2aa8f1f12"
 source = "round v8 hermes-pilot-v8: phase 6 run 23837ede invocation 2 (Undertow 8945b3c, roko e722f0e1f), T5 try 2; the lead chose the fix"
 discovered_from = "agent:hermes-pilot-v8 (round v8)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/try_allowance.rs::bounded_stop", "crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::HelperCalls"]
@@ -20,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-2c9412", "bug-4fabd0", "
 
 [[verify]]
 command = "grep -rqw 'fn a_try_the_budget_stopped_passes_when_its_checks_pass' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_try_the_budget_stopped"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-12T23:28:37Z"
+commit = "2aa8f1f12"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "M"
+forced = false
+evidence = "A try the plan's budget stopped is a bound (BoundedStop::Budget) when its task has checks: they judge the work it left in a local-only helper scope, with no model call (no diagnosis, LLM judge, judge rung or B1/B3 depth check); a pass is accepted with bound \"budget\" and the plan still starts no further task; a failure settles budget_exhausted with its steps and is not retried. Red first (cd3790761 on main e1687649e): a_try_the_budget_stopped_passes_when_its_checks_pass got the budget error, and _whose_checks_fail_stays_budget_exhausted found no steps. Green on the trial 0083d6ffa (main 2d44b5c79 + work/bug-3e04a6 + work/bug-58a1d6): 61 targeted tests pass (both items' tests, graph_task_dispatch budget, try_allowance, helper_calls and verify_depth), roko-cli lib 4154 passed 0 failed, roko-learn lib 1415 passed, integration suites graph_budget_resume, honest_verdicts_canary, graph_plan_callers, default_engine, runner_facades_e2e and tier_ladder_canary 9 passed, cargo clippy --workspace --no-deps -D warnings and nightly fmt --check clean."
 +++
 
 ## Problem

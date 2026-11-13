@@ -2,7 +2,7 @@
 id = "bug-f8c943"
 kind = "bug"
 title = "The portal's SPENT stands still while tasks work: it counts a try only when the try settles, so 7.2's web glass read $0.15 while Hermes, counting calls as they return (call_cost), read $0.84"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-11-13
 updated = 2026-11-13
 last_verified = 2026-11-13
+last_verified_rev = "a4482c29b"
 source = "round v8 portal-v8, phase 7.2's capture (2026-11-13)"
 discovered_from = "agent:portal-v8 (round v8)"
 anchors = ["apps/portal/src/lib/runState.ts", "apps/portal/src/lib/runCard.ts"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-c1726f", "gap-5c3347"], 
 
 [[verify]]
 command = "cd apps/portal && npx vitest run src/components/plan/readings.accept.test.tsx -t 'moves as each call returns'"
+
+[closed]
+at = 2026-11-13
+at_ts = "2026-11-13T01:10:30Z"
+commit = "a4482c29b"
+by = "portal-v8 (round v8)"
+executor = "unknown"
+forced = false
+evidence = "The run state folds call_cost: a running try's latest attempt_cost_usd is its live spend until the try's own cost (efficiency_event) or attempt_settled replaces it; SPENT = settled tries + running tries' calls so far + a resume's carried spend. At a4482c29b's tree in roko-work-bug-36ce72: portal tsc clean, vitest 751/751, readings.accept 6 (calls move SPENT to $0.12 after two calls; the settled try counts once)."
 +++
 
 ## Problem

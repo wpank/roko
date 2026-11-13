@@ -5,12 +5,14 @@
  * 1. roko serve isn't answering, or this page isn't signed in: a hollow light and `off`.
  * 2. A task waits for the person's review: an orange light and `1 waiting`.
  * 3. A run failed and the person hasn't opened its plan since: a red light and `1 failed`.
- * 4. Plans run: a blue light, the newest run's time on glass, and `1 running`.
+ * 4. Plans run: a blue light, the newest run's time on glass, as its TIME reads it, and `1 running`.
  * 5. Nothing is going on: a hollow light and `idle`.
  */
 
 import type { Signal } from '@/components/kit/Led';
 import type { ConnectionStatus } from '@/lib/bootstrap';
+import { runClock } from '@/lib/runReadings';
+import type { RunStarts } from '@/lib/runReadings';
 import type { RunState } from '@/lib/runState';
 import { clock, clockLabel } from '@/lib/words';
 
@@ -37,7 +39,7 @@ export type SeenFailures = Readonly<Record<string, number | null>>;
 export function statusChip(
   run: RunState,
   connection: ConnectionStatus,
-  opts: { nowMs: number; seenFailures: SeenFailures },
+  opts: { nowMs: number; seenFailures: SeenFailures; runStarts?: RunStarts },
 ): Chip {
   const idle = { reading: null, planId: null, running: false };
   if (connection === 'unauthorized') return { signal: 'off', word: 'signed out', ...idle };
@@ -74,7 +76,7 @@ export function statusChip(
 
   const newest = running[0];
   if (newest) {
-    const elapsed = newest.startedAtMs !== null ? opts.nowMs - newest.startedAtMs : null;
+    const elapsed = runClock(run, newest.planId, opts.runStarts?.[newest.planId] ?? null, opts.nowMs)?.ms ?? null;
     return {
       signal: 'live',
       word: `${running.length} running`,

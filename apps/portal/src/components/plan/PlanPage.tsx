@@ -44,7 +44,7 @@ import { RunChoice } from '@/components/stage/RunChoice';
 import { SourceEditor } from '@/components/stage/SourceEditor';
 import { ValidationBadge, validationCounts } from '@/components/stage/ValidationBadge';
 import { digestOutput } from '@/lib/checks';
-import { detailStamp, runFinishing, waitReason } from '@/lib/planSet';
+import { detailStamp, runFactsStamp, runFinishing, waitReason } from '@/lib/planSet';
 import { planProblems } from '@/lib/planProblems';
 import { failureReason } from '@/lib/reason';
 import { AWAITING_APPROVAL, becauseOf, buildCard, checkWord } from '@/lib/runCard';
@@ -91,11 +91,7 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
   const running = run.plans[plan.id]?.phase === 'running';
   // What only the plan's detail names of its run (gap-acfe4b, gap-c1726f): the cap its request set, which SPENT
   // counts against before the plan's budget, and when roko accepted it, which TIME counts from.
-  const { data: runFacts } = useRunFacts(
-    plan.id,
-    running,
-    `${run.plans[plan.id]?.startedAtMs ?? 0}:${detailStamp(run, plan.id)}`,
-  );
+  const { data: runFacts } = useRunFacts(plan.id, running, runFactsStamp(run, plan.id));
   // The plan ended but its run hasn't: revise and run again wait for it, and the clock ticks so they come back.
   const finishing = runFinishing(run, plan.id, Date.now());
   const nowMs = useNow(running || finishing);
@@ -229,7 +225,7 @@ export function PlanPage({ plan, selectedTaskId, onSelectTask, onRequestError }:
         {!cantRun && (problems.errors > 0 || problems.warnings > 0) && (
           <ValidationBadge planId={plan.id} onSelectTask={(id) => onSelectTask(id)} />
         )}
-        <span className="rk-card-when">{whenText(run, plan.id)}</span>
+        <span className="rk-card-when">{whenText(run, plan.id, runFacts?.startedAtMs ?? null)}</span>
       </div>
 
       <RunChoice planId={plan.id} onError={onRequestError} />
@@ -394,8 +390,11 @@ function NowLines({ now }: { now: readonly NowLine[] }) {
   );
 }
 
-/** When the plan last ran: "started 10:37", or the day and time it finished. */
-function whenText(run: RunState, planId: string): string {
+/**
+ * When the plan last ran: "started 10:37", from when roko accepted the run (`acceptedAtMs`) as TIME counts it, or the
+ * day and time it finished.
+ */
+function whenText(run: RunState, planId: string, acceptedAtMs: number | null): string {
   const live = run.plans[planId];
   if (!live?.startedAtMs) return '';
   const at = (ms: number) => {
@@ -403,7 +402,8 @@ function whenText(run: RunState, planId: string): string {
     const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     return new Date().toDateString() === d.toDateString() ? `today ${hm}` : `${d.getDate()} ${d.toLocaleString('en', { month: 'short' })} ${hm}`;
   };
-  return live.phase === 'running' || !live.finishedAtMs ? `started ${at(live.startedAtMs).replace(/^today /, '')}` : at(live.finishedAtMs);
+  const started = acceptedAtMs ?? live.startedAtMs;
+  return live.phase === 'running' || !live.finishedAtMs ? `started ${at(started).replace(/^today /, '')}` : at(live.finishedAtMs);
 }
 
 /** The state's one sentence. `root` is the project's path, which a failed check's paths are shown relative to. */

@@ -15,7 +15,7 @@
  *  - Errors propagate as `ApiError`; callers read `.body` for detail.
  */
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/api/client';
 import type {
   WirePlanDetail,
@@ -288,16 +288,22 @@ export function useTaskDiff(id: string, taskId: string, enabled = true) {
   });
 }
 
-/**
- * A plan's detail: its last run and the run a resume would continue. `stamp` names the live run state it goes
- * with (when the plan and its run last ended), so the detail is read again once a run ends.
- */
 /** What the plan's detail says of its run that only the run's request and roko serve know. */
 export interface RunFacts {
   /** What the run may spend: the cap its request set (gap-acfe4b), or null when it named none. */
   capUsd: number | null;
   /** When roko accepted the run, in ms (gap-c1726f), or null when serve doesn't say. */
   startedAtMs: number | null;
+}
+
+function fetchRunFacts(id: string): Promise<RunFacts> {
+  return fetchPlanDetail(id).then((detail) => {
+    const started = detail.last_run?.started_at ? Date.parse(detail.last_run.started_at) : Number.NaN;
+    return {
+      capUsd: detail.last_run?.max_usd ?? null,
+      startedAtMs: Number.isFinite(started) ? started : null,
+    };
+  });
 }
 
 /**
@@ -308,19 +314,42 @@ export interface RunFacts {
 export function useRunFacts(id: string, live: boolean, stamp: string) {
   return useQuery<RunFacts>({
     queryKey: queryKeys.runFacts(id, stamp),
-    queryFn: () =>
-      fetchPlanDetail(id).then((detail) => {
-        const started = detail.last_run?.started_at ? Date.parse(detail.last_run.started_at) : Number.NaN;
-        return {
-          capUsd: detail.last_run?.max_usd ?? null,
-          startedAtMs: Number.isFinite(started) ? started : null,
-        };
-      }),
+    queryFn: () => fetchRunFacts(id),
     retry: false,
     refetchInterval: (query) => (live && query.state.data?.startedAtMs == null ? 5_000 : false),
   });
 }
 
+/**
+ * When roko accepted each of `runs`, by plan id: what the plan list's and the top bar's clocks count from, as TIME
+ * does (bug-b6d5cb). Each is read as useRunFacts reads it, with the same key, so the plan open on its page costs no
+ * second request.
+ */
+export function useRunStarts(
+  runs: ReadonlyArray<{ id: string; live: boolean; stamp: string }>,
+): Readonly<Record<string, number>> {
+  return useQueries({
+    queries: runs.map(({ id, live, stamp }) => ({
+      queryKey: queryKeys.runFacts(id, stamp),
+      queryFn: () => fetchRunFacts(id),
+      retry: false,
+      refetchInterval: (query: { state: { data?: RunFacts } }) =>
+        live && query.state.data?.startedAtMs == null ? 5_000 : false,
+    })),
+    combine: (results) =>
+      Object.fromEntries(
+        results.flatMap((result, i) => {
+          const at = result.data?.startedAtMs;
+          return at == null ? [] : [[runs[i]!.id, at]];
+        }),
+      ),
+  });
+}
+
+/**
+ * A plan's detail: its last run and the run a resume would continue. `stamp` names the live run state it goes
+ * with (when the plan and its run last ended), so the detail is read again once a run ends.
+ */
 export function usePlanDetail(id: string, stamp: string, enabled = true) {
   return useQuery<WirePlanDetail>({
     queryKey: queryKeys.planDetail(id, stamp),

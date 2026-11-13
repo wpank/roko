@@ -13,6 +13,7 @@ import { DotMatrix } from '@/components/kit/DotMatrix';
 import { Led } from '@/components/kit/Led';
 import { ThemeSwitch } from '@/components/kit/ThemeSwitch';
 import { Wordmark } from '@/components/kit/Wordmark';
+import type { RunStarts } from '@/lib/runReadings';
 import { statusChip } from '@/lib/statusChip';
 import type { SeenFailures } from '@/lib/statusChip';
 import { useNow } from '@/lib/useNow';
@@ -20,9 +21,12 @@ import { useDashboardStore } from '@/stores/dashboard';
 
 export function TopBar({
   seenFailures,
+  runStarts,
   onOpenPlan,
 }: {
   seenFailures: SeenFailures;
+  /** When roko accepted each run, which the chip's clock counts from, as the run's TIME does. */
+  runStarts?: RunStarts;
   onOpenPlan(planId: string): void;
 }) {
   const { data: workspace } = useWorkspace();
@@ -30,7 +34,7 @@ export function TopBar({
   const connection = useDashboardStore((s) => s.connection);
   const running = Object.values(run.plans).some((p) => p.phase === 'running');
   const nowMs = useNow(running);
-  const chip = statusChip(run, connection, { nowMs, seenFailures });
+  const chip = statusChip(run, connection, { nowMs, seenFailures, runStarts });
 
   const name = workspace?.name;
   useEffect(() => {

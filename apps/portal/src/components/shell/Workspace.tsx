@@ -16,6 +16,7 @@ import {
   usePlanTasks,
   useRunPlan,
   useRunPlans,
+  useRunStarts,
   useWorkspace,
 } from '@/api/queries';
 import { confirmDiscard, useDashboardStore } from '@/stores/dashboard';
@@ -26,8 +27,9 @@ import { resolveSelection } from '@/lib/selection';
 import { pickAlert } from '@/lib/alerts';
 import { describeEmpty } from '@/lib/emptyState';
 import { useNow } from '@/lib/useNow';
-import { planSetActive } from '@/lib/planSet';
+import { planSetActive, runFactsStamp } from '@/lib/planSet';
 import { planWords } from '@/lib/planWords';
+import { runSpentUsd } from '@/lib/runReadings';
 import { splitWrites } from '@/lib/writing';
 import type { SeenFailures } from '@/lib/statusChip';
 import { describeRequestError, isMissingRoute } from '@/lib/apiErrors';
@@ -89,7 +91,13 @@ export function Workspace() {
   // anyRunning drives useNow so the rail clock keeps ticking between events.
   const anyRunning = Object.values(run.plans).some((p) => p.phase === 'running');
   const nowMs = useNow(anyRunning);
-  const rows = buildPlanRows(plans ?? [], run, { filter, nowMs });
+  // When roko accepted each run the page knows, which the list's and the top bar's clocks count from (bug-b6d5cb).
+  const runStarts = useRunStarts(
+    Object.values(run.plans)
+      .filter((p) => p.startedAtMs !== null)
+      .map((p) => ({ id: p.planId, live: p.phase === 'running', stamp: runFactsStamp(run, p.planId) })),
+  );
+  const rows = buildPlanRows(plans ?? [], run, { filter, nowMs, runStarts });
 
   // ── Resolve selection ────────────────────────────────────────────────────────
   // An unknown plan or task clears silently, whatever the filter shows. With no
@@ -273,10 +281,10 @@ export function Workspace() {
     setSeenFailures((seen) => (seen[planId] === openFailedAt ? seen : { ...seen, [planId]: openFailedAt }));
   }, [resolved.plan, openFailedAt]);
 
-  // What each plan's latest run spent, for the plan list's status lines.
+  // What each plan's latest run spent, as its SPENT reads it, for the plan list's status lines (bug-b6d5cb).
   const costs = useMemo<Readonly<Record<string, number>>>(
-    () => Object.fromEntries(Object.values(run.plans).map((p) => [p.planId, p.costUsd])),
-    [run.plans],
+    () => Object.fromEntries(Object.values(run.plans).map((p) => [p.planId, runSpentUsd(run, p.planId)])),
+    [run],
   );
 
   // The phone picker names the open plan, with its light.
@@ -286,7 +294,7 @@ export function Workspace() {
   return (
     <div data-region="workspace" className="pt">
       <ErrorBoundary name="header">
-        <TopBar seenFailures={seenFailures} onOpenPlan={handleSelectPlan} />
+        <TopBar seenFailures={seenFailures} runStarts={runStarts} onOpenPlan={handleSelectPlan} />
       </ErrorBoundary>
 
       {connection === 'unauthorized' ? (

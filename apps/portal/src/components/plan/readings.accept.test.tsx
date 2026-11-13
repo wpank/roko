@@ -92,6 +92,41 @@ describe('CHECKS', () => {
   });
 });
 
+describe('SPENT', () => {
+  it('moves as each call returns, and counts a settled try once', () => {
+    const call = (n: number, usd: number, total: number): WireDashboardEvent => ({
+      type: 'call_cost',
+      plan_id: 'p7-ship',
+      task_id: 'T1',
+      attempt: 1,
+      call: n,
+      cost_usd: usd,
+      attempt_cost_usd: total,
+    });
+    stubFetch([{ path: '/api/plans/p7-ship', body: detail(Date.now() - 60_000) }]);
+    const start: WireDashboardEvent[] = [
+      { type: 'plan_started', plan_id: 'p7-ship', tasks_total: 2 },
+      { type: 'task_started', plan_id: 'p7-ship', task_id: 'T1', phase: 'implement' },
+      call(1, 0.05, 0.05),
+      call(2, 0.07, 0.12),
+    ];
+    const { unmount } = renderPlanPage(PLAN, TASKS, start, seed);
+    expect(label('spent')).toMatch(/^spent: \$0\.12/);
+    unmount();
+    renderPlanPage(
+      PLAN,
+      TASKS,
+      [
+        ...start,
+        { type: 'efficiency_event', plan_id: 'p7-ship', task_id: 'T1', metric: 'cost_usd', value: 0.12 },
+        { type: 'attempt_settled', plan_id: 'p7-ship', task_id: 'T1', attempt: 1, verdict: 'passed', cost_usd: 0.12 },
+      ],
+      seed,
+    );
+    expect(label('spent')).toMatch(/^spent: \$0\.12/);
+  });
+});
+
 describe('a resumed run', () => {
   it('counts the whole run: what earlier processes spent, and the checks of the tasks it kept', () => {
     stubFetch([{ path: '/api/plans/p7-ship', body: detail(Date.now() - 60_000) }]);

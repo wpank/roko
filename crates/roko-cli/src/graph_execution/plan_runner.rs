@@ -4015,6 +4015,9 @@ struct FlowWatch {
     abandoned: bool,
     /// The task nodes' statuses at the last tick, as the live views saw them.
     statuses: HashMap<String, roko_graph::engine::NodeStatus>,
+    /// Whether a task that completed is held back until the graph's output
+    /// gives its verdict ([`Self::holding_completions`]).
+    hold_completions: bool,
 }
 
 impl FlowWatch {
@@ -4026,7 +4029,17 @@ impl FlowWatch {
             drain_deadline: None,
             abandoned: false,
             statuses,
+            hold_completions: false,
         }
+    }
+
+    /// The watch of a graph whose tasks' verdicts are known only once it
+    /// ends, a hand-back's try (bug-58a1d6): its ticks hold back a task that
+    /// completed, so the live views never see it without its verdict, which
+    /// would read as unverified.
+    const fn holding_completions(mut self) -> Self {
+        self.hold_completions = true;
+        self
     }
 
     /// One tick: whether `flow_handle`'s graph still runs. A stop request
@@ -4113,14 +4126,19 @@ impl FlowWatch {
             roko_graph::cells::task_executor::TaskGateVerdict,
         >,
     ) {
-        let mut current: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
+        use roko_graph::engine::NodeStatus;
+
+        let mut current: HashMap<String, NodeStatus> = flow_handle
             .status()
             .node_statuses
             .into_iter()
             .filter(|(id, _)| node_titles.contains_key(id))
             .collect();
         if self.interrupted_by.is_some() {
-            hold_back_failures(&self.statuses, &mut current);
+            hold_back(&self.statuses, &mut current, NodeStatus::Failed);
+        }
+        if self.hold_completions {
+            hold_back(&self.statuses, &mut current, NodeStatus::Complete);
         }
         ctx.graph_tui_bridge.poll_status_changes(
             plan_id,
@@ -5991,7 +6009,9 @@ async fn rerun_handed_back_tasks(
         ctx.cell_resources,
     );
     let flow_handle = engine.start(cell_ctx);
-    let mut watch = FlowWatch::new(statuses);
+    // The try's graph keeps no checkpoint, so its verdicts come with its
+    // output: until then a task that completed is held back (bug-58a1d6).
+    let mut watch = FlowWatch::new(statuses).holding_completions();
     while watch.tick(ctx, &plan.id, control, &flow_handle, &stop_attempts) {
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
         watch.publish(
@@ -6203,18 +6223,19 @@ fn task_failure_errors(
         .collect()
 }
 
-/// Keep the nodes that failed since `previous` at their `previous` status in
-/// `current`, or out of it when they had none, so the poll does not report
-/// them yet: while a run stops, a failed node's error, which the poll does not
-/// see, says whether the stop cut its task off ([`cancel_reason`]).
-fn hold_back_failures(
+/// Keep the nodes that reached `held` since `previous` at their `previous`
+/// status in `current`, or out of it when they had none, so the poll does not
+/// report them yet. While a run stops, a failed node's error, which the poll
+/// does not see, says whether the stop cut its task off ([`cancel_reason`]);
+/// and a watch with no live verdicts reports a completed node only with the
+/// verdict the graph's output gives it (bug-58a1d6).
+fn hold_back(
     previous: &HashMap<String, roko_graph::engine::NodeStatus>,
     current: &mut HashMap<String, roko_graph::engine::NodeStatus>,
+    held: roko_graph::engine::NodeStatus,
 ) {
-    use roko_graph::engine::NodeStatus;
-
     current.retain(|node_id, status| {
-        if *status != NodeStatus::Failed {
+        if *status != held {
             return true;
         }
         match previous.get(node_id) {
@@ -9749,12 +9770,25 @@ exec sleep 60
             ("T3", NodeStatus::Failed),
             ("T4", NodeStatus::Failed),
         ]);
-        hold_back_failures(&previous, &mut current);
+        let mut completions = current.clone();
+        hold_back(&previous, &mut current, NodeStatus::Failed);
         assert_eq!(
             current,
             statuses(&[
                 ("T1", NodeStatus::Running),
                 ("T2", NodeStatus::Complete),
+                ("T4", NodeStatus::Failed),
+            ])
+        );
+        // bug-58a1d6: a hand-back's watch holds back a newly completed node
+        // instead, until the graph's output gives its verdict.
+        hold_back(&previous, &mut completions, NodeStatus::Complete);
+        assert_eq!(
+            completions,
+            statuses(&[
+                ("T1", NodeStatus::Failed),
+                ("T2", NodeStatus::Running),
+                ("T3", NodeStatus::Failed),
                 ("T4", NodeStatus::Failed),
             ])
         );
@@ -11614,6 +11648,17 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
                 ["passed", "passed"],
                 "{mode}: T1 ran once, and once more for the hand-back"
             );
+            // bug-58a1d6: a hand-back's try is reported as its verdict says,
+            // never unverified, and so its run is not either.
+            let events = std::fs::read_to_string(RokoLayout::for_project(repo).events_jsonl_path())
+                .expect("the run's event log");
+            let completed: Vec<String> = events
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|event| event["type"] == "task_completed" && event["task_id"] == "T1")
+                .filter_map(|event| event["outcome"].as_str().map(str::to_string))
+                .collect();
+            assert_eq!(completed, ["passed", "passed"], "{mode}");
             let checkpoint = checkpoint_json(repo, "01-alpha");
             let handbacks = &checkpoint["extensions"]
                 [crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION]["value"];

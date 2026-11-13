@@ -165,6 +165,17 @@ export type WireDashboardEvent =
     }
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
   | {
+      /** A model call of a try returned (CallCost in roko-core, gap-5c3347): the try's priced calls so far. */
+      type: 'call_cost';
+      plan_id: string;
+      task_id: string;
+      attempt?: number;
+      call?: number;
+      model?: string;
+      cost_usd?: number | null;
+      attempt_cost_usd?: number;
+    }
+  | {
       /** A resumed plan's run carried what its earlier processes spent (BudgetCarried in roko-core, bug-b7f6a8). */
       type: 'budget_carried';
       plan_id: string;

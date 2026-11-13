@@ -79,6 +79,11 @@ export interface TaskRun {
   blockedReason?: string | null;
   /** Its tries in this run, oldest first: one per agent_spawned attempt, settled by attempt_settled. */
   tries?: TryRun[];
+  /**
+   * What its running try's calls have cost so far, as each returned (call_cost): SPENT counts it until the try
+   * settles and its own cost counts (gap-c1726f).
+   */
+  liveCall?: { attempt: number; usd: number } | null;
 }
 
 /** One try at a task: the model that made it and how it ended. */
@@ -1266,9 +1271,10 @@ export function applyEvent(
       const before = task.tries ?? [];
       const attempt = event.attempt ?? Math.max(1, before.length);
       const tries = settleTry(before, attempt, event);
+      const liveCall = task.liveCall?.attempt === attempt ? null : task.liveCall;
       return {
         ...state,
-        tasks: { ...state.tasks, [key]: { ...task, tries, attempts: Math.max(task.attempts, tries.length) } },
+        tasks: { ...state.tasks, [key]: { ...task, tries, attempts: Math.max(task.attempts, tries.length), liveCall } },
       };
     }
 
@@ -1288,6 +1294,16 @@ export function applyEvent(
       if (!plan) return state;
       const planCheck = { passed: event.passed, name: event.name ?? null };
       return { ...state, plans: { ...state.plans, [event.plan_id]: { ...plan, planCheck } } };
+    }
+
+    // ── call_cost ──────────────────────────────────────────────────────────────
+    case 'call_cost': {
+      // A running try's calls as they return (gap-5c3347): SPENT moves with them (gap-c1726f).
+      const key = taskKey(event.plan_id, event.task_id);
+      const task = state.tasks[key];
+      if (!task || typeof event.attempt_cost_usd !== 'number') return state;
+      const liveCall = { attempt: event.attempt ?? 1, usd: event.attempt_cost_usd };
+      return { ...state, tasks: { ...state.tasks, [key]: { ...task, liveCall } } };
     }
 
     // ── efficiency_event ───────────────────────────────────────────────────────
@@ -1314,6 +1330,8 @@ export function applyEvent(
           [key]: {
             ...task,
             costUsd: isCost ? task.costUsd + value : task.costUsd,
+            // The settled try's own cost now counts its calls (gap-c1726f).
+            liveCall: isCost ? null : task.liveCall,
             inputTokens:
               metric === 'input_tokens' ? task.inputTokens + value : task.inputTokens,
             outputTokens:

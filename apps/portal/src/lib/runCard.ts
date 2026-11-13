@@ -359,8 +359,10 @@ export function buildCard(input: CardInput): Card {
     note: timeNote,
   };
 
-  // The whole run's spend: on a resume, what its earlier processes spent too (gap-c1726f).
-  const spent = (live?.costUsd ?? 0) + (live?.carriedUsd ?? 0);
+  // The whole run's spend, each call priced as it returns (gap-c1726f): settled tries, the running tries' calls so
+  // far, and on a resume what its earlier processes spent.
+  const liveCalls = rows.reduce((sum, r) => sum + (liveTask(r.id)?.liveCall?.usd ?? 0), 0);
+  const spent = (live?.costUsd ?? 0) + liveCalls + (live?.carriedUsd ?? 0);
   const share = capUsd && capUsd > 0 ? spent / capUsd : 0;
   // An unknown cap isn't no cap (gap-acfe4b): without one the reading is the spend alone, with no meter.
   const spentReading: Reading = {

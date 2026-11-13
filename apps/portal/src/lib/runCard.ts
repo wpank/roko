@@ -9,6 +9,7 @@ import type { Tone } from '@/components/kit/DotMatrix';
 import type { GlyphState } from '@/lib/glyphs';
 import type { Problem } from '@/lib/planProblems';
 import { queuePosition } from '@/lib/planSet';
+import { runClock, runSpentUsd } from '@/lib/runReadings';
 import type { CheckRun, PlanRun, RunState, TaskRun, TryRun } from '@/lib/runState';
 import { taskKey } from '@/lib/runState';
 import type { ToolStep } from '@/lib/streamRecord';
@@ -330,17 +331,9 @@ export function buildCard(input: CardInput): Card {
 
   // TIME runs from when roko accepted the run, which only roko serve knows, else from when the plan's tasks began;
   // once the run has ended, it is the run's own duration, as roko counted it (gap-c1726f).
-  const startedAt = ran ? (input.runStartedMs ?? live?.startedAtMs ?? null) : null;
-  // The run's duration is this plan's only when the run held this plan alone.
-  const aloneInRun = run.planSet
-    ? run.planSet.planIds.length === 1 && run.planSet.planIds[0] === plan.id
-    : run.run.startedAtMs !== null && run.run.startedAtMs === live?.startedAtMs;
-  const runEnded = ran && live?.finishedAtMs != null && run.run.durationMs !== null && aloneInRun;
-  const elapsed = runEnded
-    ? run.run.durationMs
-    : ran && startedAt !== null
-      ? (live!.finishedAtMs ?? nowMs) - startedAt
-      : null;
+  const runTime = ran ? runClock(run, plan.id, input.runStartedMs ?? null, nowMs) : null;
+  const startedAt = runTime?.startedAtMs ?? null;
+  const elapsed = runTime?.ms ?? null;
   const retried = rows.find((r) => (liveTask(r.id)?.tries?.length ?? r.attempts) > 1);
   const timeNote =
     state === 'running' && startedAt !== null
@@ -361,8 +354,7 @@ export function buildCard(input: CardInput): Card {
 
   // The whole run's spend, each call priced as it returns (gap-c1726f): settled tries, the running tries' calls so
   // far, and on a resume what its earlier processes spent.
-  const liveCalls = rows.reduce((sum, r) => sum + (liveTask(r.id)?.liveCall?.usd ?? 0), 0);
-  const spent = (live?.costUsd ?? 0) + liveCalls + (live?.carriedUsd ?? 0);
+  const spent = runSpentUsd(run, plan.id);
   const share = capUsd && capUsd > 0 ? spent / capUsd : 0;
   // An unknown cap isn't no cap (gap-acfe4b): without one the reading is the spend alone, with no meter.
   const spentReading: Reading = {

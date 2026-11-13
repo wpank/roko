@@ -27,6 +27,11 @@ export function detailStamp(run: RunState, planId: string): string {
   return `${run.plans[planId]?.finishedAtMs ?? 0}:${run.run.outcome ?? ''}`;
 }
 
+/** The live state a plan's run facts (useRunFacts) go with: when its run started, and when it and its run ended. */
+export function runFactsStamp(run: RunState, planId: string): string {
+  return `${run.plans[planId]?.startedAtMs ?? 0}:${detailStamp(run, planId)}`;
+}
+
 /** How long a run may take to say it ended after its last plan did, before the portal stops waiting for it. */
 export const FINISHING_MS = 15_000;
 

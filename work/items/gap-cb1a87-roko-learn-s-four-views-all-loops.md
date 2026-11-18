@@ -17,7 +17,7 @@ anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/command
 links = { depends_on = [], blocks = [], related = ["gap-8752ce", "gap-2e6afb"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn learn_probes_read_like_roko' crates/roko-cli/src && cargo test -p roko-cli --bin roko learn_probes_read_like_roko"
+command = "grep -rqw 'fn learn_probes_read_like_roko' crates/roko-cli/src && grep -rqw 'fn learn_all_reads_like_roko' crates/roko-cli/src && cargo test -p roko-cli --lib -- learn_probes_read_like_roko learn_loops_leads_with_a_plain_summary && cargo test -p roko-cli --bin roko -- learn_all_reads_like_roko learn_self_model_fit_reports_insufficient_n"
 +++
 
 ## Problem

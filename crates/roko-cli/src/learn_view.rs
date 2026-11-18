@@ -195,9 +195,7 @@ mod tests {
             "  the model ladder's rung probes: whether each rung's model answers · 4 models"
                 .to_string(),
             String::new(),
-            format!(
-                "  ✓ glm-4.7       passed {probed} · lapsed, so the next run probes it again"
-            ),
+            format!("  ✓ glm-4.7       passed {probed} · lapsed, so the next run probes it again"),
             format!("  ✓ gpt-5.4-mini  passed {probed} · probed again after {later}"),
             format!(
                 "  ✗ gpt-oss-120b  failed {probed} on its provider's billing · the next run \

@@ -425,7 +425,10 @@ pub(crate) fn render_fit(report: &FitReport, style: Style) -> String {
         )],
     );
     let (glyph, verdict) = match report.calibration {
-        "eligible" => (style.paint(Role::Pass, style.glyph(Glyph::Pass)), "eligible"),
+        "eligible" => (
+            style.paint(Role::Pass, style.glyph(Glyph::Pass)),
+            "eligible",
+        ),
         "not_eligible" => (
             style.paint(Role::Fail, style.glyph(Glyph::Fail)),
             "not eligible",
@@ -942,10 +945,7 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(
-            text.contains("\n  Older logs   rows read: "),
-            "{text}"
-        );
+        assert!(text.contains("\n  Older logs   rows read: "), "{text}");
         assert!(text.contains("label sources: gate_passed 4, pre_gate_success 5"));
         assert!(
             text.contains("\n  Calibration  ○ not enough outcomes yet (n = 9 < 100)"),

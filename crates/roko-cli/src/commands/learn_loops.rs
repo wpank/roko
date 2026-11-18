@@ -297,8 +297,9 @@ mod tests {
         assert!(table.starts_with("◆ roko  learn loops\n"), "{table}");
         assert_eq!(table.lines().count(), registry.loops().len() + 6, "{table}");
         assert!(
-            table.lines().any(|line| line.starts_with("  L-linucb")
-                && line.contains("dormant:no_learning")),
+            table
+                .lines()
+                .any(|line| line.starts_with("  L-linucb") && line.contains("dormant:no_learning")),
             "{table}"
         );
     }
@@ -340,7 +341,8 @@ mod tests {
         );
 
         let empty = tempfile::tempdir().expect("tempdir");
-        let text = loops_output(empty.path(), false, Style::plain()).expect("the census of no runs");
+        let text =
+            loops_output(empty.path(), false, Style::plain()).expect("the census of no runs");
         let summary = text.lines().nth(3).expect("a summary line").trim_start();
         assert!(
             summary.starts_with(&format!(

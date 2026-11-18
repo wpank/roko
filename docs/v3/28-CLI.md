@@ -1407,7 +1407,29 @@ roko knowledge backfill-hdc [--workdir <path>]
 
 ### `roko learn all`
 
-Show all learning state: router, experiments, efficiency, episodes, reflexes, playbooks.
+Show all learning state in the run view's style: a label for each part (the router, experiments, efficiency,
+episodes and how often they reused a lesson, reflexes, gate thresholds, knowledge) with its facts beside it, times in
+the design system's forms, and the files it read on one closing line, relative to the workspace. The area views
+(`roko learn router`, `efficiency`, `episodes`, `reflexes`, `knowledge-stats`) show one part each, in the same
+frame, and so do `roko learn loops`, `roko learn self-model fit` and `roko learn probes`. `--json` is unchanged.
+
+```text
+◆ roko  learn
+  what roko has learned in this workspace, from its runs
+
+  Routing      25 observations · static (it moves to confidence at 50 observations and to UCB at 200)
+               Graph tasks start on the model ladder's rung; the router's pick is recorded beside it
+               32 outcomes: gpt-5.4 10 tries, 9 passed · gpt-5.4-mini 22 tries, 21 passed
+  Experiments  prompt: none · model: none
+  Efficiency   220 events, 19 Oct to 28 Oct
+               latest: 28 Oct, gpt-5.4 on p5-5-auval-clean task T1, passed, $0.10
+  Episodes     131 episodes, 19 Oct to 28 Oct
+  Reuse        over the last 131 episodes:
+               a playbook matched 67.9% · a lesson or playbook used 74.0%
+  Knowledge    50 live, 12 retired · average confidence 0.382
+
+  Read from .roko/learn/cascade-router.json, … and .roko/neuro/knowledge.jsonl.
+```
 
 ```
 roko learn all [--workdir <path>]

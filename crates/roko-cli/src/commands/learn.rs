@@ -428,13 +428,12 @@ fn cmd_learn_probes(workdir: &Path, cmd: ProbesCmd, json: bool) -> Result<i32> {
             let rows = probe_rows(workdir);
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
-            } else if rows.is_empty() {
-                println!("No rung probe verdicts: the next plan run probes each rung's model.");
             } else {
+                // In roko's design system (gap-cb1a87).
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                for row in &rows {
-                    println!("{}", row.line(now_ms));
-                }
+                let style = roko_cli::term_style::Style::stdout();
+                let lines = roko_cli::learn_view::probes_lines(&rows, style, now_ms);
+                println!("{}", lines.join("\n"));
             }
             Ok(EXIT_SUCCESS)
         }
@@ -731,7 +730,11 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             }
             print!(
                 "{}",
-                roko_cli::commands::learn_loops::loops_output(&wd, json)?
+                roko_cli::commands::learn_loops::loops_output(
+                    &wd,
+                    json,
+                    roko_cli::term_style::Style::stdout()
+                )?
             );
             Ok(EXIT_SUCCESS)
         }
@@ -1580,44 +1583,156 @@ async fn inspect_budget(workdir: &std::path::Path, json: bool) -> Result<i32> {
 /// `roko learn [what]` — display learning subsystem state.
 pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i32> {
     let show_all = what == "all";
-
-    if show_all || what == "router" {
-        print_learn_router(workdir);
-    }
-
-    if show_all || what == "experiments" {
-        print_learn_experiments(workdir);
-    }
-
-    if show_all || what == "efficiency" {
-        print_learn_efficiency(workdir).await;
-    }
-
-    if show_all || what == "episodes" {
-        print_learn_episodes(workdir).await;
-    }
-
-    if show_all || what == "reflexes" {
-        print_learn_reflexes(workdir);
-    }
-
-    if show_all || what == "gates" {
-        print_learn_gate_thresholds(workdir);
-    }
-
-    // `roko learn knowledge-stats` (bug-ea8c66).
-    if show_all || what == "knowledge" {
-        print_learn_knowledge(workdir).await;
-    }
-
     if !show_all && !LEARN_AREAS.contains(&what) {
         anyhow::bail!(
             "unknown learning area '{what}'. Available: {}, all",
             LEARN_AREAS.join(", ")
         );
     }
-
+    let mut sections = Vec::new();
+    if show_all || what == "router" {
+        sections.push(router_section(workdir));
+    }
+    if show_all || what == "experiments" {
+        sections.push(experiments_section(workdir));
+    }
+    if show_all || what == "efficiency" {
+        sections.push(efficiency_section(workdir).await);
+    }
+    if show_all || what == "episodes" {
+        sections.extend(episodes_sections(workdir).await);
+    }
+    if show_all || what == "reflexes" {
+        sections.push(reflexes_section(workdir));
+    }
+    if show_all || what == "gates" {
+        sections.push(thresholds_section(workdir));
+    }
+    // `roko learn knowledge-stats` (bug-ea8c66).
+    if show_all || what == "knowledge" {
+        sections.push(knowledge_section(workdir).await);
+    }
+    let style = roko_cli::term_style::Style::stdout();
+    println!("{}", learn_lines(what, &sections, style).join("\n"));
     Ok(EXIT_SUCCESS)
+}
+
+/// One part of `roko learn`'s view (gap-cb1a87): its label, what it says
+/// (each item a line of its own), and the files it read, relative to the
+/// workspace.
+#[derive(Debug, Default)]
+struct LearnSection {
+    label: &'static str,
+    items: Vec<String>,
+    read: Vec<String>,
+}
+
+impl LearnSection {
+    fn new(label: &'static str, read: &str) -> Self {
+        Self {
+            label,
+            items: Vec::new(),
+            read: vec![read.to_string()],
+        }
+    }
+}
+
+/// `roko learn [area]` in roko's design system (gap-cb1a87): the header,
+/// a label for each part, and the files they read, relative, on one faint
+/// closing line.
+fn learn_lines(
+    what: &str,
+    sections: &[LearnSection],
+    style: roko_cli::term_style::Style,
+) -> Vec<String> {
+    use roko_cli::term_style::{self, Role};
+
+    // The command's own name, and what the view covers.
+    let (area, context) = match what {
+        "all" => (None, "what roko has learned in this workspace, from its runs"),
+        "router" => (Some("router"), "how roko picks a model"),
+        "experiments" => (
+            Some("experiments"),
+            "the prompt and model experiments roko runs",
+        ),
+        "efficiency" => (
+            Some("efficiency"),
+            "what each try spent and how its check ended",
+        ),
+        "episodes" => (
+            Some("episodes"),
+            "the tries roko learns from, and how often it reused a lesson",
+        ),
+        "reflexes" => (
+            Some("reflexes"),
+            "the tool calls roko answers without a model",
+        ),
+        "gates" => (Some("gates"), "the gate thresholds roko tunes"),
+        _ => (Some("knowledge-stats"), "the lessons roko keeps"),
+    };
+    let title = area.map_or_else(|| "learn".to_string(), |area| format!("learn {area}"));
+    let mut out = term_style::header(style, &title, &context);
+    let width = sections
+        .iter()
+        .map(|section| section.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    for section in sections {
+        out.extend(roko_cli::learn_view::section(
+            style,
+            section.label,
+            width,
+            &section.items,
+        ));
+    }
+    let mut read: Vec<String> = Vec::new();
+    for path in sections.iter().flat_map(|section| &section.read) {
+        if !read.contains(path) {
+            read.push(path.clone());
+        }
+    }
+    if !read.is_empty() {
+        out.push(String::new());
+        out.push(format!(
+            "  {}",
+            style.paint(
+                Role::Dim,
+                format!("Read from {}.", term_style::listed(&read))
+            )
+        ));
+    }
+    out
+}
+
+/// When `timestamp` was, in the design system's §6.3 forms: `today 14:05`,
+/// `yesterday 09:12`, `28 Oct`.
+fn when(timestamp: chrono::DateTime<chrono::Utc>) -> String {
+    roko_cli::status_view::ago(
+        timestamp.timestamp_millis(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+/// A span of time in §6.3's forms: `19 Oct to 28 Oct`.
+fn span(
+    first: Option<chrono::DateTime<chrono::Utc>>,
+    last: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<String> {
+    let (first, last) = (when(first?), when(last?));
+    Some(if first == last {
+        first
+    } else {
+        format!("{first} to {last}")
+    })
+}
+
+/// What a try spent, in §6.3's form, or that its cost is unknown.
+fn spend(cost_usd: f64, input_tokens: u64, output_tokens: u64) -> String {
+    if display_cost(cost_usd, input_tokens, output_tokens) == "unknown" {
+        "cost unknown".to_string()
+    } else {
+        roko_cli::term_style::money(cost_usd)
+    }
 }
 
 /// The areas `roko learn [area]` shows one of, besides `all`.
@@ -2177,16 +2292,17 @@ async fn collect_knowledge_json(workdir: &std::path::Path) -> LearnJsonKnowledge
         .unwrap_or_default()
 }
 
-pub(crate) fn print_learn_router(workdir: &std::path::Path) {
+/// The router's part of `roko learn` (gap-cb1a87): its observations and
+/// stage, whether the model ladder starts Graph tasks, and its outcomes by
+/// model.
+fn router_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Routing", ".roko/learn/cascade-router.json");
     let path = learn_router_path(workdir);
-    print_checked_path(&path);
-    if !path.exists() {
-        print_no_data(&path);
-        return;
-    }
     let Ok(content) = std::fs::read_to_string(&path) else {
-        println!("Cascade router: 0 entries at {}", path.display());
-        return;
+        section
+            .items
+            .push("no router state yet: it learns from each try's outcome".to_string());
+        return section;
     };
     let snapshot = serde_json::from_str::<LearnCascadeRouterSnapshot>(&content).unwrap_or_default();
     // Compare against the runtime wire slugs, not the config map keys.
@@ -2206,75 +2322,61 @@ pub(crate) fn print_learn_router(workdir: &std::path::Path) {
     } else {
         model_rows.iter().map(|row| row.trials).sum()
     };
-
-    let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
-    let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
-    for transition in &snapshot.stage_transitions {
-        first_seen = Some(match first_seen {
-            Some(current) => current.min(transition.timestamp.clone()),
-            None => transition.timestamp.clone(),
-        });
-        last_seen = Some(match last_seen {
-            Some(current) => current.max(transition.timestamp.clone()),
-            None => transition.timestamp.clone(),
-        });
-    }
-
-    let latest = snapshot.stage_transitions.last().map(|transition| {
-        format!(
-            "{} {} -> {} after {} observations",
-            transition.timestamp.to_rfc3339(),
-            transition.from,
-            transition.to,
-            transition.observations
-        )
-    });
-
     if total_observations == 0 && model_rows.is_empty() {
-        println!("Cascade router: 0 entries at {}", path.display());
-        return;
+        section
+            .items
+            .push("no observations yet: it learns from each try's outcome".to_string());
+        return section;
     }
-
-    println!(
-        "Cascade router: {} observations, {} models at {}",
-        total_observations,
-        model_rows.len(),
-        path.display()
+    let changes = snapshot.stage_transitions.len();
+    let latest = snapshot.stage_transitions.first().zip(snapshot.stage_transitions.last()).map(
+        |(first, last)| {
+            let last_change = format!(
+                "{}: {} to {} after {} observations",
+                when(last.timestamp),
+                last.from,
+                last.to,
+                last.observations
+            );
+            if changes == 1 {
+                format!("its stage change {last_change}")
+            } else {
+                format!(
+                    "{changes} stage changes since {}, the last {last_change}",
+                    when(first.timestamp)
+                )
+            }
+        },
     );
     let ladder = roko_core::config::loader::load_config_unified(workdir)
         .map(|config| config.routing.ladder.enabled)
         .unwrap_or(true);
-    let range = latest
-        .is_some()
-        .then(|| format_range(first_seen, last_seen));
-    for line in router_detail_lines(total_observations, latest.zip(range), ladder, model_rows) {
-        println!("{line}");
-    }
+    section.items = router_detail_lines(total_observations, latest, ladder, model_rows);
+    section
 }
 
-/// The lines under the cascade router's header (gap-ea1576): its stage
-/// changes, `latest` with their range, when it recorded any, else its stage in
-/// words; whether the model ladder routes Graph tasks; and its outcomes by
-/// model, with the models it has none for on one line.
+/// What the router's part says (gap-ea1576, gap-cb1a87): its observations
+/// and its stage, the `latest` stage change when it recorded one, else its
+/// stage and when it moves on; whether the model ladder routes Graph tasks;
+/// and its outcomes by model, with the models it has none for on one line.
 fn router_detail_lines(
     total_observations: u64,
-    latest: Option<(String, String)>,
+    latest: Option<String>,
     ladder: bool,
     model_rows: Vec<LearnCascadeRouterModelRow>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some((latest, range)) = latest {
-        lines.push(format!("  Range: {range}"));
-        lines.push(format!("  Latest: {latest}"));
-    } else {
-        lines.push(format!(
-            "  Stage: {} (it moves to confidence at 50 observations and to UCB at 200)",
+    match latest {
+        Some(latest) => lines.push(format!("{total_observations} observations · {latest}")),
+        None => lines.push(format!(
+            "{total_observations} observations · {} (it moves to confidence at 50 \
+             observations and to UCB at 200)",
             cascade_stage_for_observations(total_observations)
-        ));
+        )),
     }
     if ladder {
         lines.push(
-            "  Graph tasks start on the model ladder's rung; the router's pick is recorded beside it"
+            "Graph tasks start on the model ladder's rung; the router's pick is recorded beside it"
                 .to_string(),
         );
     }
@@ -2285,67 +2387,62 @@ fn router_detail_lines(
     let (tried, untried): (Vec<_>, Vec<_>) = model_rows.into_iter().partition(|row| row.trials > 0);
     if !tried.is_empty() {
         let outcomes: u64 = tried.iter().map(|row| row.trials).sum();
-        lines.push(format!("  Outcomes by model ({outcomes} in all):"));
-        for row in &tried {
-            lines.push(format!(
-                "    {}: {} tries, {} passed",
-                label(row),
-                row.trials,
-                row.successes
-            ));
-        }
+        let rows: Vec<String> = tried
+            .iter()
+            .map(|row| {
+                format!(
+                    "{} {} tries, {} passed",
+                    label(row),
+                    row.trials,
+                    row.successes
+                )
+            })
+            .collect();
+        lines.push(format!("{outcomes} outcomes: {}", rows.join(" · ")));
     }
     if !untried.is_empty() {
         let names: Vec<String> = untried.iter().map(label).collect();
-        lines.push(format!("  No outcomes yet: {}", names.join(", ")));
+        lines.push(format!("no outcomes yet: {}", names.join(", ")));
     }
     lines
 }
 
-pub(crate) fn print_learn_experiments(workdir: &std::path::Path) {
-    // Prompt experiments
-    let prompt_path = learn_root(workdir).join("experiments.json");
-    print_checked_path(&prompt_path);
-    let prompt_store = ExperimentStore::load_or_new(&prompt_path);
-    let running = prompt_store.running_count();
-    let concluded = prompt_store.concluded_count();
-    if running > 0 || concluded > 0 {
-        println!(
-            "Prompt experiments: {} running, {} concluded",
-            running, concluded
-        );
-    } else if prompt_path.exists() {
-        println!("Prompt experiments: 0 entries at {}", prompt_path.display());
-    } else {
-        println!("Prompt experiments: none");
-    }
-
-    // Model experiments
+/// The experiments' part of `roko learn` (gap-cb1a87): the prompt and the
+/// model experiments, running and concluded, and each model experiment.
+fn experiments_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Experiments", ".roko/learn/experiments.json");
+    section
+        .read
+        .push(".roko/learn/model-experiments.json".to_string());
+    let prompt_store = ExperimentStore::load_or_new(&learn_root(workdir).join("experiments.json"));
+    let (running, concluded) = (prompt_store.running_count(), prompt_store.concluded_count());
     let model_path = learn_root(workdir).join("model-experiments.json");
-    print_checked_path(&model_path);
     let model_store = roko_learn::model_experiment::ModelExperimentStore::load_or_new(&model_path);
     let model_running = model_store.running_count();
     let model_concluded = model_store.concluded_experiments().len();
-    if model_running > 0 || model_concluded > 0 {
-        println!(
-            "Model experiments: {} running, {} concluded",
-            model_running, model_concluded
-        );
-        for exp in model_store.iter() {
-            println!(
-                "  {} [{:?}] role={} variants={} winner={}",
-                exp.experiment_id,
-                exp.status,
-                exp.role.as_deref().unwrap_or("any"),
-                exp.variants.len(),
-                exp.winner_id.as_deref().unwrap_or("-"),
-            );
+    let counts = |running: usize, concluded: usize| {
+        if running > 0 || concluded > 0 {
+            format!("{running} running, {concluded} concluded")
+        } else {
+            "none".to_string()
         }
-    } else if model_path.exists() {
-        println!("Model experiments: 0 entries at {}", model_path.display());
-    } else {
-        println!("Model experiments: none");
+    };
+    section.items.push(format!(
+        "prompt: {} · model: {}",
+        counts(running, concluded),
+        counts(model_running, model_concluded)
+    ));
+    for exp in model_store.iter() {
+        section.items.push(format!(
+            "{} ({:?}) for role {}: {} variants, winner {}",
+            exp.experiment_id,
+            exp.status,
+            exp.role.as_deref().unwrap_or("any"),
+            exp.variants.len(),
+            exp.winner_id.as_deref().unwrap_or("none yet"),
+        ));
     }
+    section
 }
 
 // ── Experiments subcommands ──────────────────────────────────────────

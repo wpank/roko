@@ -187,6 +187,7 @@ pub mod inline;
 pub(crate) mod knowledge_helpers;
 #[path = "../../../scripts/layer_check.rs"]
 pub mod layer_check;
+pub mod learn_view;
 pub mod learning_helpers;
 pub mod loop_canary;
 pub mod model_selection;

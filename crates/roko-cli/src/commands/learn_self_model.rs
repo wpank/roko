@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
 use roko_cli::exit_codes::EXIT_SUCCESS;
+use roko_cli::learn_view;
+use roko_cli::term_style::{self, Glyph, Role, Style};
 use roko_core::config::routing::LadderConfig;
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_fs::RokoLayout;
@@ -125,7 +127,7 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
             if json {
                 println!("{}", serde_json::to_string(&report)?);
             } else {
-                print!("{}", render_fit(&report));
+                print!("{}", render_fit(&report, Style::stdout()));
             }
         }
         SelfModelCmd::Replay {
@@ -375,105 +377,124 @@ fn prequential_scope(scored: usize, trained: usize) -> String {
     }
 }
 
-/// The fit report as text.
-pub(crate) fn render_fit(report: &FitReport) -> String {
+/// The width of the fit report's label column.
+const FIT_LABEL_WIDTH: usize = 11;
+
+/// The fit report as text, in roko's design system (gap-cb1a87): what the
+/// fit is, then a label for each part of it: the run records and the older
+/// logs it read, the units it trained on, its forecasts' scores, the
+/// calibration gate, the forecasts the runs made and how many joined to a
+/// verdict, and how those live forecasts scored.
+pub(crate) fn render_fit(report: &FitReport, style: Style) -> String {
     let audit = &report.data_audit;
     let scores = &report.prequential;
     let number =
         |value: Option<f64>| value.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
-    let mut out = format!(
-        "self-model fit (offline): predictor {}, prices {}\n",
+    let dot = format!(" {} ", style.glyph(Glyph::Dot));
+    let context = format!(
+        "how well roko forecasts a try's pass, refit offline over the run logs{dot}predictor \
+         {}{dot}prices {}",
         report.predictor_version, report.price_snapshot_id
     );
-    for (name, source) in [("S01 runs", &audit.runs), ("legacy logs", &audit.legacy)] {
-        let _ = writeln!(out, "{name}:");
-        for line in source.to_string().lines() {
-            let _ = writeln!(out, "  {line}");
-        }
-    }
-    let _ = writeln!(
-        out,
-        "units: {} read, {} duplicates dropped, {} kept, {} to train on",
-        audit.raw_units, audit.duplicates, audit.units, audit.training_units
+    let mut out = term_style::header(style, "learn self-model fit", &context);
+    let mut section = |label: &str, items: Vec<String>| {
+        out.extend(learn_view::section(style, label, FIT_LABEL_WIDTH, &items));
+    };
+    let lines = |source: &DataAudit| source.to_string().lines().map(str::to_string).collect();
+    section("Run records", lines(&audit.runs));
+    section("Older logs", lines(&audit.legacy));
+    section(
+        "Units",
+        vec![format!(
+            "{} read, {} duplicates dropped, {} kept, {} to train on",
+            audit.raw_units, audit.duplicates, audit.units, audit.training_units
+        )],
     );
-    let _ = writeln!(
-        out,
-        "prequential, over {}: Brier {}, base rate {}, Brier skill {}, ECE {}, \
-         calibration in the large {}, AUROC {}",
-        prequential_scope(scores.n, audit.training_units),
-        number(scores.brier),
-        number(scores.base_rate),
-        number(scores.brier_skill),
-        number(scores.ece),
-        number(scores.calibration_in_the_large),
-        number(scores.auroc)
+    section(
+        "Forecasts",
+        vec![format!(
+            "scored before each unit taught the model, over {}: Brier {}, base rate {}, Brier \
+             skill {}, ECE {}, calibration in the large {}, AUROC {}",
+            prequential_scope(scores.n, audit.training_units),
+            number(scores.brier),
+            number(scores.base_rate),
+            number(scores.brier_skill),
+            number(scores.ece),
+            number(scores.calibration_in_the_large),
+            number(scores.auroc)
+        )],
     );
-    match &report.gate {
-        None => {
-            let _ = writeln!(
-                out,
-                "calibration: {} (n = {} < {})",
-                report.calibration, scores.n, report.window
-            );
-        }
-        // The gate scores only its last W outcomes, a window of its own (gap-45f6bb).
-        Some(gate) if gate.reasons.is_empty() => {
-            let _ = writeln!(
-                out,
-                "calibration, over the gate's last {} outcomes: {}",
-                gate.window, report.calibration
-            );
-        }
-        Some(gate) => {
-            let reasons = gate.reasons.join("; ");
-            let _ = writeln!(
-                out,
-                "calibration, over the gate's last {} outcomes: {} ({reasons})",
-                gate.window, report.calibration
-            );
-        }
-    }
+    let (glyph, verdict) = match report.calibration {
+        "eligible" => (style.paint(Role::Pass, style.glyph(Glyph::Pass)), "eligible"),
+        "not_eligible" => (
+            style.paint(Role::Fail, style.glyph(Glyph::Fail)),
+            "not eligible",
+        ),
+        _ => (
+            style.paint(Role::Dim, style.glyph(Glyph::Waiting)),
+            "not enough outcomes yet",
+        ),
+    };
+    // The gate scores only its last W outcomes, a window of its own (gap-45f6bb).
+    let calibration = match &report.gate {
+        None => format!("{glyph} {verdict} (n = {} < {})", scores.n, report.window),
+        Some(gate) if gate.reasons.is_empty() => format!(
+            "{glyph} {verdict}, over the gate's last {} outcomes",
+            gate.window
+        ),
+        Some(gate) => format!(
+            "{glyph} {verdict}, over the gate's last {} outcomes ({})",
+            gate.window,
+            gate.reasons.join("; ")
+        ),
+    };
+    section("Calibration", vec![calibration]);
     let join = &report.forecast_join;
     let counts = &join.counts;
-    if counts.forecasts == 0 {
-        let _ = writeln!(
-            out,
-            "forecasts: {} (no predictions.jsonl row in {} runs)",
-            join.status, counts.runs
-        );
+    let joined = if counts.forecasts == 0 {
+        vec![format!(
+            "none yet: no predictions.jsonl row in {}",
+            term_style::plural(counts.runs, "run", "runs")
+        )]
     } else {
-        let _ = writeln!(
-            out,
-            "forecasts ({} of {} runs): {} of {} routed attempts forecast (coverage {}), {} of {} \
-             joined to a labelled verdict (join share {}); unjoined: {} without a verdict, {} \
-             with an unlabelled verdict",
-            counts.runs_forecast,
-            counts.runs,
-            counts.routed_forecast,
-            counts.routed,
-            number(join.coverage),
-            counts.joined,
-            counts.forecasts,
-            number(join.join_share),
-            counts.no_verdict,
-            counts.unlabelled
-        );
-    }
+        vec![
+            format!(
+                "{} of {} runs: {} of {} routed attempts forecast (coverage {})",
+                counts.runs_forecast,
+                counts.runs,
+                counts.routed_forecast,
+                counts.routed,
+                number(join.coverage)
+            ),
+            format!(
+                "{} of {} joined to a labelled verdict (join share {}); unjoined: {} without a \
+                 verdict, {} with an unlabelled verdict",
+                counts.joined,
+                counts.forecasts,
+                number(join.join_share),
+                counts.no_verdict,
+                counts.unlabelled
+            ),
+        ]
+    };
+    section("Runs", joined);
     let live = &report.live_forecasts;
-    if live.n == 0 {
-        let _ = writeln!(out, "live forecasts: none scored against a verdict");
+    let scored = if live.n == 0 {
+        "none scored against a verdict".to_string()
     } else {
-        let _ = writeln!(
-            out,
-            "live forecasts, as the runs made them: {} with a verdict, Brier {} against {} for \
-             always forecasting the pass rate (Brier skill {})",
+        format!(
+            "as the runs made them: {} with a verdict, Brier {} against {} for always \
+             forecasting the pass rate (Brier skill {})",
             live.n,
             number(live.brier),
             number(live.base_rate_brier),
             number(live.brier_skill)
-        );
-    }
-    out
+        )
+    };
+    section("Live", vec![scored]);
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
 }
 
 // -----------------------------------------------------------------------
@@ -912,9 +933,24 @@ mod tests {
         assert!(report.gate.is_none());
         let json = serde_json::to_string(&report).expect("serialize the report");
         assert!(json.contains(r#""calibration":"insufficient_n""#));
-        let text = render_fit(&report);
+        let text = render_fit(&report, Style::plain());
+        // In roko's design system (gap-cb1a87): the header, then a label for each part.
+        assert!(
+            text.starts_with(
+                "◆ roko  learn self-model fit\n  how well roko forecasts a try's pass, refit \
+                 offline over the run logs · predictor "
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  Older logs   rows read: "),
+            "{text}"
+        );
         assert!(text.contains("label sources: gate_passed 4, pre_gate_success 5"));
-        assert!(text.contains("calibration: insufficient_n (n = 9 < 100)"));
+        assert!(
+            text.contains("\n  Calibration  ○ not enough outcomes yet (n = 9 < 100)"),
+            "{text}"
+        );
 
         let settings = SelfModelConfig {
             n_min: 9,
@@ -949,7 +985,11 @@ mod tests {
         let empty = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
         assert_eq!(empty.forecast_join.status, "insufficient_n");
         assert_eq!(empty.forecast_join.join_share, None);
-        assert!(render_fit(&empty).contains("forecasts: insufficient_n"));
+        let text = render_fit(&empty, Style::plain());
+        assert!(
+            text.contains("\n  Runs         none yet: no predictions.jsonl row in "),
+            "{text}"
+        );
 
         let identity =
             |task: &str| AttemptIdentity::new(&AttemptKey::new("run-f", "plan-f", task, 1));
@@ -1032,7 +1072,7 @@ mod tests {
         let json = serde_json::to_value(&report).expect("serialize the report");
         assert_eq!(json["forecast_join"]["coverage"], 0.75);
         assert_eq!(json["forecast_join"]["no_verdict"], 1);
-        let text = render_fit(&report);
+        let text = render_fit(&report, Style::plain());
         let coverage = "3 of 4 routed attempts forecast (coverage 0.750)";
         assert!(text.contains(coverage), "{text}");
         let share = "2 of 3 joined to a labelled verdict (join share 0.667)";
@@ -1182,10 +1222,13 @@ mod tests {
         assert_eq!((live.n, live.passes), (1, 1));
         let brier = live.brier.expect("a Brier score");
         assert!((brier - 0.04).abs() < 1e-9, "{brier}");
-        let text = render_fit(&report);
-        assert!(text.contains("prequential, over all "), "{text}");
+        let text = render_fit(&report, Style::plain());
         assert!(
-            text.contains("live forecasts, as the runs made them: 1 with a verdict, Brier"),
+            text.contains("scored before each unit taught the model, over all "),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  Live         as the runs made them: 1 with a verdict, Brier"),
             "{text}"
         );
     }

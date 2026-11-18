@@ -2,15 +2,16 @@
 id = "gap-cb1a87"
 kind = "gap"
 title = "roko learn's four views (all, loops, self-model fit, probes list) in the run view's style: a header with a context line, labelled sections, §6.3 dates and money, glyphs, one Next, no absolute paths; each view's facts and --json kept"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "M"
 subsystem = ["roko-cli/commands"]
 created = 2026-11-13
-updated = 2026-11-13
-last_verified = 2026-11-13
+updated = 2026-11-18
+last_verified = 2026-11-18
+last_verified_rev = "20fc2cae9"
 source = "round v8 lead, wave 2 item 3 (the terminal output overhaul)"
 discovered_from = "agent:roko-recovery (round v8)"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/learn_loops.rs", "crates/roko-cli/src/commands/learn_self_model.rs"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-8752ce", "gap-2e6afb"], 
 
 [[verify]]
 command = "grep -rqw 'fn learn_probes_read_like_roko' crates/roko-cli/src && grep -rqw 'fn learn_all_reads_like_roko' crates/roko-cli/src && cargo test -p roko-cli --lib -- learn_probes_read_like_roko learn_loops_leads_with_a_plain_summary && cargo test -p roko-cli --bin roko -- learn_all_reads_like_roko learn_self_model_fit_reports_insufficient_n"
+
+[closed]
+at = 2026-11-18
+at_ts = "2026-11-18T10:39:37Z"
+commit = "20fc2cae9"
+by = "roko-recovery"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-11-13T02:57:21Z"
+forced = false
+evidence = "20fc2cae9 on work/gap-cb1a87 (with its checkpoint abcf2e0c7): roko learn's four views in the run view's style. learn all (and the area views router, efficiency, episodes, reflexes, knowledge-stats): the ◆ roko header with what it covers, a label per part (Routing, Experiments, Efficiency, Episodes, Reuse, Reflexes, Thresholds, Knowledge) with its facts beside it, §6.3 times (28 Oct, today 11:09) and money instead of RFC 3339 and four-decimal costs, and the files read on one faint closing line, relative, instead of an absolute path: line per section. learn loops: header, the plain summary (gap-2e6afb), the census table with a faint header. learn self-model fit: header with predictor and prices, then Run records, Older logs, Units, Forecasts, Calibration (✓/✗/○ in words), Runs, Live. learn probes: a glyph per verdict, when and what next, the reason under a failure, and 'roko learn probes clear <model>' as the one Next when a failed probe skips a rung. Every fact kept; each view's --json identical on copies of Undertow's and roko's workspaces (learn all's differs only in computed_at; learn-views/before vs after). Tests: learn_all_reads_like_roko, learn_probes_read_like_roko, and the loops and self-model tests on the new frame. Branch checks: nightly fmt; roko-cli lib 4161 passed, bin 484 passed; workspace clippy -D warnings clean; the binary builds (bin/roko-item15b)."
 +++
 
 ## Problem

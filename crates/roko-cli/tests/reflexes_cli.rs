@@ -6,7 +6,6 @@ use common::Isolated;
 use std::fs;
 
 use assert_cmd::Command;
-use predicates::prelude::*;
 use serde_json::json;
 
 fn reflex_rule(index: u32, hit_count: u32) -> serde_json::Value {
@@ -69,11 +68,34 @@ fn write_demotion(workdir: &std::path::Path) {
     .expect("write demotion fixture");
 }
 
+/// The facts of the Reflexes part of `roko learn reflexes` (gap-cb1a87), one
+/// per line: what its labelled line says after the label, then each line
+/// under it.
+fn reflexes_part(stdout: &str) -> Vec<String> {
+    let mut lines = stdout.lines().skip_while(|line| {
+        line.trim_start()
+            .strip_prefix("Reflexes")
+            .is_none_or(|rest| !rest.starts_with("  "))
+    });
+    let Some(first) = lines.next() else {
+        panic!("no Reflexes part: {stdout}");
+    };
+    let indent = first.len() - first.trim_start().len();
+    let first = first
+        .trim_start()
+        .strip_prefix("Reflexes")
+        .unwrap_or_default();
+    std::iter::once(first)
+        .chain(lines.take_while(|line| line.len() - line.trim_start().len() > indent))
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
 #[test]
 fn learn_reflexes_reports_an_empty_store_friendly() {
     let workdir = tempfile::tempdir().expect("temp workdir");
 
-    Command::cargo_bin("roko")
+    let output = Command::cargo_bin("roko")
         .expect("roko binary")
         .isolated()
         .current_dir(workdir.path())
@@ -81,13 +103,23 @@ fn learn_reflexes_reports_an_empty_store_friendly() {
         .arg(workdir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "T0 Reflex Store — 0 rules (max 200)",
-        ))
-        .stdout(predicate::str::contains(
-            "t0_reflexes is false, so runs add no rules",
-        ))
-        .stdout(predicate::str::contains("Recent demotions:\n  (none)"));
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).expect("UTF-8 stdout");
+
+    assert_eq!(
+        reflexes_part(&stdout),
+        [
+            "0 rules (max 200) · off: [learning] t0_reflexes is false, so runs add no rules",
+            "recent demotions: none",
+        ],
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Read from .roko/learn/reflexes.jsonl."),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -109,20 +141,31 @@ fn learn_reflexes_reports_total_and_only_the_top_five() {
         .clone();
     let stdout = String::from_utf8(output).expect("UTF-8 stdout");
 
-    assert!(stdout.contains("T0 Reflex Store — 6 rules (max 200)"));
-    assert!(stdout.contains("Top rules by hit count:"));
-    for hits in [50, 40, 30, 20, 10] {
-        assert!(stdout.contains(&format!("rule-{hits}")), "{stdout}");
+    let facts = reflexes_part(&stdout);
+    // The total and the cap, then the top five by hits, in order.
+    assert_eq!(
+        facts[0], "6 rules (max 200), the top ones by hits:",
+        "{stdout}"
+    );
+    for (rank, hits) in (1..).zip([50, 40, 30, 20, 10]) {
+        assert_eq!(
+            facts[rank],
+            format!("{rank}. 100% confident, {hits} hits: \"bash\" → bash rule-{hits}"),
+            "{stdout}"
+        );
     }
     assert!(
         !stdout.contains("→ bash rule-1\n"),
         "sixth rule leaked into output: {stdout}"
     );
-    assert_eq!(stdout.matches("% conf,").count(), 5, "{stdout}");
+    assert_eq!(stdout.matches("% confident, ").count(), 5, "{stdout}");
+    // The demotion, with its plan, task and try.
+    assert_eq!(facts[6], "recent demotions:", "{stdout}");
     assert!(
-        stdout.contains("plan=plan-a task=task-b attempt=attempt-c"),
+        facts[7].ends_with(": plan plan-a task task-b try attempt-c"),
         "{stdout}"
     );
+    assert_eq!(facts.len(), 8, "{stdout}");
 }
 
 #[test]

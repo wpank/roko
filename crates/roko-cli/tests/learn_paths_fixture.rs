@@ -207,6 +207,57 @@ fn write_learn_fixture(workdir: &Path) {
     );
 }
 
+/// When `timestamp` was, as `roko learn` says it (the design system's §6.3
+/// forms: `10 Apr`), so the test reads like the view in any time zone.
+fn day(timestamp: DateTime<Utc>) -> String {
+    roko_cli::status_view::ago(timestamp.timestamp_millis(), Utc::now().timestamp_millis())
+}
+
+/// A span of days as `roko learn` says it: `10 Apr`, or `9 Apr to 10 Apr`.
+fn span(first: DateTime<Utc>, last: DateTime<Utc>) -> String {
+    let (first, last) = (day(first), day(last));
+    if first == last {
+        first
+    } else {
+        format!("{first} to {last}")
+    }
+}
+
+/// The facts of `roko learn`'s part `label`, one per line: what its labelled
+/// line says after the label, then each line under it, up to the next label
+/// or the closing line.
+fn part(stdout: &str, label: &str) -> Vec<String> {
+    let mut lines = stdout.lines().skip_while(|line| {
+        line.trim_start()
+            .strip_prefix(label)
+            .is_none_or(|rest| !rest.starts_with("  "))
+    });
+    let Some(first) = lines.next() else {
+        panic!("no {label} part: {stdout}");
+    };
+    let indent = first.len() - first.trim_start().len();
+    let first = first.trim_start().strip_prefix(label).unwrap_or_default();
+    std::iter::once(first)
+        .chain(lines.take_while(|line| line.len() - line.trim_start().len() > indent))
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+/// The files `roko learn` names on its closing line.
+fn read_from(stdout: &str) -> String {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("Read from "))
+        .unwrap_or_else(|| panic!("no closing line naming the files read: {stdout}"))
+        .to_string()
+}
+
+/// gap-cb1a87: `roko learn all` gives each fixture's facts in its part, in
+/// the run view's style: the router's observations, models and stage changes,
+/// the efficiency events and episodes with their span and latest one, and the
+/// knowledge entries; the files read are named on its closing line, relative
+/// to the workspace, and no part reads empty.
 #[test]
 fn learn_all_reads_the_expected_fixtures() {
     let tmp = TempDir::new().expect("tempdir");
@@ -215,14 +266,6 @@ fn learn_all_reads_the_expected_fixtures() {
 
     let stdout = run_roko(workdir, &["learn", "all"]);
 
-    let router_path = workdir
-        .join(".roko")
-        .join("learn")
-        .join("cascade-router.json");
-    let efficiency_path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
-    let episodes_path = workdir.join(".roko").join("episodes.jsonl");
-    let knowledge_path = workdir.join(".roko").join("neuro").join("knowledge.jsonl");
-
     let router_first = utc("2026-04-10T08:00:00Z");
     let router_last = utc("2026-04-10T09:30:00Z");
     let efficiency_first = utc("2026-04-10T10:00:00Z");
@@ -230,102 +273,105 @@ fn learn_all_reads_the_expected_fixtures() {
     let episodes_first = utc("2026-04-10T12:00:00Z");
     let episodes_last = utc("2026-04-10T12:45:00Z");
 
-    assert!(
-        stdout.contains(&format!(
-            "Cascade router: 75 observations, 2 models at {}",
-            router_path.display()
-        )),
+    let routing = part(&stdout, "Routing");
+    assert_eq!(
+        routing[0],
+        format!(
+            "75 observations · 2 stage changes since {}, the last {}: confidence to ucb after 75 \
+             observations",
+            day(router_first),
+            day(router_last)
+        ),
         "router summary missing or incorrect: {stdout}"
     );
-    assert!(
-        stdout.contains(&format!(
-            "  Range: {} .. {}",
-            router_first.to_rfc3339(),
-            router_last.to_rfc3339()
-        )),
-        "router range missing or incorrect: {stdout}"
-    );
-    assert!(
-        stdout.contains(&format!(
-            "  Latest: {} confidence -> ucb after 75 observations",
-            router_last.to_rfc3339()
-        )),
-        "router latest line missing or incorrect: {stdout}"
-    );
+    for model in ["claude-sonnet-4-6", "claude-haiku-4-5"] {
+        assert!(
+            routing.iter().any(|fact| fact.contains(model)),
+            "router model {model} missing: {stdout}"
+        );
+    }
 
-    assert!(
-        stdout.contains(&format!(
-            "Efficiency: 2 events at {}",
-            efficiency_path.display()
-        )),
+    let efficiency = part(&stdout, "Efficiency");
+    assert_eq!(
+        efficiency[0],
+        format!("2 events, {}", span(efficiency_first, efficiency_last)),
         "efficiency summary missing or incorrect: {stdout}"
     );
-    assert!(
-        stdout.contains(&format!(
-            "  Range: {} .. {}",
-            efficiency_first.to_rfc3339(),
-            efficiency_last.to_rfc3339()
-        )),
-        "efficiency range missing or incorrect: {stdout}"
-    );
-    assert!(
-        stdout.contains(&format!(
-            "  Latest: {} model=claude-haiku-4-5 task=task-b plan=plan-b fail cost=$0.0034",
-            efficiency_last.to_rfc3339()
-        )),
+    assert_eq!(
+        efficiency[1],
+        format!(
+            "latest: {}, claude-haiku-4-5 on plan-b task task-b, failed, <$0.01",
+            day(efficiency_last)
+        ),
         "efficiency latest line missing or incorrect: {stdout}"
     );
 
-    assert!(
-        stdout.contains(&format!(
-            "Episodes: 2 entries at {}",
-            episodes_path.display()
-        )),
+    let episodes = part(&stdout, "Episodes");
+    assert_eq!(
+        episodes[0],
+        format!("2 episodes, {}", span(episodes_first, episodes_last)),
         "episode summary missing or incorrect: {stdout}"
     );
-    assert!(
-        stdout.contains(&format!(
-            "  Range: {} .. {}",
-            episodes_first.to_rfc3339(),
-            episodes_last.to_rfc3339()
-        )),
-        "episode range missing or incorrect: {stdout}"
-    );
-    assert!(
-        stdout.contains(&format!(
-            "  Latest: {} model=claude-haiku-4-5 task=task-b fail cost=$0.0022",
-            episodes_last.to_rfc3339()
-        )),
+    assert_eq!(
+        episodes[1],
+        format!(
+            "latest: {}, claude-haiku-4-5 on task task-b, failed, <$0.01",
+            day(episodes_last)
+        ),
         "episode latest line missing or incorrect: {stdout}"
     );
 
     assert!(
-        stdout.contains(&format!(
-            "Knowledge: 1 live, 0 retired, at {}",
-            knowledge_path.display()
-        )),
+        part(&stdout, "Knowledge")[0].starts_with("1 live, 0 retired"),
         "knowledge summary missing or incorrect: {stdout}"
     );
-    assert!(
-        !stdout.contains("No data at"),
-        "fixture should have satisfied every learn path: {stdout}"
-    );
+
+    let read = read_from(&stdout);
+    for path in [
+        ".roko/learn/cascade-router.json",
+        ".roko/learn/efficiency.jsonl",
+        ".roko/episodes.jsonl",
+        ".roko/neuro/knowledge.jsonl",
+    ] {
+        assert!(
+            read.contains(path),
+            "{path} missing from the files read: {stdout}"
+        );
+    }
+    for empty in [
+        "no router state yet",
+        "no observations yet",
+        "no events yet",
+        "no episodes yet",
+        "no lessons yet",
+    ] {
+        assert!(
+            !stdout.contains(empty),
+            "fixture should have satisfied every learn path: {stdout}"
+        );
+    }
 }
 
+/// gap-cb1a87: `roko learn efficiency` without an efficiency file says it has
+/// no events, names the file it read, and makes up no count.
 #[test]
 fn learn_missing_efficiency_reports_no_data_instead_of_fake_counts() {
     let tmp = TempDir::new().expect("tempdir");
     let workdir = tmp.path();
-    let expected_path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
 
     let stdout = run_roko(workdir, &["learn", "efficiency"]);
 
+    assert_eq!(
+        part(&stdout, "Efficiency"),
+        ["no events yet: each try records what it spent"],
+        "missing efficiency file should say it has no events: {stdout}"
+    );
     assert!(
-        stdout.contains(&format!("No data at {}", expected_path.display())),
+        read_from(&stdout).contains(".roko/learn/efficiency.jsonl"),
         "missing efficiency file should report the read path: {stdout}"
     );
     assert!(
-        !stdout.contains("Efficiency:"),
+        !stdout.contains(" events, ") && !stdout.contains("latest:"),
         "missing efficiency file must not produce a fake summary: {stdout}"
     );
 }

@@ -381,17 +381,6 @@ fn display_cost(cost_usd: f64, input_tokens: u64, output_tokens: u64) -> String 
     }
 }
 
-/// Format a cost value for recent-entry display with four decimal places.
-fn display_cost_precise(cost_usd: f64, input_tokens: u64, output_tokens: u64) -> String {
-    let display = display_cost(cost_usd, input_tokens, output_tokens);
-    if display == "unknown" {
-        display
-    } else {
-        let cost_usd = cost_usd.max(0.0);
-        format!("${cost_usd:.4}")
-    }
-}
-
 /// `roko learn rungs`: how each rung did over the workspace's newest `runs`
 /// runs, or every run (gap-3217a0).
 fn cmd_learn_rungs(workdir: &Path, runs: Option<usize>, json: bool) -> Result<i32> {
@@ -428,13 +417,12 @@ fn cmd_learn_probes(workdir: &Path, cmd: ProbesCmd, json: bool) -> Result<i32> {
             let rows = probe_rows(workdir);
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
-            } else if rows.is_empty() {
-                println!("No rung probe verdicts: the next plan run probes each rung's model.");
             } else {
+                // In roko's design system (gap-cb1a87).
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                for row in &rows {
-                    println!("{}", row.line(now_ms));
-                }
+                let style = roko_cli::term_style::Style::stdout();
+                let lines = roko_cli::learn_view::probes_lines(&rows, style, now_ms);
+                println!("{}", lines.join("\n"));
             }
             Ok(EXIT_SUCCESS)
         }
@@ -731,7 +719,11 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             }
             print!(
                 "{}",
-                roko_cli::commands::learn_loops::loops_output(&wd, json)?
+                roko_cli::commands::learn_loops::loops_output(
+                    &wd,
+                    json,
+                    roko_cli::term_style::Style::stdout()
+                )?
             );
             Ok(EXIT_SUCCESS)
         }
@@ -1580,44 +1572,157 @@ async fn inspect_budget(workdir: &std::path::Path, json: bool) -> Result<i32> {
 /// `roko learn [what]` — display learning subsystem state.
 pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i32> {
     let show_all = what == "all";
-
-    if show_all || what == "router" {
-        print_learn_router(workdir);
-    }
-
-    if show_all || what == "experiments" {
-        print_learn_experiments(workdir);
-    }
-
-    if show_all || what == "efficiency" {
-        print_learn_efficiency(workdir).await;
-    }
-
-    if show_all || what == "episodes" {
-        print_learn_episodes(workdir).await;
-    }
-
-    if show_all || what == "reflexes" {
-        print_learn_reflexes(workdir);
-    }
-
-    if show_all || what == "gates" {
-        print_learn_gate_thresholds(workdir);
-    }
-
-    // `roko learn knowledge-stats` (bug-ea8c66).
-    if show_all || what == "knowledge" {
-        print_learn_knowledge(workdir).await;
-    }
-
     if !show_all && !LEARN_AREAS.contains(&what) {
         anyhow::bail!(
             "unknown learning area '{what}'. Available: {}, all",
             LEARN_AREAS.join(", ")
         );
     }
-
+    let mut sections = Vec::new();
+    if show_all || what == "router" {
+        sections.push(router_section(workdir));
+    }
+    if show_all || what == "experiments" {
+        sections.push(experiments_section(workdir));
+    }
+    if show_all || what == "efficiency" {
+        sections.push(efficiency_section(workdir).await);
+    }
+    if show_all || what == "episodes" {
+        sections.extend(episodes_sections(workdir).await);
+    }
+    if show_all || what == "reflexes" {
+        sections.push(reflexes_section(workdir));
+    }
+    if show_all || what == "gates" {
+        sections.push(thresholds_section(workdir));
+    }
+    // `roko learn knowledge-stats` (bug-ea8c66).
+    if show_all || what == "knowledge" {
+        sections.push(knowledge_section(workdir).await);
+    }
+    let style = roko_cli::term_style::Style::stdout();
+    println!("{}", learn_lines(what, &sections, style).join("\n"));
     Ok(EXIT_SUCCESS)
+}
+
+/// One part of `roko learn`'s view (gap-cb1a87): its label, what it says
+/// (each item a line of its own), and the files it read, relative to the
+/// workspace.
+#[derive(Debug, Default)]
+struct LearnSection {
+    label: &'static str,
+    items: Vec<String>,
+    read: Vec<String>,
+}
+
+impl LearnSection {
+    fn new(label: &'static str, read: &str) -> Self {
+        Self {
+            label,
+            items: Vec::new(),
+            read: vec![read.to_string()],
+        }
+    }
+}
+
+/// `roko learn [area]` in roko's design system (gap-cb1a87): the header,
+/// a label for each part, and the files they read, relative, on one faint
+/// closing line.
+fn learn_lines(
+    what: &str,
+    sections: &[LearnSection],
+    style: roko_cli::term_style::Style,
+) -> Vec<String> {
+    use roko_cli::term_style::{self, Role};
+
+    // The command's own name, and what the view covers.
+    let (area, context) = match what {
+        "all" => (
+            None,
+            "what roko has learned in this workspace, from its runs",
+        ),
+        "router" => (Some("router"), "how roko picks a model"),
+        "experiments" => (
+            Some("experiments"),
+            "the prompt and model experiments roko runs",
+        ),
+        "efficiency" => (
+            Some("efficiency"),
+            "what each try spent and how its check ended",
+        ),
+        "episodes" => (
+            Some("episodes"),
+            "the tries roko learns from, and how often it reused a lesson",
+        ),
+        "reflexes" => (
+            Some("reflexes"),
+            "the tool calls roko answers without a model",
+        ),
+        "gates" => (Some("gates"), "the gate thresholds roko tunes"),
+        _ => (Some("knowledge-stats"), "the lessons roko keeps"),
+    };
+    let title = area.map_or_else(|| "learn".to_string(), |area| format!("learn {area}"));
+    let mut out = term_style::header(style, &title, &context);
+    let width = sections
+        .iter()
+        .map(|section| section.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    for section in sections {
+        out.extend(roko_cli::learn_view::section(
+            style,
+            section.label,
+            width,
+            &section.items,
+        ));
+    }
+    let mut read: Vec<String> = Vec::new();
+    for path in sections.iter().flat_map(|section| &section.read) {
+        if !read.contains(path) {
+            read.push(path.clone());
+        }
+    }
+    if !read.is_empty() {
+        out.push(String::new());
+        let said = format!("Read from {}.", term_style::listed(&read));
+        for line in roko_cli::learn_view::paragraph(style, &said) {
+            let text = line.trim_start();
+            out.push(format!("  {}", style.paint(Role::Dim, text)));
+        }
+    }
+    out
+}
+
+/// When `timestamp` was, in the design system's §6.3 forms: `today 14:05`,
+/// `yesterday 09:12`, `28 Oct`.
+fn when(timestamp: chrono::DateTime<chrono::Utc>) -> String {
+    roko_cli::status_view::ago(
+        timestamp.timestamp_millis(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+/// A span of time in §6.3's forms: `19 Oct to 28 Oct`.
+fn span(
+    first: Option<chrono::DateTime<chrono::Utc>>,
+    last: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<String> {
+    let (first, last) = (when(first?), when(last?));
+    Some(if first == last {
+        first
+    } else {
+        format!("{first} to {last}")
+    })
+}
+
+/// What a try spent, in §6.3's form, or that its cost is unknown.
+fn spend(cost_usd: f64, input_tokens: u64, output_tokens: u64) -> String {
+    if display_cost(cost_usd, input_tokens, output_tokens) == "unknown" {
+        "cost unknown".to_string()
+    } else {
+        roko_cli::term_style::money(cost_usd)
+    }
 }
 
 /// The areas `roko learn [area]` shows one of, besides `all`.
@@ -1821,6 +1926,11 @@ fn push_compounding_window(
 /// for what it measures (gap-ea1576): the provider's prompt cache comes last,
 /// apart from roko's own learning, and a repeat-failure rate with no failure
 /// signature to match reads n/a.
+/// What the reuse part says (gap-ea1576, gap-cb1a87): over the latest
+/// episodes, how often a playbook matched and a lesson or playbook was used,
+/// how often a try passed its checks and its first model passed, repeat
+/// failures (n/a without failure signatures), the cost per success, and the
+/// provider's prompt cache, labelled as the provider's.
 fn format_compounding_metrics(
     metrics: &roko_learn::aggregate::AutocatalyticMetrics,
 ) -> Vec<String> {
@@ -1831,32 +1941,32 @@ fn format_compounding_metrics(
     } else {
         percent(metrics.error_dedup_rate)
     };
-    let rows = [
-        ("playbook matched:", percent(metrics.playbook_hit_rate)),
-        (
-            "lesson or playbook used:",
-            percent(metrics.knowledge_reuse_rate),
+    let over = if window == 1 {
+        "over the last episode:".to_string()
+    } else {
+        format!("over the last {window} episodes:")
+    };
+    vec![
+        over,
+        format!(
+            "a playbook matched {} · a lesson or playbook used {}",
+            percent(metrics.playbook_hit_rate),
+            percent(metrics.knowledge_reuse_rate)
         ),
-        ("passed its checks:", percent(metrics.gate_pass_rate)),
-        ("first model passed:", percent(metrics.routing_accuracy)),
-        ("repeat failures:", repeats),
-        (
-            "cost per success:",
-            format!("${:.4}", metrics.cost_per_success),
+        format!(
+            "passed its checks {} · the first model passed {}",
+            percent(metrics.gate_pass_rate),
+            percent(metrics.routing_accuracy)
         ),
-        (
-            "provider prompt cache:",
-            format!(
-                "{} hits (the provider's, not roko's)",
-                percent(metrics.cache_hit_rate)
-            ),
+        format!(
+            "repeat failures {repeats} · {} per success",
+            roko_cli::term_style::money(metrics.cost_per_success)
         ),
-    ];
-    let mut lines = vec![format!("  Compounding (last {window} episodes):")];
-    for (label, value) in rows {
-        lines.push(format!("    {label:<26}{value}"));
-    }
-    lines
+        format!(
+            "the provider's prompt cache: {} hits (the provider's, not roko's)",
+            percent(metrics.cache_hit_rate)
+        ),
+    ]
 }
 
 /// An episode log's episodes with the workspace's hindsight corrections
@@ -1900,13 +2010,13 @@ fn format_hindsight_lines(
         return Vec::new();
     }
     let mut lines = vec![format!(
-        "  Hindsight: {} correction(s), {applied} episode(s) relabeled",
+        "hindsight: {} correction(s), {applied} episode(s) relabeled",
         adjustments.len()
     )];
     for adjustment in adjustments.iter().rev().take(3) {
         lines.push(format!(
-            "    {} {:?} {}: {}",
-            adjustment.timestamp.to_rfc3339(),
+            "{} {:?} {}: {}",
+            when(adjustment.timestamp),
             adjustment.adjustment_kind,
             adjustment.original_episode_id,
             adjustment.reason
@@ -2177,16 +2287,17 @@ async fn collect_knowledge_json(workdir: &std::path::Path) -> LearnJsonKnowledge
         .unwrap_or_default()
 }
 
-pub(crate) fn print_learn_router(workdir: &std::path::Path) {
+/// The router's part of `roko learn` (gap-cb1a87): its observations and
+/// stage, whether the model ladder starts Graph tasks, and its outcomes by
+/// model.
+fn router_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Routing", ".roko/learn/cascade-router.json");
     let path = learn_router_path(workdir);
-    print_checked_path(&path);
-    if !path.exists() {
-        print_no_data(&path);
-        return;
-    }
     let Ok(content) = std::fs::read_to_string(&path) else {
-        println!("Cascade router: 0 entries at {}", path.display());
-        return;
+        section
+            .items
+            .push("no router state yet: it learns from each try's outcome".to_string());
+        return section;
     };
     let snapshot = serde_json::from_str::<LearnCascadeRouterSnapshot>(&content).unwrap_or_default();
     // Compare against the runtime wire slugs, not the config map keys.
@@ -2206,75 +2317,63 @@ pub(crate) fn print_learn_router(workdir: &std::path::Path) {
     } else {
         model_rows.iter().map(|row| row.trials).sum()
     };
-
-    let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
-    let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
-    for transition in &snapshot.stage_transitions {
-        first_seen = Some(match first_seen {
-            Some(current) => current.min(transition.timestamp.clone()),
-            None => transition.timestamp.clone(),
-        });
-        last_seen = Some(match last_seen {
-            Some(current) => current.max(transition.timestamp.clone()),
-            None => transition.timestamp.clone(),
-        });
-    }
-
-    let latest = snapshot.stage_transitions.last().map(|transition| {
-        format!(
-            "{} {} -> {} after {} observations",
-            transition.timestamp.to_rfc3339(),
-            transition.from,
-            transition.to,
-            transition.observations
-        )
-    });
-
     if total_observations == 0 && model_rows.is_empty() {
-        println!("Cascade router: 0 entries at {}", path.display());
-        return;
+        section
+            .items
+            .push("no observations yet: it learns from each try's outcome".to_string());
+        return section;
     }
-
-    println!(
-        "Cascade router: {} observations, {} models at {}",
-        total_observations,
-        model_rows.len(),
-        path.display()
-    );
+    let changes = snapshot.stage_transitions.len();
+    let latest = snapshot
+        .stage_transitions
+        .first()
+        .zip(snapshot.stage_transitions.last())
+        .map(|(first, last)| {
+            let last_change = format!(
+                "{}: {} to {} after {} observations",
+                when(last.timestamp),
+                last.from,
+                last.to,
+                last.observations
+            );
+            if changes == 1 {
+                format!("its stage change {last_change}")
+            } else {
+                format!(
+                    "{changes} stage changes since {}, the last {last_change}",
+                    when(first.timestamp)
+                )
+            }
+        });
     let ladder = roko_core::config::loader::load_config_unified(workdir)
         .map(|config| config.routing.ladder.enabled)
         .unwrap_or(true);
-    let range = latest
-        .is_some()
-        .then(|| format_range(first_seen, last_seen));
-    for line in router_detail_lines(total_observations, latest.zip(range), ladder, model_rows) {
-        println!("{line}");
-    }
+    section.items = router_detail_lines(total_observations, latest, ladder, model_rows);
+    section
 }
 
-/// The lines under the cascade router's header (gap-ea1576): its stage
-/// changes, `latest` with their range, when it recorded any, else its stage in
-/// words; whether the model ladder routes Graph tasks; and its outcomes by
-/// model, with the models it has none for on one line.
+/// What the router's part says (gap-ea1576, gap-cb1a87): its observations
+/// and its stage, the `latest` stage change when it recorded one, else its
+/// stage and when it moves on; whether the model ladder routes Graph tasks;
+/// and its outcomes by model, with the models it has none for on one line.
 fn router_detail_lines(
     total_observations: u64,
-    latest: Option<(String, String)>,
+    latest: Option<String>,
     ladder: bool,
     model_rows: Vec<LearnCascadeRouterModelRow>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some((latest, range)) = latest {
-        lines.push(format!("  Range: {range}"));
-        lines.push(format!("  Latest: {latest}"));
-    } else {
-        lines.push(format!(
-            "  Stage: {} (it moves to confidence at 50 observations and to UCB at 200)",
+    match latest {
+        Some(latest) => lines.push(format!("{total_observations} observations · {latest}")),
+        None => lines.push(format!(
+            "{total_observations} observations · {} (it moves to confidence at 50 \
+             observations and to UCB at 200)",
             cascade_stage_for_observations(total_observations)
-        ));
+        )),
     }
     if ladder {
         lines.push(
-            "  Graph tasks start on the model ladder's rung; the router's pick is recorded beside it"
+            "Graph tasks start on the model ladder's rung; the router's pick is recorded beside it"
                 .to_string(),
         );
     }
@@ -2285,67 +2384,62 @@ fn router_detail_lines(
     let (tried, untried): (Vec<_>, Vec<_>) = model_rows.into_iter().partition(|row| row.trials > 0);
     if !tried.is_empty() {
         let outcomes: u64 = tried.iter().map(|row| row.trials).sum();
-        lines.push(format!("  Outcomes by model ({outcomes} in all):"));
-        for row in &tried {
-            lines.push(format!(
-                "    {}: {} tries, {} passed",
-                label(row),
-                row.trials,
-                row.successes
-            ));
-        }
+        let rows: Vec<String> = tried
+            .iter()
+            .map(|row| {
+                format!(
+                    "{} {} tries, {} passed",
+                    label(row),
+                    row.trials,
+                    row.successes
+                )
+            })
+            .collect();
+        lines.push(format!("{outcomes} outcomes: {}", rows.join(" · ")));
     }
     if !untried.is_empty() {
         let names: Vec<String> = untried.iter().map(label).collect();
-        lines.push(format!("  No outcomes yet: {}", names.join(", ")));
+        lines.push(format!("no outcomes yet: {}", names.join(", ")));
     }
     lines
 }
 
-pub(crate) fn print_learn_experiments(workdir: &std::path::Path) {
-    // Prompt experiments
-    let prompt_path = learn_root(workdir).join("experiments.json");
-    print_checked_path(&prompt_path);
-    let prompt_store = ExperimentStore::load_or_new(&prompt_path);
-    let running = prompt_store.running_count();
-    let concluded = prompt_store.concluded_count();
-    if running > 0 || concluded > 0 {
-        println!(
-            "Prompt experiments: {} running, {} concluded",
-            running, concluded
-        );
-    } else if prompt_path.exists() {
-        println!("Prompt experiments: 0 entries at {}", prompt_path.display());
-    } else {
-        println!("Prompt experiments: none");
-    }
-
-    // Model experiments
+/// The experiments' part of `roko learn` (gap-cb1a87): the prompt and the
+/// model experiments, running and concluded, and each model experiment.
+fn experiments_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Experiments", ".roko/learn/experiments.json");
+    section
+        .read
+        .push(".roko/learn/model-experiments.json".to_string());
+    let prompt_store = ExperimentStore::load_or_new(&learn_root(workdir).join("experiments.json"));
+    let (running, concluded) = (prompt_store.running_count(), prompt_store.concluded_count());
     let model_path = learn_root(workdir).join("model-experiments.json");
-    print_checked_path(&model_path);
     let model_store = roko_learn::model_experiment::ModelExperimentStore::load_or_new(&model_path);
     let model_running = model_store.running_count();
     let model_concluded = model_store.concluded_experiments().len();
-    if model_running > 0 || model_concluded > 0 {
-        println!(
-            "Model experiments: {} running, {} concluded",
-            model_running, model_concluded
-        );
-        for exp in model_store.iter() {
-            println!(
-                "  {} [{:?}] role={} variants={} winner={}",
-                exp.experiment_id,
-                exp.status,
-                exp.role.as_deref().unwrap_or("any"),
-                exp.variants.len(),
-                exp.winner_id.as_deref().unwrap_or("-"),
-            );
+    let counts = |running: usize, concluded: usize| {
+        if running > 0 || concluded > 0 {
+            format!("{running} running, {concluded} concluded")
+        } else {
+            "none".to_string()
         }
-    } else if model_path.exists() {
-        println!("Model experiments: 0 entries at {}", model_path.display());
-    } else {
-        println!("Model experiments: none");
+    };
+    section.items.push(format!(
+        "prompt: {} · model: {}",
+        counts(running, concluded),
+        counts(model_running, model_concluded)
+    ));
+    for exp in model_store.iter() {
+        section.items.push(format!(
+            "{} ({:?}) for role {}: {} variants, winner {}",
+            exp.experiment_id,
+            exp.status,
+            exp.role.as_deref().unwrap_or("any"),
+            exp.variants.len(),
+            exp.winner_id.as_deref().unwrap_or("none yet"),
+        ));
     }
+    section
 }
 
 // ── Experiments subcommands ──────────────────────────────────────────
@@ -2656,40 +2750,33 @@ fn cmd_experiments_report(workdir: &std::path::Path, name: &str) -> Result<i32> 
 }
 
 #[allow(clippy::cast_precision_loss)]
-pub(crate) async fn print_learn_efficiency(workdir: &std::path::Path) {
+/// The efficiency log's part of `roko learn` (gap-cb1a87): how many events,
+/// over what span, the latest, and how many tie to a task.
+async fn efficiency_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Efficiency", ".roko/learn/efficiency.jsonl");
     let path = learn_efficiency_path(workdir);
-    print_checked_path(&path);
-    if !path.exists() {
-        print_no_data(&path);
-        return;
-    }
 
     // Audit #80 Step 6: one-shot migration — rewrite pre-P0-GA-1 entries
     // that erroneously stored gate_passed=false for successful tasks.
     // Safe to call repeatedly; already-patched entries are left unchanged.
-    match roko_learn::efficiency::null_ambiguous_gate_failed_entries(&path) {
-        Ok(0) => {}
-        Ok(n) => tracing::info!(
-            patched = n,
-            "efficiency.jsonl: nulled {n} ambiguous gate_passed=false entries (audit #80)"
-        ),
-        Err(err) => tracing::warn!(
-            error = %err,
-            "efficiency.jsonl: gate_passed migration failed (non-fatal)"
-        ),
+    if path.exists() {
+        match roko_learn::efficiency::null_ambiguous_gate_failed_entries(&path) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                patched = n,
+                "efficiency.jsonl: nulled {n} ambiguous gate_passed=false entries (audit #80)"
+            ),
+            Err(err) => tracing::warn!(
+                error = %err,
+                "efficiency.jsonl: gate_passed migration failed (non-fatal)"
+            ),
+        }
     }
 
-    let Ok(text) = tokio::fs::read_to_string(&path).await else {
-        println!("Efficiency: 0 entries at {}", path.display());
-        return;
-    };
-
-    let mut count = 0usize;
+    let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
-    let mut latest: Option<String> = None;
     let mut events = Vec::new();
-
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -2700,96 +2787,80 @@ pub(crate) async fn print_learn_efficiency(workdir: &std::path::Path) {
         else {
             continue;
         };
-
-        count += 1;
-        let parsed_timestamp = parse_rfc3339_utc(&event.timestamp);
-        if let Some(timestamp) = parsed_timestamp {
-            first_seen = Some(match first_seen {
-                Some(current) => current.min(timestamp),
-                None => timestamp,
-            });
-            last_seen = Some(match last_seen {
-                Some(current) => current.max(timestamp),
-                None => timestamp,
-            });
+        if let Some(timestamp) = parse_rfc3339_utc(&event.timestamp) {
+            first_seen = Some(first_seen.map_or(timestamp, |current| current.min(timestamp)));
+            last_seen = Some(last_seen.map_or(timestamp, |current| current.max(timestamp)));
         }
-
-        let timestamp = parsed_timestamp
-            .map(|ts| ts.to_rfc3339())
-            .unwrap_or_else(|| event.timestamp.clone());
-        let model = efficiency_model_label(&event);
-        let task_id = non_empty_or_unknown(&event.task_id);
-        let plan_id = non_empty_or_unknown(&event.plan_id);
-        let status = match event.gate_passed {
-            Some(true) => "pass",
-            Some(false) => "fail",
-            None => "?",
-        };
-        latest = Some(format!(
-            "{timestamp} model={model} task={task_id} plan={plan_id} {status} cost={}",
-            display_cost_precise(event.cost_usd, event.input_tokens, event.output_tokens)
-        ));
         events.push(event);
     }
-
-    if count == 0 {
-        println!("Efficiency: 0 entries at {}", path.display());
-    } else {
-        println!("Efficiency: {} events at {}", count, path.display());
+    let Some(latest) = events.last() else {
+        section
+            .items
+            .push("no events yet: each try records what it spent".to_string());
+        return section;
+    };
+    let mut head = roko_cli::term_style::plural(events.len(), "event", "events");
+    if let Some(span) = span(first_seen, last_seen) {
+        head = format!("{head}, {span}");
     }
-    println!("  Range: {}", format_range(first_seen, last_seen));
-    println!("  Latest: {}", latest.unwrap_or_else(|| "none".to_string()));
+    section.items.push(head);
+    let at = parse_rfc3339_utc(&latest.timestamp).map_or_else(|| latest.timestamp.clone(), when);
+    let status = match latest.gate_passed {
+        Some(true) => "passed",
+        Some(false) => "failed",
+        None => "no check",
+    };
+    section.items.push(format!(
+        "latest: {at}, {} on {} task {}, {status}, {}",
+        efficiency_model_label(latest),
+        non_empty_or_unknown(&latest.plan_id),
+        non_empty_or_unknown(&latest.task_id),
+        spend(latest.cost_usd, latest.input_tokens, latest.output_tokens)
+    ));
     if let Some(summary) = attempt_correlation_summary(&events) {
-        println!("{summary}");
+        section.items.push(summary);
     }
+    section
 }
 
-pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
+/// The episode log's parts of `roko learn` (gap-cb1a87): the episodes, how
+/// many, over what span, the latest and the hindsight corrections; then how
+/// often the latest of them reused what roko learned.
+async fn episodes_sections(workdir: &std::path::Path) -> Vec<LearnSection> {
     let exact_path = learn_episodes_path(workdir);
     let path = roko_learn::runtime_feedback::resolve_project_episode_path(workdir);
-    print_checked_path(&exact_path);
-    if path != exact_path && path.exists() {
-        println!("  legacy fallback: {}", path.display());
-    }
-    if !path.exists() {
-        print_no_data(&path);
-        return;
-    }
-
-    let Ok(text) = tokio::fs::read_to_string(&path).await else {
-        println!("Episodes: 0 entries at {}", path.display());
-        return;
+    let read = if path != exact_path && path.exists() {
+        path.strip_prefix(workdir)
+            .unwrap_or(&path)
+            .display()
+            .to_string()
+    } else {
+        ".roko/episodes.jsonl".to_string()
     };
-
-    let mut count = 0usize;
+    let mut section = LearnSection::new("Episodes", &read);
+    let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
-    let mut latest: Option<String> = None;
     let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
     let AdjustedEpisodes {
         episodes,
         adjustments,
         applied,
     } = AdjustedEpisodes::parse(workdir, &text);
-
+    let count = episodes.len();
+    let mut latest = None;
     for episode in episodes {
-        count += 1;
-        first_seen = Some(match first_seen {
-            Some(current) => current.min(episode.timestamp.clone()),
-            None => episode.timestamp.clone(),
-        });
-        last_seen = Some(match last_seen {
-            Some(current) => current.max(episode.timestamp.clone()),
-            None => episode.timestamp.clone(),
-        });
-
-        let status = if episode.success { "pass" } else { "fail" };
-        let model = non_empty_or_unknown(&episode.model);
-        let task_id = non_empty_or_unknown(&episode.task_id);
+        first_seen =
+            Some(first_seen.map_or(episode.timestamp, |current| current.min(episode.timestamp)));
+        last_seen =
+            Some(last_seen.map_or(episode.timestamp, |current| current.max(episode.timestamp)));
         latest = Some(format!(
-            "{} model={model} task={task_id} {status} cost={}",
-            episode.timestamp.to_rfc3339(),
-            display_cost_precise(
+            "latest: {}, {} on task {}, {}, {}",
+            when(episode.timestamp),
+            non_empty_or_unknown(&episode.model),
+            non_empty_or_unknown(&episode.task_id),
+            if episode.success { "passed" } else { "failed" },
+            spend(
                 episode.usage.cost_usd,
                 episode.usage.input_tokens,
                 episode.usage.output_tokens
@@ -2797,56 +2868,62 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
         ));
         push_compounding_window(&mut window, episode);
     }
-
-    if count == 0 {
-        println!("Episodes: 0 entries at {}", path.display());
-    } else {
-        println!("Episodes: {} entries at {}", count, path.display());
-    }
-    println!("  Range: {}", format_range(first_seen, last_seen));
-    println!("  Latest: {}", latest.unwrap_or_else(|| "none".to_string()));
-    for line in format_hindsight_lines(&adjustments, applied) {
-        println!("{line}");
-    }
-    if count > 0 {
-        let metrics = roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window));
-        for line in format_compounding_metrics(&metrics) {
-            println!("{line}");
-        }
-    }
-}
-
-pub(crate) fn print_learn_gate_thresholds(workdir: &std::path::Path) {
-    let path = learn_gate_thresholds_path(workdir);
-    print_checked_path(&path);
-    if !path.exists() {
-        println!("Gate thresholds: 0 entries at {}", path.display());
-        return;
-    }
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        println!("Gate thresholds: 0 entries at {}", path.display());
-        return;
+    let Some(latest) = latest else {
+        section
+            .items
+            .push("no episodes yet: each try is one".to_string());
+        return vec![section];
     };
-    let count = count_gate_threshold_entries(&content);
-    println!("Gate thresholds: {} entries at {}", count, path.display());
+    let mut head = roko_cli::term_style::plural(count, "episode", "episodes");
+    if let Some(span) = span(first_seen, last_seen) {
+        head = format!("{head}, {span}");
+    }
+    section.items.push(head);
+    section.items.push(latest);
+    section
+        .items
+        .extend(format_hindsight_lines(&adjustments, applied));
+    let metrics = roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window));
+    let reuse = LearnSection {
+        label: "Reuse",
+        items: format_compounding_metrics(&metrics),
+        read: Vec::new(),
+    };
+    vec![section, reuse]
 }
 
-pub(crate) async fn print_learn_knowledge(workdir: &std::path::Path) {
-    let path = learn_knowledge_path(workdir);
-    print_checked_path(&path);
-    if !path.exists() {
-        print_no_data(&path);
-        return;
-    }
+/// The gate thresholds' part of `roko learn` (gap-cb1a87): how many there
+/// are.
+fn thresholds_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Thresholds", ".roko/learn/gate-thresholds.json");
+    let count = std::fs::read_to_string(learn_gate_thresholds_path(workdir))
+        .map(|content| count_gate_threshold_entries(&content))
+        .unwrap_or(0);
+    section.items.push(if count == 0 {
+        "none tuned yet".to_string()
+    } else {
+        format!(
+            "{} tuned",
+            roko_cli::term_style::plural(count, "gate threshold", "gate thresholds")
+        )
+    });
+    section
+}
+
+/// The knowledge store's part of `roko learn` (gap-cb1a87): live and
+/// retired lessons, by tier and by source, those at confidence 0, and the
+/// average confidence.
+async fn knowledge_section(workdir: &std::path::Path) -> LearnSection {
+    let mut section = LearnSection::new("Knowledge", ".roko/neuro/knowledge.jsonl");
     let stats = match roko_neuro::KnowledgeStore::for_workdir(workdir).read_all() {
         Ok(entries) if !entries.is_empty() => LearnJsonKnowledge::of(&entries),
         Ok(_) => {
-            println!("Knowledge: 0 entries at {}", path.display());
-            return;
+            section.items.push("no lessons yet".to_string());
+            return section;
         }
         Err(error) => {
-            println!("Knowledge: unreadable at {}: {error:#}", path.display());
-            return;
+            section.items.push(format!("unreadable: {error:#}"));
+            return section;
         }
     };
     let counts = |counts: &std::collections::BTreeMap<String, usize>| {
@@ -2857,42 +2934,51 @@ pub(crate) async fn print_learn_knowledge(workdir: &std::path::Path) {
             .join(", ")
     };
     // Retired entries are no knowledge retrieval returns (gap-ea1576).
-    println!(
-        "Knowledge: {} live, {} retired, at {}",
-        stats.live_entries,
-        stats.retired_entries,
-        path.display()
+    let mut head = format!(
+        "{} live, {} retired",
+        stats.live_entries, stats.retired_entries
     );
+    if let Some(confidence) = stats.average_confidence {
+        head = format!("{head} · average confidence {confidence:.3}");
+    }
+    section.items.push(head);
     if !stats.by_tier.is_empty() {
-        println!("  by tier: {}", counts(&stats.by_tier));
+        section
+            .items
+            .push(format!("by tier: {}", counts(&stats.by_tier)));
     }
     if !stats.by_source.is_empty() {
-        println!("  by source: {}", counts(&stats.by_source));
+        section
+            .items
+            .push(format!("by source: {}", counts(&stats.by_source)));
     }
     if stats.zero_confidence_entries > 0 {
-        println!(
-            "  at confidence 0: {} (retrieval skips them on keyword relevance)",
+        section.items.push(format!(
+            "at confidence 0: {} (retrieval skips them on keyword relevance)",
             stats.zero_confidence_entries
-        );
+        ));
     }
-    if let Some(confidence) = stats.average_confidence {
-        println!("  average confidence: {confidence:.3}");
-    }
+    section
 }
 
 async fn cmd_learn_reflexes(workdir: &std::path::Path) -> Result<i32> {
-    print_learn_reflexes(workdir);
-    Ok(EXIT_SUCCESS)
+    cmd_learn(workdir, "reflexes").await
 }
 
 const REFLEX_DISPLAY_LIMIT: usize = 5;
 
-fn print_learn_reflexes(workdir: &std::path::Path) {
+/// The reflexes' part of `roko learn` (gap-cb1a87): the rules, their top
+/// ones by hits, and the recent demotions.
+fn reflexes_section(workdir: &std::path::Path) -> LearnSection {
     let rules = reflex_store_snapshot(workdir);
     let demotions = recent_reflex_demotions(workdir);
     let enabled = roko_core::config::loader::load_config_unified(workdir)
         .is_ok_and(|config| config.learning.t0_reflexes);
-    print!("{}", format_reflexes_human(&rules, &demotions, enabled));
+    LearnSection {
+        label: "Reflexes",
+        items: format_reflexes_human(&rules, &demotions, enabled),
+        read: vec![".roko/learn/reflexes.jsonl".to_string()],
+    }
 }
 
 fn reflex_store_snapshot(workdir: &std::path::Path) -> Vec<roko_learn::reflex_store::ReflexRule> {
@@ -2916,61 +3002,59 @@ fn recent_reflex_demotions(
         .collect()
 }
 
+/// What the reflexes' part says (gap-ea1576, gap-cb1a87): the rules and
+/// their cap, that the path is off when `[learning] t0_reflexes` is, the top
+/// rules by hits, and the recent demotions.
 fn format_reflexes_human(
     rules: &[roko_learn::reflex_store::ReflexRule],
     demotions: &[roko_learn::efficiency::AgentEfficiencyEvent],
     enabled: bool,
-) -> String {
-    use std::fmt::Write as _;
-
-    let mut output = String::new();
-    let _ = writeln!(
-        output,
-        "T0 Reflex Store — {} rules (max {})",
-        rules.len(),
+) -> Vec<String> {
+    let count = format!(
+        "{} (max {})",
+        roko_cli::term_style::plural(rules.len(), "rule", "rules"),
         roko_learn::reflex_store::MAX_RULES,
     );
-
+    let mut items = Vec::new();
     if rules.is_empty() && !enabled {
         // Runs add no rule while the path is off (gap-ea1576).
-        let _ = writeln!(
-            output,
-            "  (off: [learning] t0_reflexes is false, so runs add no rules)"
-        );
+        items.push(format!(
+            "{count} · off: [learning] t0_reflexes is false, so runs add no rules"
+        ));
     } else if rules.is_empty() {
-        let _ = writeln!(output, "  (no rules yet; runs add them as tasks pass)");
+        items.push(format!(
+            "{count} · no rules yet; runs add them as tasks pass"
+        ));
     } else {
-        let _ = writeln!(output, "\nTop rules by hit count:");
+        items.push(format!("{count}, the top ones by hits:"));
         for (index, rule) in rules.iter().take(REFLEX_DISPLAY_LIMIT).enumerate() {
-            let _ = writeln!(
-                output,
-                "  {}. [{:.0}% conf, {} hits] {:?} → {} {}",
+            items.push(format!(
+                "{}. {:.0}% confident, {} hits: {:?} → {} {}",
                 index + 1,
                 rule.confidence * 100.0,
                 rule.hit_count,
                 rule.condition.tool.as_deref().unwrap_or("*"),
                 rule.action.tool,
                 rule.action.args,
-            );
+            ));
         }
     }
-
-    let _ = writeln!(output, "\nRecent demotions:");
     if demotions.is_empty() {
-        let _ = writeln!(output, "  (none)");
+        items.push("recent demotions: none".to_string());
     } else {
+        items.push("recent demotions:".to_string());
         for event in demotions {
-            let _ = writeln!(
-                output,
-                "  {} plan={} task={} attempt={}",
-                event.timestamp,
+            let at =
+                parse_rfc3339_utc(&event.timestamp).map_or_else(|| event.timestamp.clone(), when);
+            items.push(format!(
+                "{at}: plan {} task {} try {}",
                 non_empty_or_unknown(&event.plan_id),
                 non_empty_or_unknown(&event.task_id),
                 non_empty_or_unknown(&event.attempt_id),
-            );
+            ));
         }
     }
-    output
+    items
 }
 
 fn learn_root(workdir: &std::path::Path) -> std::path::PathBuf {
@@ -3462,10 +3546,6 @@ fn count_gate_threshold_entries(content: &str) -> usize {
         .map_or(0, |rungs| rungs.len())
 }
 
-fn print_checked_path(path: &std::path::Path) {
-    println!("  path: {}", path.display());
-}
-
 fn print_no_data(path: &std::path::Path) {
     println!("No data at {}", path.display());
 }
@@ -3523,8 +3603,7 @@ fn attempt_correlation_summary(
         .count();
 
     Some(format!(
-        "  Attempt correlation: {} events with task_id, {} gate failures linked",
-        events_with_task_id, linked_gate_failures
+        "{events_with_task_id} events with a task, {linked_gate_failures} gate failures linked"
     ))
 }
 
@@ -3910,12 +3989,11 @@ mod tests {
         assert_eq!(
             router,
             [
-                "  Stage: static (it moves to confidence at 50 observations and to UCB at 200)",
-                "  Graph tasks start on the model ladder's rung; the router's pick is recorded beside it",
-                "  Outcomes by model (32 in all):",
-                "    gpt-5.4-mini: 22 tries, 21 passed",
-                "    gpt-5.4: 10 tries, 9 passed",
-                "  No outcomes yet: claude-sonnet-4-6, glm-4.7 (unavailable)",
+                "25 observations · static (it moves to confidence at 50 observations and to UCB \
+                 at 200)",
+                "Graph tasks start on the model ladder's rung; the router's pick is recorded beside it",
+                "32 outcomes: gpt-5.4-mini 22 tries, 21 passed · gpt-5.4 10 tries, 9 passed",
+                "no outcomes yet: claude-sonnet-4-6, glm-4.7 (unavailable)",
             ]
         );
 
@@ -3930,8 +4008,8 @@ mod tests {
         assert_eq!(metrics.failure_signatures, 0);
         let lines = format_compounding_metrics(&metrics);
         assert!(
-            lines.contains(
-                &"    repeat failures:          n/a (no failure signatures recorded)".to_string()
+            lines.iter().any(
+                |line| line.starts_with("repeat failures n/a (no failure signatures recorded)")
             ),
             "{lines:#?}"
         );
@@ -3942,13 +4020,106 @@ mod tests {
             "{lines:#?}"
         );
 
-        let off = format_reflexes_human(&[], &[], false);
+        let off = format_reflexes_human(&[], &[], false).join("\n");
         assert!(
             off.contains("t0_reflexes is false, so runs add no rules"),
             "{off}"
         );
-        let on = format_reflexes_human(&[], &[], true);
+        let on = format_reflexes_human(&[], &[], true).join("\n");
         assert!(on.contains("no rules yet"), "{on}");
+    }
+
+    /// gap-cb1a87: `roko learn all` reads like the rest of roko: the header
+    /// with what it covers, a label for each part with its facts beside it,
+    /// times as the design system's §6.3 gives them, and no absolute path:
+    /// the files the parts read close the view, relative to the workspace.
+    #[tokio::test]
+    async fn learn_all_reads_like_roko() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let learn = root.join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("the learn directory");
+        std::fs::write(
+            learn.join("cascade-router.json"),
+            serde_json::json!({
+                "model_slugs": ["gpt-5.4"],
+                "confidence_stats": {"gpt-5.4": {"trials": 10, "successes": 9}},
+                "total_observations": 25,
+            })
+            .to_string(),
+        )
+        .expect("the router");
+        let event = |task: &str, passed: bool| {
+            let mut event = roko_learn::efficiency::AgentEfficiencyEvent::default();
+            event.timestamp = "2026-10-28T11:09:22.325032+00:00".to_string();
+            event.task_id = task.to_string();
+            event.plan_id = "p5-the-sound".to_string();
+            event.model = "gpt-5.4".to_string();
+            event.gate_passed = Some(passed);
+            event.cost_usd = 0.1018;
+            event.input_tokens = 1_000;
+            event.output_tokens = 100;
+            serde_json::to_string(&event).expect("an event") + "\n"
+        };
+        std::fs::write(
+            learn.join("efficiency.jsonl"),
+            event("T1", false) + &event("T1", true),
+        )
+        .expect("the efficiency log");
+        let mut episode = roko_learn::episode_logger::Episode::new("agent", "T1");
+        episode.success = true;
+        episode.model = "gpt-5.4".to_string();
+        std::fs::write(
+            root.join(".roko/episodes.jsonl"),
+            serde_json::to_string(&episode).expect("an episode") + "\n",
+        )
+        .expect("the episode log");
+
+        let mut sections = vec![router_section(root), experiments_section(root)];
+        sections.push(efficiency_section(root).await);
+        sections.extend(episodes_sections(root).await);
+        sections.push(reflexes_section(root));
+        sections.push(thresholds_section(root));
+        sections.push(knowledge_section(root).await);
+        let style = roko_cli::term_style::Style::plain();
+        let text = learn_lines("all", &sections, style).join("\n");
+
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("◆ roko  learn"), "{text}");
+        assert_eq!(
+            lines.next(),
+            Some("  what roko has learned in this workspace, from its runs"),
+            "{text}"
+        );
+        assert_eq!(lines.next(), Some(""), "{text}");
+        for (label, says) in [
+            ("Routing", "25 observations · static"),
+            ("Experiments", "prompt: none · model: none"),
+            ("Efficiency", "2 events, 28 Oct"),
+            ("Episodes", "1 episode, just now"),
+            ("Reuse", "over the last episode:"),
+            ("Reflexes", "0 rules (max "),
+            ("Thresholds", "none tuned yet"),
+            ("Knowledge", "no lessons yet"),
+        ] {
+            let line = format!("  {label:<11}  {says}");
+            assert!(text.contains(&line), "{line:?} in {text}");
+        }
+        assert!(
+            text.contains("latest: 28 Oct, gpt-5.4 on p5-the-sound task T1, passed, $0.10"),
+            "{text}"
+        );
+        assert!(!text.contains("+00:00"), "{text}");
+        assert!(!text.contains(&root.display().to_string()), "{text}");
+        assert!(
+            text.ends_with(
+                "\n\n  Read from .roko/learn/cascade-router.json, .roko/learn/experiments.json, \
+                 .roko/learn/model-experiments.json, .roko/learn/efficiency.jsonl, \
+                 .roko/episodes.jsonl, .roko/learn/reflexes.jsonl, \
+                 .roko/learn/gate-thresholds.json and .roko/neuro/knowledge.jsonl."
+            ),
+            "{text}"
+        );
     }
 
     /// bug-808700: the learn views read beside the roko serve that holds the
@@ -4221,21 +4392,6 @@ mod tests {
     }
 
     #[test]
-    fn display_cost_precise_uses_unknown_for_zero_usage() {
-        assert_eq!(display_cost_precise(0.0, 0, 0), "unknown");
-    }
-
-    #[test]
-    fn display_cost_precise_shows_zero_for_reported_free_usage() {
-        assert_eq!(display_cost_precise(0.0, 2, 3), "$0.0000");
-    }
-
-    #[test]
-    fn display_cost_precise_shows_formatted_value() {
-        assert_eq!(display_cost_precise(1.42, 7, 9), "$1.4200");
-    }
-
-    #[test]
     fn attempt_correlation_summary_counts_only_attempted_events() {
         let mut success = roko_learn::efficiency::AgentEfficiencyEvent::default();
         success.task_id = "task-1".into();
@@ -4253,7 +4409,7 @@ mod tests {
 
         assert_eq!(
             summary.as_deref(),
-            Some("  Attempt correlation: 2 events with task_id, 1 gate failures linked")
+            Some("2 events with a task, 1 gate failures linked")
         );
     }
 
@@ -4311,7 +4467,10 @@ mod tests {
         assert_eq!(json["compounding"]["playbook_hit_rate"], 0.25);
         assert!(json["compounding"]["cost_per_success"].is_number());
         let human = format_compounding_metrics(&episodes.compounding);
-        assert_eq!(human[1], "    playbook matched:         25.0%");
+        assert_eq!(
+            human[1],
+            "a playbook matched 25.0% · a lesson or playbook used 25.0%"
+        );
     }
 
     /// gap-5be28d: a success that a later verify failure was blamed on
@@ -4352,7 +4511,7 @@ mod tests {
         let human = format_hindsight_lines(&adjustments, 1);
         assert_eq!(
             human[0],
-            "  Hindsight: 1 correction(s), 1 episode(s) relabeled"
+            "hindsight: 1 correction(s), 1 episode(s) relabeled"
         );
         assert!(human[1].contains("Regression"), "{human:?}");
     }

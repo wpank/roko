@@ -21,6 +21,7 @@ use roko_learn::loop_audit::ledger::{CanaryRow, LoopAuditRow};
 use roko_learn::loop_audit::{LoopAuditor, Registry, census};
 
 use crate::loop_canary::DryCanaryRunner;
+use crate::term_style::{self, Role, Style};
 
 /// The exit code of a `fault` the build or the environment cannot run.
 pub const EXIT_NO_FAULTS: i32 = 2;
@@ -210,7 +211,7 @@ fn break_loop(
 ///
 /// Returns an error when the workspace's loop-registry override or its
 /// config does not load.
-pub fn loops_output(workdir: &Path, json: bool) -> anyhow::Result<String> {
+pub fn loops_output(workdir: &Path, json: bool, style: Style) -> anyhow::Result<String> {
     let registry = Registry::load(workdir).context("load the loop registry")?;
     let config = roko_core::config::loader::load_config_unified(workdir)
         .context("load the workspace config for [learning.audit]")?;
@@ -218,15 +219,31 @@ pub fn loops_output(workdir: &Path, json: bool) -> anyhow::Result<String> {
     let audit = &config.learning.audit;
     let report = census::run_audited(workdir, &registry, sha.as_deref(), audit);
     if json {
-        Ok(census::render_json(&report)?)
-    } else {
-        // One plain line first, then the table (gap-2e6afb).
-        Ok(format!(
-            "{}\n\n{}",
-            census::render_summary(&report, audit.n_beta),
-            census::render_text(&report)
-        ))
+        return Ok(census::render_json(&report)?);
     }
+    // In roko's design system (gap-cb1a87): the header, one plain line
+    // (gap-2e6afb), then the table, its header faint.
+    let mut out = term_style::header(
+        style,
+        "learn loops",
+        "the learning loops roko keeps, and what its runs measure of each",
+    );
+    out.extend(crate::learn_view::paragraph(
+        style,
+        &census::render_summary(&report, audit.n_beta),
+    ));
+    out.push(String::new());
+    for (index, line) in census::render_text(&report).lines().enumerate() {
+        let line = if index == 0 {
+            style.paint(Role::Dim, line)
+        } else {
+            line.to_string()
+        };
+        out.push(format!("  {line}"));
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -259,7 +276,7 @@ mod tests {
         copy_tree(&fixture, &temp.path().join(".roko"));
         let workdir = temp.path();
 
-        let printed = loops_output(workdir, true).expect("the census");
+        let printed = loops_output(workdir, true, Style::plain()).expect("the census");
         let registry = Registry::load(workdir).expect("the registry");
         let sha = census::harness_sha(workdir);
         let config = roko_core::config::loader::load_config_unified(workdir).expect("the config");
@@ -274,13 +291,15 @@ mod tests {
             Some("dormant:no_learning")
         );
 
-        let table = loops_output(workdir, false).expect("the table");
-        // The summary line, a blank line, the header and one line per loop (gap-2e6afb).
-        assert_eq!(table.lines().count(), registry.loops().len() + 3, "{table}");
+        let table = loops_output(workdir, false, Style::plain()).expect("the table");
+        // roko's header and its context, a blank line, the summary line, a blank line, the
+        // table's header and one line per loop (gap-2e6afb, gap-cb1a87).
+        assert!(table.starts_with("◆ roko  learn loops\n"), "{table}");
+        assert_eq!(table.lines().count(), registry.loops().len() + 6, "{table}");
         assert!(
             table
                 .lines()
-                .any(|line| line.starts_with("L-linucb") && line.contains("dormant:no_learning")),
+                .any(|line| line.starts_with("  L-linucb") && line.contains("dormant:no_learning")),
             "{table}"
         );
     }
@@ -301,9 +320,10 @@ mod tests {
         let sha = census::harness_sha(workdir);
         let report = census::run_audited(workdir, &registry, sha.as_deref(), audit);
 
-        let text = loops_output(workdir, false).expect("the census");
-        let mut lines = text.lines();
-        let summary = lines.next().expect("a summary line");
+        let text = loops_output(workdir, false, Style::plain()).expect("the census");
+        // After roko's header, its context and a blank line (gap-cb1a87).
+        let mut lines = text.lines().skip(3);
+        let summary = lines.next().expect("a summary line").trim_start();
         assert_eq!(summary, census::render_summary(&report, audit.n_beta));
         let loops = registry.loops().len();
         assert!(
@@ -316,20 +336,21 @@ mod tests {
         assert!(
             lines
                 .next()
-                .is_some_and(|header| header.starts_with("loop ")),
+                .is_some_and(|header| header.starts_with("  loop ")),
             "{text}"
         );
 
         let empty = tempfile::tempdir().expect("tempdir");
-        let text = loops_output(empty.path(), false).expect("the census of no runs");
-        let summary = text.lines().next().expect("a summary line");
+        let text =
+            loops_output(empty.path(), false, Style::plain()).expect("the census of no runs");
+        let summary = text.lines().nth(3).expect("a summary line").trim_start();
         assert!(
             summary.starts_with(&format!(
                 "{loops} loops: 0 measured, 0 with a judged benefit; "
             )),
             "{summary}"
         );
-        let json = loops_output(empty.path(), true).expect("the census as JSON");
+        let json = loops_output(empty.path(), true, Style::plain()).expect("the census as JSON");
         assert!(json.trim_start().starts_with('{'), "{json}");
     }
 
@@ -458,7 +479,7 @@ mod tests {
         .expect("write roko.toml");
         write_knowledge_run(workdir, "gr-ca63ee", 150);
 
-        let printed = loops_output(workdir, true).expect("the census");
+        let printed = loops_output(workdir, true, Style::plain()).expect("the census");
         let parsed: serde_json::Value = serde_json::from_str(&printed).expect("JSON");
         let rows = parsed["rows"].as_array().expect("the census rows");
         let know = rows
@@ -508,7 +529,7 @@ mod tests {
         std::fs::write(workdir.join("roko.toml"), toml).expect("write roko.toml");
         write_knowledge_run(workdir, "gr-1ee8c4", 150);
 
-        let printed = loops_output(workdir, true).expect("the census");
+        let printed = loops_output(workdir, true, Style::plain()).expect("the census");
         let parsed: serde_json::Value = serde_json::from_str(&printed).expect("JSON");
         let rows = parsed["rows"].as_array().expect("the census rows");
         let know = rows
@@ -524,11 +545,11 @@ mod tests {
         let eps = measured["eps"]["est"].as_f64().expect("ε̂");
         let iota = measured["iota_net"].as_f64().expect("ι_net");
 
-        let table = loops_output(workdir, false).expect("the table");
+        let table = loops_output(workdir, false, Style::plain()).expect("the table");
         // The header follows the summary line (gap-2e6afb).
         let header = table
             .lines()
-            .find(|line| line.starts_with("loop "))
+            .find(|line| line.starts_with("  loop "))
             .expect("a header");
         assert!(
             header.contains("n_L/n_D") && header.contains("β [LCB, UCB]"),
@@ -536,7 +557,7 @@ mod tests {
         );
         let line = table
             .lines()
-            .find(|line| line.starts_with("L-know "))
+            .find(|line| line.starts_with("  L-know "))
             .unwrap_or_else(|| panic!("an L-know line: {table}"));
         let columns = [
             "measured".to_string(),
@@ -551,10 +572,10 @@ mod tests {
 
         // With S03's N_β = 200, the line says why β waits.
         std::fs::remove_file(workdir.join("roko.toml")).expect("remove roko.toml");
-        let table = loops_output(workdir, false).expect("the table");
+        let table = loops_output(workdir, false, Style::plain()).expect("the table");
         let line = table
             .lines()
-            .find(|line| line.starts_with("L-know "))
+            .find(|line| line.starts_with("  L-know "))
             .unwrap_or_else(|| panic!("an L-know line: {table}"));
         assert!(line.ends_with("not judged (n_below_n_beta)"), "{line:?}");
     }

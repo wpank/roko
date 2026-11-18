@@ -3402,6 +3402,11 @@ pub struct CheckpointInspection {
     /// Spend reserved for attempts that never settled. A resume settles it
     /// as the attempts a stopped process left (bug-b7f6a8).
     pub reserved_micro_usd: Option<u64>,
+    /// What the attempts in flight had spent, in millionths of one USD, as
+    /// the same commit records their holds: each one's finished calls, less
+    /// those `spent_micro_usd` holds already (bug-80c642). The two together
+    /// count each call once, whether or not its attempt has settled.
+    pub held_micro_usd: Option<u64>,
     /// Task nodes whose output this run recorded in its Activity log, each
     /// with the gate verdict of its latest record. A record a resume refused
     /// does not count.
@@ -3466,13 +3471,30 @@ pub fn inspect_canonical_checkpoint(
     }
     let manifest = read_manifest(&paths.manifest)?;
     // The cost a resume takes: what the generation committed, or the ledger's
-    // own before generations.
+    // own before generations, with what the holds of the same commit spent
+    // (bug-80c642).
+    let held = |holds: &[CommittedHold]| {
+        holds
+            .iter()
+            .map(CommittedHold::unbooked_micro_usd)
+            .fold(0_u64, u64::saturating_add)
+    };
     let cost = match &manifest.committed {
-        Some(committed) => Some((committed.spent_micro_usd, committed.reserved_micro_usd)),
+        Some(committed) => Some((
+            committed.spent_micro_usd,
+            committed.reserved_micro_usd,
+            held(&committed.holds),
+        )),
         None => std::fs::read(&paths.costs)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok())
-            .map(|ledger| (ledger.spent_micro_usd, ledger.reserved_micro_usd)),
+            .map(|ledger| {
+                (
+                    ledger.spent_micro_usd,
+                    ledger.reserved_micro_usd,
+                    held(&ledger.holds),
+                )
+            }),
     };
     let recorded = match counted_records(
         &paths.activities,
@@ -3501,8 +3523,9 @@ pub fn inspect_canonical_checkpoint(
     Ok(Some(CheckpointInspection {
         recorded,
         replaced_at_ms: latest_archive_ms(&paths),
-        spent_micro_usd: cost.map(|(spent, _)| spent),
-        reserved_micro_usd: cost.map(|(_, reserved)| reserved),
+        spent_micro_usd: cost.map(|(spent, _, _)| spent),
+        reserved_micro_usd: cost.map(|(_, reserved, _)| reserved),
+        held_micro_usd: cost.map(|(_, _, held)| held),
         invalidated_on_resume,
         manifest,
         paths,

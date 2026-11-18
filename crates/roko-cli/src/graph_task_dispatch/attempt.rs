@@ -2559,11 +2559,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             .await
             .expect("the verified attempt passes");
 
-        // The calls' costs, in the order the hub published them, and where
-        // the attempt's settlement came.
+        // The calls' costs, in the order the hub published them, where the
+        // attempt's settlement came, and its cost row, whether the
+        // settlement had come yet.
         let mut calls = Vec::new();
         let mut reasoning = Vec::new();
         let mut settled_after = None;
+        let mut cost_row = None;
         while let Ok(envelope) = events.try_recv() {
             match envelope.payload {
                 DashboardEvent::CallCost {
@@ -2600,6 +2602,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                     reasoning.push((reasoning_tokens, finish_reason));
                 }
                 DashboardEvent::AttemptSettled { .. } => settled_after = Some(calls.len()),
+                DashboardEvent::EfficiencyEvent {
+                    metric,
+                    attempt,
+                    value,
+                    ..
+                } if metric == "cost_usd" => {
+                    cost_row = Some((attempt, value, settled_after.is_some()));
+                }
                 _ => {}
             }
         }
@@ -2608,6 +2618,17 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             settled_after,
             Some(3),
             "every call's cost came before the try settled"
+        );
+        // bug-80c642: the try's cost row names it and comes before its
+        // settlement, so that a reader of the hub's events moves the try's
+        // spend from its calls to its cost at one event, and counts it once.
+        let (attempt, value, after_settled) = cost_row.expect("the try's cost row");
+        assert_eq!(attempt, Some(1), "the cost row names its try");
+        assert!(!after_settled, "the try's cost row came before it settled");
+        let so_far = calls.last().map(|call| call.4).expect("the try's calls");
+        assert!(
+            (value - so_far).abs() < 1e-6,
+            "the try cost ${value}; its calls ${so_far}"
         );
         assert_eq!(
             reasoning,

@@ -2141,8 +2141,8 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     // The first time any row carries: a Graph run has no start event of its own.
     let mut first_time = None;
     // A running try's model calls as they return (gap-5c3347): what each
-    // attempt's priced calls have cost so far, until it settles and its own
-    // records count it.
+    // attempt's priced calls have cost so far, until its own records count
+    // it: its cost row, or its `attempt_settled` (bug-80c642).
     let mut live_calls = BTreeMap::<(String, String, u64), f64>::new();
     let mut settled = BTreeSet::<(String, String, u64)>::new();
     // The calls each try's provider refused before it failed over. They are
@@ -2185,6 +2185,19 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
         if kind == "efficiency_event" {
             efficiency.add(value);
+            // A try's cost row names the try, and roko publishes it before the
+            // try's `attempt_settled`: from it, the try's cost counts in place
+            // of its calls, so the run's spend neither doubles nor drops
+            // between the two (bug-80c642).
+            if let Some(("cost_usd", _)) = efficiency_metric(value)
+                && let (Some(plan_id), Some(task_id), Some(attempt)) = (
+                    event_plan_id(value),
+                    event_task_id(value),
+                    event_attempt(value),
+                )
+            {
+                settled.insert((plan_id.to_string(), task_id.to_string(), attempt));
+            }
             if let Some((metric, amount)) = efficiency_metric(value)
                 && side_call_role(metric) == Some(FAILOVER_REFUSED_SIDE_CALL)
                 && let (Some(plan_id), Some(task_id)) = (event_plan_id(value), event_task_id(value))
@@ -3555,6 +3568,52 @@ mod tests {
         let ended = summary(&rows);
         assert!((cost(&ended, "cost_usd") - 0.05).abs() < 1e-9, "{ended}");
         assert!(cost(&ended, "live_cost_usd").abs() < 1e-9, "{ended}");
+    }
+
+    /// bug-80c642: a try counts once as it settles. roko publishes the try's
+    /// cost row, which names it, before its `attempt_settled`; from that row
+    /// the summary counts the try's cost in place of its calls, so the run's
+    /// spend neither doubles nor drops between the two.
+    #[test]
+    fn a_settling_try_counts_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let cost_row = |task: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"metric":"cost_usd","value":value});
+        let call = |task: &str, call: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"call":call,"model":"glm-4.7","input_tokens":1000,"output_tokens":100,"cost_usd":0.01,"attempt_cost_usd":so_far});
+        let settled = |task: &str| json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"verdict":"passed"});
+        let spent = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            let metrics = summarize_events(&page.events)["metrics"].clone();
+            metrics["cost_usd"].as_f64().expect("cost_usd")
+        };
+
+        // T1 settled at $0.02; T2's try has made two calls, $0.03 so far.
+        let mut rows = vec![
+            call("T1", 1, 0.01),
+            call("T1", 2, 0.02),
+            cost_row("T1", 0.02),
+            settled("T1"),
+            call("T2", 1, 0.01),
+            call("T2", 2, 0.03),
+        ];
+        let mut seen = vec![spent(&rows)];
+        // T2's cost row, then its settlement.
+        rows.push(cost_row("T2", 0.03));
+        seen.push(spent(&rows));
+        rows.push(settled("T2"));
+        seen.push(spent(&rows));
+        assert!(seen.iter().all(|usd| (usd - 0.05).abs() < 1e-9), "{seen:?}");
     }
 
     /// gap-1430ea: a side call's event names the try that made it, and the

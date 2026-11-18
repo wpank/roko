@@ -149,19 +149,27 @@ impl PlanStatus {
         }
         if let Some(readings) = readings {
             // The plan's own checks count once its check reports; a plan
-            // with none written has the one its delivery ran.
+            // with none written has the one its delivery ran. Until the
+            // delivery records the check, the check's end says how it went
+            // (bug-80c642).
             let checks = self
                 .delivery
                 .as_ref()
                 .map_or(&[][..], |delivery| delivery.checks.as_slice());
-            let own = if checks.is_empty() {
+            let ended = report
+                .plan_check_finished
+                .as_ref()
+                .filter(|check| checks.is_empty() && check.over);
+            let own = if checks.is_empty() && ended.is_none() {
                 readings.plan_checks
             } else {
                 readings.plan_checks.max(1)
             };
             let all = readings.checks_total - readings.plan_checks + own;
-            let own_passed =
-                !checks.is_empty() && checks.iter().all(|check| check.exit_code == Some(0));
+            let own_passed = match ended {
+                Some(check) => check.passed,
+                None => !checks.is_empty() && checks.iter().all(|check| check.exit_code == Some(0)),
+            };
             let passed = readings.checks_passed + if own_passed { own } else { 0 };
             if all > 0 {
                 parts.push(format!(
@@ -291,7 +299,9 @@ mod tests {
         TelemetryWriter, TelemetryWriterConfig, VerifyStepVerdict,
     };
 
-    use crate::graph_checkpoint::start_plan_checkpoint;
+    use crate::graph_checkpoint::{
+        CommittedHold, GraphCostLedgerCheckpoint, start_plan_checkpoint,
+    };
     use crate::runner::plan_loader::Plan;
     use crate::task_parser::TasksFile;
 
@@ -478,6 +488,21 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         String,
         crate::workspace_lock::WorkspaceLockGuard,
     ) {
+        let (workspace, run_id, lock, _ledger) = run_with_ledger(passed, status);
+        (workspace, run_id, lock)
+    }
+
+    /// [`run_of`], with the run's cost ledger, which commits to its
+    /// checkpoint as the run's own does.
+    fn run_with_ledger(
+        passed: &[&str],
+        status: GraphCheckpointStatus,
+    ) -> (
+        tempfile::TempDir,
+        String,
+        crate::workspace_lock::WorkspaceLockGuard,
+        GraphCostLedgerCheckpoint,
+    ) {
         let workspace = tempfile::tempdir().expect("tempdir");
         let root = workspace.path();
         let dir = root.join("plans/demo");
@@ -500,10 +525,8 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
             recorder.record("demo", task, 0, output).expect("record");
         }
         drop(recorder);
-        checkpoint
-            .take_cost_ledger()
-            .persist(150_000, 0, Vec::new())
-            .expect("cost ledger");
+        let ledger = checkpoint.take_cost_ledger();
+        ledger.persist(150_000, 0, Vec::new()).expect("cost ledger");
         checkpoint
             .finish_with_status(status)
             .expect("commit the checkpoint");
@@ -525,7 +548,7 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         writer.close();
         let lock = crate::workspace_lock::acquire_runner_lock(&root.join(".roko"))
             .expect("the runner lock");
-        (workspace, run_id, lock)
+        (workspace, run_id, lock, ledger)
     }
 
     /// bug-addd24: while the run goes, a task whose try started reads
@@ -625,17 +648,26 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         event("plan_check_finished");
         let text = text_of(&status_of(root).await);
         assert!(!text.contains("checking"), "{text}");
+        // bug-80c642: until its delivery is recorded, the check that passed
+        // reads passed, and CHECKS counts it.
+        let check = row(&text, "plan check");
+        assert!(check.contains("✓ plan check"), "{text}");
+        assert!(check.contains("grep -q parser README.md"), "{text}");
+        let readings = text.lines().nth(2).expect("the readings line");
+        assert!(readings.ends_with(" · 4/4 checks"), "{text}");
     }
 
     /// gap-9bfb4e, bug-7a62d9: the header gives the run's four readings as the glass
     /// does, by the rule every surface shares: its tasks; TIME from the run's
     /// start, when roko accepted it; SPENT, which counts what an open try has
-    /// spent so far (its latest call), of the run's cap; and CHECKS, every
-    /// check the plan has, fixed from the start, of which those passed. Once
-    /// the run ends, TIME is its `run_completed.duration_ms`.
+    /// spent so far (its calls, as the cost ledger commits them), of the
+    /// run's cap; and CHECKS, every check the plan has, fixed from the start,
+    /// of which those passed. Once the run ends, TIME is its
+    /// `run_completed.duration_ms`.
     #[tokio::test]
     async fn plan_status_reads_like_the_glass() {
-        let (workspace, run_id, _lock) = running_run(&["T1"]);
+        let (workspace, run_id, _lock, ledger) =
+            run_with_ledger(&["T1"], GraphCheckpointStatus::Running);
         let root = workspace.path();
         let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
         let now = chrono::Utc::now().timestamp_millis();
@@ -671,7 +703,17 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
         index(serde_json::json!({
             "type": "plan_set_loaded", "plans": [], "run_id": run_id, "ts_millis": now - 125_400,
         }));
-        for (call, cost) in [(1, 0.31), (2, 0.69)] {
+        // Each call's cost: the ledger commits what the try has spent, then
+        // the hub hears of the call.
+        for (call, cost, spent_micro_usd) in [(1, 0.31, 310_000), (2, 0.69, 690_000)] {
+            let hold = CommittedHold {
+                attempt_key: Some(key.attempt_key()),
+                spent_micro_usd,
+                ..CommittedHold::default()
+            };
+            ledger
+                .persist(150_000, spent_micro_usd, vec![hold])
+                .expect("cost ledger");
             index(serde_json::json!({
                 "type": "call_cost", "plan_id": "demo", "task_id": "T2", "attempt": 1,
                 "call": call, "cost_usd": 0.3, "attempt_cost_usd": cost, "run_id": run_id,
@@ -706,6 +748,93 @@ verify = [{ phase = "usage", command = "grep -q parser README.md" }]
             readings, "  3/3 tasks · 6m 19s · $0.15 · 3/3 checks",
             "{text}"
         );
+    }
+
+    /// bug-80c642: SPENT never falls as a try settles. Replayed in the order
+    /// a run commits them: each of T2's model calls (the cost ledger commits
+    /// what the try has spent, then the hub hears of the call), the ledger
+    /// settling the try's spend as its agent's call ends, its verdict line
+    /// once its checks pass, then its cost row and `attempt_settled`. SPENT
+    /// counts T2 once at each: it grows with its calls and holds as it
+    /// settles.
+    #[tokio::test]
+    async fn plan_status_spent_never_falls_as_a_try_settles() {
+        let (workspace, run_id, _lock, ledger) =
+            run_with_ledger(&["T1"], GraphCheckpointStatus::Running);
+        let root = workspace.path();
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let paths = crate::runner::persist::PersistPaths::from_workdir(root).expect("paths");
+        let index = |event: serde_json::Value| {
+            crate::runner::persist::append_run_index_event(&paths, &run_id, &event, true)
+                .expect("append to the run's event index");
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let key = AttemptKey::new(run_id.as_str(), "demo", "T2", 1);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(AttemptOpenRecord::new(
+            AttemptIdentity::new(&key),
+            now - 40_000
+        )));
+        writer.close();
+        let hold = |spent_micro_usd| CommittedHold {
+            attempt_key: Some(key.attempt_key()),
+            spent_micro_usd,
+            ..CommittedHold::default()
+        };
+        let call = |call: u32, so_far: f64| {
+            serde_json::json!({
+                "type": "call_cost", "plan_id": "demo", "task_id": "T2", "attempt": 1,
+                "call": call, "cost_usd": 0.02, "attempt_cost_usd": so_far, "run_id": run_id,
+                "ts_millis": now,
+            })
+        };
+        let spent = |text: String| {
+            text.lines()
+                .nth(2)
+                .and_then(|readings| readings.split(" · ").find(|part| part.starts_with('$')))
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("no SPENT: {text}"))
+        };
+        let mut seen = Vec::new();
+
+        // T2's two calls.
+        ledger
+            .persist(150_000, 20_000, vec![hold(10_000)])
+            .expect("cost ledger");
+        index(call(1, 0.01));
+        seen.push(spent(text_of(&status_of(root).await)));
+        ledger
+            .persist(150_000, 50_000, vec![hold(30_000)])
+            .expect("cost ledger");
+        index(call(2, 0.03));
+        seen.push(spent(text_of(&status_of(root).await)));
+        // Its agent's call ends: the ledger settles what the try spent, while
+        // its checks run.
+        ledger.persist(180_000, 0, Vec::new()).expect("cost ledger");
+        seen.push(spent(text_of(&status_of(root).await)));
+        // Its checks pass: its verdict line closes the try.
+        let mut verdict =
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), AttemptOutcome::Passed, true);
+        verdict.cost.billed_usd = Some(0.03);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(verdict));
+        writer.close();
+        seen.push(spent(text_of(&status_of(root).await)));
+        // The hub hears its cost, then its settlement.
+        index(serde_json::json!({
+            "type": "efficiency_event", "plan_id": "demo", "task_id": "T2", "attempt": 1,
+            "metric": "cost_usd", "value": 0.03, "run_id": run_id, "ts_millis": now,
+        }));
+        index(serde_json::json!({
+            "type": "attempt_settled", "plan_id": "demo", "task_id": "T2", "attempt": 1,
+            "settled": { "verdict": "passed", "cost_usd": 0.03 }, "run_id": run_id,
+            "ts_millis": now,
+        }));
+        seen.push(spent(text_of(&status_of(root).await)));
+
+        assert_eq!(seen, ["$0.16", "$0.18", "$0.18", "$0.18", "$0.18"]);
     }
 
     /// The records roko keeps of writing plan `demo` before it ran: the

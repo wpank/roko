@@ -13,8 +13,11 @@ updated = 2026-11-18
 last_verified = 2026-11-18
 source = "round v8 guide-v8: phase 7.3's terminal capture (run 0d8e8a2c), frames 02:55:21-02:55:31 UTC and 02:58:45"
 discovered_from = "agent:guide-v8 (round v8)"
-anchors = ["crates/roko-cli/src/commands/diagnose.rs::RunReadings", "crates/roko-cli/src/graph_checkpoint.rs::CommittedHold"]
+anchors = ["crates/roko-cli/src/commands/diagnose.rs::RunReadings", "crates/roko-cli/src/graph_checkpoint.rs::CommittedHold", "crates/roko-cli/src/graph_task_dispatch/budget.rs::AttemptHold", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-serve/src/routes/runs.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-7a62d9", "gap-9bfb4e", "bug-addd24"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn plan_status_spent_never_falls_as_a_try_settles' crates/roko-cli/src && grep -rqw 'fn a_settling_try_counts_once' crates/roko-serve/src && cargo test -p roko-cli --lib -- plan_status_spent_never_falls_as_a_try_settles plan_status_shows_what_is_running a_plan_without_a_ceiling_commits_its_attempts_spend_too a_running_try_reports_its_spend_per_model_call && cargo test -p roko-serve --lib -- a_settling_try_counts_once"
 +++
 
 ## Problem
@@ -53,7 +56,11 @@ Goal tooling. SPENT should only grow while a run goes. A figure that falls makes
 
 - `crates/roko-cli/src/commands/diagnose.rs::run_readings`: committed spend plus the open tries' live cost.
 - The checkpoint's committed holds (`graph_checkpoint.rs::CommittedHold`), which record each open attempt's finished
-  calls, and the order of the try's ledger commit and its verdict.
+  calls, and the order of the try's ledger commit and its verdict. A plan without a ceiling kept no holds
+  (`graph_task_dispatch/budget.rs::try_reserve`), so its checkpoint had no record of a try's calls before it settled.
+- `crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback`: the try's `cost_usd` row went out after its
+  `attempt_settled` and named no try. roko serve's run summary (`routes/runs.rs::summarize_events`) and the portal
+  dropped the try's calls at `attempt_settled` and added its cost a moment later (2 ms in 7.4's run).
 
 ## Plan
 
@@ -65,4 +72,5 @@ Goal tooling. SPENT should only grow while a run goes. A figure that falls makes
 
 ## Done when
 
-A replay of 7.3's commits shows SPENT never falling. No [[verify]] yet; it comes with the fix.
+A replay of 7.3's commits shows SPENT never falling, the hub's events count a settling try once, and the plan check
+reads as it ended until its delivery is recorded; the `[[verify]]` passes.

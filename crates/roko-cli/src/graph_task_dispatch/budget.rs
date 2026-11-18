@@ -186,9 +186,9 @@ struct PlanBudgetState {
     /// The ceiling the operator raised the plan's to during its run (`roko
     /// plan budget raise`, backlog 2118), kept in its `costs.json`.
     raised_ceiling_micro_usd: Option<u64>,
-    /// The attempts in flight under a ceiling, by hold id: what each holds of
-    /// `reserved_micro_usd`, and what its model calls cost so far
-    /// (bug-4fabd0).
+    /// The attempts in flight, by hold id: what each holds of
+    /// `reserved_micro_usd` under a ceiling (bug-4fabd0), nothing without
+    /// one, and what its model calls cost so far (bug-80c642).
     holds: HashMap<u64, AttemptHold>,
     /// The attempt key of each hold whose attempt has opened (bug-b7f6a8).
     hold_attempts: HashMap<u64, String>,
@@ -440,6 +440,10 @@ struct AttemptHold {
     /// the dispatches failover settled as refused (bug-8bcd98). A resume after
     /// a crash charges the attempt only for the rest (bug-b7f6a8).
     booked_micro_usd: u64,
+    /// Its plan has no ceiling to enforce: it holds nothing back and only
+    /// keeps what its calls cost, which the checkpoint commits with each
+    /// call (bug-80c642).
+    tracks_only: bool,
 }
 
 /// A raise of a plan's budget ceiling that the plan ledger applied (backlog
@@ -783,6 +787,25 @@ impl GraphPlanBudgetLedger {
                 Some(reserved_micro_usd)
             }
         };
+        // Without a ceiling to enforce, the attempt's hold reserves nothing:
+        // it keeps what its calls cost, so the checkpoint commits that with
+        // each call and then the settled spend in its place, in one commit.
+        // A reader of the checkpoint then counts each call once, whether or
+        // not the attempt has settled (bug-80c642), and a resume after a
+        // crash settles what the attempt spent (bug-b7f6a8).
+        if hold.is_none() {
+            let id = self
+                .next_hold
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            state.holds.insert(
+                id,
+                AttemptHold {
+                    tracks_only: true,
+                    ..AttemptHold::default()
+                },
+            );
+            hold = Some(id);
+        }
         drop(plans);
 
         Ok(GraphPlanBudgetReservation {
@@ -953,9 +976,10 @@ impl GraphPlanBudgetLedger {
         state.admit_call(hold, policy)?;
         // The call goes ahead: the checkpoint records it in flight, at what
         // it is expected to cost, so that a crash during it is charged
-        // (bug-b7f6a8).
+        // (bug-b7f6a8). Without a ceiling to enforce, a crash is charged for
+        // the calls that finished alone (bug-80c642).
         let costliest = state.costliest_call_micro_usd;
-        let Some(held) = state.holds.get_mut(&hold) else {
+        let Some(held) = state.holds.get_mut(&hold).filter(|held| !held.tracks_only) else {
             return Ok(());
         };
         held.in_flight = true;
@@ -989,10 +1013,15 @@ impl GraphPlanBudgetLedger {
         held.called = true;
         held.in_flight = false;
         held.in_flight_micro_usd = 0;
-        let kept = held.reserved_micro_usd.clamp(
-            held.spent_micro_usd,
-            held.spent_micro_usd.saturating_add(cost_micro_usd),
-        );
+        // A hold without a ceiling to enforce holds nothing back (bug-80c642).
+        let kept = if held.tracks_only {
+            0
+        } else {
+            held.reserved_micro_usd.clamp(
+                held.spent_micro_usd,
+                held.spent_micro_usd.saturating_add(cost_micro_usd),
+            )
+        };
         let before = std::mem::replace(&mut held.reserved_micro_usd, kept);
         state.reserved_micro_usd = state
             .reserved_micro_usd
@@ -1090,8 +1119,8 @@ impl GraphPlanBudgetLedger {
 pub(super) struct GraphPlanBudgetReservation<'a> {
     ledger: &'a GraphPlanBudgetLedger,
     plan_id: String,
-    /// The attempt's hold on the plan budget; `None` without a ceiling to
-    /// hold against.
+    /// The attempt's hold on the plan budget, which holds nothing back
+    /// without a ceiling to enforce (bug-80c642).
     hold: Option<u64>,
     policy: GraphPlanBudgetPolicy,
     routing_budget_micro_usd: Option<u64>,
@@ -1105,8 +1134,9 @@ impl GraphPlanBudgetReservation<'_> {
     }
 
     /// What the attempt may spend on its model calls, which its agent's tool
-    /// loop asks before each one (bug-4fabd0); `None` without a ceiling.
-    /// `ledger` is the ledger this reservation was made in.
+    /// loop asks before each one (bug-4fabd0). Without a ceiling it refuses
+    /// no call and sets no limit, and keeps what the calls cost
+    /// (bug-80c642). `ledger` is the ledger this reservation was made in.
     pub(super) fn allowance(
         &self,
         ledger: &Arc<GraphPlanBudgetLedger>,
@@ -1917,6 +1947,88 @@ mod tests {
         assert!(settled["holds"].is_null());
         assert_eq!(settled["spent_micro_usd"], 82_000);
         assert_eq!(settled["reserved_micro_usd"], 0);
+    }
+
+    /// bug-80c642: a plan without a ceiling holds nothing back, but its
+    /// checkpoint still commits what each attempt in flight has spent, with
+    /// each call, and then the settled spend in its place, in one commit. A
+    /// reader of the checkpoint alone, the plan's settled spend and each
+    /// hold's, counts every call once, and the figure never falls.
+    #[test]
+    fn a_plan_without_a_ceiling_commits_its_attempts_spend_too() {
+        let dir = tempdir().expect("tempdir");
+        let mut graph = roko_graph::Graph::new(roko_graph::GraphMetadata {
+            name: "plan-a".to_string(),
+            ..roko_graph::GraphMetadata::default()
+        });
+        graph
+            .add_node(roko_graph::Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
+            })
+            .expect("node");
+        let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "plan-a",
+            1,
+            &graph,
+            false,
+            false,
+        )
+        .expect("checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        let committed = || -> serde_json::Value {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
+                    .expect("parse manifest");
+            manifest["committed"].clone()
+        };
+        // What the checkpoint says the plan spent: its settled spend and what
+        // its holds' calls cost.
+        let spent = || {
+            let committed = committed();
+            let held: u64 = committed["holds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|hold| {
+                    let micro = |field: &str| hold[field].as_u64().unwrap_or(0);
+                    micro("spent_micro_usd").saturating_sub(micro("booked_micro_usd"))
+                })
+                .sum();
+            committed["spent_micro_usd"].as_u64().expect("spent") + held
+        };
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        ledger
+            .attach_checkpoint("plan-a", checkpoint.take_cost_ledger())
+            .expect("attach the ledger");
+        let policy = GraphPlanBudgetPolicy::unlimited();
+        let reservation = ledger.reserve("plan-a", policy).expect("reserve");
+        let key = "run-1:plan-a:task-1:1";
+        reservation.bind_attempt(key);
+        let allowance = reservation
+            .allowance(&ledger)
+            .expect("the attempt's calls reach its hold");
+        let mut seen = vec![spent()];
+        for _ in 0..2 {
+            assert_eq!(allowance.refuse_call(), None, "nothing is held back");
+            allowance.record_call(0.041, true);
+            seen.push(spent());
+        }
+        assert_eq!(committed()["holds"][0]["attempt_key"], key);
+        assert_eq!(committed()["reserved_micro_usd"], 0, "nothing is reserved");
+        assert_eq!(allowance.spend_limit_usd(), None, "nothing limits it");
+        drop(allowance);
+        reservation.settle(0.082).expect("settle");
+        seen.push(spent());
+        assert!(committed()["holds"].is_null(), "{}", committed());
+        assert_eq!(seen, [0, 41_000, 82_000, 82_000]);
     }
 
     /// bug-b7f6a8 with bug-8bcd98: a crash books each call of a try once, at
@@ -3614,16 +3726,19 @@ exit 1
         assert!((limit(&first_allowance) - 0.70).abs() < 1e-9);
         assert!((limit(&second_allowance) - 0.90).abs() < 1e-9);
 
+        // A plan without a ceiling sets its attempts no limit (bug-80c642).
         let unlimited = ledger
             .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
             .expect("reservation");
-        assert!(unlimited.allowance(&ledger).is_none(), "nothing to limit");
+        let unlimited_calls = unlimited.allowance(&ledger).expect("its calls are kept");
+        assert_eq!(unlimited_calls.spend_limit_usd(), None, "nothing to limit");
         drop((first, second));
     }
 
     /// bug-4fabd0: a call with no price leaves the attempt's spend unknown,
     /// so its next call is refused, as a plan's is (decision 2110); a plan
-    /// without a ceiling holds nothing to ask.
+    /// without a ceiling has nothing to enforce, and refuses no call
+    /// (bug-80c642).
     #[test]
     fn an_unpriced_call_stops_its_attempt() {
         let ledger = Arc::new(GraphPlanBudgetLedger::default());
@@ -3640,7 +3755,9 @@ exit 1
         let unlimited = ledger
             .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
             .expect("reservation");
-        assert!(unlimited.allowance(&ledger).is_none());
+        let unlimited_calls = unlimited.allowance(&ledger).expect("its calls are kept");
+        unlimited_calls.record_call(0.0, false);
+        assert_eq!(unlimited_calls.refuse_call(), None);
     }
 
     /// A config whose one model, `api-model`, the OpenAI-compatible mock at

@@ -400,6 +400,35 @@ impl GraphTaskDispatcher {
                 }
             }
         }
+        // ── W05c: Publish token usage and cost to the TUI dashboard ──────
+        //
+        // `token_usage` and `efficiency_event("cost_usd")` feed the snapshot's
+        // per-agent counters and the overall `SnapshotStats` totals.  Kept
+        // outside the `if let Some(costs_path)` block below so they fire even
+        // when `.roko/learn/costs.jsonl` is not configured.  The fold in
+        // `DashboardSnapshot::apply` attributes the numbers to the agent that
+        // `forward_dispatch_events_to_tui` announced for the task, so publish
+        // after that call. The cost row names its try and comes before the
+        // try's `attempt_settled`, so a reader of the hub's events moves the
+        // try's spend from its calls to its cost at one event and counts it
+        // once (bug-80c642).
+        if let Some(tui) = &self.tui_bridge {
+            tui.token_usage(
+                &spec.plan_id,
+                &task.id,
+                tokens_in,
+                tokens_out,
+                u64::from(dispatch.result.usage.cache_read_tokens),
+                u64::from(dispatch.result.usage.cache_create_tokens),
+            );
+            tui.try_efficiency_event(
+                &spec.plan_id,
+                &task.id,
+                Some(settled.key().attempt),
+                "cost_usd",
+                cost_usd,
+            );
+        }
         self.publish_settlement(spec, task, settled).await;
         self.record_cli_turn_provenance(settled, dispatch).await;
 
@@ -602,27 +631,6 @@ impl GraphTaskDispatcher {
                     );
                 }
             }
-        }
-
-        // ── W05c: Publish token usage and cost to the TUI dashboard ──────
-        //
-        // `token_usage` and `efficiency_event("cost_usd")` feed the snapshot's
-        // per-agent counters and the overall `SnapshotStats` totals.  Kept
-        // outside the `if let Some(costs_path)` block above so they fire even
-        // when `.roko/learn/costs.jsonl` is not configured.  The fold in
-        // `DashboardSnapshot::apply` attributes the numbers to the agent that
-        // `forward_dispatch_events_to_tui` announced for the task, so publish
-        // after that call.
-        if let Some(tui) = &self.tui_bridge {
-            tui.token_usage(
-                &spec.plan_id,
-                &task.id,
-                tokens_in,
-                tokens_out,
-                u64::from(dispatch.result.usage.cache_read_tokens),
-                u64::from(dispatch.result.usage.cache_create_tokens),
-            );
-            tui.efficiency_event(&spec.plan_id, &task.id, "cost_usd", cost_usd);
         }
 
         // ── W07: Playbook outcome recording ──────────────────────────────

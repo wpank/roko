@@ -144,6 +144,11 @@ pub struct DiagnoseReport {
     /// Not in `--json`.
     #[serde(skip)]
     pub plan_check_running: Option<RunningPlanCheck>,
+    /// The plan check step the run finished last, while the run goes: until
+    /// its delivery records the check, nothing else says how it went
+    /// (bug-80c642). Not in `--json`.
+    #[serde(skip)]
+    pub plan_check_finished: Option<FinishedPlanCheck>,
     /// The run's readings, as every surface shows them (gap-9bfb4e); `None`
     /// for a report without a Graph run. Not in `--json`.
     #[serde(skip)]
@@ -366,6 +371,27 @@ pub struct RunningPlanCheck {
     pub command: String,
 }
 
+/// The plan check step the run finished last, from the run's event index,
+/// while the run goes and its delivery has not recorded the check
+/// (bug-80c642).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishedPlanCheck {
+    /// The step's command.
+    pub command: String,
+    /// How the step ended: passed, failed, or stopped.
+    pub state: RowState,
+    /// Why it failed or stopped, when it says.
+    pub reason: Option<String>,
+    /// How long the check's steps took so far.
+    pub elapsed: Duration,
+    /// The check is over: this was its last step, or a step that did not
+    /// pass, which ends it.
+    pub over: bool,
+    /// The check is over and every step passed: the plan's own checks
+    /// passed.
+    pub passed: bool,
+}
+
 /// A run's readings by the rule every surface shares, the design system's
 /// §4.8 (gap-9bfb4e): TIME, SPENT of its cap, and CHECKS. Its tasks are in
 /// the report's run state.
@@ -375,9 +401,10 @@ pub struct RunReadings {
     /// (`run_completed.duration_ms`), or until now while it runs; `None`
     /// when its event index does not say.
     pub time: Option<Duration>,
-    /// What its calls have cost so far: its committed spend and, while it
-    /// runs, what each try that has not settled has spent (its latest
-    /// `call_cost`). `None` when its cost ledger cannot be read.
+    /// What its calls have cost so far, as one commit of its checkpoint
+    /// records it: its settled spend and what each try in flight spent on
+    /// the calls that finished (bug-7a62d9, bug-80c642). `None` when its cost
+    /// ledger cannot be read.
     pub spent_usd: Option<f64>,
     /// What it may spend, when its manifest says.
     pub cap_usd: Option<f64>,
@@ -705,16 +732,16 @@ fn recorded_open_tries(
 }
 
 /// What a run's event index (`.roko/events-by-run/`) says of plan `plan_id`
-/// while and after it runs. Plan checks, calls and the run's end are
-/// lifecycle or prompt events there, flushed as they happen.
+/// while and after it runs. Plan checks and the run's end are lifecycle
+/// events there, flushed as they happen.
 #[derive(Debug, Default)]
 struct RunIndex {
     /// The plan check step started last, when no `plan_check_finished`
     /// followed it (bug-addd24).
     plan_check_running: Option<RunningPlanCheck>,
-    /// What each try has spent so far, by task and attempt: its latest
-    /// `call_cost`'s `attempt_cost_usd` (bug-7a62d9).
-    attempt_costs: BTreeMap<(String, u32), f64>,
+    /// The plan check step finished last, when no step started after it
+    /// (bug-80c642).
+    plan_check_finished: Option<FinishedPlanCheck>,
     /// When this process's part of the run started: its first event, after
     /// the run's last `run_completed` when an earlier process ended (a
     /// resume).
@@ -737,13 +764,15 @@ impl RunIndex {
             return index;
         };
         let mut ended = false;
+        // Whether the plan check's steps so far passed, and how long they
+        // took.
+        let (mut steps_passed, mut steps_ms) = (true, 0_u64);
         for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
             if index.started_ms.is_none() {
                 index.started_ms = ts_millis(&line);
             }
             let interesting = [
                 "\"plan_check_",
-                "\"call_cost\"",
                 "\"run_completed\"",
                 "\"spec_gate_started\"",
                 "\"plan_set_loaded\"",
@@ -769,20 +798,43 @@ impl RunIndex {
                 }
                 _ if event["plan_id"].as_str() != Some(plan_id) => {}
                 Some("plan_check_started") => {
+                    if event["step"].as_u64().is_none_or(|step| step <= 1) {
+                        (steps_passed, steps_ms) = (true, 0);
+                    }
+                    index.plan_check_finished = None;
                     index.plan_check_running = Some(RunningPlanCheck {
                         command: event["command"].as_str().unwrap_or_default().to_string(),
                     });
                 }
-                Some("plan_check_finished") => index.plan_check_running = None,
-                Some("call_cost") => {
-                    let task = event["task_id"].as_str().unwrap_or_default().to_string();
-                    let attempt = event["attempt"]
-                        .as_u64()
-                        .and_then(|attempt| u32::try_from(attempt).ok())
-                        .unwrap_or(0);
-                    if let Some(cost) = event["attempt_cost_usd"].as_f64() {
-                        index.attempt_costs.insert((task, attempt), cost);
-                    }
+                Some("plan_check_finished") => {
+                    // A failed step ends the check.
+                    let passed = event["passed"].as_bool() == Some(true);
+                    let last = !passed
+                        || event["step"]
+                            .as_u64()
+                            .zip(event["steps"].as_u64())
+                            .is_none_or(|(step, steps)| step >= steps);
+                    steps_passed &= passed;
+                    steps_ms = steps_ms.saturating_add(event["elapsed_ms"].as_u64().unwrap_or(0));
+                    let state = if passed {
+                        RowState::Passed
+                    } else if event["stopped_by"].is_string() {
+                        RowState::Stopped
+                    } else {
+                        RowState::Failed
+                    };
+                    index.plan_check_finished = Some(FinishedPlanCheck {
+                        command: index
+                            .plan_check_running
+                            .take()
+                            .map(|running| running.command)
+                            .unwrap_or_default(),
+                        state,
+                        reason: event["reason"].as_str().map(str::to_string),
+                        elapsed: Duration::from_millis(steps_ms),
+                        over: last,
+                        passed: last && steps_passed,
+                    });
                 }
                 _ => {}
             }
@@ -794,14 +846,13 @@ impl RunIndex {
 /// The run's readings by the rule every surface shares (gap-9bfb4e): TIME
 /// from the run's start, when roko accepted it, to its end
 /// (`run_completed.duration_ms`), or until now while it runs; SPENT, the
-/// run's committed spend and, while it runs, what each open try has spent so
-/// far; its cap, from its manifest; and its checks.
+/// run's settled spend and what its tries in flight have spent so far; its
+/// cap, from its manifest; and its checks.
 fn run_readings(
     workdir: &Path,
     checkpoint: &CheckpointInspection,
     definition: Option<&PlanDefinition>,
     tasks: &[TaskDiagnosis],
-    records: &RunRecords,
     index: &RunIndex,
     running: bool,
 ) -> RunReadings {
@@ -813,18 +864,12 @@ fn run_readings(
     } else {
         index.duration_ms.map(Duration::from_millis)
     };
-    let live_usd: f64 = if running {
-        records
-            .open_tries
-            .iter()
-            .filter_map(|(task, open)| index.attempt_costs.get(&(task.clone(), open.number)))
-            .sum()
-    } else {
-        0.0
-    };
+    // Both parts come from one commit of the checkpoint, which settles a
+    // try's spend as its agent's call ends, before its checks run and its
+    // verdict closes it: each call counts once, settled or not (bug-80c642).
     let spent_usd = checkpoint
         .spent_micro_usd
-        .map(|spent| micro_to_usd(spent) + live_usd);
+        .map(|spent| micro_to_usd(spent.saturating_add(checkpoint.held_micro_usd.unwrap_or(0))));
     let run_dir = RokoLayout::for_project(workdir).run_dir(&checkpoint.manifest.run_id);
     let cap_usd = roko_learn::telemetry::RunProvenanceManifest::load(&run_dir)
         .ok()
@@ -1143,7 +1188,6 @@ fn build_graph_report(
         checkpoint,
         definition.as_ref(),
         &tasks,
-        &records,
         &index,
         running,
     );
@@ -1187,6 +1231,7 @@ fn build_graph_report(
         total_cost_usd: collect_total_cost_usd(workdir, plan_id),
         plan_check_failure: crate::graph_checkpoint::recorded_plan_check_failure(workdir, plan_id),
         plan_check_running: index.plan_check_running.filter(|_| running),
+        plan_check_finished: index.plan_check_finished.filter(|_| running),
         readings: Some(readings),
     }
 }
@@ -2221,6 +2266,7 @@ fn build_legacy_report(
         total_cost_usd,
         plan_check_failure: None,
         plan_check_running: None,
+        plan_check_finished: None,
         readings: None,
     })
 }
@@ -2648,7 +2694,13 @@ pub fn render_lines(
             if all == 1 { "task" } else { "tasks" }
         ));
     }
-    if let Some(spent) = run.spent_usd {
+    // SPENT by the rule every surface shares (bug-80c642).
+    if let Some(spent) = report
+        .readings
+        .as_ref()
+        .and_then(|readings| readings.spent_usd)
+        .or(run.spent_usd)
+    {
         facts.push(term_style::money(spent));
     }
     let title = format!("diagnose {}", style.bold(&report.plan_id));
@@ -2861,6 +2913,17 @@ pub fn run_model(report: &DiagnoseReport, now: Instant) -> RunModel {
             RowState::Failed,
             Some(reason.clone()),
             None,
+        ));
+    } else if let Some(check) = &report.plan_check_finished {
+        // Until the delivery records the check, its last step says how it
+        // went (bug-80c642).
+        model.plan_checks.push(PlanCheckRow::recorded(
+            &report.plan_id,
+            "plan check",
+            &check.command,
+            check.state,
+            check.reason.clone(),
+            Some(check.elapsed),
         ));
     }
     model
@@ -3547,6 +3610,7 @@ warning: unused variable: `x`";
             total_cost_usd: None,
             plan_check_failure: None,
             plan_check_running: None,
+            plan_check_finished: None,
             readings: None,
         }
     }

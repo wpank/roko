@@ -550,12 +550,14 @@ impl RokoLayout {
     // ── I/O helpers ──────────────────────────────────────────────────────
 
     /// All top-level subdirectories that should exist for a working layout.
+    /// `.roko/plans/` is not one (bug-a1c99a): plans live in the workspace's
+    /// `plans/`, and the enrichment pipeline makes `.roko/plans/<plan>/` when
+    /// it writes there.
     #[must_use]
     pub fn top_level_dirs(&self) -> Vec<PathBuf> {
         vec![
             self.runtime_dir(),
             self.memory_dir(),
-            self.plans_dir(),
             self.runs_dir(),
             self.state_dir(),
             self.config_dir(),
@@ -882,13 +884,13 @@ mod tests {
     }
 
     #[test]
-    fn top_level_dirs_returns_eight() {
+    fn top_level_dirs_returns_seven() {
         let layout = RokoLayout::new("/tmp/.roko");
         let dirs = layout.top_level_dirs();
-        assert_eq!(dirs.len(), 8);
+        assert_eq!(dirs.len(), 7);
         assert!(dirs.contains(&PathBuf::from("/tmp/.roko/runtime")));
         assert!(dirs.contains(&PathBuf::from("/tmp/.roko/memory")));
-        assert!(dirs.contains(&PathBuf::from("/tmp/.roko/plans")));
+        assert!(!dirs.contains(&PathBuf::from("/tmp/.roko/plans")));
         assert!(dirs.contains(&PathBuf::from("/tmp/.roko/runs")));
         assert!(dirs.contains(&PathBuf::from("/tmp/.roko/state")));
         assert!(dirs.contains(&PathBuf::from("/tmp/.roko/config")));

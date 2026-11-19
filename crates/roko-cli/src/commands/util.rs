@@ -261,63 +261,10 @@ pub(crate) async fn cmd_init(
             .with_context(|| format!("create {}", extra.display()))?;
     }
 
-    let engrams_path = roko_dir.join("engrams.jsonl");
-    if !engrams_path.exists() {
-        // Migrate from legacy name if present, but only rows that parse as
-        // Engram.  Non-Engram rows (e.g. GateVerdict) stay in signals.jsonl
-        // to avoid schema-mixing in the engram store.
-        let legacy = roko_dir.join("signals.jsonl");
-        if legacy.exists() {
-            let content = tokio::fs::read_to_string(&legacy)
-                .await
-                .with_context(|| format!("read legacy {}", legacy.display()))?;
-
-            let mut signal_lines = Vec::new();
-            let mut kept_lines = Vec::new();
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if serde_json::from_str::<roko_core::Signal>(trimmed).is_ok() {
-                    signal_lines.push(line.to_string());
-                } else {
-                    kept_lines.push(line.to_string());
-                }
-            }
-
-            // Write valid signal rows to engrams.jsonl.
-            if signal_lines.is_empty() {
-                tokio::fs::write(&engrams_path, b"")
-                    .await
-                    .with_context(|| format!("create {}", engrams_path.display()))?;
-            } else {
-                let mut out = signal_lines.join("\n");
-                out.push('\n');
-                tokio::fs::write(&engrams_path, out.as_bytes())
-                    .await
-                    .with_context(|| {
-                        format!("write migrated engrams to {}", engrams_path.display())
-                    })?;
-            }
-
-            // If all rows migrated, remove the legacy file; otherwise leave
-            // the non-Engram rows in place for the gate-verdicts migration.
-            if kept_lines.is_empty() {
-                let _ = tokio::fs::remove_file(&legacy).await;
-            } else {
-                let mut remainder = kept_lines.join("\n");
-                remainder.push('\n');
-                tokio::fs::write(&legacy, remainder.as_bytes())
-                    .await
-                    .with_context(|| format!("rewrite non-Engram rows to {}", legacy.display()))?;
-            }
-        } else {
-            tokio::fs::write(&engrams_path, b"")
-                .await
-                .with_context(|| format!("create {}", engrams_path.display()))?;
-        }
-    }
+    // The signal log is `signals.jsonl` (bug-a1c99a). A workspace an older
+    // roko made may keep it as `engrams.jsonl`, which the log reads only while
+    // `signals.jsonl` is absent: it moves into `signals.jsonl`.
+    ensure_signal_log(&roko_dir).await?;
 
     let demo_config = if let Some(options) = &options {
         // The template is checked like `roko config validate` before it is
@@ -433,6 +380,49 @@ pub(crate) async fn cmd_init(
          Tip:  roko serve  — prints a portal URL with a one-time token so you can open the UI instantly",
     );
 
+    Ok(())
+}
+
+/// Give the workspace whose state is `roko_dir` its signal log,
+/// `signals.jsonl` (bug-a1c99a), empty when it has none. A legacy
+/// `engrams.jsonl` moves into it: its rows go first, then those the log
+/// holds already, which are newer, and the old file goes. The log is
+/// replaced whole, through a temporary file, so a stop part way leaves it as
+/// it was or with every row.
+async fn ensure_signal_log(roko_dir: &Path) -> Result<()> {
+    let log = roko_dir.join("signals.jsonl");
+    let legacy = roko_dir.join("engrams.jsonl");
+    if !legacy.exists() {
+        if !log.exists() {
+            tokio::fs::write(&log, b"")
+                .await
+                .with_context(|| format!("create {}", log.display()))?;
+        }
+        return Ok(());
+    }
+    let mut rows = tokio::fs::read_to_string(&legacy)
+        .await
+        .with_context(|| format!("read the legacy signal log {}", legacy.display()))?;
+    if log.exists() {
+        let current = tokio::fs::read_to_string(&log)
+            .await
+            .with_context(|| format!("read the signal log {}", log.display()))?;
+        if !rows.is_empty() && !rows.ends_with('\n') {
+            rows.push('\n');
+        }
+        rows.push_str(&current);
+    }
+    let staged = roko_dir.join("signals.jsonl.migrating");
+    tokio::fs::write(&staged, rows.as_bytes())
+        .await
+        .with_context(|| format!("write {}", staged.display()))?;
+    tokio::fs::rename(&staged, &log)
+        .await
+        .with_context(|| format!("move {} to {}", staged.display(), log.display()))?;
+    tokio::fs::remove_file(&legacy)
+        .await
+        .with_context(|| format!("remove the legacy signal log {}", legacy.display()))?;
+    println!("moved {} into {}", legacy.display(), log.display());
     Ok(())
 }
 

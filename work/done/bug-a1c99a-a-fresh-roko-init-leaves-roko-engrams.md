@@ -2,7 +2,7 @@
 id = "bug-a1c99a"
 kind = "bug"
 title = "A fresh roko init leaves .roko/engrams.jsonl and .roko/plans/, so roko doctor warns about both, and its fix is roko init"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/init"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
-last_verified_rev = "befee2f9b"
+last_verified_rev = "b395e783c"
 source = "docs sweep on branch work/readme-v8, checked with roko at befee2f9b (2026-11-19)"
 anchors = ["crates/roko-cli/src/commands/util.rs::cmd_init", "crates/roko-fs/src/layout.rs::top_level_dirs", "crates/roko-cli/src/doctor.rs::check_plans_dir_conflict", "crates/roko-fs/src/file_substrate.rs::open"]
 lane = "rust-cold"
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn fresh_init_leaves_no_legacy_files' crates/roko-cli/ && cargo test -p roko-cli --test doctor -- fresh_init_leaves_no_legacy_files reinit_keeps_the_signal_log init_moves_a_legacy_signal_log_into_signals_jsonl && cargo test -p roko-cli --lib -- plans_dir_conflict_counts_only_plans && d=\"$(mktemp -d)\" && git -C \"$d\" init -q && mkdir \"$d/h\" && cargo build -q -p roko-cli && HOME=\"$d/h\" target/debug/roko init \"$d\" >/dev/null 2>&1 && test ! -e \"$d/.roko/engrams.jsonl\" && test ! -d \"$d/.roko/plans\""
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T13:40:59Z"
+commit = "b395e783c"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-11-19T12:58:48Z"
+forced = false
+evidence = "b395e783c on work/bug-a1c99a. Confirmed first: in a workspace with signals.jsonl and no engrams.jsonl, roko init moved every Signal row into engrams.jsonl and deleted signals.jsonl (reinit_keeps_the_signal_log red: 'init moved the signal log'); FileSubstrate::open reads engrams.jsonl only while signals.jsonl is absent and writes to signals.jsonl, so the next write hid the moved rows. Fix: init gives the workspace signals.jsonl (empty when it has no log) and never touches it otherwise; a legacy engrams.jsonl moves into it, its rows first and the newer signals.jsonl rows after, through a temporary file, which recovers a workspace an earlier init split and makes doctor's 'fix: roko init' true; .roko/plans/ left RokoLayout::top_level_dirs (init and doctor's layout check no longer need it; the enrichment pipeline makes .roko/plans/<plan>/ when it writes there); plans_dir_conflict warns only when .roko/plans/ holds a plan (dirs with tasks.toml or plan.md); docs/v3/01-SIGNAL.md and roko explain name signals.jsonl. Red first in tests/doctor.rs: fresh_init_leaves_no_legacy_files (init wrote engrams.jsonl) and reinit_keeps_the_signal_log; green with init_moves_a_legacy_signal_log_into_signals_jsonl (split log whole again, doctor legacy ok) and the unit test plans_dir_conflict_counts_only_plans. The [[verify]] names --test doctor instead of building every roko-cli test target. Checks: tests/doctor.rs 8 passed; lib doctor+init 76; bin init 12; roko-fs 257; tests/e2e.rs 1; workspace clippy clean; CLI check on a scratch repo: no .roko/engrams.jsonl, no .roko/plans/, signals.jsonl present."
 +++
 
 ## Problem

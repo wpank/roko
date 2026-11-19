@@ -2,7 +2,7 @@
 id = "bug-b589fe"
 kind = "bug"
 title = "A plan-check hand-back's try is not reported when no 100 ms tick sees it run: its watch starts from the plan's last statuses, where its task already reads complete, so the try's end is no change and the hub and .roko/events.jsonl never get its task_completed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
+last_verified_rev = "06dcdf980"
 source = "round v8 lead: release PR #89's Test + Clippy job (run 44524474195) and coverage job (run 44518589408) failed a_failed_plan_check_goes_back_to_the_task_whose_file_it_names at plan_runner.rs:11662"
 discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::rerun_handed_back_tasks", "crates/roko-cli/src/graph_execution/plan_runner.rs::FlowWatch"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["find-5bcba7", "bug-58a1d6"],
 
 [[verify]]
 command = "grep -rqw 'fn for_handback_try' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_handback_try_that_no_tick_saw_is_reported a_failed_plan_check_goes_back_to_the_task_whose_file_it_names a_plan_check_is_handed_back"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T15:02:33Z"
+commit = "06dcdf980"
+forced = false
+evidence = "06dcdf980 on work/bug-b589fe. PR #89's CI failed a_failed_plan_check_goes_back_to_the_task_whose_file_it_names at plan_runner.rs:11662 in Test + Clippy (run 44524474195) and coverage (run 44518589408): .roko/events.jsonl held one task_completed for T1, not two, while the attempt log had both verdicts; the run awaits its event log's finish before returning, so the event was never published, not half-read. Cause: rerun_handed_back_tasks started the try's FlowWatch from the plan's last statuses, where T1 already read complete from its try before, with completions held until the try's graph gives their verdicts (bug-58a1d6); when no 100 ms tick saw the try running, its end was complete after complete, no change, and no task_started or task_completed was published. Fix: FlowWatch::for_handback_try starts the try's watch without its task, so its end is always reported with its verdict; FlowWatch::report_end is the end diff moved out unchanged. Red first: a_handback_try_that_no_tick_saw_is_reported got no task_completed (left []) on the seam that kept the task, while the two hand-back tests passed on the refactor. Green: it passes; every plan_runner test passes (99); the hand-back test passed 12 of 12 run 4 at a time; workspace clippy clean."
 +++
 
 ## Problem

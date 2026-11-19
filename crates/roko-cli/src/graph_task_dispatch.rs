@@ -418,10 +418,6 @@ pub struct GraphTaskDispatcher {
     /// The least strict policy every task of the run gets for tool calls
     /// that act on the outside world ([`Self::with_outbound_floor`]).
     outbound_floor: Option<roko_core::tool::OutboundPolicy>,
-    /// The environment a test's checks inherit in place of roko's own
-    /// ([`Self::with_check_env`], bug-eab239).
-    #[cfg(test)]
-    check_env: Option<Vec<(String, std::ffi::OsString)>>,
 }
 
 /// The `[models.*]` keys a run's side calls may use
@@ -505,19 +501,7 @@ impl GraphTaskDispatcher {
             ceiling_overlay: roko_core::disturbance::CeilingOverlay::default(),
             cut_ground_truth: budget::CutGroundTruth::default(),
             outbound_floor: None,
-            #[cfg(test)]
-            check_env: None,
         }
-    }
-
-    /// Have this test dispatcher's checks inherit `env` in place of roko's
-    /// own environment, filtered as roko's is (bug-eab239): a test whose
-    /// checks run cargo leaves out what its own harness sets, such as the
-    /// coverage job's `RUSTC_WRAPPER`.
-    #[cfg(test)]
-    pub(crate) fn with_check_env(mut self, env: Vec<(String, std::ffi::OsString)>) -> Self {
-        self.check_env = Some(env);
-        self
     }
 
     /// The running attempts the operator can stop by plan and task: a TUI

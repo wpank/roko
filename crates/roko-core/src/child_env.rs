@@ -42,6 +42,13 @@
 //! build of a crate in a shared target dir for this checkout's whenever this
 //! checkout's copy of the crate is older.
 //!
+//! Neither gate nor check commands inherit cargo-llvm-cov's rustc wrapper
+//! (bug-62b77a). `cargo llvm-cov` runs the tests with its own executable as
+//! `RUSTC_WRAPPER` and with marker variables beside it, which neither policy
+//! passes on. A nested cargo that inherits the wrapper alone calls it as a
+//! `cargo llvm-cov` command, which refuses. A person's own wrapper, such as
+//! sccache, stays ([`is_coverage_wrapper`]).
+//!
 //! Keeping keys out of a child's environment is moot while the child can read
 //! the files they come from, so this module also lists those files: see
 //! [`key_file_paths`] and [`is_key_file`].
@@ -301,18 +308,55 @@ pub fn gate_env_keeps(name: &str, passthrough: &[String], dotenv: &DotenvNames) 
     !dotenv.is_listed(name) && !is_secret_env_name(name) && gate_env_allowlisted(name)
 }
 
+/// The variables cargo runs rustc through.
+const RUSTC_WRAPPER_VARS: &[&str] = &["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"];
+
+/// The executable `cargo llvm-cov` names as the rustc wrapper of the cargo it
+/// runs (cargo-llvm-cov's `src/wrapper.rs`).
+const LLVM_COV_EXE: &str = "cargo-llvm-cov";
+
+/// Whether `name`, holding `value`, is cargo-llvm-cov's rustc wrapper
+/// (bug-62b77a): a rustc wrapper variable whose program is cargo-llvm-cov,
+/// however its path is written.
+///
+/// It works as a wrapper only with the marker variables `cargo llvm-cov` sets
+/// beside it (`__CARGO_LLVM_COV_RUSTC_WRAPPER*`), which no allowlist here
+/// admits. A nested cargo that inherits the wrapper alone calls it as a
+/// `cargo llvm-cov` command, which refuses ("expected subcommand
+/// 'llvm-cov'"), so gate and check commands leave it out. Any other wrapper,
+/// such as a person's sccache, is not this.
+#[must_use]
+pub fn is_coverage_wrapper(name: &str, value: &OsStr) -> bool {
+    let wrapper_var = RUSTC_WRAPPER_VARS.iter().any(|var| {
+        if cfg!(windows) {
+            var.eq_ignore_ascii_case(name)
+        } else {
+            *var == name
+        }
+    });
+    if !wrapper_var {
+        return false;
+    }
+    let value = value.to_string_lossy();
+    let program = value.rsplit(&['/', '\\'][..]).next().unwrap_or_default();
+    program.strip_suffix(".exe").unwrap_or(program) == LLVM_COV_EXE
+}
+
 /// The environment a gate command inherits from `parent` (roko's own
-/// environment in production): the entries [`gate_env_keeps`] admits. The
-/// caller clears the child's environment first and adds the gate's explicit
+/// environment in production): the entries [`gate_env_keeps`] admits, less
+/// cargo-llvm-cov's rustc wrapper ([`is_coverage_wrapper`]). The caller
+/// clears the child's environment first and adds the gate's explicit
 /// variables afterwards.
-pub fn gate_env<V>(
+pub fn gate_env<V: AsRef<OsStr>>(
     parent: impl IntoIterator<Item = (String, V)>,
     passthrough: &[String],
     dotenv: &DotenvNames,
 ) -> Vec<(String, V)> {
     parent
         .into_iter()
-        .filter(|(name, _)| gate_env_keeps(name, passthrough, dotenv))
+        .filter(|(name, value)| {
+            gate_env_keeps(name, passthrough, dotenv) && !is_coverage_wrapper(name, value.as_ref())
+        })
         .collect()
 }
 
@@ -724,6 +768,10 @@ pub enum CheckEnvRemoval {
     /// One of [`CARGO_BUILD_DIR_VARS`] naming a directory outside the
     /// command's own: other checkouts build there too (bug-be2a53).
     SharedBuildDir,
+    /// cargo-llvm-cov's rustc wrapper, which a nested cargo cannot use
+    /// without the marker variables beside it ([`is_coverage_wrapper`],
+    /// bug-62b77a).
+    CoverageWrapper,
     /// Not on the gate allowlist ([`gate_env_allowlisted`]).
     NotAllowlisted,
 }
@@ -739,6 +787,7 @@ impl CheckEnvRemoval {
             Self::Dotenv => "other names roko loaded from .env",
             Self::Credential => "names that look like credentials",
             Self::SharedBuildDir => "cargo build dirs outside the check's directory",
+            Self::CoverageWrapper => "cargo-llvm-cov's rustc wrapper",
             Self::NotAllowlisted => "not on the allowlist",
         }
     }
@@ -785,8 +834,9 @@ pub fn check_env_removal(
 }
 
 /// The variables of `parent` a check command inherits, and the names it does
-/// not, each with why ([`check_env_removal`]).
-pub fn check_env<V>(
+/// not, each with why ([`check_env_removal`]). cargo-llvm-cov's rustc wrapper
+/// is left out too ([`is_coverage_wrapper`]).
+pub fn check_env<V: AsRef<OsStr>>(
     parent: impl IntoIterator<Item = (String, V)>,
     passthrough: &[String],
     dotenv: &DotenvNames,
@@ -795,7 +845,10 @@ pub fn check_env<V>(
     let mut kept = Vec::new();
     let mut removed = Vec::new();
     for (name, value) in parent {
-        match check_env_removal(&name, passthrough, dotenv, strip) {
+        let removal = check_env_removal(&name, passthrough, dotenv, strip).or_else(|| {
+            is_coverage_wrapper(&name, value.as_ref()).then_some(CheckEnvRemoval::CoverageWrapper)
+        });
+        match removal {
             None => kept.push((name, value)),
             Some(reason) => removed.push((name, reason)),
         }
@@ -1353,6 +1406,68 @@ mod tests {
                 "https_proxy",
             ]
         );
+    }
+
+    /// bug-62b77a: `cargo llvm-cov` runs the tests with its own executable as
+    /// `RUSTC_WRAPPER`, and its marker variables beside it, which no policy
+    /// here passes on. Without them, it takes a nested cargo's rustc call for a
+    /// `cargo llvm-cov` command and refuses it. Gate and check commands leave
+    /// out a rustc wrapper variable that names cargo-llvm-cov, however its
+    /// path is written. A person's own wrapper, sccache, stays.
+    #[test]
+    fn cargo_llvm_covs_wrapper_stays_out_of_gate_and_check_commands() {
+        for wrapper in [
+            "/home/runner/.cargo/bin/cargo-llvm-cov",
+            "cargo-llvm-cov",
+            r"C:\Users\ci\.cargo\bin\cargo-llvm-cov.exe",
+        ] {
+            let env = parent(&[
+                ("PATH", "/usr/bin"),
+                ("RUSTC_WRAPPER", wrapper),
+                ("RUSTC_WORKSPACE_WRAPPER", wrapper),
+                ("__CARGO_LLVM_COV_RUSTC_WRAPPER", "1"),
+                ("CARGO_LLVM_COV", "1"),
+            ]);
+            let gate = gate_env(env.clone(), &[], &DotenvNames::new());
+            assert_eq!(
+                kept_names(&gate),
+                vec!["PATH", "CARGO_LLVM_COV"],
+                "{wrapper}"
+            );
+            let (kept, removed) = check_env(env, &[], &DotenvNames::new(), &[]);
+            assert_eq!(
+                kept_names(&kept),
+                vec!["PATH", "CARGO_LLVM_COV"],
+                "{wrapper}"
+            );
+            assert_eq!(
+                removals(&removed),
+                vec![
+                    ("RUSTC_WRAPPER", CheckEnvRemoval::CoverageWrapper),
+                    ("RUSTC_WORKSPACE_WRAPPER", CheckEnvRemoval::CoverageWrapper),
+                    (
+                        "__CARGO_LLVM_COV_RUSTC_WRAPPER",
+                        CheckEnvRemoval::NotAllowlisted
+                    ),
+                ],
+                "{wrapper}"
+            );
+        }
+        let env = parent(&[
+            ("RUSTC_WRAPPER", "sccache"),
+            ("RUSTC_WORKSPACE_WRAPPER", "/opt/homebrew/bin/sccache"),
+        ]);
+        let gate = gate_env(env.clone(), &[], &DotenvNames::new());
+        assert_eq!(
+            kept_names(&gate),
+            vec!["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"]
+        );
+        let (kept, removed) = check_env(env, &[], &DotenvNames::new(), &[]);
+        assert_eq!(
+            kept_names(&kept),
+            vec!["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"]
+        );
+        assert!(removed.is_empty(), "{removed:?}");
     }
 
     #[test]

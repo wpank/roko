@@ -20,6 +20,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn with_check_env' crates/roko-cli/src && grep -rqw 'fn env_without_compiler_wrappers' crates/roko-cli/src && cargo test -p roko-cli --lib -- rust_task_checks_refuse_an_unformatted_change rust_checks verify_depth"
+superseded = "2026-11-19: bug-62b77a moved the filter into the check and gate environment policy (roko_core::child_env::is_coverage_wrapper), which leaves out cargo-llvm-cov's rustc wrapper for every check, so the Rust checks test's own filter (with_check_env, env_without_compiler_wrappers) is gone"
+superseded_by = "bug-62b77a"
 
 [closed]
 at = 2026-11-19

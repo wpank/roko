@@ -545,6 +545,13 @@ impl GraphTaskDispatcher {
             .with_timeout_ms(step.timeout_ms)
             .with_name(label)
             .with_phase(&step.phase);
+        // A test's checks may inherit an environment of their own
+        // (bug-eab239).
+        #[cfg(test)]
+        let gate = match &self.check_env {
+            Some(env) => gate.with_parent_env(env.iter().cloned()),
+            None => gate,
+        };
         let payload = GatePayload::in_dir(workdir)
             .with_label(format!("{}/{}", spec.plan_id, task.id))
             .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());

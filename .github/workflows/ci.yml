@@ -13,13 +13,19 @@ jobs:
   test:
     name: Test + Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # After a Cargo.lock change the cache misses, and clippy plus a cold
+    # `cargo test --workspace` outlast 60 minutes. A cancelled job saves no
+    # cache, so every later run would start cold too (bug-623001).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # A run whose tests fail still saves its build for the next one.
+          cache-on-failure: true
       - run: cargo clippy --workspace --no-deps -- -D warnings
       - run: cargo test --workspace
 

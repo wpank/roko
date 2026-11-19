@@ -2,7 +2,7 @@
 id = "bug-c6f163"
 kind = "bug"
 title = "roko-serve's run index tests read an index straight from a temp dir, so the check judges the system temp dir as the global log's directory and refuses it on Linux (/tmp is root-owned, 1777): 9 routes::runs tests fail with 'global log directory must be user-owned and not group/world writable'"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
+last_verified_rev = "0d38f49de"
 source = "round v8 lead: release PR #89's first --no-fail-fast run on Linux, 44611946697 (roko-serve lib)"
 discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = ["crates/roko-serve/src/routes/runs.rs", "crates/roko-fs/src/run_index.rs::open_existing_run_index"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "TMPDIR=/tmp cargo test -p roko-serve --lib -- routes::runs::tests"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T22:02:10Z"
+commit = "0d38f49de"
+forced = false
+evidence = "0d38f49de on work/bug-c6f163. PR #89 first --no-fail-fast Linux run (44611946697): the only failing binary, roko-serve lib, 9 routes::runs tests, ApiError 500 \"global log directory must be user-owned and not group/world writable\". Cause: the tests put a run index straight into a fresh temp dir (tempdir()/run.jsonl); the reader checks the index directory and the global log directory, its parent, which for these tests is the system temp root (/tmp on Linux, root-owned, 1777), and refuses it as it should. Production keeps an index at <workspace>/.roko/events-by-run/<digest>.jsonl. Fix (tests only): index_in lays an index out as production does (run_index_path beside .roko/events.jsonl, directories 0700) and write_private writes it owner-only like roko writer, whatever the umask; the check is unchanged. Red first: on macOS with TMPDIR=/private/tmp (root-owned, 1777) the same 9 tests failed with the same error; with a private TMPDIR they passed. Green: routes::runs 38 passed both ways; roko-serve lib 1104 passed; workspace clippy clean. Found on the way, a product bug filed separately: under umask 002 roko creates .roko group-writable and its own checks refuse it (37 of 38 routes::runs tests fail under umask 002)."
 +++
 
 ## Problem

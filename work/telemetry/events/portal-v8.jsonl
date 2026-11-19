@@ -42,3 +42,5 @@
 {"schema": "roko.work_event/1", "ts": "2026-11-13T01:35:08Z", "event": "post-verify", "item": "bug-35c1f3", "executor": null, "via": null, "session": "portal-v8", "branch": null, "concurrency": 1, "source": "live", "rc": 0}
 {"schema": "roko.work_event/1", "ts": "2026-11-13T01:35:08Z", "event": "post-verify", "item": "bug-f8c943", "executor": null, "via": null, "session": "portal-v8", "branch": null, "concurrency": 1, "source": "live", "rc": 0}
 {"schema": "roko.work_event/1", "ts": "2026-11-13T01:35:09Z", "event": "post-verify", "item": "bug-b6d5cb", "executor": null, "via": null, "session": "portal-v8", "branch": null, "concurrency": 1, "source": "live", "rc": 0}
+{"schema": "roko.work_event/1", "ts": "2026-11-19T11:51:02Z", "event": "merged", "item": "bug-044a2d", "executor": null, "via": null, "session": "portal-v8", "branch": "work/bug-044a2d", "concurrency": 0, "source": "live", "merge_sha": "a7ec12459"}
+{"schema": "roko.work_event/1", "ts": "2026-11-19T11:51:02Z", "event": "post-verify", "item": "bug-044a2d", "executor": null, "via": null, "session": "portal-v8", "branch": null, "concurrency": 0, "source": "live", "rc": 0}

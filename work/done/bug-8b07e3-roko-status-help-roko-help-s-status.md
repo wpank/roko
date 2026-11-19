@@ -2,7 +2,7 @@
 id = "bug-8b07e3"
 kind = "bug"
 title = "roko status --help, roko --help's status line and roko plan status --help still describe the old views"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
-last_verified_rev = "befee2f9b"
+last_verified_rev = "40f916b84"
 source = "docs sweep on branch work/readme-v8, checked with roko at befee2f9b (2026-11-19)"
 anchors = ["crates/roko-cli/src/main.rs:652", "crates/roko-cli/src/commands/plan.rs:501"]
 lane = "rust-hot"
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'Print signal counts, most recent episode, and gate pass/fail' crates/roko-cli/src/main.rs && ! grep -q 'lightweight runner status from' crates/roko-cli/src/commands/plan.rs && cargo run -q -p roko-cli -- status --help 2>/dev/null | sed -n 1p | grep -qi 'run' && cargo run -q -p roko-cli -- plan status --help 2>/dev/null | sed -n 1p | grep -qi 'last run'"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T13:59:20Z"
+commit = "40f916b84"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-11-19T13:50:56Z"
+forced = false
+evidence = "40f916b84 on work/bug-8b07e3, text only. roko status's about (and its line in roko --help): 'What is running, how the last runs ended and what they spent, and what to run next'. roko plan status: 'Show a plan's last run in the run view's style.', then its readings, task rows, plan check, where the work went and Next, read from the run's records from any terminal; without a plan directory, the latest run's progress from .roko/state/status.json (id, phase, plans done, agents running, time, last event), as its code path prints it; examples and the PLAN_DIR doc to match. docs/v3/28-CLI.md's plan status entry opens the same way. Red first: the [[verify]] failed on main fdad6a002 (both stale sentences present; first help lines 'Print signal counts, most recent episode, and gate pass/fail' and 'Show the lightweight runner status from .roko/state/status.json.'). Green: the [[verify]] exits 0; cli_fallback (every command's --help) 27 passed."
 +++
 
 ## Problem

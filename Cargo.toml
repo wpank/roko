@@ -198,7 +198,9 @@ rand = "0.8"
 rand_chacha = "0.3"
 regex = "1"
 unicode-segmentation = "1"
-rusqlite = { version = "0.35", features = ["bundled"] }
+# 0.41 bundles SQLite 3.54 (RUSTSEC-2026-0459); since 0.38 the u64/usize conversions roko-index reads need
+# `fallible_uint`.
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 jsonwebtoken = "9"
 webbrowser = "1"
 

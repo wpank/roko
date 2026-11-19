@@ -19,7 +19,7 @@ use roko_agent::mcp::workspace_mcp_config;
 use roko_agent::model_call_service::ModelCallService;
 use roko_agent::process::{
     GRACE_STDIN_CLOSE_MS, apply_credential_scrub, config_file_env_names, kill_tree,
-    set_process_group,
+    set_process_group, write_prompt,
 };
 use roko_agent::provider::claude_cli::stream::parse_stream_line;
 use roko_agent::safety::contract::AgentContract;
@@ -39,7 +39,7 @@ use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
 use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::signal;
 
@@ -1431,8 +1431,9 @@ async fn send_turn_streaming_with_program(
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(error) = stdin.write_all(prompt.as_bytes()).await
+    // A CLI that stopped reading it is judged by its exit (bug-7d13f0).
+    if let Some(stdin) = child.stdin.take()
+        && let Err(error) = write_prompt(stdin, prompt.as_bytes()).await
     {
         let message = format!("stdin write failed: {error}");
         let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;

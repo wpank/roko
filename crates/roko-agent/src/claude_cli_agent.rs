@@ -12,7 +12,7 @@ use crate::mcp::workspace_mcp_config;
 use crate::process::{
     GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
     benign_stderr_warn_once, classify_benign_stderr, config_file_env_names, confined_command,
-    kill_tree, register_spawned_pid, set_process_group, unregister_pid,
+    kill_tree, register_spawned_pid, set_process_group, unregister_pid, write_prompt,
 };
 use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
 use crate::tool_loop::{StreamEvent, StreamEventKind};
@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -1529,8 +1529,10 @@ impl ClaudeCliAgent {
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
 
-        if let Some(mut stdin) = child.stdin.take()
-            && let Err(e) = stdin.write_all(prompt_text.as_bytes()).await
+        // A Claude Code that stopped reading it is judged by its exit
+        // (bug-7d13f0).
+        if let Some(stdin) = child.stdin.take()
+            && let Err(e) = write_prompt(stdin, prompt_text.as_bytes()).await
         {
             let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
             tree_guard.disarm();
@@ -4065,6 +4067,35 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert!(reason.contains("managed-mcp.json"), "{reason}");
         assert!(!started.exists(), "Claude Code was started");
         assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
+    }
+
+    /// bug-7d13f0: a Claude Code that fails at startup, before it reads its
+    /// prompt, reports its own error, not the prompt write's broken pipe. A
+    /// prompt bigger than any pipe's buffer always breaks it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_cli_that_exits_before_reading_its_prompt_reports_its_own_error() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\necho 'Invalid API key \u{b7} Please run /login' >&2\nexit 1\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let result = agent
+            .run(&prompt(&"x".repeat(4 << 20)), &Context::now())
+            .await;
+        assert!(!result.success);
+        let reason = result.output.body.as_text().expect("failure reason");
+        assert!(
+            reason.starts_with("exit 1: ") && reason.contains("Invalid API key"),
+            "{reason}"
+        );
     }
 
     #[tokio::test]

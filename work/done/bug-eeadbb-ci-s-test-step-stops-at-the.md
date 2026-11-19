@@ -2,7 +2,7 @@
 id = "bug-eeadbb"
 kind = "bug"
 title = "CI's test step stops at the first failing test binary (cargo test --workspace without --no-fail-fast), so each run shows one Linux failure and hides every test after it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["ci"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
+last_verified_rev = "2b4272ff4"
 source = "round v8 lead: release PR #89, runs 44524474195, 44574043691 and 44589959537"
 discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = [".github/workflows/ci.yml"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["bug-623001", "bug-4debc8"], 
 
 [[verify]]
 command = "awk '/^  test:/{t=1;next} /^  [a-z-]+:/{t=0} t' .github/workflows/ci.yml | grep -q 'run: cargo test --workspace --no-fail-fast'"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T20:44:42Z"
+commit = "2b4272ff4"
+forced = false
+evidence = "2b4272ff4 on work/bug-4debc8. ci.yml job test now runs cargo test --workspace --no-fail-fast (every test binary runs; the step still fails if any test fails), so one run shows every remaining Linux failure instead of one per run (plan_runner hand-back, immune_boundary factory, roko-gate clippy rung in a row; 18 packages after roko-gate had not run). The verify failed on the old workflow and passes now; the workflow parses as YAML."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-996dc9"
 kind = "bug"
 title = "cargo-deny fails release PR #89 on RustSec advisories published since #87: tokio, rustls-webpki, webpki-roots, webpki-root-certs, rustix and libsqlite3-sys (via rusqlite 0.35) have fixes; crypto-bigint, pin-utils, chrono and chrono-tz have none"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["ci"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
-last_verified_rev = "5396186d1"
+last_verified_rev = "2580237ae"
 source = "round v8: the lead's CI drift job for release PR #89 (run 44516751327)"
 discovered_from = "agent:team-lead (round v8)"
 anchors = ["deny.toml", "Cargo.lock", "crates/roko-index/src/sqlite.rs"]
@@ -20,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-9dd205"], supersedes = [
 
 [[verify]]
 command = "cargo deny check"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T12:56:58Z"
+commit = "2580237ae"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "M"
+forced = false
+evidence = "cargo update took tokio 1.53.1 -> 1.54.1, rustls-webpki 0.103.15 -> 0.103.17, webpki-roots and webpki-root-certs 1.0.9 -> 1.0.12 and rustix 1.1.4 -> 1.1.6; rusqlite 0.35 -> 0.41.1 (with fallible_uint, roko-index unchanged) brought libsqlite3-sys 0.39.1 (SQLite 3.54.1); deny.toml reviews RUSTSEC-2026-0387 (crypto-bigint 0.5, no semver fix), -0441 (pin-utils), -0543 (chrono) and -0555 (chrono-tz) with their paths. In a CI-like environment (heavy.sh, scratch HOME, TMPDIR outside the repo, CI=true, CARGO_INCREMENTAL=0, line-tables-only debug info): cargo deny check advisories ok, bans ok, licenses ok, sources ok; nightly fmt --check clean; cargo clippy --workspace --no-deps -D warnings clean; cargo test --workspace --no-fail-fast 283 test binaries, 18165 passed, 0 failed, 83 ignored."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-9fbed1"
 kind = "bug"
 title = "The ViabilityBench verifier CI pins Python 3.12.8, which Ubuntu 26.04 runners lack, so all three of its jobs fail at setup-python on release PR #89"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["ci"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
-last_verified_rev = "5396186d1"
+last_verified_rev = "4d724ae85"
 source = "round v8: the lead's CI drift job for release PR #89 (run 44516751223)"
 discovered_from = "agent:team-lead (round v8)"
 anchors = [".github/workflows/viabilitybench-ci.yml"]
@@ -19,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'python-version: \"3.12\"' .github/workflows/viabilitybench-ci.yml && ! grep -qE 'python-version: \"?3\\.[0-9]+\\.[0-9]+' .github/workflows/*.yml"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T11:46:59Z"
+commit = "4d724ae85"
+by = "roko-planner-v8"
+via = "manual"
+executor = "claude-agent"
+size = "S"
+forced = false
+evidence = "viabilitybench-ci.yml pins python-version \"3.12\" in its three jobs instead of 3.12.8, which Ubuntu 26.04 runners lack (run 44516751223); requirements.lock is --universal for Python 3.11+, so no patch release was needed. Red first: the verify grep failed before the change; it passes now, and no workflow pins an exact patch of a runner-provided toolchain (Rust comes from rustup, Node by major)."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-407f38"
 kind = "gap"
 title = "roko learn rungs and roko learn patterns print their old formats, not the learn views' style"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
-last_verified_rev = "befee2f9b"
+last_verified_rev = "da0196aec"
 source = "docs sweep on branch work/readme-v8, checked with roko at befee2f9b (2026-11-19)"
 anchors = ["crates/roko-cli/src/commands/learn.rs::cmd_learn_rungs", "crates/roko-cli/src/commands/learn.rs::cmd_learn_patterns", "crates/roko-cli/src/learn_view.rs"]
 lane = "rust-hot"
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-cb1a87"], supersedes = [
 
 [[verify]]
 command = "! grep -q 'println!(\"Rungs over' crates/roko-cli/src/commands/learn.rs && ! grep -q 'format_for_prompt(20)' crates/roko-cli/src/commands/learn.rs && grep -rqw 'fn learn_rungs_and_patterns_read_as_learn_views' crates/roko-cli/ && cargo test -p roko-cli learn_rungs_and_patterns_read_as_learn_views"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T15:24:25Z"
+commit = "da0196aec"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-11-19T14:03:28Z"
+forced = false
+evidence = "da0196aec on work/gap-407f38 (with 56322ee2f). roko learn rungs, roko learn patterns and patterns --graduate render through learn_view (rungs_lines, patterns_lines, graduation_lines, read_from) like the other learn views: the ◆ roko header and its context, a part per rung or pattern with the facts the old formats gave (rungs: model and role, tries and verified passes, median time a try and per verified pass, share on the model, cost a try and per verified pass, tries without a price, time-bound stops, refused calls, and the ladder's finding as a closing paragraph; patterns: the 20 most frequent unresolved, digest, class, times and plans, last seen, the check and key unless the digest says them, fix and hint one line each on a terminal cut at a word; --graduate: the fix whole and the suggested check), the files read on the closing line, Next to --graduate when a pattern is ready; no prompt text; --json unchanged. Red first: learn_rungs_and_patterns_read_as_learn_views (tests/learn_paths_fixture.rs, a run written by roko's telemetry writer and a pattern file from the store) failed on the old 'Rungs over 1 run(s):' header before the wiring; it passes now. rungs_and_patterns_lay_out_like_the_other_learn_views pins both layouts exactly. learn_view lib 2, bin learn 50, learn_paths_fixture 3, learn_paths 7, reflexes_cli 3; workspace clippy clean; the three views checked on a copy of Undertow's 32 runs and 20 patterns, in a pipe and at 80 columns."
 +++
 
 ## Problem

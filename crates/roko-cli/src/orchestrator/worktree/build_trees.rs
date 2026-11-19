@@ -5,7 +5,10 @@
 //! the whole project: on a C++ project with JUCE about 50 s, where the same
 //! check on a warm tree takes 4 s. [`give_build_trees`] gives the new checkout
 //! a copy-on-write clone of each build tree of the repository's checkout,
-//! made to work at the new path:
+//! made to work at the new path. Where the filesystem makes no clones (ext4,
+//! overlayfs), a tree of at most [`COPY_LIMIT_BYTES`] is copied instead,
+//! keeping its files' times; a larger one builds cold (bug-19af94).
+//!
 //!
 //! - **Relocated.** CMake names the source and build directories by absolute
 //!   path in its cache, makefiles and dependency files, and refuses a cache
@@ -67,6 +70,13 @@ const UNRELOCATABLE_EXTENSIONS: &[&str] = &["pch", "gch", "pcm"];
 /// The CMake file whose custom-command hashes force reruns.
 const RULE_HASHES_FILE: &str = "CMakeRuleHashes.txt";
 
+/// The most a build tree may hold for [`give_build_trees`] to copy it where
+/// the filesystem makes no copy-on-write clone (bug-19af94). A copy costs the
+/// checkout the tree's size in disk and the time to write it: for a tree
+/// this size, a few seconds at most, against a cold build. A larger tree
+/// builds cold.
+const COPY_LIMIT_BYTES: u64 = 256 << 20;
+
 /// One build tree [`give_build_trees`] gave a checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GivenBuildTree {
@@ -74,7 +84,9 @@ pub struct GivenBuildTree {
     pub dir: PathBuf,
     /// Text files whose paths were rewritten.
     pub rewritten: usize,
-    /// How long cloning and moving the tree took, in ms.
+    /// It was copied, where the filesystem makes no clone (bug-19af94).
+    pub copied: bool,
+    /// How long cloning or copying the tree and moving it took, in ms.
     pub elapsed_ms: u64,
 }
 
@@ -218,14 +230,42 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// How [`give_build_trees`] makes a checkout's tree: a copy-on-write clone
+/// by `clone`, else, where the filesystem makes none, a copy of a tree of at
+/// most `copy_limit` bytes (bug-19af94).
+#[derive(Debug, Clone, Copy)]
+struct Making {
+    clone: fn(&Path, &Path) -> std::io::Result<bool>,
+    copy_limit: u64,
+}
+
+impl Making {
+    /// The platform's clone, and copies of up to [`COPY_LIMIT_BYTES`].
+    const PLATFORM: Self = Self {
+        clone: clone_tree,
+        copy_limit: COPY_LIMIT_BYTES,
+    };
+}
+
 /// Give the new checkout at `checkout` a warm copy of each build tree of the
 /// repository's checkout at `source` ([`warm_build_dirs`]), unless it has one
-/// there already, and return the trees it gave. A tree that cannot be cloned
-/// or moved is logged and left out: the checkout builds it cold.
+/// there already, and return the trees it gave. A tree that cannot be cloned,
+/// or copied where the filesystem makes no clones, or moved, is logged and
+/// left out: the checkout builds it cold.
 pub fn give_build_trees(
     source: &Path,
     checkout: &Path,
     configured: Option<&[String]>,
+) -> Vec<GivenBuildTree> {
+    give_build_trees_making(source, checkout, configured, Making::PLATFORM)
+}
+
+/// [`give_build_trees`], making each tree as `making` says.
+fn give_build_trees_making(
+    source: &Path,
+    checkout: &Path,
+    configured: Option<&[String]>,
+    making: Making,
 ) -> Vec<GivenBuildTree> {
     let dirs = warm_build_dirs(source, configured);
     if dirs.is_empty() {
@@ -240,18 +280,20 @@ pub fn give_build_trees(
         // not regenerate the same would rewrite its makefiles, and rebuild.
         let (roots, recorded) = recorded_roots(source, &source.join(dir));
         let to = mirrored_form(&canonical(source), &recorded, &canonical(checkout));
-        match give_tree(source, &roots, checkout, &to, dir, &dirs) {
-            Ok(Some(rewritten)) => {
+        match give_tree(source, &roots, checkout, &to, dir, &dirs, making) {
+            Ok(Some((rewritten, copied))) => {
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 tracing::info!(
                     dir = %dir.display(),
                     rewritten,
+                    copied,
                     elapsed_ms,
                     "gave the checkout a warm copy of the repository checkout's build tree"
                 );
                 given.push(GivenBuildTree {
                     dir: dir.clone(),
                     rewritten,
+                    copied,
                     elapsed_ms,
                 });
             }
@@ -279,10 +321,12 @@ pub fn give_build_trees(
     given
 }
 
-/// Clone `dir` of `source` into `checkout` and move it there. `Ok(None)` when
-/// there is nothing to do: the checkout has the directory already, or its
-/// parent is not there, or no copy-on-write clone can be made. `Err` (why)
-/// when the clone was made but cannot be used, which the caller removes.
+/// Clone `dir` of `source` into `checkout`, or copy it where the filesystem
+/// makes no clones and the tree is small enough (`making`), and move it there;
+/// the text files it rewrote, and whether it was copied. `Ok(None)` when there
+/// is nothing to do: the checkout has the directory already, or its parent is
+/// not there, or neither a clone nor a copy can be made. `Err` (why) when the
+/// tree was made but cannot be used, which the caller removes.
 fn give_tree(
     source: &Path,
     roots: &[PathBuf],
@@ -290,7 +334,8 @@ fn give_tree(
     to: &Path,
     dir: &Path,
     trees: &[PathBuf],
-) -> Result<Option<usize>, String> {
+    making: Making,
+) -> Result<Option<(usize, bool)>, String> {
     let from = source.join(dir);
     let target = checkout.join(dir);
     let Ok(metadata) = std::fs::symlink_metadata(&from) else {
@@ -307,8 +352,8 @@ fn give_tree(
     if std::fs::create_dir_all(parent).is_err() {
         return Ok(None);
     }
-    // A clone, never a copy: a copy across devices would cost the attempt
-    // the tree's size in time and disk.
+    // Never across devices: no clone can be made there, and a copy would cost
+    // the attempt the tree's size in time and disk.
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
@@ -316,11 +361,20 @@ fn give_tree(
             return Ok(None);
         }
     }
-    match clone_tree(&from, &target) {
-        Ok(true) => {}
+    // A copy-on-write clone where the filesystem makes one. Where it makes
+    // none (ext4, overlayfs), a copy that keeps the files' times, of a tree
+    // small enough that copying it costs less than building it cold
+    // (bug-19af94).
+    let copied = match (making.clone)(&from, &target) {
+        Ok(true) => false,
+        Ok(false) if tree_within(&from, making.copy_limit) => match copy_tree(&from, &target) {
+            Ok(true) => true,
+            Ok(false) => return Ok(None),
+            Err(error) => return Err(format!("the copy failed: {error}")),
+        },
         Ok(false) => return Ok(None),
         Err(error) => return Err(format!("the clone failed: {error}")),
-    }
+    };
     let rewritten = relocate(&target, roots, source, checkout, to, trees)?;
     drop_populate_rule_hashes(&target).map_err(|error| format!("{RULE_HASHES_FILE}: {error}"))?;
     // The checkout's git must ignore it too, or the attempt's commit adds it.
@@ -336,7 +390,58 @@ fn give_tree(
     if !ignored {
         return Err("the checkout's git does not ignore it".to_string());
     }
-    Ok(Some(rewritten))
+    Ok(Some((rewritten, copied)))
+}
+
+/// A copy of the directory `source` at `target` that keeps its files' times
+/// and modes and copies its links as links (`cp -pPR`), for a filesystem
+/// that makes no clones (bug-19af94). False, and nothing left at `target`,
+/// when the copy fails.
+fn copy_tree(source: &Path, target: &Path) -> std::io::Result<bool> {
+    let status = std::process::Command::new("cp")
+        .arg("-pPR")
+        .arg(source)
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        return Ok(true);
+    }
+    let _ = std::fs::remove_dir_all(target);
+    Ok(false)
+}
+
+/// Whether the files under `dir` hold at most `limit` bytes in all; it stops
+/// reading once they hold more. A link counts as itself, not what it names,
+/// and a directory that cannot be read counts as too much.
+fn tree_within(dir: &Path, limit: u64) -> bool {
+    let mut total = 0_u64;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            // A directory entry's metadata is the link's own, not its target's.
+            let Ok(metadata) = entry.metadata() else {
+                return false;
+            };
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                total = total.saturating_add(metadata.len());
+                if total > limit {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Rewrite every absolute path under `source` in the text files of `tree` (a
@@ -579,20 +684,6 @@ fn git_stdout(dir: &Path, args: &[&str]) -> std::io::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Whether the filesystem at `dir` can make the copy-on-write clones
-/// [`give_build_trees`] needs. APFS, Btrfs and XFS can; ext4, which CI's
-/// runners use, cannot, and there no tree is given and checkouts build cold.
-#[cfg(test)]
-pub(crate) fn clones_on(dir: &Path) -> bool {
-    let probe = dir.join(".clone-probe");
-    let copy = dir.join(".clone-probe-copy");
-    let cloned =
-        std::fs::create_dir_all(&probe).is_ok() && clone_tree(&probe, &copy).unwrap_or(false);
-    let _ = std::fs::remove_dir_all(&probe);
-    let _ = std::fs::remove_dir_all(&copy);
-    cloned
-}
-
 /// Whether the relative path `dir` stays inside the directory it is relative
 /// to.
 fn is_inside(dir: &Path) -> bool {
@@ -687,10 +778,6 @@ mod tests {
     #[test]
     fn warm_build_tree_is_relocated_with_its_times() {
         let temp = tempfile::tempdir().expect("tempdir");
-        if !clones_on(temp.path()) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         let (repo, checkout) = repo_and_checkout(temp.path());
         let root = repo.display().to_string();
         std::fs::create_dir_all(repo.join("build/plugins/CMakeFiles/core.dir")).expect("tree");
@@ -764,15 +851,112 @@ mod tests {
         );
     }
 
+    /// No copy-on-write clones, as on ext4 or overlayfs.
+    fn no_clones(_: &Path, _: &Path) -> std::io::Result<bool> {
+        Ok(false)
+    }
+
+    /// bug-19af94: where the filesystem makes no copy-on-write clone (ext4,
+    /// overlayfs), a small tree is copied, its files keeping their times and
+    /// its links staying links, then made to work at the new path as a clone
+    /// is. The repository checkout's tree is left alone.
+    #[test]
+    fn a_tree_is_copied_where_the_filesystem_makes_no_clones() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (repo, checkout) = repo_and_checkout(temp.path());
+        let root = repo.display().to_string();
+        std::fs::create_dir_all(repo.join("build/CMakeFiles")).expect("tree");
+        let cache = repo.join("build/CMakeCache.txt");
+        std::fs::write(
+            &cache,
+            format!(
+                "{}CMAKE_CACHEFILE_DIR:INTERNAL={root}/build\n",
+                home_entry(&repo)
+            ),
+        )
+        .expect("cache");
+        set_mtime(&cache, 1_700_000_000);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("../CMakeCache.txt", repo.join("build/CMakeFiles/cache"))
+            .expect("link");
+        let making = Making {
+            clone: no_clones,
+            copy_limit: COPY_LIMIT_BYTES,
+        };
+
+        let given = give_build_trees_making(&repo, &checkout, None, making);
+
+        assert_eq!(given.len(), 1, "{given:?}");
+        assert!(given[0].copied, "{given:?}");
+        assert_eq!(given[0].rewritten, 1, "{given:?}");
+        let to = checkout.display().to_string();
+        let moved = checkout.join("build/CMakeCache.txt");
+        let text = std::fs::read_to_string(&moved).expect("moved cache");
+        assert!(
+            text.contains(&format!("CMAKE_HOME_DIRECTORY:INTERNAL={to}\n")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("CMAKE_CACHEFILE_DIR:INTERNAL={to}/build\n")),
+            "{text}"
+        );
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        assert_eq!(mtime(&moved), at, "the copy lost the file's times");
+        #[cfg(unix)]
+        assert!(
+            std::fs::symlink_metadata(checkout.join("build/CMakeFiles/cache"))
+                .expect("the link was copied")
+                .file_type()
+                .is_symlink(),
+            "the copy followed a link"
+        );
+        assert!(
+            std::fs::read_to_string(&cache)
+                .expect("original cache")
+                .contains(&format!("INTERNAL={root}\n")),
+            "the source tree changed"
+        );
+        assert!(
+            git(&checkout, &["status", "--porcelain"]).is_empty(),
+            "the given tree shows in the checkout's status"
+        );
+    }
+
+    /// bug-19af94: where no clone can be made, a tree holding more than the
+    /// copy limit is not copied: the checkout builds it cold, and nothing is
+    /// left behind.
+    #[test]
+    fn a_tree_past_the_copy_limit_builds_cold_without_clones() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (repo, checkout) = repo_and_checkout(temp.path());
+        std::fs::create_dir_all(repo.join("build")).expect("build");
+        std::fs::write(repo.join("build/CMakeCache.txt"), home_entry(&repo)).expect("cache");
+        std::fs::write(repo.join("build/object.o"), vec![0_u8; 4096]).expect("object");
+        let making = Making {
+            clone: no_clones,
+            copy_limit: 4096,
+        };
+
+        assert!(give_build_trees_making(&repo, &checkout, None, making).is_empty());
+        assert!(
+            !checkout.join("build").exists(),
+            "a tree past the copy limit was given"
+        );
+        // Within the limit, it is copied.
+        let making = Making {
+            clone: no_clones,
+            copy_limit: 1 << 20,
+        };
+        let given = give_build_trees_making(&repo, &checkout, None, making);
+        assert_eq!(given.len(), 1, "{given:?}");
+        assert!(given[0].copied, "{given:?}");
+    }
+
     /// Only a populate step's rule hashes are dropped; every other rule keeps
     /// its hash, and the file its times.
     #[test]
     fn warm_build_tree_drops_only_populate_rule_hashes() {
         let temp = tempfile::tempdir().expect("tempdir");
-        if !clones_on(temp.path()) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         let (repo, checkout) = repo_and_checkout(temp.path());
         let hashes_dir = repo.join("build/_deps/juce-subbuild/CMakeFiles");
         std::fs::create_dir_all(&hashes_dir).expect("subbuild");
@@ -807,10 +991,6 @@ mod tests {
     #[test]
     fn warm_build_tree_gives_unchanged_files_their_times() {
         let temp = tempfile::tempdir().expect("tempdir");
-        if !clones_on(temp.path()) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         let (repo, checkout) = repo_and_checkout(temp.path());
         std::fs::create_dir_all(repo.join("build")).expect("build");
         std::fs::write(repo.join("build/CMakeCache.txt"), home_entry(&repo)).expect("cache");
@@ -869,9 +1049,7 @@ mod tests {
         std::fs::remove_file(repo.join("build/cmake_pch.hxx.pch")).expect("drop the pch");
         assert!(give_build_trees(&repo, &checkout, Some(&[])).is_empty());
         let named = give_build_trees(&repo, &checkout, Some(&["build/".to_string()]));
-        if clones_on(temp.path()) {
-            assert_eq!(named.len(), 1, "{named:?}");
-        }
+        assert_eq!(named.len(), 1, "{named:?}");
         assert_eq!(
             warm_build_dirs(&repo, Some(&["../repo".to_string()])),
             Vec::<PathBuf>::new()
@@ -899,10 +1077,6 @@ mod tests {
             return;
         };
         let temp = tempfile::tempdir().expect("tempdir");
-        if !clones_on(temp.path()) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         let (repo, _) = repo_and_checkout(temp.path());
         std::fs::write(
             repo.join("CMakeLists.txt"),

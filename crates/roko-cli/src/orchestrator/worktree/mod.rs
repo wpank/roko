@@ -29,8 +29,6 @@ pub use acceptance::{ReviewDiff, attempt_review_diff};
 mod build_output;
 pub use build_output::LeftOut;
 mod build_trees;
-#[cfg(test)]
-pub(crate) use build_trees::clones_on;
 pub use build_trees::{GivenBuildTree, give_build_trees, warm_build_dirs};
 mod cleanup;
 pub use cleanup::{LEFTOVER_CHECKOUT_MIN_AGE, LeftoverCheckout, clear_stale_index_lock};

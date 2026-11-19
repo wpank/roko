@@ -2683,10 +2683,6 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
     #[test]
     fn warm_seeds_the_base_from_the_workspace_build() {
         let temp = tempfile::tempdir().expect("tempdir");
-        if !crate::orchestrator::worktree::clones_on(temp.path()) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         let step = "if test -f build/made-here; then echo seeded; else echo cold; fi; \
                     grep -c \"$PWD\" build/CMakeCache.txt; exit 1";
         let plan = warm_plan(&[("T1", step)]);

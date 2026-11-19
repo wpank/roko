@@ -2,19 +2,27 @@
 id = "bug-13bbe9"
 kind = "bug"
 title = "CI coverage: canaries that run a nested cargo fail under cargo-llvm-cov (the gate inherits its RUSTC_WRAPPER but not its marker variables)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-core/child-env"]
 created = 2026-10-11
-updated = 2026-10-11
-last_verified = 2026-10-11
+updated = 2026-11-19
+last_verified = 2026-11-19
+last_verified_rev = "930673ae1"
 source = "PR #85 coverage run 38012399914"
 discovered_from = "dec-01be49 (the coverage run got past the doctor tests)"
 anchors = ["crates/roko-core/src/child_env.rs::gate_env", ".github/workflows/coverage.yml"]
-links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-62b77a"], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T16:57:29Z"
+commit = "930673ae1"
+forced = false
+evidence = "930673ae1 (bug-62b77a, which duplicated this item) implements option 2: roko_core::child_env::is_coverage_wrapper leaves a RUSTC_WRAPPER or RUSTC_WORKSPACE_WRAPPER naming cargo-llvm-cov out of gate commands (gate_env) and every check command (check_env), a person sccache kept. attempt_diff_canary c5_tampering_attempt_is_flagged and c5_empty_diff_is_rejected_before_verify, which failed exactly as in PR #85 (run 38012399914) and PR #89 (run 44558280294) under a stand-in cargo-llvm-cov set as cargo llvm-cov sets it, pass under it after the fix; the check-environment probe now asserts the wrapper reaches no check path. The coverage job on PR #89 confirms it on Linux."
 +++
 
 ## Problem

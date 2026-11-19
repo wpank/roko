@@ -2,7 +2,7 @@
 id = "bug-62b77a"
 kind = "bug"
 title = "Checks and gate commands keep cargo-llvm-cov's RUSTC_WRAPPER without its marker variables, so a nested cargo under coverage fails (expected subcommand 'llvm-cov'): the coverage job fails attempt_diff_canary's c5 tests, as it failed the Rust checks test (bug-eab239)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,14 +11,22 @@ subsystem = ["roko-core/child_env"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
+last_verified_rev = "930673ae1"
 source = "round v8 lead: release PR #89's coverage job at ffd178a22 (run 44558280294)"
 discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = ["crates/roko-core/src/child_env.rs::check_env", "crates/roko-core/src/child_env.rs::gate_env", "crates/roko-gate/src/check_env_probe.rs", "crates/roko-cli/src/check_env_probe.rs"]
 lane = "rust-hot"
-links = { depends_on = [], blocks = [], related = ["bug-eab239"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-eab239", "bug-13bbe9"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'fn is_coverage_wrapper' crates/roko-core/src/child_env.rs && cargo test -p roko-core --lib -- child_env::tests"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T16:57:29Z"
+commit = "930673ae1"
+forced = false
+evidence = "930673ae1 on work/bug-62b77a. PR #89 coverage job at ffd178a22 (run 44558280294) failed attempt_diff_canary c5_empty_diff_is_rejected_before_verify and c5_tampering_attempt_is_flagged: their roko rust:clippy check got cargo-llvm-cov as RUSTC_WRAPPER without its __CARGO_LLVM_COV_RUSTC_WRAPPER* markers, which the check allowlist drops, and refused (\"expected subcommand llvm-cov\"). This is bug-13bbe9 (filed 2026-10-11 from PR #85), option 2, which I found only after filing this item; both are closed by this commit. Fix in the shared policy: roko_core::child_env::is_coverage_wrapper (RUSTC_WRAPPER or RUSTC_WORKSPACE_WRAPPER whose program is cargo-llvm-cov, any path form); gate_env (gate commands and agent tool commands) and check_env (every check, reason CoverageWrapper) leave it out; a person sccache stays. bug-eab239 test-only filter removed and its verify retired. The check-environment probe (roko-gate 3 paths, roko-cli 7) now runs its child under a stand-in cargo-llvm-cov with the marker and asserts no path command inherits the wrapper. Red first: the new child_env test kept both wrappers; all 10 probes failed (wrapper reached the check); under a stand-in cargo-llvm-cov that refuses without its marker (roko-recovery/linux/llvm-cov-standin), set as cargo llvm-cov sets it, the two c5 tests failed as in CI and the Rust checks test failed at rust_checks.rs:531. Green: child_env tests 32; roko-gate probes plus gate_env and shell tests 43; roko-cli probes 7; the Rust checks test passes under the stand-in cargo-llvm-cov, under a stand-in sccache (8 wrapper calls from the nested cargo, so a person wrapper still reaches the check) and with none; the c5 tests pass under the stand-in and without it; workspace clippy clean."
 +++
 
 ## Problem

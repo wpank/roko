@@ -173,6 +173,8 @@ impl CliRuntime for RecordingRuntime {
             tasks,
             title: None,
             max_parallel: 1,
+            plan_checks: Vec::new(),
+            workspace_rungs: true,
         }))
     }
 
@@ -332,6 +334,7 @@ impl CliRuntime for RecordingRuntime {
             artifacts: vec![],
             cost_usd: 0.0125,
             source_checks: None,
+            repairs: Vec::new(),
         })
     }
 
@@ -643,6 +646,8 @@ async fn generate_plan_rejects_empty_slug() {
     let req = GenerateRequest {
         slug: Some("  ".into()),
         prompt: None,
+        spec_path: None,
+        max_usd: None,
     };
     assert!(req.validate_payload().is_err());
 }
@@ -652,6 +657,8 @@ async fn generate_plan_rejects_neither_field() {
     let req = GenerateRequest {
         slug: None,
         prompt: None,
+        spec_path: None,
+        max_usd: None,
     };
     let err = req.validate_payload().unwrap_err();
     // Must be a 422.
@@ -663,6 +670,8 @@ async fn generate_plan_rejects_both_fields() {
     let req = GenerateRequest {
         slug: Some("demo".into()),
         prompt: Some("build something".into()),
+        spec_path: None,
+        max_usd: None,
     };
     let err = req.validate_payload().unwrap_err();
     assert_eq!(err.status.as_u16(), 422);
@@ -673,6 +682,8 @@ async fn generate_plan_rejects_blank_prompt() {
     let req = GenerateRequest {
         slug: None,
         prompt: Some("   ".into()),
+        spec_path: None,
+        max_usd: None,
     };
     let err = req.validate_payload().unwrap_err();
     assert_eq!(err.status.as_u16(), 422);
@@ -683,6 +694,8 @@ async fn generate_plan_accepts_prompt_only() {
     let req = GenerateRequest {
         slug: None,
         prompt: Some("build a widget".into()),
+        spec_path: None,
+        max_usd: None,
     };
     assert!(req.validate_payload().is_ok());
 }
@@ -817,6 +830,106 @@ impl CliRuntime for ResumableRuntime {
     }
 }
 
+/// A runtime whose plan `demo` has `checkpoint` as its last run.
+struct CheckpointedRuntime {
+    checkpoint: Option<crate::runtime::CheckpointRun>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for CheckpointedRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        Ok(RunResult {
+            success: true,
+            output_text: None,
+            usage: None,
+            gate_results: Vec::new(),
+        })
+    }
+
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        ResumableRuntime {
+            skippable: Vec::new(),
+        }
+        .load_plan_summary(workdir, plan_id)
+        .await
+    }
+
+    async fn checkpoint_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+    ) -> anyhow::Result<Option<crate::runtime::CheckpointRun>> {
+        Ok(self.checkpoint.clone())
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// gap-6d2dd2: `GET /api/plans/{id}` names the plan's last run whatever
+/// became of it, so the portal can find where a passed run's work went after
+/// a reload; `resumable_run` still names it only while a resume would
+/// continue it, and a plan with no checkpoint says null for both.
+#[tokio::test]
+async fn plan_detail_names_its_last_run() {
+    let run = |status: &str, passed: &[&str], left: &[&str]| crate::runtime::CheckpointRun {
+        run_id: "6988f0b8-4199-4abf-9cfc-67713bc60e34".to_string(),
+        status: status.to_string(),
+        passed_tasks: passed.iter().map(ToString::to_string).collect(),
+        tasks_left: left.iter().map(ToString::to_string).collect(),
+        resumable: !left.is_empty() && !passed.is_empty(),
+        delivery_pending: false,
+        continues: true,
+        reason: None,
+        spent_usd: None,
+    };
+    let detail = |checkpoint: Option<crate::runtime::CheckpointRun>| async move {
+        let (_dir, state) = test_state_with_runtime(Arc::new(CheckpointedRuntime { checkpoint }));
+        let Json(body) = get_plan(State(state), Path("demo".into()))
+            .await
+            .expect("the plan's detail");
+        body
+    };
+
+    let passed = run("succeeded", &["T1", "T2"], &[]);
+    let body = detail(Some(passed.clone())).await;
+    assert_eq!(body["last_run"], json!(passed), "{body}");
+    assert_eq!(body["last_run"]["status"], "succeeded", "{body}");
+    assert!(body["resumable_run"].is_null(), "{body}");
+
+    let failed = run("failed", &["T1"], &["T2"]);
+    let body = detail(Some(failed.clone())).await;
+    assert_eq!(body["last_run"], json!(failed), "{body}");
+    assert_eq!(body["resumable_run"], json!(failed), "{body}");
+
+    let body = detail(None).await;
+    assert!(body["last_run"].is_null(), "{body}");
+    assert!(body.get("last_run").is_some(), "always said: {body}");
+    assert!(body["resumable_run"].is_null(), "{body}");
+}
+
 /// gap-b07969: `POST /api/plans/{id}/execute` with `{ "resume": true }`
 /// says in its 202 which tasks the resume replays instead of running, and
 /// a fresh run replays none.
@@ -857,22 +970,30 @@ fn generate_request_refuses_a_prd_slug() {
     let slug_only = GenerateRequest {
         slug: Some("demo".into()),
         prompt: None,
+        spec_path: None,
+        max_usd: None,
     };
     let error = slug_only.validate_payload().expect_err("a slug is refused");
     assert!(format!("{error:?}").contains("'prompt'"), "{error:?}");
     let both = GenerateRequest {
         slug: Some("demo".into()),
         prompt: Some("Build the widget".into()),
+        spec_path: None,
+        max_usd: None,
     };
     assert!(both.validate_payload().is_err());
     let blank = GenerateRequest {
         slug: None,
         prompt: Some("  ".into()),
+        spec_path: None,
+        max_usd: None,
     };
     assert!(blank.validate_payload().is_err());
     let neither = GenerateRequest {
         slug: None,
         prompt: None,
+        spec_path: None,
+        max_usd: None,
     };
     assert!(neither.validate_payload().is_err());
 }
@@ -899,6 +1020,8 @@ async fn generate_plan_from_prompt_calls_the_runtime_with_the_prompt() {
         ValidJson(GenerateRequest {
             slug: None,
             prompt: Some("Build a widget library".into()),
+            spec_path: None,
+            max_usd: None,
         }),
     )
     .await
@@ -931,6 +1054,222 @@ async fn generate_plan_from_prompt_calls_the_runtime_with_the_prompt() {
     assert_eq!(calls[0].arg, "Build a widget library");
     // Nothing is written as a PRD draft any more.
     assert!(!state.workdir.join(".roko").join("prd").exists());
+}
+
+/// gap-fe4225: with a `spec_path`, `POST /plans/generate` plans from the
+/// workspace file's exact bytes, with the prompt's instructions after them.
+/// A chat that copied phase 2's spec by hand turned every row of its checks
+/// table into `|| …`. A path outside the workspace, or no file, is refused.
+#[tokio::test]
+async fn plan_generate_with_a_spec_path_plans_from_the_file() {
+    let runtime = Arc::new(RecordingRuntime {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        notify: Arc::new(Notify::new()),
+        success: true,
+        call_count: Arc::new(AtomicUsize::new(0)),
+        group: None,
+        last_options: Arc::new(Mutex::new(None)),
+        known_plan_id: None,
+        plan_tasks: vec![],
+        summary_estimated_minutes: None,
+    });
+    let notify = Arc::clone(&runtime.as_ref().notify);
+    let calls = Arc::clone(&runtime.as_ref().calls);
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let spec = "# Phase 2: rumble\n\n## Acceptance checks\n\n| Id | Command | Check |\n|---|---|---|\n\
+                | P2.01 | `tools/spec.sh 2 lfo 'P2.01*'` | the rates are right |\n";
+    std::fs::create_dir_all(state.workdir.join("docs/specs")).expect("docs");
+    std::fs::write(state.workdir.join("docs/specs/phase-2.md"), spec).expect("the spec");
+
+    let request = GenerateRequest {
+        slug: None,
+        prompt: Some("Don't run it yet.".into()),
+        spec_path: Some("docs/specs/phase-2.md".into()),
+        max_usd: None,
+    };
+    assert!(request.validate_payload().is_ok());
+    let response = generate_plan(State(Arc::clone(&state)), ValidJson(request))
+        .await
+        .expect("generate a plan from the spec");
+    assert_eq!(
+        response.into_response().status(),
+        axum::http::StatusCode::ACCEPTED
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+        .await
+        .expect("runtime should be called");
+    let asked = calls.lock().expect("lock calls")[0].arg.clone();
+    assert!(asked.starts_with(spec), "{asked}");
+    assert!(asked.ends_with("---\n\nDon't run it yet.\n"), "{asked}");
+
+    let outside = tempfile::tempdir().expect("tempdir");
+    std::fs::write(outside.path().join("other.md"), spec).expect("a file outside");
+    let outside_path = outside.path().join("other.md").display().to_string();
+    for path in [
+        "../other.md",
+        outside_path.as_str(),
+        "docs/specs/missing.md",
+        "docs/specs",
+    ] {
+        let refused = generate_plan(
+            State(Arc::clone(&state)),
+            ValidJson(GenerateRequest {
+                slug: None,
+                prompt: None,
+                spec_path: Some(path.to_string()),
+                max_usd: None,
+            }),
+        )
+        .await;
+        assert!(refused.is_err(), "{path}");
+    }
+}
+
+/// A runtime whose plan generation records the cap it runs under, then
+/// writes the plan (gap-33d458).
+struct CapRuntime {
+    caps: Arc<Mutex<Vec<Option<f64>>>>,
+    /// The file each generation's request was read from (bug-60ad88).
+    spec_paths: Arc<Mutex<Vec<Option<PathBuf>>>>,
+    notify: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for CapRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("CapRuntime only generates")
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        _prompt: &str,
+        _for_chat_host: bool,
+        options: crate::runtime::PlanGenerationOptions,
+        _progress: crate::runtime::ProgressReporter,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        self.caps.lock().expect("lock caps").push(options.max_usd);
+        self.spec_paths
+            .lock()
+            .expect("lock spec paths")
+            .push(options.spec_path);
+        self.notify.notify_one();
+        let plans_root = workdir.join("plans");
+        Ok(crate::runtime::PlanGenerationResult {
+            plan_targets: vec![plans_root.join(slug)],
+            plans_root,
+            artifacts: Vec::new(),
+            cost_usd: 0.0,
+            source_checks: None,
+            repairs: Vec::new(),
+        })
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// gap-33d458: `POST /plans/generate` takes the most writing the plan may
+/// spend. The runtime plans under it, and the answer gives it with its
+/// source, `request`. Without one, `[authoring] max_generation_usd` ($2 by
+/// default) applies, and the answer says it came from the config. A cap of
+/// 0, a negative one or one that is not finite is refused.
+#[tokio::test]
+async fn plan_generate_takes_a_spend_cap() {
+    let caps = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
+    let runtime = Arc::new(CapRuntime {
+        caps: Arc::clone(&caps),
+        spec_paths: Arc::default(),
+        notify: Arc::clone(&notify),
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let request = |max_usd: Option<f64>| GenerateRequest {
+        slug: None,
+        prompt: Some("Build a widget library".into()),
+        spec_path: None,
+        max_usd,
+    };
+    for (max_usd, cap, source) in [
+        (Some(0.6), json!(0.6), "request"),
+        (None, json!(2.0), "config"),
+    ] {
+        let request = request(max_usd);
+        assert!(request.validate_payload().is_ok());
+        let response = generate_plan(State(Arc::clone(&state)), ValidJson(request))
+            .await
+            .expect("the generation starts")
+            .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the answer");
+        let answer: Value = serde_json::from_slice(&bytes).expect("answer json");
+        assert_eq!(answer["max_usd"], cap, "{answer}");
+        assert_eq!(answer["max_usd_source"], source, "{answer}");
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("the runtime is called");
+    }
+    assert_eq!(*caps.lock().expect("lock caps"), [Some(0.6), Some(2.0)]);
+
+    for max_usd in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+        assert!(
+            request(Some(max_usd)).validate_payload().is_err(),
+            "{max_usd}"
+        );
+    }
+}
+
+/// bug-60ad88: a `spec_path` reaches the runtime as the file the request's
+/// text was read from, so every task of the plan reads it.
+#[tokio::test]
+async fn plan_generate_passes_its_spec_path_on() {
+    let spec_paths = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
+    let runtime = Arc::new(CapRuntime {
+        caps: Arc::default(),
+        spec_paths: Arc::clone(&spec_paths),
+        notify: Arc::clone(&notify),
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    std::fs::create_dir_all(state.workdir.join("docs/specs")).expect("docs");
+    std::fs::write(state.workdir.join("docs/specs/phase-3.md"), "# Phase 3\n").expect("a spec");
+    let request = GenerateRequest {
+        slug: None,
+        prompt: None,
+        spec_path: Some("docs/specs/phase-3.md".into()),
+        max_usd: None,
+    };
+    generate_plan(State(Arc::clone(&state)), ValidJson(request))
+        .await
+        .expect("the generation starts");
+    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+        .await
+        .expect("the runtime is called");
+    assert_eq!(
+        *spec_paths.lock().expect("lock spec paths"),
+        [Some(state.workdir.join("docs/specs/phase-3.md"))]
+    );
 }
 
 /// A runtime whose plan generation returns without writing a plan.
@@ -975,6 +1314,7 @@ impl CliRuntime for NoPlanRuntime {
             artifacts: Vec::new(),
             cost_usd: 0.0,
             source_checks: None,
+            repairs: Vec::new(),
         })
     }
 }
@@ -991,6 +1331,8 @@ async fn generate_plan_that_writes_no_plan_fails_its_operation() {
         ValidJson(GenerateRequest {
             slug: None,
             prompt: Some("a rust app that prints hello world".into()),
+            spec_path: None,
+            max_usd: None,
         }),
     )
     .await
@@ -1960,9 +2302,12 @@ async fn list_plans_returns_internal_error_for_corrupt_plan_file() {
         .await
         .expect("write corrupt plan");
 
-    let err = list_plans(State(state))
-        .await
-        .expect_err("corrupt plan should fail");
+    let err = list_plans(
+        State(state),
+        axum::extract::Query(ListPlansQuery::default()),
+    )
+    .await
+    .expect_err("corrupt plan should fail");
 
     assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     drop(dir);
@@ -2065,6 +2410,8 @@ async fn rest_pause_holds_the_run_without_cancelling() {
         status: crate::state::PlanRunStatus::running(),
         handle,
         cancel: cancel.clone(),
+        max_usd: None,
+        started_at: chrono::Utc::now(),
     };
     state
         .active_plans
@@ -2511,6 +2858,8 @@ async fn plan_list_and_detail_carry_the_summary_fields() {
                     tasks: vec![],
                     title: None,
                     max_parallel: 1,
+                    plan_checks: Vec::new(),
+                    workspace_rungs: true,
                 }))
             } else {
                 Ok(None)
@@ -2682,6 +3031,8 @@ async fn put_plan_source_returns_409_when_run_is_active() {
         status: crate::state::PlanRunStatus::running(),
         handle,
         cancel,
+        max_usd: None,
+        started_at: chrono::Utc::now(),
     };
     state
         .active_plans
@@ -2985,7 +3336,15 @@ async fn a_chat_host_plan_is_generated_for_a_chat_host() {
         let (_dir, state) = test_state_with_runtime(runtime);
 
         let notified = notify.notified();
-        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+        start_plan_generation(
+            &state,
+            "Build a widget library".into(),
+            &origin,
+            None,
+            GenerationCap::resolve(&state, None),
+            None,
+        )
+        .await;
         tokio::time::timeout(std::time::Duration::from_secs(1), notified)
             .await
             .expect("runtime should be called");
@@ -3019,8 +3378,15 @@ async fn plan_generation_status_reports_its_cost() {
     let origin = crate::runtime::RunOrigin::Mcp {
         client: "hermes".into(),
     };
-    let (op_id, slug) =
-        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        "Build a widget library".into(),
+        &origin,
+        None,
+        GenerationCap::resolve(&state, None),
+        None,
+    )
+    .await;
 
     let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -3067,6 +3433,7 @@ impl CliRuntime for StagedRuntime {
         slug: &str,
         _prompt: &str,
         _for_chat_host: bool,
+        _options: crate::runtime::PlanGenerationOptions,
         progress: crate::runtime::ProgressReporter,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
         let stage = |stage: &str, cost_usd: f64| {
@@ -3089,6 +3456,7 @@ impl CliRuntime for StagedRuntime {
             artifacts: Vec::new(),
             cost_usd: 0.0125,
             source_checks: None,
+            repairs: vec!["T1: added `core/CMakeLists.txt` to its files".to_string()],
         })
     }
 
@@ -3150,6 +3518,8 @@ async fn plan_generation_status_reports_its_stage() {
         "Build a widget library".into(),
         &crate::runtime::RunOrigin::Http,
         None,
+        GenerationCap::resolve(&state, None),
+        None,
     )
     .await;
     let status = |app: axum::Router| {
@@ -3199,6 +3569,12 @@ async fn plan_generation_status_reports_its_stage() {
     let done = wait_for(|status| status["status"] != "running").await;
     assert_eq!(done["status"], "completed", "{done}");
     assert_eq!(done["result"]["cost_usd"], 0.0125, "{done}");
+    // gap-0fb7d9: and what roko changed in its planner's draft.
+    assert_eq!(
+        done["result"]["repairs"],
+        json!(["T1: added `core/CMakeLists.txt` to its files"]),
+        "{done}"
+    );
     assert_eq!(done["progress"]["stage"], "recording", "{done}");
     assert!(done.get("elapsed_secs").is_none(), "{done}");
 }
@@ -3215,6 +3591,8 @@ async fn plan_generation_status_outlives_its_handle() {
         &state,
         "Build a widget library".into(),
         &crate::runtime::RunOrigin::Http,
+        None,
+        GenerationCap::resolve(&state, None),
         None,
     )
     .await;
@@ -3274,4 +3652,393 @@ async fn plan_generation_status_outlives_its_handle() {
         assert_eq!(status["progress"]["stage"], "recording", "{status}");
         assert!(status.get("elapsed_secs").is_none(), "{status}");
     }
+}
+
+/// Sets its flag when it is dropped before it is disarmed: a planner call
+/// whose future a cancel dropped, as a CLI planner's child is killed when its
+/// future is. A call that ends disarms it.
+struct DropFlag(Option<Arc<std::sync::atomic::AtomicBool>>);
+
+impl DropFlag {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        if let Some(flag) = &self.0 {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// A runtime whose plan write reports its first planner call settled, at
+/// stage `planning`, or (`saving`) reports that it saves its plan, then waits
+/// at `gate`. A saving write writes its plan once `gate` opens; `dropped`
+/// says whether a cancel dropped the write (bug-36ce72).
+struct HeldWriteRuntime {
+    saving: bool,
+    gate: Arc<Notify>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl HeldWriteRuntime {
+    fn new(saving: bool) -> Self {
+        Self {
+            saving,
+            gate: Arc::new(Notify::new()),
+            dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for HeldWriteRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("a held plan write runs nothing")
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        _prompt: &str,
+        _for_chat_host: bool,
+        _options: crate::runtime::PlanGenerationOptions,
+        progress: crate::runtime::ProgressReporter,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        let mut call = DropFlag(Some(Arc::clone(&self.dropped)));
+        progress(json!({
+            "stage": if self.saving { "recording" } else { "planning" },
+            "attempt": 1,
+            "attempts": 1,
+            "model": "planner",
+            "calls": 1,
+            "cost_usd": 0.0375,
+            "max_usd": 2.0,
+        }));
+        self.gate.notified().await;
+        call.disarm();
+        let plan_dir = workdir.join("plans").join(slug);
+        std::fs::create_dir_all(&plan_dir)?;
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]\n")?;
+        Ok(crate::runtime::PlanGenerationResult {
+            plan_targets: vec![plan_dir],
+            plans_root: workdir.join("plans"),
+            artifacts: Vec::new(),
+            cost_usd: 0.0375,
+            source_checks: None,
+            repairs: Vec::new(),
+        })
+    }
+
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        if !workdir.join("plans").join(plan_id).exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(json!({
+            "id": plan_id,
+            "title": "Widgets",
+            "task_count": 1,
+            "tasks_done": 0,
+            "tasks_failed": 0,
+            "completed": false,
+            "status": "ready",
+            "old_format": false,
+        }))?))
+    }
+
+    async fn list_plans(
+        &self,
+        _workdir: &std::path::Path,
+    ) -> anyhow::Result<Vec<crate::plan_types::PlanSummaryDto>> {
+        Ok(Vec::new())
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// `method` on `uri` through the router, with auth off: the status and JSON
+/// body.
+async fn route_json(
+    state: &Arc<AppState>,
+    method: &str,
+    uri: &str,
+) -> (axum::http::StatusCode, Value) {
+    let app = build_router(
+        Arc::clone(state),
+        &[],
+        ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        },
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Start a plan write on `state` and wait until it reports its first
+/// progress: its operation id and its plan's id.
+async fn held_write(state: &Arc<AppState>) -> (String, String) {
+    let (op_id, slug) = start_plan_generation(
+        state,
+        "Build a widget library".into(),
+        &crate::runtime::RunOrigin::Http,
+        None,
+        GenerationCap::resolve(state, None),
+        None,
+    )
+    .await;
+    let uri = format!("/api/operations/{op_id}");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while route_json(state, "GET", &uri)
+            .await
+            .1
+            .get("progress")
+            .is_none()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the write reports its progress");
+    (op_id, slug)
+}
+
+/// bug-36ce72: `POST /api/plans/{id}/cancel`, the route a run's cancel
+/// takes, stops a plan write named by its operation id or by its plan's id.
+/// It answers 200 with `cancelled` and what the write's settled calls cost,
+/// the planner call is dropped, no plan directory is left, the operation's
+/// status says `cancelled`, and `plan_generate.cancelled` is on the event
+/// stream. A second cancel answers the same, as already ended.
+#[tokio::test]
+async fn the_cancel_route_stops_a_plan_write() {
+    for by_plan_id in [false, true] {
+        let runtime = Arc::new(HeldWriteRuntime::new(false));
+        let (dir, state) = test_state_with_runtime(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+        let (op_id, slug) = held_write(&state).await;
+        let name = if by_plan_id { &slug } else { &op_id };
+
+        let (status, body) = route_json(&state, "POST", &format!("/api/plans/{name}/cancel")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["cancelled"], true, "{body}");
+        assert_eq!(body["state"], "cancelled", "{body}");
+        assert_eq!(body["run_id"], op_id.as_str(), "{body}");
+        assert_eq!(body["plan_id"], slug.as_str(), "{body}");
+        assert_eq!(body["cost_usd"], 0.0375, "{body}");
+        assert!(
+            runtime.dropped.load(Ordering::SeqCst),
+            "the planner call is stopped"
+        );
+        assert!(!dir.path().join("plans").join(&slug).exists());
+
+        let (_, operation) = route_json(&state, "GET", &format!("/api/operations/{op_id}")).await;
+        assert_eq!(operation["status"], "cancelled", "{operation}");
+        assert_eq!(operation["progress"]["cost_usd"], 0.0375, "{operation}");
+        let cancelled_events = state
+            .state_hub
+            .replay_from(0)
+            .into_iter()
+            .filter(|envelope| {
+                matches!(
+                    &envelope.payload,
+                    roko_core::DashboardEvent::EventLogEntry { event_type, plan_id, .. }
+                        if event_type == "plan_generate.cancelled" && *plan_id == slug
+                )
+            })
+            .count();
+        assert_eq!(cancelled_events, 1);
+
+        let (status, again) =
+            route_json(&state, "POST", &format!("/api/plans/{op_id}/cancel")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{again}");
+        assert_eq!(again["state"], "cancelled", "{again}");
+        assert_eq!(again["already_ended"], true, "{again}");
+    }
+}
+
+/// bug-36ce72: a cancel that comes while a plan write saves its plan lets
+/// the write end as it would have. The plan is written whole, the operation
+/// completes, and the cancel waits for it, then answers 409: the write had
+/// already written its plan.
+#[tokio::test]
+async fn a_cancel_never_stops_a_plan_write_being_saved() {
+    let runtime = Arc::new(HeldWriteRuntime::new(true));
+    let (dir, state) = test_state_with_runtime(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+    let (op_id, slug) = held_write(&state).await;
+
+    let cancel = tokio::spawn({
+        let state = Arc::clone(&state);
+        let uri = format!("/api/plans/{op_id}/cancel");
+        async move { route_json(&state, "POST", &uri).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!cancel.is_finished(), "the cancel waits for the save");
+    runtime.gate.notify_one();
+    let (status, body) = cancel.await.expect("the cancel answers");
+    assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("had already written it")),
+        "{body}"
+    );
+    assert!(!runtime.dropped.load(Ordering::SeqCst));
+    assert!(
+        dir.path()
+            .join("plans")
+            .join(&slug)
+            .join("tasks.toml")
+            .is_file()
+    );
+    let (_, operation) = route_json(&state, "GET", &format!("/api/operations/{op_id}")).await;
+    assert_eq!(operation["status"], "completed", "{operation}");
+}
+
+/// gap-6774b5: `GET /api/plans?writing=true` lists a plan being written, until
+/// the write ends: a row with the plan summary's fields, `status: "writing"`
+/// and no tasks, its request's first line as its title, and what the write is
+/// doing and has spent. Without `writing`, the list is the plans on disk alone.
+#[tokio::test]
+async fn the_plan_list_shows_a_plan_being_written() {
+    let runtime = Arc::new(HeldWriteRuntime::new(false));
+    let (_dir, state) = test_state_with_runtime(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+    let (op_id, slug) = held_write(&state).await;
+
+    let (status, listed) = route_json(&state, "GET", "/api/plans").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{listed}");
+    assert_eq!(listed, json!([]));
+
+    let (status, listed) = route_json(&state, "GET", "/api/plans?writing=true").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{listed}");
+    let rows = listed.as_array().expect("a plan list");
+    assert_eq!(rows.len(), 1, "{listed}");
+    let row = &rows[0];
+    assert_eq!(row["id"], slug.as_str(), "{row}");
+    assert_eq!(row["title"], "Build a widget library", "{row}");
+    assert_eq!(row["status"], "writing", "{row}");
+    assert_eq!(row["task_count"], 0, "{row}");
+    assert_eq!(row["tasks_done"], 0, "{row}");
+    assert_eq!(row["completed"], false, "{row}");
+    let writing = &row["writing"];
+    assert_eq!(writing["run_id"], op_id.as_str(), "{row}");
+    assert_eq!(writing["stage"], "planning", "{row}");
+    assert_eq!(writing["calls"], 1, "{row}");
+    assert_eq!(writing["cost_usd"], 0.0375, "{row}");
+    assert_eq!(writing["max_usd"], 2.0, "{row}");
+    assert!(writing["elapsed_secs"].is_u64(), "{row}");
+
+    let (status, _) = route_json(&state, "POST", &format!("/api/plans/{op_id}/cancel")).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let (_, listed) = route_json(&state, "GET", "/api/plans?writing=true").await;
+    assert_eq!(listed, json!([]));
+}
+
+/// A runtime whose plan has one check of its own and opts out of the
+/// workspace's rungs (bug-35c1f3).
+struct PlanChecksRuntime;
+
+#[async_trait::async_trait]
+impl CliRuntime for PlanChecksRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("a plan with checks of its own runs nothing here")
+    }
+
+    async fn load_plan_tasks(
+        &self,
+        _workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanTasksDto>> {
+        Ok(Some(crate::plan_types::PlanTasksDto {
+            plan_id: plan_id.to_string(),
+            task_count: 0,
+            tasks: Vec::new(),
+            title: None,
+            max_parallel: 1,
+            plan_checks: vec![crate::plan_types::PlanTaskVerifyDto {
+                phase: "plan".to_string(),
+                command: "tools/check.sh".to_string(),
+                fail_msg: None,
+                timeout_ms: None,
+            }],
+            workspace_rungs: false,
+        }))
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// bug-35c1f3: `GET /api/plans/{id}/tasks` says what else roko checks, as
+/// the plan's tasks record does (gap-c1726f): the plan's own checks
+/// (`plan_checks`), and whether its tasks run the workspace's rungs.
+#[tokio::test]
+async fn plan_tasks_route_names_the_plans_own_checks() {
+    let (_dir, state) = test_state_with_runtime(Arc::new(PlanChecksRuntime));
+    let (status, body) = route_json(&state, "GET", "/api/plans/demo/tasks").await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(
+        body["plan_checks"],
+        json!([{ "phase": "plan", "command": "tools/check.sh" }]),
+        "{body}"
+    );
+    assert_eq!(body["workspace_rungs"], false, "{body}");
 }

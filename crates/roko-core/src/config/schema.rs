@@ -1421,7 +1421,12 @@ impl RokoConfig {
             out,
             "# They never see your gh login, GitHub tokens or .env provider keys; remove more:"
         );
-        let _ = writeln!(out, "# strip_env = [\"SCCACHE_*\"]\n");
+        let _ = writeln!(out, "# strip_env = [\"SCCACHE_*\"]");
+        let _ = writeln!(
+            out,
+            "# New attempt checkouts get a warm copy of these build trees (unset: every CMake one):"
+        );
+        let _ = writeln!(out, "# warm_build_dirs = [\"build\"]\n");
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");
@@ -2737,7 +2742,7 @@ pub struct CoreRunnerConfig {
     pub delete_attempt_branches: bool,
     /// Whether `roko plan run` runs each task in its own git worktree, as
     /// `--worktree-per-task` asks. Defaults to `true`: finished plans are
-    /// delivered into the run's batch branch, `roko/batch/<run-id>`, and the
+    /// delivered into the run's batch branch, `roko/work/<slug>`, and the
     /// operator's checkout is never changed. A workdir that is not the top
     /// level of a git checkout with a commit runs its tasks in the shared
     /// working tree instead. `--worktree-per-task` and

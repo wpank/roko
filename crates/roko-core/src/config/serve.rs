@@ -1862,10 +1862,7 @@ mod chat_run_tests {
             ("top", "cli-sonnet"),
         ]
         .into_iter()
-        .map(|(name, model)| crate::config::routing::LadderRung {
-            name: name.into(),
-            model: model.into(),
-        })
+        .map(|(name, model)| crate::config::routing::LadderRung::new(name, model))
         .collect();
         assert_eq!(
             config.tool_loop_models_with_env(&env),
@@ -1896,10 +1893,7 @@ mod chat_run_tests {
             ("top", "claude-sonnet-4-6"),
         ]
         .into_iter()
-        .map(|(name, model)| crate::config::routing::LadderRung {
-            name: name.into(),
-            model: model.into(),
-        })
+        .map(|(name, model)| crate::config::routing::LadderRung::new(name, model))
         .collect();
         let refusal = config
             .chat_run_refusal_with_env(None, &env)
@@ -1947,10 +1941,7 @@ mod chat_run_tests {
         config.routing.ladder.roles.clear();
         config.routing.ladder.rungs = [("strong", "gpt-5.4-mini"), ("top", "cli-sonnet")]
             .into_iter()
-            .map(|(name, model)| crate::config::routing::LadderRung {
-                name: name.into(),
-                model: model.into(),
-            })
+            .map(|(name, model)| crate::config::routing::LadderRung::new(name, model))
             .collect();
         let refusal = config
             .chat_run_refusal_with_env(None, &env)

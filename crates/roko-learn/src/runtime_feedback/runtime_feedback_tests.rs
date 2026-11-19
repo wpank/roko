@@ -1506,6 +1506,7 @@ async fn generation_outcome_partial_success_does_not_seed_learning() {
         spec_quality: None,
         source_checks: None,
         cost_usd: 0.0,
+        repairs: Vec::new(),
     };
 
     runtime

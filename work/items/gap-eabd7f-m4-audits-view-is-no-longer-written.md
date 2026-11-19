@@ -9,8 +9,9 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
-updated = 2026-10-15
-last_verified = 2026-10-04
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-14 follow-up reports 2026-10-04 (gap-dbe8e7, gate 14b)"
 discovered_from = "gap-dbe8e7 (in flight, work/gap-dbe8e7; dropped the placeholder view rather than ship fake data)"
 anchors = ["benchmarks/viabilitybench/showcase/build_bundle.py"]
@@ -94,3 +95,5 @@ but nothing projects it into the showcase bundle's view format.
   Available from the mirror: `visible_passes` (selection rows), `audited` and `caught` (results, `labels.y`), each draw's `audit_id`, `attempt_key`, `pi` and `outcome`, and `detector.honeypots` (audited `vs.label` rows with `honeypot`). Needs a decision: extend the records (a redacted per-check summary in the mirror, the policy knobs on selections, audit estimates as MetricRecords with `n_eff`, the mirror copied into results), or change the contract to the implemented lottery.
 
 2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Change the m4-audits contract to the lottery as built, plus two Python-side steps that need no vault data. (a) Drop by_check and each draw's per-check checks[], and replace pi_base/pi_honeypot/pi_gaming_prone with each draw's recorded pi and the audit.policy_change moves of rho and lambda. (b) Project each mirrored audit.estimate row into a vb.metric_record/1 row with an optional n_eff field, so false_green, gaming_rate and series carry a metric_ref. (c) Copy .roko/audit/audits.jsonl into the experiment's results in run_roko.py. No per-check outcome leaves the vault. Remove the hold; the item stays open with its verify. Why: The mirror redacts only audit.result's checks (crates/roko-gate/src/audit/ledger.rs:539-542); selections, estimates and policy changes are mirrored, so (b) and (c) are possible without touching the vault. Adding a per-check summary to the mirror would put more audit detail in the agent-readable .roko/audit/, against the vault rule (crates/roko-core/src/audit_home.rs:1-14). policy.rs has one pi formula, so a three-pi block would be fabricated (item Progress note, checked at deba5c6f8). This is the cheapest option and reversible (schema and Python only), and it keeps every shown number traceable to a record. Audits are off and the showcase waits on the pilots, so nothing ships before this lands. If vetoed: With 'extend the records', the item grows by Rust changes to ledger::redact_for_mirror (a per-check count summary) and policy.rs (named pi components), and the Audits page keeps its per-check table.
+
+Checked 2026-10-27: 2026-10-26 sweep: Will's 2026-10-15 decision (change the m4-audits contract to the lottery as built: drop by_check/per-check checks[], use each draw's recorded pi plus audit.policy_change's rho/lambda moves, project audit.estimate into vb.metric_record/1 rows with an optional n_eff, copy .roko/audit/audits.jsonl into experiment results via run_roko.py) is recorded in the item but none of it is implemented yet.

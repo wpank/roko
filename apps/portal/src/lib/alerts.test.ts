@@ -12,7 +12,6 @@ function baseInput(overrides: Partial<AlertInput> = {}): AlertInput {
     run: initialRunState(),
     connection: 'connected',
     selectedPlanId: null,
-    validationErrors: 0,
     requestError: null,
     dismissedKey: null,
     ...overrides,
@@ -102,22 +101,16 @@ describe('pickAlert', () => {
     const alert = pickAlert(baseInput({ run }));
     expect(alert).not.toBeNull();
     expect(alert!.severity).toBe('error');
-    expect(alert!.text).toBe('plan-1: task-compile failed (compile check)');
+    expect(alert!.text).toBe('plan-1: a task failed its compile check.');
     expect(alert!.key).toBe('task-failed:plan-1:task-compile:1');
     expect(alert!.actions).toEqual([
       { kind: 'select-task', planId: 'plan-1', taskId: 'task-compile' },
     ]);
   });
 
-  // 5. Rank 3 — validation errors
-  it('rank 3: emits a warning for validation errors on the selected plan', () => {
-    const alert = pickAlert(
-      baseInput({ selectedPlanId: 'plan-1', validationErrors: 3 }),
-    );
-    expect(alert).not.toBeNull();
-    expect(alert!.severity).toBe('warning');
-    expect(alert!.text).toBe('3 validation errors');
-    expect(alert!.actions).toEqual([]);
+  // 5. Rank 3 — a plan's validation errors stay on its page (gap-6c4d24): with nothing else to say, no band
+  it('rank 3: leaves a selected plan’s validation errors to its page', () => {
+    expect(pickAlert(baseInput({ selectedPlanId: 'plan-1' }))).toBeNull();
   });
 
   // 6. Rank 4 — connection disconnected
@@ -146,7 +139,6 @@ describe('pickAlert', () => {
         run,
         requestError: 'Server rejected: forbidden',
         selectedPlanId: 'plan-1',
-        validationErrors: 5,
       }),
     );
     expect(alert!.key).toContain('request-error:');
@@ -212,9 +204,4 @@ describe('pickAlert', () => {
     expect(alert!.key).toBe('task-failed:plan-selected:task-sel:1');
   });
 
-  // 12. Validation alert suppressed when no plan is selected
-  it('rank 3: no validation alert when selectedPlanId is null', () => {
-    const alert = pickAlert(baseInput({ validationErrors: 5, selectedPlanId: null }));
-    expect(alert).toBeNull();
-  });
 });

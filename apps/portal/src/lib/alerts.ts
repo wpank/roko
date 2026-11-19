@@ -12,13 +12,16 @@
  * 1c. newest run.errors entry (execution error); the server's generic
  *     "plan <id> completed with task-level failures" yields to rank 2 when
  *     the plan has a known failed task, and otherwise reads "<title> failed".
- * 2. Failed task, preferring the selected plan
- * 3. validationErrors > 0 on the selected plan
+ *     A failed write or revision of a plan is not repeated here: the box that
+ *     asked for it says it, in one sentence (gap-6c4d24).
+ * 2. Failed task, preferring the selected plan (in words: the plan's page numbers its tasks; "show" opens it)
+ * 3. (a plan's validation errors: its page says them, one line per problem, so the band no longer does)
  * 4. Connection disconnected or error
  */
 
 import type { RunState, TaskRun } from './runState';
 import { SIGN_IN_HINT, type ConnectionStatus } from './bootstrap';
+import { checkWord } from './runCard';
 
 // ── Exported types ────────────────────────────────────────────────────────────
 
@@ -38,7 +41,6 @@ export interface AlertInput {
   run: RunState;
   connection: ConnectionStatus;
   selectedPlanId: string | null;
-  validationErrors: number;
   requestError: string | null;
   /** A server notice about an unsupported operation — shown as an info alert. */
   requestNotice?: string | null;
@@ -65,20 +67,17 @@ function resolvePlanTitle(
 }
 
 /**
- * Return the label for the first failed check: its phase if set, else its name.
- * Returns null when the task has no failed check.
+ * Return the word for the first failed check ("build", "compile"), or null when the task has no failed check.
  */
 function failedCheckLabel(task: TaskRun): string | null {
   const check = task.checks.find((c) => c.status === 'failed');
   if (!check) return null;
-  return check.phase || check.name;
+  return checkWord(check.phase || check.name);
 }
 
 /**
- * Build the human-readable text for a failed task alert.
- *
- * Format: "<plan title>: <task id> failed (<check label> check)"
- * The trailing " (<check label> check)" is omitted when no failed check exists.
+ * Build the human-readable text for a failed task alert, without the task's id (an engine name):
+ * "<plan title>: a task failed its <check> check." or, with no failed check, "<plan title>: a task failed."
  */
 function failedTaskText(
   task: TaskRun,
@@ -87,8 +86,7 @@ function failedTaskText(
 ): string {
   const title = resolvePlanTitle(task.planId, planTitles, run);
   const checkLabel = failedCheckLabel(task);
-  const base = `${title}: ${task.taskId} failed`;
-  return checkLabel ? `${base} (${checkLabel} check)` : base;
+  return checkLabel ? `${title}: a task failed its ${checkLabel} check.` : `${title}: a task failed.`;
 }
 
 // ── pickAlert ─────────────────────────────────────────────────────────────────
@@ -98,7 +96,7 @@ function failedTaskText(
  * when no alert conditions are present.
  */
 export function pickAlert(input: AlertInput): Alert | null {
-  const { run, connection, selectedPlanId, validationErrors, requestError, requestNotice, dismissedKey, planTitles } = input;
+  const { run, connection, selectedPlanId, requestError, requestNotice, dismissedKey, planTitles } = input;
 
   /** Return `alert` if it is not the dismissed candidate, otherwise null. */
   function tryAlert(alert: Alert): Alert | null {
@@ -131,8 +129,10 @@ export function pickAlert(input: AlertInput): Alert | null {
   // catch-all; hide it when rank 2 already has a specific task to show.
   // Without a known failed task, reword it to "<title> failed" (same key).
   // Any other run error passes through unchanged.
-  if (run.errors.length > 0) {
-    const newest = run.errors[run.errors.length - 1]!;
+  const shownByTheAsk = (message: string) => /^plan (generation|revision) failed for /.test(message);
+  const errors = run.errors.filter((e) => !shownByTheAsk(e.message));
+  if (errors.length > 0) {
+    const newest = errors[errors.length - 1]!;
     const key = `run-error:${newest.atMs}`;
 
     const genericMatch = newest.message.match(/^plan (\S+) completed with task-level failures$/);
@@ -181,17 +181,7 @@ export function pickAlert(input: AlertInput): Alert | null {
     }
   }
 
-  // ── Rank 3: validation errors on selected plan ───────────────────────────
-  if (validationErrors > 0 && selectedPlanId !== null) {
-    const key = `validation:${selectedPlanId}:${validationErrors}`;
-    const alert = tryAlert({
-      key,
-      severity: 'warning',
-      text: `${validationErrors} validation error${validationErrors === 1 ? '' : 's'}`,
-      actions: [],
-    });
-    if (alert) return alert;
-  }
+  // ── Rank 3: validation errors — not here. The plan's page says them, one line each, by its task (gap-6c4d24).
 
   // ── Rank 4: connection issue ─────────────────────────────────────────────
   if (connection === 'disconnected' || connection === 'error') {

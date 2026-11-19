@@ -8,11 +8,15 @@ severity = "p2"
 goal = "cybernetic"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "for id in gap-b5caf3 gap-aea13a gap-ac2611 gap-943046 gap-31c0e8 gap-e9218e gap-894977 gap-222d47; do grep -rqw \"id = \\\"$id\\\"\" work/done/ || exit 1; done"
 +++
 
 ## Problem
@@ -49,3 +53,5 @@ Every package of this phase is done.
 ## Notes
 
 - Held tasks and deferred decisions are not filed; see the backlog folder.
+
+Checked 2026-10-27: 2026-10-26 sweep: 7/8 packages done (PK32-PK36, PK38-PK39). PK37/gap-e9218e (LOG1 block A, 960 billed runs on roko_fixed) remains open; it is blocked by the same live-run/provider-billing issue as spec-567e52's Pilot B (commit 4c0a712da: 'roko_fixed is blocked by Cerebras 402s').

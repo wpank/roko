@@ -9,8 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/orchestrator", "roko-cli/graph_execution"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-dogfood-will#R4-4"
 discovered_from = "agent:dogfood-will (round v6 run 4, 2026-10-17)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::format_attempt_worktree_id", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider"]
@@ -80,3 +81,5 @@ state but not its kept attempt branches.
 - Related: bug-06bd18 (done, the reattach fix), bug-c872f6 (a CLI run's two run ids).
 - Evidence: the reflog above, from the scratch project of `tmp/hermes-roko-v6/dogfood-will/evidence/run4/`, and the
   two runs' logs (`tmp/hermes-roko-v6/dogfood-will/logs/g4-strong.out`, `g4-top.out`).
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. The three commits since 2026-10-17 that touched workspaces.rs/worktree/mod.rs (warm CMake build-tree copies, build-output filtering, registration-file merge) did not scope attempt checkout ids by run; worktree_id (workspaces.rs:103-104) still hashes only plan_id/task_id/attempt.

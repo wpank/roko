@@ -359,7 +359,10 @@ a request-driven refresh storm.
 1. **Allow-list** -- `privy_allowed_users`, `privy_allowed_roles` or
    `privy_workspace_id` must be configured. Without any of the three, every
    Privy JWT is rejected (fail closed) and the server logs a warning naming
-   all three settings.
+   all three settings. On a bind beyond localhost, serve refuses to start
+   instead, with an error that names them (S11 G0b): add one, or unset
+   `privy_app_id` to turn Privy JWT auth off. `serve.acknowledge_public_risk`
+   does not lift this refusal.
 2. **Signature + app-id** -- verified against the JWKS keyset for the configured
    `privy_app_id`.
 3. **User allow-list** -- if the JWT `sub` claim (e.g. `did:privy:...`,

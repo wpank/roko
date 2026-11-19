@@ -678,7 +678,7 @@ mod tests {
         // A price shock writes a valid snapshot with one model's rates × k.
         let base = PriceSnapshot::builtin().expect("the built-in snapshot");
         let model = base.rows()[0].slug.clone();
-        let builtin_text = include_str!("../../../config/prices/2026-09-28.toml");
+        let builtin_text = include_str!("../../../config/prices/2026-10-27.toml");
         let shock = DisturbanceSpec {
             kind: DisturbanceKind::PriceShock,
             params: BTreeMap::from([

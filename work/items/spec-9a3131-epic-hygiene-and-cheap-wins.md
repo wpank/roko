@@ -3,22 +3,21 @@ id = "spec-9a3131"
 kind = "spec"
 title = "Epic: hygiene and cheap wins"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/main", "roko-serve/routes", "roko-core/config", "docs/v3", ".github/workflows"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #6-7, §3, §5); workstreams/assessment/W5-contention-parallelism.md (rec 2-3); W6-build-verify-throughput.md"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/main.rs", "crates/roko-serve/src/routes/plans.rs", "crates/roko-core/src/config/learning.rs::LearningConfig", "docs/v3/", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
 links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805", "bug-91af0e", "bug-31bca6", "bug-9434c4", "bug-919fe8", "bug-c1950e", "bug-7df50d", "dec-01be49", "gap-4b3bd5", "bug-779ae7", "bug-ccfa0d", "gap-d0f52f", "bug-a70def", "bug-f3969d", "gap-3505fb", "gap-603aa4", "bug-fbefe0", "bug-f1f814", "bug-ddd5bd"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
-
-[[verify]]
-command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-serve/src/routes/plans/run_control.rs && ! grep -qE 'enum (LearnCmd|PlanCmd) [{]' crates/roko-cli/src/main.rs && grep -q '^dream_on_completion = false' roko.toml && ! grep -q 'This is law' docs/v3/30-CONDUCTOR.md"
 
 [[verify]]
 command = "sha=\"$(gh api repos/{owner}/{repo}/commits/main --jq .sha)\" && test \"$(gh run list --commit \"$sha\" --json conclusion --jq length)\" -gt 0 && test \"$(gh run list --commit \"$sha\" --json conclusion --jq '[.[]|select(.conclusion==\"failure\" or .conclusion==\"startup_failure\" or .conclusion==\"timed_out\")]|length')\" = 0 && test \"$(gh api repos/{owner}/{repo}/branches/main/protection/required_status_checks --jq '.contexts|length')\" -gt 0"
@@ -132,3 +131,7 @@ This is the implementation plan.
   cheap-wins candidate: either wire it into whatever control path it was meant for, or remove it if it was
   superseded by the control-file polling (`forward_control_file` in `plan_runner.rs`, from an earlier batch's
   research on bug-8208a6).
+
+Checked 2026-10-27: 2026-10-26 sweep: effectively done except find-8cc7ac (CI has never passed on main) and setting required status checks on main, both of which need the repo author. The epic's first verify command now passes in full; only the CI-dependent second verify and find-8cc7ac block formal closure.
+
+Removed [[verify]] `test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-serve/src/routes/plans/run_control.rs && ! grep -qE 'enum (LearnCmd|PlanCmd) [{]' crates/roko-cli/src/main.rs && grep -q '^dream_on_completion = false' roko.toml && ! grep -q 'This is law' docs/v3/30-CONDUCTOR.md`: it passes while the problem still exists.

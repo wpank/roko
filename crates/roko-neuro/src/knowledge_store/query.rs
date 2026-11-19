@@ -109,7 +109,7 @@ impl KnowledgeStore {
         let entries = self.read_all()?;
         let mut scored = entries
             .into_iter()
-            .filter(|entry| self.visible(entry))
+            .filter(|entry| is_hot(entry) && self.visible(entry))
             .filter_map(|entry| {
                 let similarity = similarity_against_entry(fingerprint, &entry)?;
                 Some(KnowledgeSimilarityHit { entry, similarity })
@@ -168,13 +168,16 @@ impl KnowledgeStore {
             Err(err) => return Err(err).context("open knowledge store for HDC query"),
         };
 
+        // This query streams the file itself, so it applies the retirement
+        // ledger as a read does (bug-2ad4fa).
+        let retired = self.retired_ids();
         let mut hits = Vec::new();
         for (line_idx, line) in BufReader::new(file).lines().enumerate() {
             let line = line.with_context(|| format!("read HDC query line {}", line_idx + 1))?;
             let Ok(entry) = serde_json::from_str::<KnowledgeEntry>(&line) else {
                 continue;
             };
-            if entry.frozen {
+            if !is_hot(&entry) || retired.contains(&entry.id) {
                 continue;
             }
             // P3-11: Skip entries whose HDC vector was encoded with a
@@ -256,7 +259,7 @@ impl KnowledgeStore {
             .read_all()?
             .into_iter()
             .filter(|entry| {
-                !entry.frozen
+                is_hot(entry)
                     && entry
                         .hdc_vector
                         .as_ref()
@@ -338,6 +341,9 @@ impl KnowledgeStore {
     }
 
     /// Return the most similar existing entry at or above `minimum`.
+    ///
+    /// A retired entry still counts (bug-2ad4fa): it absorbs a repeat of its
+    /// lesson, which would otherwise come back as a new entry.
     pub fn find_similar_entry(
         &self,
         candidate: &KnowledgeEntry,
@@ -412,6 +418,7 @@ impl KnowledgeStore {
         let mut tier_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut source_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut anti_knowledge_count = 0usize;
+        let retired_count = entries.iter().filter(|entry| entry.deprecated).count();
         let mut confidence_sum = 0.0;
         let mut oldest_entry: Option<&KnowledgeEntry> = None;
         let mut newest_entry: Option<&KnowledgeEntry> = None;
@@ -468,6 +475,7 @@ impl KnowledgeStore {
             tier_counts,
             source_counts,
             anti_knowledge_count,
+            retired_count,
             average_confidence,
             oldest_entry: oldest_entry.cloned(),
             newest_entry: newest_entry.cloned(),
@@ -508,7 +516,8 @@ impl KnowledgeStore {
 }
 
 /// Whether hot queries consider `entry`. Frozen entries belong to the cold
-/// tier (NEURO-11), and entries with blank content are noise (Audit #80).
+/// tier (NEURO-11), a person retired a deprecated one (bug-2ad4fa), and
+/// entries with blank content are noise (Audit #80).
 fn is_hot(entry: &KnowledgeEntry) -> bool {
-    !entry.frozen && !entry.content.trim().is_empty()
+    !entry.frozen && !entry.deprecated && !entry.content.trim().is_empty()
 }

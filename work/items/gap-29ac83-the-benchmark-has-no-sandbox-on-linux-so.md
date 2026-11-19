@@ -3,13 +3,15 @@ id = "gap-29ac83"
 kind = "gap"
 title = "The benchmark has no sandbox on Linux, so records there say sandbox: none"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench's report)"
 anchors = ["benchmarks/viabilitybench/driver/census.py", "benchmarks/viabilitybench/driver/records.py"]
@@ -61,3 +63,5 @@ The sandbox set-up in `census.py`, and the records' `sandbox` field.
   - "loopback:<port>": the Roko and mini-swe-agent arms (the metering proxy's port), and the CLI arms and the
     roko_plan planner (their egress proxy's port). A new network namespace has its own loopback, so this needs a
     bridge (a Unix socket or port forwarding into the namespace) or bwrap with a seccomp filter.
+
+Checked 2026-10-27: 2026-10-26: unchanged since the 2026-10-16 note already on this item - the backend seam/BACKENDS dict exists from gap-0bd49a, but no Linux entry was added to it.

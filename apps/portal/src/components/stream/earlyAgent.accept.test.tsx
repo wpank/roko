@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanTasks } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { StreamPane } from '@/components/stream/StreamPane';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { initialRunState, taskKey } from '@/lib/runState';
 import { STREAM_RECORD_PREFIX } from '@/lib/streamRecord';
 import { foldEvents, renderWithClient, setStore, textOf } from '@/test/dom';
@@ -69,7 +69,7 @@ describe('the fold', () => {
   });
 });
 
-describe('the stream', () => {
+describe('the running task, opened', () => {
   it('says agent working and marks the live step while that agent runs', () => {
     const tasks: WirePlanTasks = {
       plan_id: 'hello',
@@ -78,10 +78,13 @@ describe('the stream', () => {
       tasks: [{ id: 'T01', title: 'Write the hello world program', tier: 'mechanical', status: 'pending', depends_on: [], files: ['hello/main.rs'], completed: false, verify_phases: ['build'] }],
     };
     setStore(foldEvents([PLAN_STARTED, spawned('hello/T01', 'T01'), started('T01'), step]));
-    renderWithClient(<StreamPane planId="hello" selectedTaskId="T01" open onToggle={() => {}} />, {
+    const plan = { id: 'hello', title: 'Hello world', task_count: 1, tasks_failed: 0, completed: false, status: 'pending', old_format: false };
+    renderWithClient(<PlanPage plan={plan} selectedTaskId="T01" onSelectTask={() => {}} onRequestError={() => {}} />, {
       seed: [
         [queryKeys.planTasks('hello'), tasks],
-        [queryKeys.workspace, { name: 'hello', path: '/tmp/hello', branch: null }],
+        [queryKeys.validation('hello'), { valid: true, errors: [], warnings: [], diagnostics: [] }],
+        [queryKeys.gateRungs, []],
+        [queryKeys.planCosts('hello'), 3],
       ],
     });
     const transcript = document.querySelector('[data-region="transcript"]')!;

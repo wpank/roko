@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use roko_core::Body;
-use roko_core::tool::{Artifact, ToolError, ToolResult};
+use roko_core::tool::{Artifact, ToolError, ToolResult, ToolResultContent};
 use serde::Serialize;
 
 /// Marker appended when enough budget remains.
@@ -34,31 +34,65 @@ pub fn truncate_result(result: ToolResult, max_bytes: usize) -> ToolResult {
     }
 }
 
+/// Whether the text blocks of `content`, joined as the immune screen joins
+/// them, are one JSON value: what a structured result promises.
+///
+/// It reads the syntax and builds no value, and a payload of one block is read
+/// in place, so a handler's large payload costs no copy of it.
+pub(crate) fn text_is_json(content: &[ToolResultContent]) -> bool {
+    let texts: Vec<&str> = content
+        .iter()
+        .filter_map(ToolResultContent::as_text)
+        .collect();
+    let parses = |text: &str| serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok();
+    match texts.as_slice() {
+        [only] => parses(only),
+        _ => parses(&texts.concat()),
+    }
+}
+
 fn truncate_ok(
-    content: Vec<roko_core::tool::ToolResultContent>,
+    content: Vec<ToolResultContent>,
     is_structured: bool,
     artifacts: Vec<Artifact>,
     max_bytes: usize,
 ) -> ToolResult {
+    // bug-1f8db7: a cut ends the handler's JSON mid-value, and the cut payload
+    // is then text, as a cut JSON artifact is. Left structured, the immune
+    // screen would take the host's own cut for a malformed result and isolate
+    // the tool. A payload that was not JSON before the cut stays structured,
+    // so the screen still sees the handler's own malformed result.
+    let content_bytes: usize = content
+        .iter()
+        .map(|block| match block {
+            ToolResultContent::Text { text } => text.len(),
+            ToolResultContent::Image { data, .. } => data.len(),
+        })
+        .sum();
+    let sent_json = is_structured && content_bytes > max_bytes && text_is_json(&content);
+    let mut text_cut = false;
     let mut remaining = max_bytes;
-    let truncated_content: Vec<roko_core::tool::ToolResultContent> = content
+    let truncated_content: Vec<ToolResultContent> = content
         .into_iter()
         .map(|block| match block {
-            roko_core::tool::ToolResultContent::Text { text } => {
+            ToolResultContent::Text { text } => {
+                let sent = text.len();
                 let truncated = take_text(text, remaining);
+                text_cut |= truncated.len() < sent;
                 remaining = remaining.saturating_sub(truncated.len());
-                roko_core::tool::ToolResultContent::Text { text: truncated }
+                ToolResultContent::Text { text: truncated }
             }
-            roko_core::tool::ToolResultContent::Image { media_type, data } => {
+            ToolResultContent::Image { media_type, data } => {
                 let truncated = take_text(data, remaining);
                 remaining = remaining.saturating_sub(truncated.len());
-                roko_core::tool::ToolResultContent::Image {
+                ToolResultContent::Image {
                     media_type,
                     data: truncated,
                 }
             }
         })
         .collect();
+    let is_structured = is_structured && !(sent_json && text_cut);
     let mut retained = Vec::with_capacity(artifacts.len().min(MAX_RESULT_ARTIFACTS));
     for artifact in artifacts.into_iter().take(MAX_RESULT_ARTIFACTS) {
         if remaining == 0 {
@@ -269,6 +303,66 @@ mod tests {
                 })
                 .sum::<usize>();
         assert!(total <= 1_024);
+    }
+
+    /// bug-1f8db7: a cut ends a structured payload's JSON, and the cut
+    /// payload is text; an uncut one stays structured.
+    #[test]
+    fn a_cut_json_payload_is_text() {
+        let payload = serde_json::json!({ "status": "ok", "output": "x".repeat(200) }).to_string();
+
+        let cut = truncate_result(ToolResult::structured(payload.clone()), 64);
+        assert!(
+            matches!(
+                cut,
+                ToolResult::Ok {
+                    is_structured: false,
+                    ..
+                }
+            ),
+            "{cut:?}"
+        );
+        assert!(cut.text_content().ends_with(TRUNCATION_MARKER), "{cut:?}");
+
+        let whole = truncate_result(ToolResult::structured(payload), 4_096);
+        assert!(
+            matches!(
+                whole,
+                ToolResult::Ok {
+                    is_structured: true,
+                    ..
+                }
+            ),
+            "{whole:?}"
+        );
+    }
+
+    /// bug-1f8db7: a structured payload that was never JSON stays structured
+    /// when cut, so the immune screen still sees the handler's own malformed
+    /// result.
+    #[test]
+    fn a_cut_payload_that_was_never_json_stays_structured() {
+        let malformed = ToolResult::Ok {
+            content: vec![ToolResultContent::text(format!(
+                "{{not-json {}",
+                "x".repeat(200)
+            ))],
+            is_structured: true,
+            artifacts: Vec::new(),
+        };
+
+        let cut = truncate_result(malformed, 64);
+
+        assert!(
+            matches!(
+                cut,
+                ToolResult::Ok {
+                    is_structured: true,
+                    ..
+                }
+            ),
+            "{cut:?}"
+        );
     }
 
     #[test]

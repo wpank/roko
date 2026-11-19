@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
 use roko_cli::exit_codes::EXIT_SUCCESS;
+use roko_cli::learn_view;
+use roko_cli::term_style::{self, Glyph, Role, Style};
 use roko_core::config::routing::LadderConfig;
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_fs::RokoLayout;
@@ -47,7 +49,8 @@ pub(crate) enum SelfModelCmd {
     /// logs), and print the data audit, its prequential scores, and how the runs' shadow
     /// forecasts join their routed attempts and verdicts. Nothing is saved.
     Fit {
-        /// Read the logs and dispatch nothing: the one mode there is.
+        /// Read the logs and dispatch nothing, the one mode there is, so it is the default; the
+        /// flag stays accepted for scripts that pass it (gap-45f6bb).
         #[arg(long)]
         offline: bool,
         /// The `.roko` directory to read (default: the working directory's).
@@ -116,10 +119,7 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
     let snapshot = PriceSnapshot::for_workspace(&config.pricing, &workdir)
         .context("load the price snapshot")?;
     match cmd {
-        SelfModelCmd::Fit { offline, from, .. } => {
-            if !offline {
-                bail!("only `--offline` fits exist: the fit reads the logs and dispatches nothing");
-            }
+        SelfModelCmd::Fit { from, .. } => {
             let layout = from.map_or_else(|| RokoLayout::for_project(&workdir), RokoLayout::new);
             // The gate a plan run scores with: `[self_model] n_min` is its W (gap-4c531f).
             let gate = CalibrationGate::of(&config.self_model);
@@ -127,7 +127,7 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
             if json {
                 println!("{}", serde_json::to_string(&report)?);
             } else {
-                print!("{}", render_fit(&report));
+                print!("{}", render_fit(&report, Style::stdout()));
             }
         }
         SelfModelCmd::Replay {
@@ -192,6 +192,8 @@ pub(crate) struct FitReport {
     pub(crate) gate: Option<GateReport>,
     /// How the runs' shadow forecasts join their routed attempts and verdicts (S04 §7.4).
     pub(crate) forecast_join: ForecastReport,
+    /// Those forecasts scored against what happened, as the runs made them (gap-45f6bb).
+    pub(crate) live_forecasts: ingest::LiveForecasts,
 }
 
 /// A fit's data audit: each source's counts, and the units left once the legacy logs' copies
@@ -208,7 +210,8 @@ pub(crate) struct FitAudit {
     pub(crate) duplicates: usize,
     /// Units left.
     pub(crate) units: usize,
-    /// Of those, the units the model trains on: labelled, and not a failover substitute.
+    /// Of those, the units the model learns: the labelled ones, a failover substitute's
+    /// included (bug-a35286), though the prequential scores leave the substitutes out.
     pub(crate) training_units: usize,
 }
 
@@ -274,6 +277,8 @@ pub(crate) fn fit_offline(
     let runs = ingest::read_runs(&layout.runs_dir()).context("read the S01 runs")?;
     let forecasts =
         ingest::read_forecast_join(&layout.runs_dir()).context("read the S01 runs' forecasts")?;
+    let live_forecasts = ingest::score_live_forecasts(&layout.runs_dir())
+        .context("score the S01 runs' forecasts")?;
     let logs = legacy::read_files(&layout.efficiency_path(), &layout.episodes_path())
         .context("read the legacy logs")?;
     let held: BTreeSet<(&str, &str)> = runs.units.iter().map(plan_task).collect();
@@ -285,16 +290,24 @@ pub(crate) fn fit_offline(
     let mut model = SelfModel::new(snapshot);
     let mut window = CalibrationWindow::new(model.version.clone()).keeping(gate.keeps());
     let mut scored = Vec::new();
+    let mut learned = 0;
     for unit in runs.units.iter().chain(fresh.iter().copied()) {
-        let Some(passed) = unit.label.y_gate.filter(|_| !unit.failover) else {
+        let Some(passed) = unit.label.y_gate else {
             continue;
         };
         let task = TaskFeatures::from(unit);
+        let w = unit.label.weight;
+        // A failover substitute teaches the model what the model that ran did, but nobody
+        // chose it: it is neither scored nor in the window, as in the live sink (bug-a35286).
+        if unit.failover {
+            model.observe_with(unit, &task, w);
+            learned += 1;
+            continue;
+        }
         let forecasts = model.forecast(&task, std::slice::from_ref(&unit.arm));
         let Some(p) = forecasts.first().map(|forecast| forecast.p_gate) else {
             continue;
         };
-        let w = unit.label.weight;
         scored.push(Scored::weighted(p, passed, w));
         // The fit routes nothing, so it scores as a shadow window does: the routed pass rate
         // is unknown and fails no bound (bug-92cc56).
@@ -306,6 +319,7 @@ pub(crate) fn fit_offline(
         };
         window.push(&model.version, outcome);
         model.observe_with(unit, &task, w);
+        learned += 1;
     }
     let report = (scored.len() >= gate.window).then(|| gate.evaluate(&window));
     let calibration = match &report {
@@ -322,7 +336,7 @@ pub(crate) fn fit_offline(
             raw_units,
             duplicates: raw_units - units,
             units,
-            training_units: scored.len(),
+            training_units: learned,
         },
         predictor_version: model.version.to_string(),
         price_snapshot_id: snapshot.id().to_string(),
@@ -339,6 +353,7 @@ pub(crate) fn fit_offline(
         calibration,
         gate: report,
         forecast_join: ForecastReport::of(forecasts),
+        live_forecasts,
     })
 }
 
@@ -347,82 +362,142 @@ fn plan_task(unit: &Unit) -> (&str, &str) {
     (unit.plan_id.as_str(), unit.task_id.as_str())
 }
 
-/// The fit report as text.
-pub(crate) fn render_fit(report: &FitReport) -> String {
+/// The units the prequential scores cover: every unit the fit trains on but the failover
+/// substitutes, which teach the model and are not scored (bug-a35286, gap-c63eb1).
+fn prequential_scope(scored: usize, trained: usize) -> String {
+    match trained.saturating_sub(scored) {
+        0 => format!("all {scored} units"),
+        1 => format!(
+            "{scored} of the {trained} units (the failover substitute trains but isn't scored)"
+        ),
+        substitutes => format!(
+            "{scored} of the {trained} units (the {substitutes} failover substitutes train but \
+             aren't scored)"
+        ),
+    }
+}
+
+/// The width of the fit report's label column.
+const FIT_LABEL_WIDTH: usize = 11;
+
+/// The fit report as text, in roko's design system (gap-cb1a87): what the
+/// fit is, then a label for each part of it: the run records and the older
+/// logs it read, the units it trained on, its forecasts' scores, the
+/// calibration gate, the forecasts the runs made and how many joined to a
+/// verdict, and how those live forecasts scored.
+pub(crate) fn render_fit(report: &FitReport, style: Style) -> String {
     let audit = &report.data_audit;
     let scores = &report.prequential;
     let number =
         |value: Option<f64>| value.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
-    let mut out = format!(
-        "self-model fit (offline): predictor {}, prices {}\n",
+    let dot = format!(" {} ", style.glyph(Glyph::Dot));
+    let context = format!(
+        "how well roko forecasts a try's pass, refit offline over the run logs{dot}predictor \
+         {}{dot}prices {}",
         report.predictor_version, report.price_snapshot_id
     );
-    for (name, source) in [("S01 runs", &audit.runs), ("legacy logs", &audit.legacy)] {
-        let _ = writeln!(out, "{name}:");
-        for line in source.to_string().lines() {
-            let _ = writeln!(out, "  {line}");
-        }
-    }
-    let _ = writeln!(
-        out,
-        "units: {} read, {} duplicates dropped, {} kept, {} to train on",
-        audit.raw_units, audit.duplicates, audit.units, audit.training_units
+    let mut out = term_style::header(style, "learn self-model fit", &context);
+    let mut section = |label: &str, items: Vec<String>| {
+        out.extend(learn_view::section(style, label, FIT_LABEL_WIDTH, &items));
+    };
+    let lines = |source: &DataAudit| source.to_string().lines().map(str::to_string).collect();
+    section("Run records", lines(&audit.runs));
+    section("Older logs", lines(&audit.legacy));
+    section(
+        "Units",
+        vec![format!(
+            "{} read, {} duplicates dropped, {} kept, {} to train on",
+            audit.raw_units, audit.duplicates, audit.units, audit.training_units
+        )],
     );
-    let _ = writeln!(
-        out,
-        "prequential (n = {}): Brier {}, base rate {}, Brier skill {}, ECE {}, calibration in \
-         the large {}, AUROC {}",
-        scores.n,
-        number(scores.brier),
-        number(scores.base_rate),
-        number(scores.brier_skill),
-        number(scores.ece),
-        number(scores.calibration_in_the_large),
-        number(scores.auroc)
+    section(
+        "Forecasts",
+        vec![format!(
+            "scored before each unit taught the model, over {}: Brier {}, base rate {}, Brier \
+             skill {}, ECE {}, calibration in the large {}, AUROC {}",
+            prequential_scope(scores.n, audit.training_units),
+            number(scores.brier),
+            number(scores.base_rate),
+            number(scores.brier_skill),
+            number(scores.ece),
+            number(scores.calibration_in_the_large),
+            number(scores.auroc)
+        )],
     );
-    match &report.gate {
-        None => {
-            let _ = writeln!(
-                out,
-                "calibration: {} (n = {} < {})",
-                report.calibration, scores.n, report.window
-            );
-        }
-        Some(gate) if gate.reasons.is_empty() => {
-            let _ = writeln!(out, "calibration: {}", report.calibration);
-        }
-        Some(gate) => {
-            let reasons = gate.reasons.join("; ");
-            let _ = writeln!(out, "calibration: {} ({reasons})", report.calibration);
-        }
-    }
+    let (glyph, verdict) = match report.calibration {
+        "eligible" => (
+            style.paint(Role::Pass, style.glyph(Glyph::Pass)),
+            "eligible",
+        ),
+        "not_eligible" => (
+            style.paint(Role::Fail, style.glyph(Glyph::Fail)),
+            "not eligible",
+        ),
+        _ => (
+            style.paint(Role::Dim, style.glyph(Glyph::Waiting)),
+            "not enough outcomes yet",
+        ),
+    };
+    // The gate scores only its last W outcomes, a window of its own (gap-45f6bb).
+    let calibration = match &report.gate {
+        None => format!("{glyph} {verdict} (n = {} < {})", scores.n, report.window),
+        Some(gate) if gate.reasons.is_empty() => format!(
+            "{glyph} {verdict}, over the gate's last {} outcomes",
+            gate.window
+        ),
+        Some(gate) => format!(
+            "{glyph} {verdict}, over the gate's last {} outcomes ({})",
+            gate.window,
+            gate.reasons.join("; ")
+        ),
+    };
+    section("Calibration", vec![calibration]);
     let join = &report.forecast_join;
     let counts = &join.counts;
-    if counts.forecasts == 0 {
-        let _ = writeln!(
-            out,
-            "forecasts: {} (no predictions.jsonl row in {} runs)",
-            join.status, counts.runs
-        );
+    let joined = if counts.forecasts == 0 {
+        vec![format!(
+            "none yet: no predictions.jsonl row in {}",
+            term_style::plural(counts.runs, "run", "runs")
+        )]
     } else {
-        let _ = writeln!(
-            out,
-            "forecasts ({} of {} runs): {} of {} routed attempts forecast (coverage {}), {} of {} \
-             joined to a labelled verdict (join share {}); unjoined: {} without a verdict, {} \
-             with an unlabelled verdict",
-            counts.runs_forecast,
-            counts.runs,
-            counts.routed_forecast,
-            counts.routed,
-            number(join.coverage),
-            counts.joined,
-            counts.forecasts,
-            number(join.join_share),
-            counts.no_verdict,
-            counts.unlabelled
-        );
-    }
-    out
+        vec![
+            format!(
+                "{} of {} runs: {} of {} routed attempts forecast (coverage {})",
+                counts.runs_forecast,
+                counts.runs,
+                counts.routed_forecast,
+                counts.routed,
+                number(join.coverage)
+            ),
+            format!(
+                "{} of {} joined to a labelled verdict (join share {}); unjoined: {} without a \
+                 verdict, {} with an unlabelled verdict",
+                counts.joined,
+                counts.forecasts,
+                number(join.join_share),
+                counts.no_verdict,
+                counts.unlabelled
+            ),
+        ]
+    };
+    section("Runs", joined);
+    let live = &report.live_forecasts;
+    let scored = if live.n == 0 {
+        "none scored against a verdict".to_string()
+    } else {
+        format!(
+            "as the runs made them: {} with a verdict, Brier {} against {} for always \
+             forecasting the pass rate (Brier skill {})",
+            live.n,
+            number(live.brier),
+            number(live.base_rate_brier),
+            number(live.brier_skill)
+        )
+    };
+    section("Live", vec![scored]);
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
 }
 
 // -----------------------------------------------------------------------
@@ -573,7 +648,7 @@ enum Spec {
     /// H4-B1 on the rungs.
     Frugal(Vec<String>),
     /// H4-BL: the ladder, and each rung model's arm.
-    Ladder(LadderConfig, BTreeMap<String, String>),
+    Ladder(Box<LadderConfig>, BTreeMap<String, String>),
     /// H4-B2 over (model, provider, arm) triples.
     Router(Vec<(String, String, String)>),
     /// H4-B3 over every cell.
@@ -590,7 +665,7 @@ impl Spec {
             Self::Static(arms) => Box::new(CrossFitStatic(arms.clone())),
             Self::Frugal(rungs) => Box::new(FrugalCascade::new(rungs.clone())),
             Self::Ladder(config, arms) => {
-                Box::new(ProductionLadder::new(config.clone(), arms.clone()))
+                Box::new(ProductionLadder::new((**config).clone(), arms.clone()))
             }
             Self::Router(models) => {
                 let models: Vec<(&str, &str, &str)> = models
@@ -649,7 +724,7 @@ fn policy_spec(
                 let why = format!("no arm runs a ladder rung's model ({})", rungs.join(", "));
                 return Ok(Err(why));
             }
-            Spec::Ladder(ladder.clone(), by_model)
+            Spec::Ladder(Box::new(ladder.clone()), by_model)
         }
         "H4-B2" => {
             if by_model.is_empty() {
@@ -861,9 +936,21 @@ mod tests {
         assert!(report.gate.is_none());
         let json = serde_json::to_string(&report).expect("serialize the report");
         assert!(json.contains(r#""calibration":"insufficient_n""#));
-        let text = render_fit(&report);
+        let text = render_fit(&report, Style::plain());
+        // In roko's design system (gap-cb1a87): the header, then a label for each part.
+        assert!(
+            text.starts_with(
+                "◆ roko  learn self-model fit\n  how well roko forecasts a try's pass, refit \
+                 offline over the run logs · predictor "
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\n  Older logs   rows read: "), "{text}");
         assert!(text.contains("label sources: gate_passed 4, pre_gate_success 5"));
-        assert!(text.contains("calibration: insufficient_n (n = 9 < 100)"));
+        assert!(
+            text.contains("\n  Calibration  ○ not enough outcomes yet (n = 9 < 100)"),
+            "{text}"
+        );
 
         let settings = SelfModelConfig {
             n_min: 9,
@@ -898,7 +985,11 @@ mod tests {
         let empty = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
         assert_eq!(empty.forecast_join.status, "insufficient_n");
         assert_eq!(empty.forecast_join.join_share, None);
-        assert!(render_fit(&empty).contains("forecasts: insufficient_n"));
+        let text = render_fit(&empty, Style::plain());
+        assert!(
+            text.contains("\n  Runs         none yet: no predictions.jsonl row in "),
+            "{text}"
+        );
 
         let identity =
             |task: &str| AttemptIdentity::new(&AttemptKey::new("run-f", "plan-f", task, 1));
@@ -924,6 +1015,7 @@ mod tests {
                 would_choose: None,
                 default: None,
                 action: "dispatch".to_string(),
+                start_rules: None,
             };
             AttemptPredictionRecord::new(identity(task), predictor, Vec::new(), decision)
         };
@@ -980,7 +1072,7 @@ mod tests {
         let json = serde_json::to_value(&report).expect("serialize the report");
         assert_eq!(json["forecast_join"]["coverage"], 0.75);
         assert_eq!(json["forecast_join"]["no_verdict"], 1);
-        let text = render_fit(&report);
+        let text = render_fit(&report, Style::plain());
         let coverage = "3 of 4 routed attempts forecast (coverage 0.750)";
         assert!(text.contains(coverage), "{text}");
         let share = "2 of 3 joined to a labelled verdict (join share 0.667)";
@@ -1039,12 +1131,121 @@ mod tests {
     fn learn_econ_prices_lists_every_snapshot_row() {
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
         let text = render_prices(&snapshot);
-        assert_eq!(text.lines().count(), 1 + 10, "{text}");
+        let rows = snapshot.rows().len();
+        assert_eq!(text.lines().count(), 1 + rows, "{text}");
         for row in snapshot.rows() {
             assert!(text.contains(&row.source_url));
         }
         let json = prices_json(&snapshot);
-        assert_eq!(json["rows"].as_array().map(Vec::len), Some(10));
+        assert_eq!(json["rows"].as_array().map(Vec::len), Some(rows));
+    }
+
+    /// gap-45f6bb: `roko learn self-model fit` runs without `--offline`: the fit reads the logs
+    /// and dispatches nothing, the one mode there is.
+    #[test]
+    fn self_model_fit_runs_offline_by_default() {
+        use clap::Parser as _;
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let workdir = workspace.path().to_string_lossy().into_owned();
+        let parse = || {
+            Cli::try_parse_from(["roko", "learn", "self-model", "fit", "--workdir", &workdir])
+                .expect("parse self-model fit")
+        };
+        let Some(Command::Learn {
+            cmd: LearnCmd::SelfModel { cmd },
+        }) = parse().command
+        else {
+            panic!("a self-model command");
+        };
+        assert_eq!(
+            cmd_self_model(&parse(), cmd, true).expect("a fit without --offline"),
+            0
+        );
+    }
+
+    /// gap-45f6bb: the fit says what each score covers. The prequential scores every unit, the
+    /// calibration gate its last W outcomes, and the live forecasts what the runs' shadow
+    /// forecasts said at the time, against what happened.
+    #[test]
+    fn the_fit_names_its_windows_and_scores_the_live_forecasts() {
+        use roko_learn::telemetry::records::{
+            AttemptPredictionRecord, PredictionCandidate, PredictionDecision, PredictionPredictor,
+        };
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+            TelemetryWriter, TelemetryWriterConfig,
+        };
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+
+        // One run: the self-model forecast 0.8 for the arm that ran, and the try passed.
+        let layout = RokoLayout::for_project(workspace.path());
+        let identity = || AttemptIdentity::new(&AttemptKey::new("run-l", "plan-l", "T1", 1));
+        let candidate: PredictionCandidate = serde_json::from_value(serde_json::json!({
+            "arm": "roko/cerebras/gpt-oss-120b@default#V0",
+            "p_gate": 0.8, "p_fg": 0.05, "p_vs": 0.76, "p_vs_lcb": 0.7,
+            "cost_q50": 0.01, "cost_q90": 0.02, "lat_q50_s": 30.0, "lat_q90_s": 60.0,
+        }))
+        .expect("a candidate");
+        let predictor = PredictionPredictor {
+            version: "m3-l1-00000000".to_string(),
+            class: "m3-l1".to_string(),
+            mode: "shadow".to_string(),
+            trained_on_n: 0,
+            features_schema: 1,
+            features_hash: "b3:0".to_string(),
+        };
+        let decision = PredictionDecision {
+            would_choose: None,
+            default: None,
+            action: "dispatch".to_string(),
+            start_rules: None,
+        };
+        let run_dir = layout.run_dir("run-l");
+        std::fs::create_dir_all(&run_dir).expect("the run's directory");
+        let writer =
+            TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default()).expect("a writer");
+        assert!(writer.submit(AttemptOpenRecord::new(identity(), 0)));
+        let forecast =
+            AttemptPredictionRecord::new(identity(), predictor, vec![candidate], decision);
+        assert!(writer.submit(forecast));
+        let mut verdict = AttemptVerdictRecord::settle(identity(), AttemptOutcome::Passed, true);
+        verdict.executed.provider = Some("cerebras".to_string());
+        verdict.executed.model_dispatched = Some("gpt-oss-120b".to_string());
+        assert!(writer.submit(verdict));
+        writer.close();
+
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
+        let live = report.live_forecasts;
+        assert_eq!((live.n, live.passes), (1, 1));
+        let brier = live.brier.expect("a Brier score");
+        assert!((brier - 0.04).abs() < 1e-9, "{brier}");
+        let text = render_fit(&report, Style::plain());
+        assert!(
+            text.contains("scored before each unit taught the model, over all "),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  Live         as the runs made them: 1 with a verdict, Brier"),
+            "{text}"
+        );
+    }
+
+    /// gap-c63eb1: the prequential line counts the units it scores, and says why they are
+    /// fewer than the units the fit trains on.
+    #[test]
+    fn the_prequential_line_counts_the_units_it_scores() {
+        assert_eq!(prequential_scope(132, 132), "all 132 units");
+        assert_eq!(
+            prequential_scope(129, 139),
+            "129 of the 139 units (the 10 failover substitutes train but aren't scored)"
+        );
+        assert_eq!(
+            prequential_scope(5, 6),
+            "5 of the 6 units (the failover substitute trains but isn't scored)"
+        );
     }
 
     /// 6124: the three commands parse.

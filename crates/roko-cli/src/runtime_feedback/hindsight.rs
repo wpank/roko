@@ -577,7 +577,10 @@ mod tests {
         facade.on_event(&picked).await.unwrap();
         let mut laddered = completed("T1", true, None);
         if let FeedbackEvent::TaskCompleted { model_source, .. } = &mut laddered {
-            *model_source = ModelChoiceSource::Ladder { rung: 0 };
+            *model_source = ModelChoiceSource::Ladder {
+                rung: 0,
+                draw: None,
+            };
         }
         facade.on_event(&laddered).await.unwrap();
         assert_eq!(sonnet_confidence(&router), Some((1, 1)));

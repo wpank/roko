@@ -252,6 +252,7 @@ impl CursorConnection {
         turn_done_tx: mpsc::Sender<()>,
         resource_limits: Option<&ResourceLimits>,
         credential_scrub: &CredentialScrub,
+        agent_id: &str,
         env: &[(String, String)],
     ) -> Result<Self, String> {
         let mut cmd = confined_command(command, resource_limits)
@@ -275,6 +276,10 @@ impl CursorConnection {
         // Limit cargo parallelism for multi-agent scenarios.
         cmd.env("CARGO_INCREMENTAL", "0");
         cmd.env("CARGO_BUILD_JOBS", "2");
+
+        // Marked as the agent's (gap-31e8a7), before the caller's variables
+        // so an explicit id wins.
+        roko_core::child_env::mark_agent_process(cmd.as_std_mut(), agent_id);
 
         // Forward caller-supplied environment variables.
         cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
@@ -718,6 +723,8 @@ impl CursorCliAgent {
             turn_done_tx,
             self.resource_limits.as_ref(),
             &self.credential_scrub,
+            // The id a dispatch gives the agent, else `cursor-cli`.
+            &self.name,
             &self.env,
         )
         .await?;
@@ -1068,10 +1075,12 @@ done
     }
 
     /// Mock Cursor ACP server whose prompt turn starts `tool_calls` tool
-    /// calls and then either ends the turn or hangs until it is killed.
+    /// calls and then either ends the turn or hangs until it is killed. It
+    /// writes the `ROKO_AGENT_ID` it runs with to `agent-id.txt`.
     fn mock_tool_calling_script(tool_calls: usize, end_turn: bool) -> String {
         r#"#!/usr/bin/env python3
 import json
+import os
 import sys
 import time
 
@@ -1083,6 +1092,8 @@ for line in sys.stdin:
     method = msg.get("method", "")
     msg_id = msg.get("id", 0)
     if method == "initialize":
+        with open("agent-id.txt", "w") as agent_id:
+            agent_id.write(os.environ.get("ROKO_AGENT_ID", "<unset>"))
         print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": {"protocolVersion": 1}}), flush=True)
     elif method == "session/new":
         print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": {"sessionId": "cap-sess"}}), flush=True)
@@ -1134,7 +1145,8 @@ for line in sys.stdin:
         write_script(&script_path, &mock_tool_calling_script(2, true));
         let agent = CursorCliAgent::new(script_path.display().to_string(), tmp.path())
             .with_timeout_ms(30_000)
-            .with_max_turns(2);
+            .with_max_turns(2)
+            .with_name("live-a/cursor");
 
         let result = agent.run(&prompt("two steps"), &Context::now()).await;
 
@@ -1142,6 +1154,11 @@ for line in sys.stdin:
             result.success,
             "{}",
             result.output.body.as_text().unwrap_or("?")
+        );
+        // gap-31e8a7: the agent process is marked with its id.
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("agent-id.txt")).expect("agent id"),
+            "live-a/cursor"
         );
     }
 }

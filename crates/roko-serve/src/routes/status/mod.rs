@@ -458,6 +458,8 @@ mod tests {
             // Still going: only live runs count as active.
             handle: tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(30))),
             cancel: roko_runtime::cancel::CancelToken::new(),
+            max_usd: None,
+            started_at: chrono::Utc::now(),
         };
         state
             .active_plans
@@ -730,6 +732,7 @@ mod tests {
         hub.publish(DashboardEvent::EfficiencyEvent {
             plan_id: "hello".into(),
             task_id: "T01".into(),
+            attempt: None,
             metric: "cost_usd".into(),
             value: 0.125,
         });

@@ -319,7 +319,11 @@ struct ReleaseResponse {
 }
 
 /// Release one agent's isolation control on behalf of the authenticated
-/// principal (`local-api` for an unauthenticated local server). 404 when the
+/// principal (`local-api` for a request that names no user, as to an
+/// unauthenticated local server). The audit line records that the release
+/// came through this route and where its principal came from (find-d05b5e).
+/// Agent credentials cannot reach the route: it needs `ConfigEdit`, and an
+/// agent token fails closed on routes outside its capabilities. 404 when the
 /// agent has no control, 400 for a malformed agent id or reason.
 async fn release_control_handler(
     State(state): State<Arc<AppState>>,
@@ -327,11 +331,20 @@ async fn release_control_handler(
     auth: Option<Extension<AuthContext>>,
     Json(request): Json<ReleaseRequest>,
 ) -> Result<Json<ReleaseResponse>, ApiError> {
-    let by = auth
-        .and_then(|Extension(context)| context.user_id)
-        .unwrap_or_else(|| "local-api".to_string());
+    let (by, by_source) = match auth.and_then(|Extension(context)| context.user_id) {
+        Some(user) => (user, roko_agent::PrincipalSource::AuthenticatedUser),
+        None => (
+            "local-api".to_string(),
+            roko_agent::PrincipalSource::LocalApi,
+        ),
+    };
+    let via = roko_agent::ReleaseOrigin {
+        channel: roko_agent::ReleaseChannel::ServeApi,
+        by_source,
+        terminal: None,
+    };
     let released =
-        roko_agent::release_agent_control(&state.workdir, &agent_id, &by, &request.reason)
+        roko_agent::release_agent_control(&state.workdir, &agent_id, &by, &request.reason, via)
             .map_err(|error| match error.kind() {
                 io::ErrorKind::InvalidInput => ApiError::bad_request(error.to_string()),
                 _ => ApiError::internal(format!("release isolation control: {error}")),
@@ -445,6 +458,18 @@ mod tests {
         let audit_path = roko_agent::agent_control_releases_path(workdir.path());
         let audit = std::fs::read_to_string(audit_path).expect("audit file");
         assert_eq!(audit.lines().count(), 1, "{audit}");
+        // find-d05b5e: the audit line says the release came through this
+        // route, from a request that named no user.
+        let line: roko_agent::ReleasedControl =
+            serde_json::from_str(audit.trim_end()).expect("audit line");
+        assert_eq!(
+            line.via,
+            Some(roko_agent::ReleaseOrigin {
+                channel: roko_agent::ReleaseChannel::ServeApi,
+                by_source: roko_agent::PrincipalSource::LocalApi,
+                terminal: None,
+            })
+        );
 
         let (status, _) = post_json(&state, uri, serde_json::json!({ "reason": "again" })).await;
         assert_eq!(status, StatusCode::NOT_FOUND);

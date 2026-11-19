@@ -1,0 +1,178 @@
+{
+  "argv": [
+    "vb",
+    "run",
+    "--experiment",
+    "PILOT-A-RECAL",
+    "--run-id",
+    "cheap-direct-1",
+    "--stream",
+    "pilot",
+    "--arm",
+    "cheap_direct",
+    "--model",
+    "gpt-oss-120b",
+    "--seeds",
+    "1-3",
+    "--line",
+    "BL0",
+    "--allow-network",
+    "--max-cost-usd",
+    "2",
+    "--results",
+    "/Users/will/.roko-bench/viability",
+    "--lock",
+    "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-a5ec4c6318d9ce601/benchmarks/viabilitybench/experiments/prereg.lock.json",
+    "--prereg-spec",
+    "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-a5ec4c6318d9ce601/tmp/cybernetic-harness/specs/S09-experiments.md",
+    "--transcripts"
+  ],
+  "arm": "cheap_direct",
+  "base_url": "https://api.cerebras.ai/v1",
+  "caps": {
+    "command_timeout_s": 60,
+    "identical_calls": 5,
+    "input_tokens_per_attempt": 150000,
+    "input_tokens_per_task": 300000,
+    "max_output_tokens": 8192,
+    "model_calls_per_task": 30,
+    "observation_chars": 10000,
+    "turns_per_attempt": 12,
+    "turns_per_task": 30,
+    "usd_per_task": 0.3,
+    "wallclock_s": 1200
+  },
+  "config": {
+    "arm": {
+      "arm": {
+        "billed": true,
+        "harness": "mini-loop",
+        "id": "cheap_direct",
+        "label": "cheap·direct",
+        "line": "BL0",
+        "models_allow": [
+          "gpt-oss-120b"
+        ]
+      },
+      "caps": {
+        "command_timeout_s": 60,
+        "identical_calls": 5,
+        "input_tokens_per_attempt": 150000,
+        "input_tokens_per_task": 300000,
+        "max_output_tokens": 8192,
+        "model_calls_per_task": 30,
+        "observation_chars": 10000,
+        "turns_per_attempt": 12,
+        "turns_per_task": 30,
+        "usd_per_task": 0.3,
+        "wallclock_s": 1200
+      },
+      "providers": {
+        "cerebras": {
+          "api_key_env": "CEREBRAS_API_KEY",
+          "base_url": "https://api.cerebras.ai/v1",
+          "max_tokens_param": "max_completion_tokens"
+        }
+      },
+      "schema_version": "vb.arm/1"
+    },
+    "caps": {
+      "command_timeout_s": 60,
+      "identical_calls": 5,
+      "input_tokens_per_attempt": 150000,
+      "input_tokens_per_task": 300000,
+      "max_output_tokens": 8192,
+      "model_calls_per_task": 30,
+      "observation_chars": 10000,
+      "turns_per_attempt": 12,
+      "turns_per_task": 30,
+      "usd_per_task": 0.3,
+      "wallclock_s": 1200
+    },
+    "driver": "vb-driver-1.0.0",
+    "endpoint": {
+      "api_key_env": "CEREBRAS_API_KEY",
+      "base_url": "https://api.cerebras.ai/v1",
+      "max_tokens_param": "max_completion_tokens",
+      "provider": "cerebras",
+      "timeout_s": 180.0
+    },
+    "line": "BL0",
+    "model": "gpt-oss-120b",
+    "price_snapshot_id": "prices-2026-09-28",
+    "prompt": {
+      "sha256": "30b0d6e672a40aed0cc5f0360d9a011e03095602a1e1e2b4418575e339533fce",
+      "version": "mini-loop-2"
+    },
+    "stream": {
+      "id": "pilot",
+      "instances": [
+        "F1-l1-0001",
+        "F1-l1-0002",
+        "F1-l2-0001",
+        "F1-l2-0002",
+        "F1-l3-0001",
+        "F1-l3-0002",
+        "F1-l4-0001",
+        "F1-l4-0002",
+        "F1-l5-0001",
+        "F1-l5-0002",
+        "F4-l1-0001",
+        "F4-l1-0002",
+        "F4-l2-0001",
+        "F4-l2-0002",
+        "F4-l3-0001",
+        "F4-l3-0002",
+        "F4-l4-0001",
+        "F4-l4-0002",
+        "F4-l5-0001",
+        "F4-l5-0002"
+      ],
+      "spec_variant": "precise"
+    }
+  },
+  "config_hash": "sha256:464654fc9b5bcac73d4c0733156516cf02f8d9400203dcfff220463b400ae8c8",
+  "dirty": false,
+  "experiment_id": "PILOT-A-RECAL",
+  "harness_sha": "2775a1b523daf2b2dfc5e1d2c0077a1ea33dd5f1",
+  "model": "gpt-oss-120b",
+  "network": true,
+  "offline": false,
+  "price_snapshot_id": "prices-2026-09-28",
+  "provider": "cerebras",
+  "proxy": {
+    "log": "proxy.jsonl",
+    "policy": {
+      "allow": {},
+      "models": [
+        "gpt-oss-120b"
+      ],
+      "paths": [
+        "/chat/completions"
+      ],
+      "server_tools": "refused"
+    },
+    "profile": {
+      "name": "clean"
+    }
+  },
+  "run_id": "cheap-direct-1",
+  "runs": 60,
+  "schema_version": "vb.run_manifest/1",
+  "secret_file": "/Users/will/.config/viabilitybench/secret",
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "started_at": "2026-10-19T11:58:52Z",
+  "stream": "pilot",
+  "suite": {
+    "hash": "sha256:630e4dcbeb4e77431e293a261b40cb5c629662a0975779674b586c835fe31173",
+    "id": "vb"
+  },
+  "tasks": 20,
+  "work_dir": "/Users/will/workspaces/ae0f81b40071b04e",
+  "worst_case_usd": 17.3592,
+  "worst_task_usd": 0.28932
+}

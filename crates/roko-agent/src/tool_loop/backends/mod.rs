@@ -10,9 +10,10 @@ use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 
 use crate::http::{HttpPostError, HttpPoster};
+use crate::live_output::LiveOutput;
 use crate::provider::openai_compat::{
-    base_url_for_tool_loop, build_extra_body_params, max_tokens_for_model, resolve_api_key,
-    should_use_max_completion_tokens,
+    base_url_for_tool_loop, build_extra_body_params, max_tokens_for_model, openai_wire,
+    resolve_api_key, should_use_max_completion_tokens,
 };
 use crate::provider::{AgentCreationError, current_safety_layer};
 use crate::rate_limit::ProviderRateLimiter;
@@ -50,6 +51,19 @@ pub fn create_openai_compat_backend(
     model: &ModelProfile,
     poster: Arc<dyn HttpPoster>,
 ) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
+    create_observed_openai_compat_backend(provider, model, poster, None)
+}
+
+/// [`create_openai_compat_backend`], whose calls say on `live_output`, as
+/// queued, while they wait for a slot at their provider (bug-33a61f). The
+/// adapters pass the agent's live output, so the stall watchdog and the
+/// try's time bound skip the wait.
+pub fn create_observed_openai_compat_backend(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    poster: Arc<dyn HttpPoster>,
+    live_output: Option<LiveOutput>,
+) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
     match provider.kind {
         // The Hermes and OpenClaw harnesses speak the same chat completions
         // protocol over HTTP (bug-02d5ad).
@@ -71,7 +85,11 @@ pub fn create_openai_compat_backend(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
-                .with_provider_kind(provider.kind);
+                .with_provider_kind(provider.kind)
+                .with_live_output(live_output)
+                // OpenAI's reasoning models reason beside tools only on the
+                // Responses API (gap-1ba0ac).
+                .with_wire(openai_wire(provider, model));
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }
@@ -113,7 +131,8 @@ pub fn create_openai_compat_backend(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
-                .with_provider_kind(ProviderKind::PerplexityApi);
+                .with_provider_kind(ProviderKind::PerplexityApi)
+                .with_live_output(live_output);
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }
@@ -147,7 +166,8 @@ pub fn create_openai_compat_backend(
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
-                .with_provider_kind(ProviderKind::CerebrasApi);
+                .with_provider_kind(ProviderKind::CerebrasApi)
+                .with_live_output(live_output);
             if let Some(ref env_var) = provider.api_key_env {
                 backend = backend.with_api_key_env(env_var.clone());
             }
@@ -196,7 +216,8 @@ pub fn create_openai_compat_backend_with_limiter(
                 .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind)
-                .with_rate_limiter(rate_limiter);
+                .with_rate_limiter(rate_limiter)
+                .with_wire(openai_wire(provider, model));
             Ok(Arc::new(backend))
         }
         ProviderKind::CerebrasApi => {
@@ -631,6 +652,7 @@ mod tests {
             provider: "gemini".to_string(),
             slug: "gemini-2.5-pro".to_string(),
             context_window: 1_048_576,
+            compact_at_tokens: None,
             max_output: Some(65_536),
             supports_tools: true,
             supports_thinking: true,
@@ -663,6 +685,8 @@ mod tests {
             tier: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
+            api: None,
         };
         let backend = create_tool_loop_backend(
             &provider,

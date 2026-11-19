@@ -815,8 +815,9 @@ pub fn chi_squared_test(stats_a: &VariantStats, stats_b: &VariantStats) -> (f64,
     (statistic, erfc((statistic / 2.0).sqrt()).clamp(0.0, 1.0))
 }
 
-// Abramowitz and Stegun 7.1.26; ample precision for an experiment gate.
-fn erfc(value: f64) -> f64 {
+// Abramowitz and Stegun 7.1.26; ample precision for an experiment gate, and for
+// `self_model::prior::normal_cdf`.
+pub(crate) fn erfc(value: f64) -> f64 {
     let x = value.abs();
     let t = 1.0 / (1.0 + 0.327_591_1 * x);
     let polynomial =

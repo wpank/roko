@@ -8,11 +8,12 @@ severity = "p3"
 size = "S"
 subsystem = ["roko-core/task"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/workflow-audit (roko-7d migration, 2026-10-02)"
 discovered_from = "audit:tmp/workflow-audit/"
-anchors = ["crates/roko-core/src/task.rs", "crates/roko-cli/src/task_parser.rs"]
+anchors = ["crates/roko-core/src/task.rs:577", "crates/roko-core/src/task.rs:756", "crates/roko-cli/src/task_parser.rs:1064"]
 lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
@@ -55,3 +56,5 @@ Pick one:
 ## Notes
 
 - Found by the workflow-audit migration (session roko-7d, 2026-10-02).
+
+Checked 2026-10-27: 2026-10-26 re-verify at 15335e2f9: unchanged; anchor line numbers drifted up by about 30 lines from the body's 'around :547 and :725'.

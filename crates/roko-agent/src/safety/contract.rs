@@ -4,7 +4,7 @@
 //! higher-level orchestration can evaluate with a low-latency policy check.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,9 @@ use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{
     ExternalAction, OutboundPolicy, ToolCall, ToolContext, ToolError, ToolResult,
 };
+use roko_std::tool::builtin::apply_patch;
+
+use super::path::resolve_file;
 
 const CONTRACT_DIR: &str = "src/safety/contracts";
 const NETWORK_TOOLS: &[&str] = &["web_fetch", "web_search"];
@@ -25,6 +28,10 @@ const EDIT_TOOLS: &[&str] = &[
     "apply_patch",
     "notebook_edit",
 ];
+/// The arguments a file tool takes its file in, in the order a tool looks
+/// for one: roko's own tools take `path`, Claude-style ones `file_path` or
+/// `notebook_path`.
+const PATH_ARGUMENTS: &[&str] = &["path", "file_path", "notebook_path"];
 
 #[derive(Debug, Clone, Copy)]
 struct BundledContractAsset {
@@ -792,33 +799,8 @@ impl GovernanceRule {
                 }
             }
             Self::RequireToolBeforeEdit(required_tool) => {
-                if EDIT_TOOLS.contains(&call.name.as_str()) && !has_prior_tool(ctx, required_tool) {
-                    // Allow write_file for NEW file creation: you can't read a
-                    // file that doesn't exist yet.  The guard still fires for
-                    // edits to *existing* files — the security intent is
-                    // "don't overwrite what you haven't read."
-                    let is_new_file = call
-                        .arguments
-                        .get("path")
-                        .or_else(|| call.arguments.get("file_path"))
-                        .and_then(|v| v.as_str())
-                        .map(|p| {
-                            let candidate = std::path::Path::new(p);
-                            if candidate.is_absolute() {
-                                !candidate.exists()
-                            } else {
-                                !ctx.worktree_path.join(p).exists()
-                            }
-                        })
-                        .unwrap_or(false); // no path arg → enforce the rule
-
-                    if !is_new_file {
-                        return Err(ContractViolation::new(
-                            role,
-                            "RequireToolBeforeEdit",
-                            format!("tool `{required_tool}` must run before `{}`", call.name),
-                        ));
-                    }
+                if EDIT_TOOLS.contains(&call.name.as_str()) {
+                    check_read_before_edit(role, required_tool, call, ctx)?;
                 }
             }
             Self::OutboundEffects(_) => {}
@@ -1013,9 +995,10 @@ fn is_failure_action(action: &ExternalAction) -> bool {
 ///
 /// `MaxToolCallsPerTurn` counts the calls admitted in the current turn,
 /// `MaxConsecutiveFailures` the trailing failed results, and
-/// `RequireToolBeforeEdit` looks for a successful one. Cost- and gate-based
-/// rules see only [`orchestrator_actions`], so ordinary tool use never counts
-/// as — or forges — an orchestrator-recorded action.
+/// `RequireToolBeforeEdit` looks for a successful one on the file an edit
+/// changes. Cost- and gate-based rules see only [`orchestrator_actions`], so
+/// ordinary tool use never counts as — or forges — an orchestrator-recorded
+/// action.
 pub const TOOL_HISTORY_SERVICE: &str = "roko.tool_history";
 
 /// The `kind` of a tool-history entry: a model turn's start, a call admitted
@@ -1046,17 +1029,25 @@ pub fn begin_tool_turn(ctx: &ToolContext, calls: &[ToolCall]) {
     }));
 }
 
-/// Record the result of a dispatched call: whether it succeeded.
+/// Record the result of a dispatched call: whether it succeeded and, when
+/// the call names a file, which file (its first path argument, resolved
+/// against the worktree), so that `RequireToolBeforeEdit` can tell which
+/// file a read read.
 pub fn record_tool_result(ctx: &ToolContext, call: &ToolCall, succeeded: bool) {
+    let mut metadata = serde_json::json!({
+        "kind": RESULT_ENTRY,
+        "tool": call.name,
+        "success": succeeded,
+    });
+    if let Some(named) = named_file(call) {
+        let file = resolve_file(ctx.worktree(), named);
+        metadata["path"] = serde_json::json!(file.to_string_lossy());
+    }
     ctx.record_external_action(ExternalAction {
         service: TOOL_HISTORY_SERVICE.to_string(),
         action_type: call.name.clone(),
         resource_id: String::new(),
-        metadata: serde_json::json!({
-            "kind": RESULT_ENTRY,
-            "tool": call.name,
-            "success": succeeded,
-        }),
+        metadata,
         performed_at: chrono::Utc::now(),
     });
 }
@@ -1117,18 +1108,102 @@ fn place_in_turn(ctx: &ToolContext, call: &ToolCall) -> u32 {
     place.saturating_add(1)
 }
 
-/// Whether `required_tool` has run: an orchestrator action or a tool result
-/// names it, and it did not fail. A call only admitted has not run yet.
-fn has_prior_tool(ctx: &ToolContext, required_tool: &str) -> bool {
+/// `RequireToolBeforeEdit` on `call`, a call of an edit tool.
+///
+/// Each file the call changes that exists must have had a successful
+/// `required_tool` call on it in this run, since a read of another file says
+/// nothing about this one ("don't overwrite what you haven't read";
+/// gap-78cf31). A read of part of the file (`offset`, `limit`) is still a
+/// read tool call on it, unlike a view the prompt carried (q-2f780c). A file
+/// that does not exist yet needs no read, as there is nothing to read before
+/// creating it. A call that names no file is refused: the rule cannot tell
+/// what it changes.
+fn check_read_before_edit(
+    role: &str,
+    required_tool: &str,
+    call: &ToolCall,
+    ctx: &ToolContext,
+) -> Result<(), ContractViolation> {
+    let refusal = |detail: String| ContractViolation::new(role, "RequireToolBeforeEdit", detail);
+    let files = edited_files(call);
+    if files.is_empty() {
+        return Err(refusal(format!(
+            "tool `{required_tool}` must run on the file `{}` changes, and this call names no \
+             file",
+            call.name
+        )));
+    }
+    for named in &files {
+        let file = resolve_file(ctx.worktree(), named);
+        // A file that may exist counts as existing.
+        let exists = file.try_exists().unwrap_or(true);
+        if exists && !has_prior_tool(ctx, required_tool, &file) {
+            return Err(refusal(format!(
+                "tool `{required_tool}` must run on `{named}` before `{}` changes it",
+                call.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The files `call`, a call of an edit tool, changes, as it names them.
+/// `apply_patch` changes the file its patch names, which overrides its
+/// `path`, so the tool's own reading of the patch says which; when the patch
+/// cannot be read, its path arguments stand. Any other edit tool changes the
+/// file each of its path arguments names.
+fn edited_files(call: &ToolCall) -> Vec<String> {
+    if call.name == apply_patch::NAME
+        && let Some(file) = apply_patch::patched_file(&call.arguments)
+    {
+        return vec![file];
+    }
+    PATH_ARGUMENTS
+        .iter()
+        .filter_map(|key| call.arguments.get(*key)?.as_str())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The file `call` names: its first path argument, the one a file tool
+/// reads.
+fn named_file(call: &ToolCall) -> Option<&str> {
+    PATH_ARGUMENTS
+        .iter()
+        .find_map(|key| call.arguments.get(*key)?.as_str())
+}
+
+/// Whether `required_tool` has run on `file`, a [`resolve_file`] path: an
+/// orchestrator action or a tool result names the tool and that file, and
+/// it did not fail. A call only admitted has not run yet, and a run of the
+/// tool on another file does not count.
+fn has_prior_tool(ctx: &ToolContext, required_tool: &str, file: &Path) -> bool {
     ctx.external_actions.read().iter().any(|action| {
         let bookkeeping = is_history(action, TURN_ENTRY) || is_history(action, ADMITTED_ENTRY);
-        !bookkeeping
-            && !is_failure_action(action)
-            && (action.action_type == required_tool
-                || action.service == required_tool
-                || action.metadata.get("tool").and_then(|value| value.as_str())
-                    == Some(required_tool))
+        let names_tool = action.action_type == required_tool
+            || action.service == required_tool
+            || action.metadata.get("tool").and_then(|value| value.as_str()) == Some(required_tool);
+        !bookkeeping && !is_failure_action(action) && names_tool && names_file(ctx, action, file)
     })
+}
+
+/// Whether `action` names `file`, a [`resolve_file`] path. A tool result
+/// records its file as resolved when the call ran ([`record_tool_result`]);
+/// an orchestrator action names its file in its `path` or `resource_id`,
+/// resolved against the worktree here.
+fn names_file(ctx: &ToolContext, action: &ExternalAction, file: &Path) -> bool {
+    let recorded = action
+        .metadata
+        .get("path")
+        .and_then(serde_json::Value::as_str);
+    if is_history(action, RESULT_ENTRY) {
+        return recorded.is_some_and(|recorded| Path::new(recorded) == file);
+    }
+    let resource = Some(action.resource_id.as_str()).filter(|id| !id.is_empty());
+    recorded
+        .into_iter()
+        .chain(resource)
+        .any(|named| resolve_file(ctx.worktree(), named) == file)
 }
 
 #[cfg(test)]
@@ -1480,6 +1555,19 @@ mod tests {
         assert!(err.detail.contains("0.3000 > 0.2500"));
     }
 
+    /// A worktree holding `files`, each with a line of text.
+    fn worktree_with(files: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for file in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, "a\n").expect("seed");
+        }
+        dir
+    }
+
+    /// An orchestrator-recorded read of a file admits an edit of that file,
+    /// and only of that file.
     #[test]
     fn require_tool_before_edit_reads_external_actions() {
         let contract = AgentContract {
@@ -1490,6 +1578,7 @@ mod tests {
             allowed_tools: None,
             max_taint_level: default_max_taint_level(),
         };
+        let worktree = worktree_with(&["src/lib.rs", "src/main.rs"]);
         let actions = Arc::new(RwLock::new(vec![ExternalAction {
             service: "tool_dispatcher".into(),
             action_type: "read_file".into(),
@@ -1498,7 +1587,7 @@ mod tests {
             performed_at: chrono::Utc::now(),
         }]));
         let ctx = ToolContext::new(
-            "/tmp/contract-tests",
+            worktree.path(),
             Duration::from_secs(5),
             ToolPermission {
                 read: true,
@@ -1513,13 +1602,18 @@ mod tests {
             Arc::new(roko_core::tool::NeverCancel),
         )
         .with_external_actions(actions);
-        let call = ToolCall::new(
-            "call-2",
-            "edit_file",
-            serde_json::json!({ "path": "src/lib.rs" }),
-        );
+        let edit =
+            |path: &str| ToolCall::new("call-2", "edit_file", serde_json::json!({ "path": path }));
 
-        assert!(contract.check_pre_execution(&call, &ctx).is_ok());
+        assert!(
+            contract
+                .check_pre_execution(&edit("src/lib.rs"), &ctx)
+                .is_ok()
+        );
+        let err = contract
+            .check_pre_execution(&edit("src/main.rs"), &ctx)
+            .expect_err("src/main.rs was not read");
+        assert_eq!(err.rule, "RequireToolBeforeEdit");
     }
 
     #[test]
@@ -1544,9 +1638,15 @@ mod tests {
             metadata: serde_json::json!({ "kind": RESULT_ENTRY, "tool": tool, "success": true }),
             performed_at: chrono::Utc::now(),
         };
-        let ctx = ToolContext::testing("/tmp/contract-tests").with_external_actions(Arc::new(
-            RwLock::new(vec![history("read_file"), history("grep"), history("ls")]),
-        ));
+        let worktree = worktree_with(&["src/lib.rs"]);
+        let ctx = ToolContext::testing(worktree.path())
+            .with_external_actions(Arc::new(RwLock::new(vec![history("grep"), history("ls")])));
+        let read = ToolCall::new(
+            "call-1",
+            "read_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        );
+        record_tool_result(&ctx, &read, true);
         let call = ToolCall::new(
             "call-4",
             "edit_file",
@@ -2095,14 +2195,18 @@ mod tests {
             governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
             ..AgentContract::permissive("implementer")
         };
-        let ctx = ToolContext::testing("/tmp/contract-tests");
+        let worktree = worktree_with(&["src/lib.rs"]);
+        let ctx = ToolContext::testing(worktree.path());
         let read = ToolCall::new(
             "read",
             "read_file",
             serde_json::json!({ "path": "src/lib.rs" }),
         );
-        // No path: the rule holds whether or not the file exists.
-        let edit = ToolCall::new("edit", "edit_file", serde_json::json!({}));
+        let edit = ToolCall::new(
+            "edit",
+            "edit_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        );
 
         begin_tool_turn(&ctx, &[read.clone(), edit.clone()]);
         assert!(contract.check_pre_execution(&edit, &ctx).is_err());
@@ -2110,6 +2214,266 @@ mod tests {
         assert!(contract.check_pre_execution(&edit, &ctx).is_err());
         record_tool_result(&ctx, &read, true);
         assert!(contract.check_pre_execution(&edit, &ctx).is_ok());
+        // An edit that names no file is refused even so: the rule cannot
+        // tell which file it changes.
+        let unnamed = ToolCall::new("unnamed", "edit_file", serde_json::json!({}));
+        let err = contract
+            .check_pre_execution(&unnamed, &ctx)
+            .expect_err("an edit naming no file");
+        assert!(err.detail.contains("names no file"), "{err}");
+    }
+
+    /// A contract whose only rule is `RequireToolBeforeEdit("read_file")`.
+    fn read_before_edit_contract() -> AgentContract {
+        AgentContract {
+            governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
+            ..AgentContract::permissive("implementer")
+        }
+    }
+
+    /// A unified diff of one line of `file`, `a` to `b`.
+    fn diff_of(file: &str) -> String {
+        format!("--- a/{file}\n+++ b/{file}\n@@ -1 +1 @@\n-a\n+b\n")
+    }
+
+    /// A call of each edit tool that changes `file`, as roko's tools and
+    /// Claude-style ones name it.
+    fn edits_of(file: &str) -> Vec<ToolCall> {
+        let call = |tool: &str, arguments: serde_json::Value| ToolCall::new(tool, tool, arguments);
+        let replace = serde_json::json!({ "old_string": "a", "new_string": "b" });
+        vec![
+            call(
+                "write_file",
+                serde_json::json!({ "path": file, "content": "b\n" }),
+            ),
+            call(
+                "edit_file",
+                serde_json::json!({ "path": file, "old_string": "a", "new_string": "b" }),
+            ),
+            call(
+                "multi_edit",
+                serde_json::json!({ "path": file, "edits": [replace] }),
+            ),
+            call(
+                "apply_patch",
+                serde_json::json!({ "path": file, "patch": diff_of(file) }),
+            ),
+            call(
+                "notebook_edit",
+                serde_json::json!({ "path": file, "cell_index": 0, "source": "b" }),
+            ),
+            call(
+                "write_file",
+                serde_json::json!({ "file_path": file, "content": "b\n" }),
+            ),
+        ]
+    }
+
+    /// gap-78cf31: in the golden-path rerun's run 1, T8 read only
+    /// `py/test_textutil.py` (its read of `py/test_accept_word_list.py`
+    /// failed: the file did not exist yet), and its `apply_patch` of
+    /// `py/textutil.py`, a file it never read, went through. Through roko's
+    /// own dispatcher, its tools and the implementer's contract, that patch
+    /// is now refused, the refusal names the unread file, and the file is
+    /// unchanged; once the attempt reads `py/textutil.py`, the same patch
+    /// applies.
+    #[tokio::test]
+    async fn a_read_of_another_file_does_not_admit_an_edit() {
+        use crate::dispatcher::{HandlerResolver, ToolDispatcher};
+        use crate::safety::SafetyLayer;
+        use roko_core::tool::{ToolRegistry, VecToolRegistry};
+        use roko_std::tool::builtin::{read_file, write_file};
+
+        const MODULE: &str = "def words(text):\n    return text.split()\n";
+        let worktree = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(worktree.path().join("py")).expect("mkdir");
+        std::fs::write(worktree.path().join("py/textutil.py"), MODULE).expect("seed");
+        std::fs::write(
+            worktree.path().join("py/test_textutil.py"),
+            "from textutil import words\n",
+        )
+        .expect("seed");
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![
+            read_file::tool_def(),
+            write_file::tool_def(),
+            apply_patch::tool_def(),
+        ]));
+        let resolver: Arc<dyn HandlerResolver> =
+            Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+        let contract = AgentContract::load_for_role("implementer").expect("implementer contract");
+        let dispatcher = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive().with_contract(contract));
+        let ctx = ToolContext::testing(worktree.path());
+        let read = |id: &str, path: &str| {
+            ToolCall::new(id, "read_file", serde_json::json!({ "path": path }))
+        };
+        let patch = ToolCall::new(
+            "patch",
+            "apply_patch",
+            serde_json::json!({
+                "path": "py/textutil.py",
+                "patch": "--- a/py/textutil.py\n+++ b/py/textutil.py\n@@ -1,2 +1,2 @@\n \
+                          def words(text):\n-    return text.split()\n\
+                          +    return [word for word in text.split() if word]\n",
+            }),
+        );
+
+        let tests = dispatcher
+            .dispatch(read("r1", "py/test_textutil.py"), &ctx)
+            .await;
+        assert!(tests.is_ok(), "{tests:?}");
+        let missing = dispatcher
+            .dispatch(read("r2", "py/test_accept_word_list.py"), &ctx)
+            .await;
+        assert!(missing.is_err(), "{missing:?}");
+        // The refusal names the module, the file left unread.
+        let refused_unread = |result: &ToolResult, tool: &str| {
+            let unread = format!(
+                "(RequireToolBeforeEdit): tool `read_file` must run on `py/textutil.py` \
+                 before `{tool}` changes it"
+            );
+            matches!(result, ToolResult::Err(ToolError::PermissionDenied(reason))
+                if reason.contains(&unread))
+        };
+        let refused = dispatcher.dispatch(patch.clone(), &ctx).await;
+        assert!(refused_unread(&refused, "apply_patch"), "{refused:?}");
+        let module = std::fs::read_to_string(worktree.path().join("py/textutil.py")).expect("read");
+        assert_eq!(module, MODULE, "the refused patch changed nothing");
+        // Neither does an overwrite, nor a patch that names the file it read
+        // as its `path`: the patch's own file is the one it changes.
+        let overwrite = ToolCall::new(
+            "write",
+            "write_file",
+            serde_json::json!({ "path": "py/textutil.py", "content": "words = str.split\n" }),
+        );
+        let overwritten = dispatcher.dispatch(overwrite, &ctx).await;
+        assert!(
+            refused_unread(&overwritten, "write_file"),
+            "{overwritten:?}"
+        );
+        let mut misnamed = patch.clone();
+        misnamed.id = "misnamed".to_string();
+        misnamed.arguments["path"] = serde_json::json!("py/test_textutil.py");
+        let misnamed = dispatcher.dispatch(misnamed, &ctx).await;
+        assert!(refused_unread(&misnamed, "apply_patch"), "{misnamed:?}");
+        // A new file needs no read.
+        let new_test = ToolCall::new(
+            "new",
+            "write_file",
+            serde_json::json!({ "path": "py/test_accept_word_list.py", "content": "pass\n" }),
+        );
+        let created = dispatcher.dispatch(new_test, &ctx).await;
+        assert!(created.is_ok(), "{created:?}");
+
+        // Once the attempt reads the module, the same patch applies.
+        let module_read = dispatcher
+            .dispatch(read("r3", "py/textutil.py"), &ctx)
+            .await;
+        assert!(module_read.is_ok(), "{module_read:?}");
+        let patched = dispatcher.dispatch(patch, &ctx).await;
+        assert!(patched.is_ok(), "{patched:?}");
+        let module = std::fs::read_to_string(worktree.path().join("py/textutil.py")).expect("read");
+        assert!(module.contains("if word]"), "{module}");
+    }
+
+    /// gap-78cf31: every edit tool the rule governs needs a read of the very
+    /// file it changes, however either call spells the path; a read of
+    /// another file admits none of them, and the refusal names the file.
+    #[test]
+    fn every_edit_tool_needs_a_read_of_the_file_it_changes() {
+        let contract = read_before_edit_contract();
+        let worktree = worktree_with(&["py/textutil.py", "py/test_textutil.py"]);
+        let ctx = ToolContext::testing(worktree.path());
+        let read =
+            |path: &str| ToolCall::new("read", "read_file", serde_json::json!({ "path": path }));
+
+        record_tool_result(&ctx, &read("py/test_textutil.py"), true);
+        for edit in edits_of("py/textutil.py") {
+            let err = contract
+                .check_pre_execution(&edit, &ctx)
+                .expect_err("a read of another file admits no edit");
+            assert_eq!(err.rule, "RequireToolBeforeEdit", "{edit:?}");
+            let named = format!(
+                "tool `read_file` must run on `py/textutil.py` before `{}`",
+                edit.name
+            );
+            assert!(err.detail.contains(&named), "{edit:?}: {err}");
+        }
+        // A file that does not exist yet needs no read.
+        for edit in edits_of("py/new_module.py") {
+            assert!(
+                contract.check_pre_execution(&edit, &ctx).is_ok(),
+                "{edit:?}"
+            );
+        }
+
+        let absolute = worktree
+            .path()
+            .join("py/textutil.py")
+            .to_string_lossy()
+            .into_owned();
+        for spelled in ["./py/../py/textutil.py", absolute.as_str()] {
+            let ctx = ToolContext::testing(worktree.path());
+            record_tool_result(&ctx, &read(spelled), true);
+            for edit in edits_of("py/textutil.py") {
+                let admitted = contract.check_pre_execution(&edit, &ctx);
+                assert!(
+                    admitted.is_ok(),
+                    "read as {spelled}, {edit:?}: {admitted:?}"
+                );
+            }
+        }
+    }
+
+    /// gap-78cf31: `apply_patch` changes the file its patch names, which
+    /// overrides its `path`, so the rule asks for a read of that file, in
+    /// both of the tool's patch formats.
+    #[test]
+    fn apply_patch_needs_a_read_of_the_file_its_patch_names() {
+        let contract = read_before_edit_contract();
+        let worktree = worktree_with(&["py/textutil.py", "py/test_textutil.py"]);
+        let read =
+            |path: &str| ToolCall::new("read", "read_file", serde_json::json!({ "path": path }));
+        let patch = |path: &str, text: String| {
+            ToolCall::new(
+                "patch",
+                "apply_patch",
+                serde_json::json!({ "path": path, "patch": text }),
+            )
+        };
+        let envelope = "*** Begin Patch\n*** Update File: py/textutil.py\n@@\n-a\n+b\n\
+                        *** End Patch\n"
+            .to_string();
+
+        let tests_read = ToolContext::testing(worktree.path());
+        record_tool_result(&tests_read, &read("py/test_textutil.py"), true);
+        for call in [
+            patch("py/test_textutil.py", diff_of("py/textutil.py")),
+            patch("py/test_textutil.py", envelope.clone()),
+        ] {
+            let err = contract
+                .check_pre_execution(&call, &tests_read)
+                .expect_err("the patched file was not read");
+            assert!(err.detail.contains("`py/textutil.py`"), "{err}");
+        }
+
+        let module_read = ToolContext::testing(worktree.path());
+        record_tool_result(&module_read, &read("py/textutil.py"), true);
+        for call in [
+            patch("py/test_textutil.py", diff_of("py/textutil.py")),
+            patch("py/test_textutil.py", envelope),
+            // A diff without file headers patches its `path`.
+            patch("py/textutil.py", "@@ -1 +1 @@\n-a\n+b\n".to_string()),
+        ] {
+            let admitted = contract.check_pre_execution(&call, &module_read);
+            assert!(admitted.is_ok(), "{call:?}: {admitted:?}");
+        }
+        let headless = patch("py/test_textutil.py", "@@ -1 +1 @@\n-a\n+b\n".to_string());
+        assert!(
+            contract
+                .check_pre_execution(&headless, &module_read)
+                .is_err()
+        );
     }
 
     /// find-8416f2: the roles that only read and report may neither write

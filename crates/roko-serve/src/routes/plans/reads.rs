@@ -3,14 +3,28 @@
 
 use super::*;
 
+/// The query of `GET /api/plans`.
+#[derive(Deserialize, Default)]
+pub(super) struct ListPlansQuery {
+    /// Also list each plan being written (gap-6774b5).
+    #[serde(default)]
+    writing: bool,
+}
+
 /// `GET /api/plans` — list plans by delegating to the runtime's plan discovery.
 ///
 /// The previous implementation walked `.roko/plans/` and filtered by file
 /// extension, which silently skipped every plan stored as a directory (the
 /// normal layout). Delegating to `state.runtime.list_plans()` fixes that and
 /// also surfaces richer status metadata the portal needs to colour plans.
+///
+/// With `?writing=true` the list also has a row for each plan being written
+/// (gap-6774b5): `status: "writing"`, no tasks, and `writing`, what the write
+/// is doing and has spent. Without it the list is unchanged, so older hosts
+/// see only plans on disk.
 pub(super) async fn list_plans(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ListPlansQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let plans = state
         .runtime
@@ -20,7 +34,7 @@ pub(super) async fn list_plans(
             ApiError::internal(format!("list plans in {}: {e}", state.workdir.display()))
         })?;
 
-    let summaries: Vec<Value> = plans
+    let mut summaries: Vec<Value> = plans
         .into_iter()
         .map(|dto| {
             let mut v = serde_json::to_value(&dto).unwrap_or(Value::Null);
@@ -31,11 +45,57 @@ pub(super) async fn list_plans(
             v
         })
         .collect();
+    if query.writing {
+        let writing = writing_rows(&state, &summaries).await;
+        summaries.extend(writing);
+    }
 
     Ok(Json(Value::Array(summaries)))
 }
 
-/// `GET /api/plans/:id` — load a specific plan summary.
+/// A row for each plan being written whose plan isn't in `listed` yet, oldest
+/// first (gap-6774b5): the plan summary's fields, with `status: "writing"`
+/// and no tasks, and `writing`, what the write is doing and has spent.
+async fn writing_rows(state: &AppState, listed: &[Value]) -> Vec<Value> {
+    let operations = state.operations.read().await;
+    let mut writes: Vec<_> = operations
+        .values()
+        .filter(|operation| matches!(operation.status, OperationStatus::Running))
+        .filter_map(|operation| Some((operation, operation.write.as_ref()?)))
+        .filter(|(_, write)| !listed.iter().any(|row| row["id"] == write.plan_id.as_str()))
+        .collect();
+    writes.sort_by_key(|(operation, _)| operation.started);
+    writes
+        .into_iter()
+        .map(|(operation, write)| {
+            let progress = crate::operations::latest_progress(operation).unwrap_or(Value::Null);
+            json!({
+                "id": write.plan_id,
+                "title": write.title,
+                "task_count": 0,
+                "tasks_done": 0,
+                "completed_task_count": 0,
+                "tasks_failed": 0,
+                "completed": false,
+                "status": "writing",
+                "fixture": false,
+                "old_format": false,
+                "writing": {
+                    "run_id": operation.id,
+                    "stage": progress.get("stage"),
+                    "elapsed_secs": operation.started.elapsed().as_secs(),
+                    "calls": progress.get("calls"),
+                    "cost_usd": progress.get("cost_usd"),
+                    "max_usd": write.max_usd,
+                },
+            })
+        })
+        .collect()
+}
+
+/// `GET /api/plans/:id` — load a specific plan summary, with the plan's last
+/// run whatever became of it (`last_run`, or null) and the run a resume would
+/// continue (`resumable_run`, or null).
 ///
 /// Delegates to `state.runtime.load_plan_summary()` so that directory-layout
 /// plans (the normal layout) are discovered correctly. The previous
@@ -60,7 +120,51 @@ pub(super) async fn get_plan(
     if let Some(tasks_done) = v.get("tasks_done").and_then(Value::as_u64) {
         v["completed_task_count"] = tasks_done.into();
     }
+    // The plan's last run, from its checkpoint, whatever became of it: the
+    // portal finds where a run's work went from its id, which the event
+    // stream does not carry (gap-6d2dd2). Within it, the run a resume would
+    // continue, which a chat host's `plan_run` that says neither `resume` nor
+    // `fresh` is refused over (bug-cbdb6b), so the host can ask its person
+    // before any paid work is approved (gap-b78706). Reading them changes
+    // nothing; a checkpoint it cannot read leaves both null.
+    let last_run = state
+        .runtime
+        .checkpoint_run(&state.workdir, &plan_dir_of(&state.workdir, &dto))
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(plan_id = %id, %error, "could not read the plan's checkpoint");
+            None
+        });
+    v["resumable_run"] = json!(last_run.as_ref().filter(|run| run.resumable));
+    v["last_run"] = json!(last_run);
+    // What only the run's request and its handle know, from the plan's live
+    // run, else its newest ended one serve still holds: what it may spend
+    // (gap-acfe4b) and when it started (gap-c1726f). A resume continues the
+    // run the checkpoint records, and its cap counts the whole run, so they
+    // belong to `last_run` too.
+    if v["last_run"].is_object()
+        && let Some((max_usd, started_at)) = run_facts(&state, &id).await
+    {
+        if let Some(max_usd) = max_usd {
+            v["last_run"]["max_usd"] = json!(max_usd);
+        }
+        v["last_run"]["started_at"] =
+            json!(started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    }
     Ok(Json(v))
+}
+
+/// The cap the request of plan `id`'s live run set, and when the run started,
+/// else those of its newest ended run serve still holds (gap-acfe4b,
+/// gap-c1726f); `None` when serve holds no run of the plan.
+async fn run_facts(
+    state: &AppState,
+    id: &str,
+) -> Option<(Option<f64>, chrono::DateTime<chrono::Utc>)> {
+    let active = state.active_plans.read().await;
+    let key = active_run_for(&active, id).or_else(|| finished_run_for(&active, id))?;
+    let handle = active.get(&key)?;
+    Some((handle.max_usd, handle.started_at))
 }
 
 /// `GET /api/plans/:id/tasks` — return the task list for a specific plan.
@@ -98,6 +202,10 @@ pub(super) async fn plan_tasks(
         "title": dto.title,
         "max_parallel": dto.max_parallel,
         "tasks": tasks,
+        // What else roko checks, so a surface counts every check from the
+        // start (gap-c1726f, bug-35c1f3).
+        "plan_checks": dto.plan_checks,
+        "workspace_rungs": dto.workspace_rungs,
     })))
 }
 

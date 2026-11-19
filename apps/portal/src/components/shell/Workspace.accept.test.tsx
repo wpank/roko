@@ -79,7 +79,7 @@ describe('Workspace', () => {
     expect(document.querySelector('header[data-region="header"]')).not.toBeNull();
     expect(rail()!.querySelectorAll('[data-plan-row]')).toHaveLength(3);
     expect(hasMissingValue(textOf(rail()))).toBe(false);
-    expect(textOf(document.querySelector('[data-region="status-line"]'))).toContain('2 tasks');
+    expect(document.querySelector('[data-reading="tasks"] svg')!.getAttribute('aria-label')).toBe('tasks: 0 of 2 tasks done');
   });
 
   it('explains a Run all this server cannot do instead of showing a raw status', async () => {
@@ -109,17 +109,17 @@ describe('Workspace', () => {
     expect(again.disabled).toBe(false);
   });
 
-  it('keeps the rail clock of a running plan moving between events', () => {
+  it('keeps the plan list’s clock of a running plan moving between events', () => {
     vi.useFakeTimers();
     vi.setSystemTime(T0);
     stubFetch([]);
     setStore(foldEvents(HELLO_RUNNING, T0 - 5_000, 0));
     renderWithClient(<Workspace />, { seed: SEED });
-    const time = () => textOf(rail()!.querySelector('[data-plan-row="hello"] [data-time]'));
-    expect(time()).toBe('5s');
+    const line = () => textOf(rail()!.querySelector('[data-plan-row="hello"] .pt-plan-line'));
+    expect(line()).toBe('running · 0 of 2 · 0:05');
     act(() => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(time()).toBe('8s');
+    expect(line()).toBe('running · 0 of 2 · 0:08');
   });
 });

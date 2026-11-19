@@ -5,6 +5,8 @@
 //! safety scoping, resume threading, and learning-episode persistence.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::agent_config::{command_from_config, model_from_config};
@@ -15,10 +17,31 @@ use crate::learning_helpers::{
     provider_id_for_model, record_persisted_provider_outcome, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Utc};
 use roko_core::agent::ProviderKind;
 use roko_core::agent::resolve_model;
+use roko_core::config::schema::ModelProfile;
+use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_core::{Body, Context, Kind, Signal, Usage};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
+
+tokio::task_local! {
+    /// Whether the agent calls of this task print their own progress lines,
+    /// the "Agent working" ticker and the "Agent completed" summary: not
+    /// while a view shows the work itself (gap-3436e7).
+    static QUIET_PROGRESS: bool;
+}
+
+/// Run `work` with its agent calls printing no progress lines of their own,
+/// for a caller that shows the work itself (gap-3436e7).
+pub async fn without_progress_lines<F: std::future::Future>(work: F) -> F::Output {
+    QUIET_PROGRESS.scope(true, work).await
+}
+
+/// Whether this task's agent calls print their progress lines.
+fn prints_progress() -> bool {
+    !QUIET_PROGRESS.try_with(|quiet| *quiet).unwrap_or(false)
+}
 
 /// Options for agent execution.
 #[derive(Clone, Copy)]
@@ -47,6 +70,101 @@ pub struct AgentExecOpts<'a> {
     /// Turn cap for the run. `None` keeps the provider's own default: for
     /// the Claude CLI that is `OperatingFrequency::Theta`, 10 turns.
     pub max_turns: Option<u32>,
+    /// What the run's model calls may spend (bug-187c5c): roko's tool loop
+    /// asks it before each model call, and an agent that runs its own loop
+    /// gets what is left of it as its own limit (the Claude CLI's
+    /// `--max-budget-usd`). `None` leaves the run unbounded.
+    pub spend_limit: Option<&'a Arc<SpendLimit>>,
+}
+
+/// What a run's model calls may spend: what is left of its operation's cap
+/// as it starts (bug-187c5c). A model call is not made when what the run's
+/// calls spent and what the costliest model call of the operation so far
+/// cost would pass it, the rule plan runs keep for each model call, "as much
+/// as its last" (bug-4fabd0), taken from the costliest.
+#[derive(Debug)]
+pub struct SpendLimit {
+    left_micro_usd: u64,
+    spent_micro_usd: AtomicU64,
+    /// The operation's costliest model call so far, shared by its runs.
+    costliest_micro_usd: Arc<AtomicU64>,
+}
+
+impl SpendLimit {
+    /// A run that may spend `left_usd`, of an operation whose runs share
+    /// `costliest`, the cost of its costliest model call so far in
+    /// micro-USD.
+    #[must_use]
+    pub fn new(left_usd: f64, costliest: Arc<AtomicU64>) -> Self {
+        Self {
+            left_micro_usd: usd_to_micro_usd(left_usd),
+            spent_micro_usd: AtomicU64::new(0),
+            costliest_micro_usd: costliest,
+        }
+    }
+
+    /// What the run may spend, in USD.
+    #[must_use]
+    pub fn left_usd(&self) -> f64 {
+        micro_usd_to_usd(self.left_micro_usd)
+    }
+
+    /// Why the run's next model call must not be made, when it must not.
+    fn refusal(&self) -> Option<String> {
+        let spent = self.spent_micro_usd.load(Ordering::Relaxed);
+        let costliest = self.costliest_micro_usd.load(Ordering::Relaxed);
+        (spent.saturating_add(costliest) > self.left_micro_usd).then(|| {
+            format!(
+                "spend cap: this run's model calls cost ${:.4} of the ${:.4} left, and the next \
+                 would cost about ${:.4}, as much as the costliest so far",
+                micro_usd_to_usd(spent),
+                micro_usd_to_usd(self.left_micro_usd),
+                micro_usd_to_usd(costliest)
+            )
+        })
+    }
+
+    /// A model call of the run that cost `cost_usd` finished.
+    fn record(&self, cost_usd: f64) {
+        let cost = usd_to_micro_usd(cost_usd);
+        self.spent_micro_usd.fetch_add(cost, Ordering::Relaxed);
+        self.costliest_micro_usd.fetch_max(cost, Ordering::Relaxed);
+    }
+}
+
+/// A run's [`SpendLimit`] as the tool loop of its model sees it: each call
+/// priced as the run's spend is ([`crate::dispatch_v2::fill_usage_cost_from_pricing`]).
+#[derive(Debug)]
+struct PricedLimit {
+    limit: Arc<SpendLimit>,
+    snapshot: Option<Arc<PriceSnapshot>>,
+    profile: Option<ModelProfile>,
+    slug: String,
+}
+
+impl roko_agent::tool_loop::TurnBudget for PricedLimit {
+    fn refuse_turn(&self) -> Option<String> {
+        self.limit.refusal()
+    }
+
+    fn record_turn(&self, usage: &Usage) {
+        let mut usage = *usage;
+        crate::dispatch_v2::fill_usage_cost_from_pricing(
+            &mut usage,
+            self.snapshot.as_deref(),
+            self.profile.as_ref(),
+            &self.slug,
+        );
+        self.limit.record(f64::from(usage.cost_usd));
+    }
+}
+
+fn usd_to_micro_usd(usd: f64) -> u64 {
+    (usd.max(0.0) * 1e6).round() as u64
+}
+
+fn micro_usd_to_usd(micro_usd: u64) -> f64 {
+    micro_usd as f64 / 1e6
 }
 
 /// Episode metadata for agent execution paths that should persist learning data.
@@ -162,6 +280,8 @@ async fn run_agent_capture_impl(
     echo_output: bool,
     episode: Option<AgentExecEpisode<'_>>,
 ) -> Result<AgentCapture> {
+    // The call's episode starts here (bug-41e2de).
+    let started_at = Utc::now();
     let started = Instant::now();
     let routing_config = roko_core::config::loader::load_config_unified(opts.workdir)
         .with_context(|| format!("load routing config from {}", opts.workdir.display()))?;
@@ -192,6 +312,17 @@ async fn run_agent_capture_impl(
             }
         });
     let resolved = resolve_model(&routing_config, &model);
+    let snapshot = crate::dispatch_v2::pricing_snapshot(&routing_config.pricing, opts.workdir);
+    // bug-187c5c: the run's model calls keep to what its operation may still
+    // spend, priced as its spend is below.
+    let turn_budget = opts.spend_limit.map(|limit| {
+        Arc::new(PricedLimit {
+            limit: Arc::clone(limit),
+            snapshot: snapshot.clone(),
+            profile: resolved.profile.clone(),
+            slug: resolved.slug.clone(),
+        }) as Arc<dyn roko_agent::tool_loop::TurnBudget>
+    });
     let mut extra_args = Vec::new();
     if resolved.provider_kind == ProviderKind::ClaudeCli
         && let Some(session_id) = opts.resume_session
@@ -220,6 +351,8 @@ async fn run_agent_capture_impl(
             dangerously_skip_permissions: routing_config.runner.dangerously_skip_permissions,
             name: format!("{}:{model}", resolved.provider_kind.label()),
             role: opts.role.map(str::to_string),
+            turn_budget,
+            max_budget_usd: opts.spend_limit.map(|limit| limit.left_usd()),
         },
         format!("create agent for model {model}"),
     )?;
@@ -242,25 +375,30 @@ async fn run_agent_capture_impl(
     let tick_model = model.clone();
     let tick_provider = resolved.provider_kind.label().to_string();
     let tick_start = Instant::now();
-    let ticker = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-        interval.tick().await; // skip immediate first tick
-        loop {
-            interval.tick().await;
-            let elapsed = tick_start.elapsed().as_secs();
-            let mins = elapsed / 60;
-            let secs = elapsed % 60;
-            if mins > 0 {
-                eprintln!(
-                    "  ⏳ Agent working... ({mins}m {secs}s) [{tick_model} via {tick_provider}]"
-                );
-            } else {
-                eprintln!("  ⏳ Agent working... ({secs}s) [{tick_model} via {tick_provider}]");
+    let progress_lines = prints_progress();
+    let ticker = progress_lines.then(|| {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let elapsed = tick_start.elapsed().as_secs();
+                let mins = elapsed / 60;
+                let secs = elapsed % 60;
+                if mins > 0 {
+                    eprintln!(
+                        "  ⏳ Agent working... ({mins}m {secs}s) [{tick_model} via {tick_provider}]"
+                    );
+                } else {
+                    eprintln!("  ⏳ Agent working... ({secs}s) [{tick_model} via {tick_provider}]");
+                }
             }
-        }
+        })
     });
     let result = agent.run(&prompt, &Context::now()).await;
-    ticker.abort();
+    if let Some(ticker) = ticker {
+        ticker.abort();
+    }
 
     let rendered = result.output.body.as_text().unwrap_or("").to_string();
     let elapsed_ms = started.elapsed().as_millis();
@@ -273,7 +411,7 @@ async fn run_agent_capture_impl(
         "agent_exec: agent returned"
     );
     // Print completion summary to stderr
-    {
+    if progress_lines {
         let secs = elapsed_ms / 1000;
         let mins = secs / 60;
         let s = secs % 60;
@@ -315,6 +453,7 @@ async fn run_agent_capture_impl(
             opts.prompt,
             &rendered,
             exit_code == 0,
+            started_at,
             duration_ms,
             opts.resume_session,
         )
@@ -322,7 +461,6 @@ async fn run_agent_capture_impl(
     }
 
     let mut usage = result.usage;
-    let snapshot = crate::dispatch_v2::pricing_snapshot(&routing_config.pricing, opts.workdir);
     crate::dispatch_v2::fill_usage_cost_from_pricing(
         &mut usage,
         snapshot.as_deref(),
@@ -345,6 +483,9 @@ async fn run_agent_capture_impl(
 }
 
 /// Persist a lightweight learning episode for a direct agent-exec CLI path.
+///
+/// The episode starts at `started_at`, the clock read as the agent's work
+/// began, and lasts `wall_time_ms` (bug-41e2de).
 pub async fn persist_capture_episode(
     workdir: &Path,
     agent_command: &str,
@@ -354,6 +495,7 @@ pub async fn persist_capture_episode(
     prompt: &str,
     output: &str,
     success: bool,
+    started_at: DateTime<Utc>,
     wall_time_ms: u64,
     resume_session: Option<&str>,
 ) -> Result<()> {
@@ -366,6 +508,7 @@ pub async fn persist_capture_episode(
         prompt,
         output,
         success,
+        started_at,
         wall_time_ms,
         resume_session,
         None,
@@ -386,6 +529,7 @@ pub async fn persist_capture_episode_distilled_by(
     prompt: &str,
     output: &str,
     success: bool,
+    started_at: DateTime<Utc>,
     wall_time_ms: u64,
     resume_session: Option<&str>,
     distiller: Option<&str>,
@@ -406,6 +550,7 @@ pub async fn persist_capture_episode_distilled_by(
         prompt,
         output,
         success,
+        started_at,
         wall_time_ms,
         resume_session,
     );
@@ -456,6 +601,11 @@ pub enum AgentCrashClass {
     /// stopped at its cap. Not retriable: the same prompt under the same cap
     /// would most likely stop there again.
     TurnCapReached,
+    /// The agent's run stopped at its spend limit (bug-187c5c): roko's tool
+    /// loop refused a model call its [`SpendLimit`] could not pay for, or the
+    /// Claude CLI stopped at its `--max-budget-usd`. Not retriable: the same
+    /// prompt under what is left would stop there again.
+    BudgetExhausted,
     Unknown,
 }
 
@@ -499,6 +649,10 @@ impl AgentCrashClass {
                 "The agent used every turn its turn cap allows before it finished; a narrower \
                  request, or one that names the files involved, needs fewer turns"
             }
+            Self::BudgetExhausted => {
+                "The agent stopped at its spend limit; a higher cap, or a smaller request, lets \
+                 it finish"
+            }
             Self::Unknown => "Agent crashed for an unknown reason; inspect the full stderr output",
         }
     }
@@ -517,6 +671,11 @@ pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
     // status code ("turns=429") below (bug-09cc5f).
     if roko_agent::provider::error_classify::detect_turn_cap(stderr).is_some() {
         return AgentCrashClass::TurnCapReached;
+    }
+    // A run stopped at its spend limit says so first (bug-187c5c), whatever
+    // numbers follow.
+    if stderr.trim_start().starts_with("Budget exhausted:") {
+        return AgentCrashClass::BudgetExhausted;
     }
     // Check most-specific patterns first.
     if stderr.contains("401")
@@ -573,6 +732,7 @@ mod tests {
     #[tokio::test]
     async fn persist_capture_episode_records_learning_episode() {
         let tmp = TempDir::new().expect("tempdir");
+        let started_at = Utc::now() - chrono::TimeDelta::minutes(1);
 
         persist_capture_episode(
             tmp.path(),
@@ -583,6 +743,7 @@ mod tests {
             "prompt body",
             "output body",
             true,
+            started_at,
             42,
             Some("sess-1"),
         )
@@ -598,6 +759,13 @@ mod tests {
         assert_eq!(episode.kind, "agent_turn");
         assert_eq!(episode.model, "claude-sonnet-4-6");
         assert!(episode.success);
+        // The logged episode keeps the call's start and lasts its 42 ms
+        // (bug-41e2de).
+        assert_eq!(episode.started_at, started_at);
+        assert_eq!(
+            (episode.completed_at - episode.started_at).num_milliseconds(),
+            42
+        );
         assert_eq!(
             episode.extra.get("task_kind"),
             Some(&serde_json::json!("plan-generate"))
@@ -659,6 +827,7 @@ tool_format = "openai_json"
             "prompt body",
             "output body",
             true,
+            Utc::now(),
             42,
             None,
         )
@@ -736,6 +905,7 @@ tool_format = "openai_json"
                 "prompt body",
                 output,
                 false,
+                Utc::now(),
                 42,
                 None,
             )
@@ -840,6 +1010,69 @@ tool_format = "openai_json"
             classify_agent_crash("segfault at 0xdeadbeef"),
             AgentCrashClass::Unknown
         );
+    }
+
+    /// bug-187c5c: a run that may spend $0.10 makes a model call while what
+    /// it spent and the costliest model call of its operation so far stay
+    /// within that, so the call that would pass it is refused before it is
+    /// made. The runs of one operation share the costliest call, and a run
+    /// stopped there is not retried.
+    #[test]
+    fn the_generation_budget_refuses_the_call_that_would_pass_the_cap() {
+        use roko_agent::tool_loop::TurnBudget as _;
+
+        let costliest = Arc::new(AtomicU64::new(0));
+        let priced = |cost_usd: f32| Usage {
+            input_tokens: 1_000,
+            output_tokens: 100,
+            cost_usd,
+            ..Usage::default()
+        };
+        let run = |left: f64| PricedLimit {
+            limit: Arc::new(SpendLimit::new(left, Arc::clone(&costliest))),
+            snapshot: None,
+            profile: None,
+            slug: "gpt-test".to_string(),
+        };
+        let first = run(0.10);
+        assert_eq!(
+            first.refuse_turn(),
+            None,
+            "nothing spent, nothing to expect"
+        );
+        first.record_turn(&priced(0.04));
+        assert_eq!(first.refuse_turn(), None, "0.04 and 0.04 are within 0.10");
+        first.record_turn(&priced(0.02));
+        assert_eq!(first.refuse_turn(), None, "0.06 and 0.04 reach it, no more");
+        first.record_turn(&priced(0.01));
+        let refused = first.refuse_turn().expect("0.07 and 0.04 pass it");
+        assert_eq!(
+            refused,
+            "spend cap: this run's model calls cost $0.0700 of the $0.1000 left, and the next \
+             would cost about $0.0400, as much as the costliest so far"
+        );
+        // The operation's next run expects its costliest call too.
+        assert!(
+            run(0.03).refuse_turn().is_some(),
+            "0.04 is over the 0.03 left"
+        );
+        let roomy = run(0.05);
+        assert_eq!(roomy.refuse_turn(), None);
+        assert!((roomy.limit.left_usd() - 0.05).abs() < 1e-9);
+
+        // The tool loop's stop and the Claude CLI's own say so first.
+        for output in [
+            format!("Budget exhausted: {refused}"),
+            "Budget exhausted: the Claude CLI stopped at its spend limit (--max-budget-usd \
+             $0.1000) after $0.1032"
+                .to_string(),
+        ] {
+            assert_eq!(
+                classify_agent_crash(&output),
+                AgentCrashClass::BudgetExhausted
+            );
+        }
+        assert!(!AgentCrashClass::BudgetExhausted.is_retriable());
     }
 
     /// gap-11d870: an agent an adapter stopped at its time limit is a
@@ -1076,6 +1309,7 @@ mode = "off"
                 role: Some("strategist"),
                 allowed_tools: None,
                 max_turns: None,
+                spend_limit: None,
             },
             AgentExecEpisode {
                 task_kind: "plan-generate",
@@ -1118,6 +1352,7 @@ mode = "off"
                 role: Some("strategist"),
                 allowed_tools: None,
                 max_turns: None,
+                spend_limit: None,
             },
             AgentExecEpisode {
                 task_kind: "plan-generate",
@@ -1175,6 +1410,7 @@ mode = "off"
                 role: Some("researcher"),
                 allowed_tools: Some("Read,Write,Edit"),
                 max_turns: None,
+                spend_limit: None,
             },
             &spend,
         )

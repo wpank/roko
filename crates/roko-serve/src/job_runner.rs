@@ -661,6 +661,7 @@ async fn prepare_coding_plan(
                 plan_targets: targets,
                 cost_usd: 0.0,
                 source_checks: None,
+                repairs: Vec::new(),
             });
         }
         warn!(
@@ -714,6 +715,7 @@ async fn synthesize_coding_plan(
         artifacts: vec![plan_md, tasks_toml],
         cost_usd: 0.0,
         source_checks: None,
+        repairs: Vec::new(),
     })
 }
 

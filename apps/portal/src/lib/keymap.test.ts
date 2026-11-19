@@ -30,8 +30,8 @@ describe('resolveKey — bindings', () => {
     expect(resolveKey(k('/'))).toBe('filter');
   });
 
-  it('o → stream', () => {
-    expect(resolveKey(k('o'))).toBe('stream');
+  it('o does nothing: the stream pane is gone (gap-60f6b6)', () => {
+    expect(resolveKey(k('o'))).toBeNull();
   });
 
   it('Escape → escape', () => {

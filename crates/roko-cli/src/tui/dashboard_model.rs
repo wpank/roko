@@ -2054,11 +2054,10 @@ fn verdict_metric(verdict: &AttemptVerdictRecord, role: Option<&str>) -> TaskMet
     if metric.input_tokens > 0 {
         metric.cache_hit_rate = metric.cached_tokens as f64 / metric.input_tokens as f64;
     }
+    // The calls a provider refused before failover count too (bug-8bcd98).
     let cost = &verdict.cost;
     metric.cost_usd = cost
-        .api_equiv_usd
-        .or(cost.billed_usd)
-        .or(cost.vendor_usd)
+        .plus_refused(cost.api_equiv_usd.or(cost.billed_usd).or(cost.vendor_usd))
         .unwrap_or(0.0);
     metric
 }

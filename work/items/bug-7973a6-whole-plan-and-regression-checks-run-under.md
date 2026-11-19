@@ -3,13 +3,15 @@ id = "bug-7973a6"
 kind = "bug"
 title = "Whole-plan and regression checks run under sh while task verify steps run under bash -o pipefail, so a copied step behaves differently"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
 anchors = ["crates/roko-cli/src/graph_execution/plan_verify.rs::run_plan_verify", "crates/roko-cli/src/graph_execution/delivery.rs"]
@@ -42,3 +44,5 @@ about bash syntax in `[meta] verify`. Test with a `[[ ]]` step.
 ## Done when
 
 `plan_verify_runs_steps_like_task_verify` passes (the `[[verify]]` command).
+
+Checked 2026-10-27: 2026-10-26 sweep: still open. 8 touching commits (regression-lock release timing, merge-on-added-lines, per-checkout CARGO_TARGET_DIR, cancel handling) changed delivery.rs/plan_verify.rs around these call sites but kept them on sh -c.

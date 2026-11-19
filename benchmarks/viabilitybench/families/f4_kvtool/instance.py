@@ -15,6 +15,7 @@ API:
     FAMILY, GENERATOR_VERSION, TRUTH_SUITE, LATENTS, LADDER, kvstore (template/lib/kvstore.py: the store format)
     plan(level: int, seed: int) -> Plan
     visible_store(plan: Plan) -> dict                         # the store document of data/store.db
+    sample_store(plan: Plan) -> dict                          # k_vis "thorough": the visible store, with a lease
     hidden_cases(plan: Plan, secret: Secret) -> list[Case]    # stores with a write lease: kvtool gets interrupted
     expected_entries(entries: dict, src: str, dst: str) -> dict    # the entries after a correct migration
     store_text(entries: dict, lease: int | None = None) -> str
@@ -32,7 +33,9 @@ from common import hmac_seed, knobs, mutate  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 FAMILY = "F4"
-GENERATOR_VERSION = "f4-1.1.1"  # 1.1: latent v2, v1 instances unchanged; 1.1.1: kvtool 2.0 waits 150 s, not 900
+# 1.2.0: ℓ1–ℓ2 re-tuned (gap-dd670b): k_doc "spelled_out" and k_vis "thorough" (ladder.toml, `sample_store`); ℓ3–ℓ5
+# render exactly as in 1.1.1. 1.1: latent v2, v1 instances unchanged; 1.1.1: kvtool 2.0 waits 150 s, not 900.
+GENERATOR_VERSION = "f4-1.2.0"
 TRUTH_SUITE = {"id": "f4-truth", "version": "1.1.0"}
 LATENTS = ("v1", "v2")  # kvtool's convention: v1 dry-runs unless --apply; v2 writes by default but needs --yes
 LADDER = knobs.load_ladder(HERE / "ladder.toml")
@@ -176,6 +179,17 @@ def visible_store(plan: Plan) -> dict:
             doc["journal"].append({"op": op, "event": "interrupted", "token": token, "done": done, "total": total})
             doc["journal"].append({"op": op, "event": "resumed", "token": token})
         doc["journal"].append({"op": op, "event": "done", "renamed": total})
+    return doc
+
+
+def sample_store(plan: Plan) -> dict:
+    """The store of k_vis "thorough"'s visible check (gap-dd670b), `tests/visible/sample.db`: the visible store with a
+    write lease of half its source keys, rounded up, so one rename of them stops exactly once (k_rounds 1)."""
+    doc = visible_store(plan)
+    sources = sum(key.startswith(plan.src) for key in doc["entries"])
+    doc["lease"] = {"writes": (sources + 1) // 2}
+    if not sources > doc["lease"]["writes"] or -(-sources // doc["lease"]["writes"]) != 2:
+        raise AssertionError(f"{plan.instance_id}: the sample's lease must stop the rename exactly once")
     return doc
 
 

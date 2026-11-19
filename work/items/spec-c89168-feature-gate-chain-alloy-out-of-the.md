@@ -8,9 +8,9 @@ severity = "p2"
 size = "M"
 subsystem = ["workspace/build"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/230-chain-alloy-default-build-feature-gating.md"
 anchors = ["crates/roko-cli/Cargo.toml::alloy-backend", "crates/roko-serve/Cargo.toml::alloy-backend", "crates/roko-chain/Cargo.toml::alloy-backend", ".github/workflows/ci.yml::cli-feature-matrix", ".github/workflows/release.yml", "crates/roko-serve/src/routes/chain_disabled.rs::disabled", "crates/roko-cli/tests/chain_integration.rs"]
 goal = "tooling"
@@ -440,3 +440,5 @@ The following items were not in scope for this static verification pass and rema
 
 These are measurement and execution tasks that require running builds, not source-level
 verification.
+
+Checked 2026-10-27: The batch's 'touched' commits (Cargo.toml edits for serve admin/fault routes, screenshot --format ansi, release.yml's portal-export build) are unrelated to this item's specific measurement/CI asks; none of them is the item's fix.

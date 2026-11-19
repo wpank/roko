@@ -1383,6 +1383,15 @@ def _relative(path: Path, root: Path) -> str:
 
 def lint_files(files: list[Path], root: Path, red_on_base: dict[tuple[str, str], str] | None = None, linter: str = LINTER) -> tuple[list[dict], list[tuple[str, str]]]:
     """Score every task of ``files`` under ``linter``; returns (records without `ts`, parse errors)."""
+    pairs, errors = plan_tasks(files, root)
+    records = [score_task(task, ctx, (red_on_base or {}).get((ctx.plan_path, _str(task.get("id"))), "unknown"), linter)
+               for ctx, task in pairs]
+    return records, errors
+
+
+def plan_tasks(files: list[Path], root: Path) -> tuple[list[tuple[PlanContext, dict]], list[tuple[str, str]]]:
+    """Every task of ``files`` with the context it is scored in, in file order, and the parse errors: the corpus
+    :func:`lint_files` scores, for a caller that rescores tasks (the refiner's cost sample, ``specops/live.py``)."""
     workspace = Workspace(root)
     parsed: list[tuple[Path, dict]] = []
     errors: list[tuple[str, str]] = []
@@ -1397,7 +1406,7 @@ def lint_files(files: list[Path], root: Path, red_on_base: dict[tuple[str, str],
         outputs = plan_outputs.setdefault(_plan_id(path, data), set())
         for task in _tables(data.get("task")):
             outputs |= task_outputs(task)
-    records = []
+    pairs: list[tuple[PlanContext, dict]] = []
     for path, data in parsed:
         tasks = _tables(data.get("task"))
         rel = _relative(path, workspace.root)
@@ -1410,10 +1419,8 @@ def lint_files(files: list[Path], root: Path, red_on_base: dict[tuple[str, str],
             plan_outputs=plan_outputs,
             hidden_suites=_table(data.get("meta")).get("hidden_suites") is True,
         )
-        for task in tasks:
-            key = (rel, _str(task.get("id")))
-            records.append(score_task(task, ctx, (red_on_base or {}).get(key, "unknown"), linter))
-    return records, errors
+        pairs += [(ctx, task) for task in tasks]
+    return pairs, errors
 
 
 def _plan_id(path: Path, data: dict) -> str:

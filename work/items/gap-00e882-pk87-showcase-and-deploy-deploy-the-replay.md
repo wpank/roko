@@ -11,8 +11,9 @@ size = "S"
 hold = "waits on Will's deferred decision 9302 (private Fly showcase) for 9339; 9304 answered 2026-10-15 (keep deploys guarded; D18: reject Privy mismatches), and 9340 is filed separately as bug-17213a"
 subsystem = ["deploy/fly"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK87"
 anchors = ["crates/roko-serve/src/routes/middleware.rs"]
 lane = "rust-cold"
@@ -65,3 +66,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Suggested model: sonnet.
 
 2026-10-15 (status-quo decision 3, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): Will accepted 9304's defaults — keep both deploy workflows guarded and rewrite their comments; D18: reject a Privy JWT on a role or user-id mismatch. Backlog task 9340 (part of this package) is filed on its own as bug-17213a so it is not held with the showcase (9302); drop 9340 from this package's scope. 9304 itself is answered: its remaining workflow-comment rewrite stays here or goes to whoever files decision 3's 9304 part.
+
+Checked 2026-10-27: 2026-10-26 sweep: this item's second [[verify]] entry checks D18/9340, already done elsewhere as bug-17213a (work/done/) and out of scope here since the 2026-10-15 note; it should be retired rather than re-verified. The remaining scope (task 9339, Fly deploy) is still blocked on decision 9302.
+
+The [[verify]] command is unsound. Proposed replacement, not yet validated: `Drop the second [[verify]] entry (superseded by bug-17213a, done) and keep only the preflight.sh entry for task 9339, still gated on decision 9302.`.

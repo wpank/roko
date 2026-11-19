@@ -2,6 +2,7 @@
 
 use crate::*;
 use anyhow::ensure;
+use roko_fs::RokoLayout;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -23,6 +24,24 @@ pub(crate) enum KnowledgeCmd {
     },
     /// Show aggregate statistics for the durable knowledge store.
     Stats {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Retire one knowledge entry a person judges wrong, such as a lesson a
+    /// gamed pass taught.
+    ///
+    /// Retrieval skips it from then on, and the ledger
+    /// `.roko/neuro/knowledge-retired.jsonl` keeps it retired through a
+    /// restore, an import, a sync or a rollback. An id the store no longer
+    /// holds is retired too when a kept version of the knowledge guard holds
+    /// it. Works beside a running `roko serve`.
+    Retire {
+        /// The entry's id, as `roko knowledge query --json` prints it.
+        id: String,
+        /// Why it is retired.
+        #[arg(long)]
+        reason: String,
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -367,6 +386,14 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
             cmd_neuro(cli, NeuroCmd::Stats { workdir: Some(wd) }).await
         }
+        KnowledgeCmd::Retire {
+            id,
+            reason,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_retire(cli, &wd, &id, &reason)
+        }
         KnowledgeCmd::Gc { workdir, .. } => {
             cmd_neuro(
                 cli,
@@ -491,6 +518,51 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
         } => cmd_archive(cli, workdir, &older_than, batch_size, dry_run).await,
         KnowledgeCmd::BackfillHdc { workdir } => cmd_backfill_hdc(cli, workdir).await,
     }
+}
+
+/// `roko knowledge retire` (bug-2ad4fa): retire the entry `id` for `reason`.
+///
+/// It takes only the knowledge store's own file lock, as `roko knowledge gc`
+/// does, so it works beside a running serve. A plan run in progress loaded
+/// its prompt cache at its start and keeps the entry until it ends.
+fn cmd_retire(cli: &Cli, workdir: &Path, id: &str, reason: &str) -> Result<i32> {
+    let layout = RokoLayout::for_project(workdir);
+    let store = KnowledgeStore::for_layout(&layout);
+    let retired = store.retire(id, reason, "human", &layout.learn_dir())?;
+    let running = roko_cli::workspace_lock::runner_lock_holder(layout.root());
+    if cli.json {
+        let payload = serde_json::json!({
+            "id": retired.id,
+            "found_in": retired.found_in,
+            "already_retired": retired.already,
+            "reason": reason.trim(),
+            "content": retired.content,
+            "ledger": store.retired_path(),
+            "running": running,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(EXIT_SUCCESS);
+    }
+    let done = if retired.already {
+        "was already retired"
+    } else {
+        "retired"
+    };
+    let text = query_entry_text(&retired.content, false);
+    println!("{} {done}: {text}", retired.id);
+    if retired.found_in != "store" {
+        println!(
+            "  not in the knowledge store; the knowledge guard's {} holds it, so nothing can \
+             bring it back",
+            retired.found_in
+        );
+    }
+    println!("  reason: {}", reason.trim());
+    println!("  ledger: {}", store.retired_path().display());
+    if let Some(holder) = running {
+        println!("  {holder} is running: its prompts keep the entry until it ends");
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 async fn cmd_backfill_hdc(cli: &Cli, workdir: Option<PathBuf>) -> Result<i32> {
@@ -818,12 +890,21 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             let stats = store.stats().with_context(|| {
                 format!("read knowledge store stats from {}", store.path().display())
             })?;
+            // Each retired entry with how many times a run learned its
+            // lesson again since (bug-2ad4fa).
+            let retirements = store.retirements().with_context(|| {
+                format!(
+                    "read the retirement ledger {}",
+                    store.retired_path().display()
+                )
+            })?;
 
             if cli.json {
                 let payload = serde_json::json!({
                     "workdir": wd,
                     "path": store.path(),
                     "stats": stats,
+                    "retirements": retirements,
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
                 return Ok(EXIT_SUCCESS);
@@ -832,6 +913,13 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             println!("Knowledge stats for {}:", store.path().display());
             println!("  total entries: {}", stats.total_entries);
             println!("  anti-knowledge: {}", stats.anti_knowledge_count);
+            println!("  retired: {}", stats.retired_count);
+            for retired in retirements.iter().filter(|retired| retired.relearned > 0) {
+                println!(
+                    "    {}: learned again {} time(s) since it was retired",
+                    retired.id, retired.relearned
+                );
+            }
             println!(
                 "  average confidence: {}",
                 stats
@@ -2114,5 +2202,56 @@ mod tests {
 
         assert_eq!(super::query_entry_text(&content, true), content.trim());
         assert_eq!(super::query_entry_text("one line\n", false), "one line");
+    }
+
+    /// bug-2ad4fa: `roko knowledge retire <id> --reason` parses, retires the
+    /// entry so that no query finds it, says so again for a second retire,
+    /// and refuses an id found nowhere.
+    #[test]
+    fn knowledge_retire_retires_one_entry() {
+        use clap::Parser as _;
+
+        let (_tmp, wd) = setup_workdir();
+        let store = KnowledgeStore::for_workdir(&wd);
+        let gamed = make_entry("kn-gamed", "render-demos must compensate locally");
+        let sound = make_entry("kn-sound", "presets set their own master gain");
+        store.ingest(vec![gamed, sound]).expect("seed the store");
+        let workdir = wd.to_str().expect("a UTF-8 path");
+        let cli = crate::Cli::try_parse_from([
+            "roko",
+            "--json",
+            "knowledge",
+            "retire",
+            "kn-gamed",
+            "--reason",
+            "a gamed pass taught it",
+            "--workdir",
+            workdir,
+        ])
+        .expect("parse knowledge retire");
+        let Some(crate::Command::Knowledge {
+            cmd:
+                super::KnowledgeCmd::Retire {
+                    id,
+                    reason,
+                    workdir: Some(dir),
+                },
+        }) = &cli.command
+        else {
+            panic!("expected knowledge retire: {:?}", cli.command);
+        };
+        assert_eq!(id, "kn-gamed");
+        let code = super::cmd_retire(&cli, dir, id, reason).expect("retired");
+        assert_eq!(code, crate::EXIT_SUCCESS);
+        let found = |topic: &str| -> Vec<String> {
+            let hits = store.query(topic, 5).expect("query");
+            hits.into_iter().map(|entry| entry.id).collect()
+        };
+        assert!(found("render demos compensate").is_empty());
+        assert_eq!(found("presets master gain"), ["kn-sound"]);
+        assert_eq!(store.retirements().expect("the ledger").len(), 1);
+        super::cmd_retire(&cli, dir, id, reason).expect("retired again");
+        assert_eq!(store.retirements().expect("the ledger").len(), 1);
+        assert!(super::cmd_retire(&cli, dir, "kn-typo", reason).is_err());
     }
 }

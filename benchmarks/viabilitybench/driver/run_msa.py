@@ -2,12 +2,22 @@
 "without Roko" baseline, so the field's own direct loop (`mini_loop.py`) is checked against a real, independently
 maintained one before either becomes every direct arm's loop (Pilot B's optional block, 3308).
 
-mini-swe-agent (MIT, github.com/SWE-agent/mini-swe-agent) is pinned in `requirements-msa.lock` and installed into its
-own venv, `.venv-msa/`, next to the driver's own `.venv/`; this module never imports it, only runs its `mini` CLI as
-a subprocess (`binary_path`, `[msa] binary` in the arm file, default `.venv-msa/bin/mini`), under 3303's sandbox with
-loopback to the arm's endpoint only (the metering proxy's port in a proxied run), exactly as Roko's process tree is
-confined (`run_roko.network_rule`): unlike `mini_loop.py`, whose driver makes every model call itself, mini-swe-agent
-makes its own, so its whole process tree needs that one loopback port, not none.
+mini-swe-agent (MIT, github.com/SWE-agent/mini-swe-agent) is pinned in `requirements-msa.lock` and installed into a
+venv of its own outside the repository, by default `~/.local/share/mini-swe-agent/venv` (`DEFAULT_VENV`; the README
+has the commands); this module never imports it, only runs its `mini` CLI as a subprocess (`binary_path`, `[msa]
+binary` in the arm file, default that venv's `bin/mini`), under 3303's sandbox with loopback to the arm's endpoint only
+(the metering proxy's port in a proxied run), exactly as Roko's process tree is confined (`run_roko.network_rule`):
+unlike `mini_loop.py`, whose driver makes every model call itself, mini-swe-agent makes its own, so its whole process
+tree needs that one loopback port, not none.
+
+**A neutral path** (bug-e16450). mini-swe-agent runs each of its agent's commands in a shell that is its child, and
+from inside the sandbox that shell reads the `mini` process's command line and start-up environment
+(`sysctl(KERN_PROCARGS2)`): `mini`'s own path, the interpreter its first line names (the venv's python, which a
+framework build of Python also puts in `__PYVENV_LAUNCHER__`) and its flags. The venv used to be `.venv-msa/` inside
+the benchmark tree, so every agent of this arm read `<repo>/benchmarks/viabilitybench/` there, a search key into the
+public repository. So `binary_path` refuses a binary whose path, or its interpreter's, lies inside the repository or
+names the benchmark (`BENCHMARK_NAME`: `vb`, `viabilitybench`), as written or with its links followed, since a neutral
+symlink would not hide the venv's interpreter from the agent, and `vb run` asks it before the first task (`preflight`).
 
 Our own prompt (`_config`) replaces mini-swe-agent's bundled one, so the agent sees exactly the spec text every arm
 gets (A4, module docstring of `planemit.py`) and nothing SWE-bench-specific; its completion marker stays
@@ -32,9 +42,10 @@ that arm.
 
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
+    preflight(arm, model, endpoint, caps, snapshot) -> None   # `vb run`'s start-up check; raises RunnerError
     binary_path(arm: dict) -> Path                        # raises RunnerError
     network_policy(deny, endpoint) -> dict
-    HARNESS, PROMPT_VERSION, PROMPT_SHA256
+    HARNESS, PROMPT_VERSION, PROMPT_SHA256, DEFAULT_VENV, DEFAULT_BINARY, BENCHMARK_NAME
 """
 
 from __future__ import annotations
@@ -42,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -57,7 +69,13 @@ from common import repo, sandbox
 
 HARNESS = "mini-swe-agent"
 PROMPT_VERSION = "run-msa-1"
-DEFAULT_BINARY = ".venv-msa/bin/mini"  # relative to the benchmark tree (layout.VB_ROOT), like the Roko arm's binary
+DEFAULT_VENV = "~/.local/share/mini-swe-agent/venv"  # outside the repository, under a neutral name (bug-e16450)
+DEFAULT_BINARY = f"{DEFAULT_VENV}/bin/mini"
+# What a path on mini's command line may not hold (module docstring): the benchmark's name, as BENCHMARK_MARK in tests.
+BENCHMARK_NAME = re.compile(r"\bvb\b|vb[-_]|[-_.]vb\b|viabilitybench", re.IGNORECASE)
+NEUTRAL_PATH = ("mini's command line, which its agent's shell reads from inside the sandbox, may name neither the "
+                f"repository nor the benchmark (bug-e16450): make its venv outside the repository, by default "
+                f"{DEFAULT_VENV}, from requirements-msa.lock (README, \"mini-swe-agent's venv\")")
 OFFLINE_KEY = "placeholder"  # the proxy drops it and sends the real key; a stub ignores it. Neutral (bug-d68575)
 SCRATCH_PREFIX = "mini-"  # mini-swe-agent's config and trajectory directory, which its env and argv name
 STEP_LIMIT_FLOOR = 4  # mini-swe-agent counts a step as one model call; never ask for fewer than this
@@ -163,14 +181,56 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                                network_policy=network_policy(ctx.deny, ctx.endpoint))
 
 
+def preflight(arm: dict, model: str, endpoint, caps, snapshot) -> None:
+    """`vb run`'s start-up check (`harness.py`): the arm's `mini` is an executable file whose path, and whose
+    interpreter's, names neither the repository nor the benchmark (`binary_path`), so a wrong one stops the run before
+    its first task."""
+    binary_path(arm)
+
+
 def binary_path(arm: dict) -> Path:
-    """The `mini` CLI the arm names (`[msa] binary`, relative to the benchmark tree), or the default venv's."""
+    """The `mini` CLI the arm names (`[msa] binary`: `~` is the operator's home, and a relative path lies under the
+    benchmark tree, which is refused), or the default venv's. Raises RunnerError for a path that lies inside the
+    repository or names the benchmark, as written or resolved, for one that is not an executable file, and for one whose
+    first line names an interpreter that does (module docstring)."""
     raw = Path(arm.get("msa", {}).get("binary") or DEFAULT_BINARY).expanduser()
     path = raw if raw.is_absolute() else layout.VB_ROOT / raw
+    shown = _shown_problem(path)
+    if shown:
+        raise RunnerError(f"the mini binary {path} {shown}; {NEUTRAL_PATH}")
     if not (path.is_file() and os.access(path, os.X_OK)):
-        raise RunnerError(f"no executable mini binary at {path}; pip install -r requirements-msa.lock into "
-                          f"{layout.VB_ROOT / '.venv-msa'}")
+        raise RunnerError(f"no executable mini binary at {path}; make its venv from requirements-msa.lock (README, "
+                          f"\"mini-swe-agent's venv\")")
+    interpreter = _interpreter(path)
+    shown = _shown_problem(interpreter) if interpreter else None
+    if shown:
+        raise RunnerError(f"the interpreter {interpreter} that the mini binary {path} names {shown}; {NEUTRAL_PATH}")
     return path
+
+
+def _shown_problem(path: Path) -> str | None:
+    """Why `path` may not stand on mini's command line (module docstring): as written or with its links followed, it
+    lies inside the repository or names the benchmark. None when it may."""
+    root = layout.REPO_ROOT
+    for form in dict.fromkeys((Path(os.path.abspath(path)), Path(os.path.realpath(path)))):
+        if form == root or root in form.parents:
+            return f"lies inside the repository ({root})"
+        found = BENCHMARK_NAME.search(str(form))
+        if found:
+            return f"names the benchmark ({found.group(0)!r} in {form})"
+    return None
+
+
+def _interpreter(path: Path) -> Path | None:
+    """The interpreter a script's first line names (`#!/path/to/python`), which the kernel runs it with and puts on its
+    command line, as pip's console scripts name their venv's python; None for a binary or an unreadable file."""
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline(4096)
+    except OSError:
+        return None
+    words = first[2:].split() if first.startswith(b"#!") else []
+    return Path(os.fsdecode(words[0])) if words else None
 
 
 def network_policy(deny: tuple[Path, ...], endpoint) -> dict:

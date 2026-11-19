@@ -20,6 +20,7 @@ use roko_graph::engine::{GraphOutput, NodeStatus};
 
 use crate::state_hub::StateHubSender;
 
+use super::eta::{Estimate, EtaTask, PlanEta, REFRESH, TaskDurations};
 use super::tui_bridge::TuiBridge;
 
 /// Per-plan ETA tracking state shared across polling cycles.
@@ -31,6 +32,9 @@ struct EtaTracker {
     total: usize,
     /// Number of tasks completed so far (success + failure + skip).
     done: usize,
+    /// The plan's tasks, once the runner gave them (gap-c1045f); without them
+    /// the estimate stays proportional.
+    plan: Option<PlanEta>,
 }
 
 impl EtaTracker {
@@ -47,11 +51,66 @@ impl EtaTracker {
         // Clamp to 1 minute minimum so the display is always useful.
         Some(eta_minutes.max(1))
     }
+
+    /// The plan's time left at `now`: from its tasks and `history` when the
+    /// runner gave them (gap-c1045f), else proportional.
+    fn estimate(&self, history: &EtaHistory, now: Instant) -> Option<RunEta> {
+        match &self.plan {
+            Some(plan) => plan
+                .estimate(&history.durations, history.slots, now)
+                .map(RunEta::Ranged),
+            None => self.eta_minutes().map(RunEta::Proportional),
+        }
+    }
+}
+
+/// A plan's time left, as the bridge publishes it.
+#[derive(Debug, Clone, PartialEq)]
+enum RunEta {
+    /// Elapsed / done × remaining minutes, for a plan whose tasks the bridge
+    /// does not know.
+    Proportional(u32),
+    /// From the plan's tasks and how long past tasks took (gap-c1045f).
+    Ranged(Estimate),
+}
+
+impl RunEta {
+    /// Its median seconds, which orders the plans.
+    fn median_secs(&self) -> f64 {
+        match self {
+            Self::Proportional(minutes) => f64::from(*minutes) * 60.0,
+            Self::Ranged(estimate) => estimate.p50_secs,
+        }
+    }
+}
+
+/// What the plans' estimates learn from, and when the last one went out
+/// (gap-c1045f).
+#[derive(Debug, Default)]
+struct EtaHistory {
+    /// How long past tasks took, this run's included as they pass.
+    durations: TaskDurations,
+    /// Tasks the run can work on at once.
+    slots: usize,
+    /// When the bridge last published an estimate.
+    published_at: Option<Instant>,
 }
 
 /// The run's remaining time: the longest estimate among running plans.
-fn largest_eta_minutes(trackers: &HashMap<String, EtaTracker>) -> Option<u32> {
-    trackers.values().filter_map(EtaTracker::eta_minutes).max()
+fn largest_eta(
+    trackers: &HashMap<String, EtaTracker>,
+    history: &EtaHistory,
+    now: Instant,
+) -> Option<RunEta> {
+    trackers
+        .values()
+        .filter_map(|tracker| tracker.estimate(history, now))
+        .max_by(|a, b| a.median_secs().total_cmp(&b.median_secs()))
+}
+
+/// `secs` in whole minutes, at least one.
+fn whole_minutes(secs: f64) -> u32 {
+    ((secs / 60.0).ceil() as u32).max(1)
 }
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
@@ -91,8 +150,10 @@ impl TelemetryEventSink for StateHubTelemetrySink {
 /// can run at once.
 pub struct GraphTuiBridge {
     tui: TuiBridge,
-    /// ETA tracking per running plan.
+    /// ETA tracking per running plan. Locked before `eta_history`.
     eta: Arc<Mutex<HashMap<String, EtaTracker>>>,
+    /// What the estimates learn from (gap-c1045f).
+    eta_history: Arc<Mutex<EtaHistory>>,
 }
 
 impl GraphTuiBridge {
@@ -101,6 +162,84 @@ impl GraphTuiBridge {
         Self {
             tui,
             eta: Arc::new(Mutex::new(HashMap::new())),
+            eta_history: Arc::new(Mutex::new(EtaHistory::default())),
+        }
+    }
+
+    /// Give the plans' time-left estimates how long past tasks took and the
+    /// run's agent slots (gap-c1045f).
+    pub fn use_eta_history(&self, durations: TaskDurations, slots: usize) {
+        if let Ok(mut history) = self.eta_history.lock() {
+            history.durations = durations;
+            history.slots = slots;
+        }
+    }
+
+    /// The tasks of `plan_id`, each with what it waits for, the rung it starts
+    /// on and its tier (gap-c1045f). From then on the plan's estimate is the
+    /// longest path through its unfinished tasks, published as tasks start and
+    /// finish and, through [`Self::refresh_eta`], every minute while they run.
+    /// Call it after [`Self::plan_started`].
+    pub fn plan_tasks(&self, plan_id: &str, tasks: Vec<EtaTask>) {
+        if let Ok(mut guard) = self.eta.lock()
+            && let Some(tracker) = guard.get_mut(plan_id)
+        {
+            tracker.plan = Some(PlanEta::new(tasks));
+        }
+    }
+
+    /// Publish the run's time left again once [`REFRESH`] has passed since the
+    /// last estimate, while a task of a plan with known tasks runs
+    /// (gap-c1045f). The status poll calls it on every tick.
+    pub fn refresh_eta(&self) {
+        let Ok(guard) = self.eta.lock() else {
+            return;
+        };
+        let due = self.eta_history.lock().ok().is_some_and(|history| {
+            history
+                .published_at
+                .is_none_or(|at| at.elapsed() >= REFRESH)
+        });
+        if !due {
+            return;
+        }
+        let running = guard
+            .iter()
+            .find(|(_, tracker)| tracker.plan.as_ref().is_some_and(PlanEta::running))
+            .map(|(plan_id, _)| plan_id.clone());
+        let Some(plan_id) = running else {
+            return;
+        };
+        let eta = self.largest_eta(&guard);
+        drop(guard);
+        self.publish_eta(&plan_id, eta);
+    }
+
+    /// The run's time left over `trackers`, now.
+    fn largest_eta(&self, trackers: &HashMap<String, EtaTracker>) -> Option<RunEta> {
+        let history = self.eta_history.lock().ok()?;
+        largest_eta(trackers, &history, Instant::now())
+    }
+
+    /// Publish `eta`, the run's time left, under `plan_id`: a range with its
+    /// time and basis for a plan with known tasks, the proportional minutes
+    /// otherwise, and `None` to clear it.
+    fn publish_eta(&self, plan_id: &str, eta: Option<RunEta>) {
+        match eta {
+            Some(RunEta::Ranged(estimate)) => self.tui.critical_path_eta_range(
+                plan_id,
+                whole_minutes(estimate.p50_secs),
+                whole_minutes(estimate.p90_secs),
+                chrono::Utc::now().timestamp_millis().max(0) as u64,
+                estimate.basis,
+            ),
+            Some(RunEta::Proportional(minutes)) => {
+                self.tui.critical_path_eta(plan_id, Some(minutes));
+            }
+            None => self.tui.critical_path_eta(plan_id, None),
+        }
+        if let Ok(mut history) = self.eta_history.lock() {
+            history.published_at = Some(Instant::now());
         }
     }
 
@@ -120,6 +259,7 @@ impl GraphTuiBridge {
                     started_at: Instant::now(),
                     total: task_count,
                     done: 0,
+                    plan: None,
                 },
             );
         }
@@ -132,17 +272,31 @@ impl GraphTuiBridge {
         // what the plans still running need (none once the last finishes).
         let remaining = self.eta.lock().ok().and_then(|mut guard| {
             guard.remove(plan_id);
-            largest_eta_minutes(&guard)
+            self.largest_eta(&guard)
         });
-        self.tui.critical_path_eta(plan_id, remaining);
+        self.publish_eta(plan_id, remaining);
     }
 
     // ── Node-level events (pre-execution) ────────────────────────────
 
-    /// Emit `TaskStarted` when a graph node begins executing.
+    /// Emit `TaskStarted` when a graph node begins executing. A plan whose
+    /// tasks the bridge knows estimates its time left again (gap-c1045f).
     pub fn node_started(&self, plan_id: &str, node_id: &str, title: &str) {
         self.tui
             .task_started(plan_id, node_id, title, "graph-executing");
+        let Ok(mut guard) = self.eta.lock() else {
+            return;
+        };
+        let Some(plan) = guard
+            .get_mut(plan_id)
+            .and_then(|tracker| tracker.plan.as_mut())
+        else {
+            return;
+        };
+        plan.started(node_id, Instant::now());
+        let eta = self.largest_eta(&guard);
+        drop(guard);
+        self.publish_eta(plan_id, eta);
     }
 
     // ── Node-level events (post-execution) ───────────────────────────
@@ -168,20 +322,40 @@ impl GraphTuiBridge {
         self.tui
             .task_completed(plan_id, node_id, node_outcome(status, verdict));
 
-        // Update ETA tracking.  Only publish when there is a non-trivial
-        // estimate: at least one task done and at least one remaining.  The
-        // TUI progress card's proportional fallback handles the zero-done
-        // case, so we skip publishing a None here to keep event volume low.
-        // With several plans running, the run's estimate is the longest one.
-        if let Ok(mut guard) = self.eta.lock() {
-            let Some(tracker) = guard.get_mut(plan_id) else {
-                return;
-            };
-            tracker.done = tracker.done.saturating_add(1);
-            if tracker.eta_minutes().is_some() {
-                self.tui
-                    .critical_path_eta(plan_id, largest_eta_minutes(&guard));
+        // Update ETA tracking. A plan whose tasks the bridge knows always
+        // publishes, and a task that passed teaches the history what a task of
+        // its rung and tier takes (gap-c1045f). A proportional plan publishes
+        // only when there is a non-trivial estimate: at least one task done
+        // and at least one remaining; the TUI progress card's proportional
+        // fallback handles the zero-done case, so we skip publishing a None
+        // here to keep event volume low. With several plans running, the
+        // run's estimate is the longest one.
+        let Ok(mut guard) = self.eta.lock() else {
+            return;
+        };
+        let Some(tracker) = guard.get_mut(plan_id) else {
+            return;
+        };
+        tracker.done = tracker.done.saturating_add(1);
+        let publish = match tracker.plan.as_mut() {
+            Some(plan) => {
+                let outcome = node_outcome(status, verdict);
+                let passed = outcome == TASK_OUTCOME_PASSED
+                    || outcome == TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES;
+                let ran = plan.finished(node_id, Instant::now());
+                if let Some((rung, tier, secs)) = ran.filter(|_| passed)
+                    && let Ok(mut history) = self.eta_history.lock()
+                {
+                    history.durations.add(rung.as_deref(), tier, secs);
+                }
+                true
             }
+            None => tracker.eta_minutes().is_some(),
+        };
+        if publish {
+            let eta = self.largest_eta(&guard);
+            drop(guard);
+            self.publish_eta(plan_id, eta);
         }
     }
 
@@ -453,6 +627,7 @@ mod tests {
                 if let roko_core::DashboardEvent::CriticalPathEtaUpdated {
                     plan_id,
                     eta_minutes,
+                    ..
                 } = envelope.payload
                 {
                     etas.push((plan_id, eta_minutes));
@@ -472,6 +647,61 @@ mod tests {
 
         bridge.plan_completed("plan-b", true);
         assert_eq!(etas(&mut sub), [("plan-b".to_string(), None)]);
+    }
+
+    /// gap-c1045f: a plan whose tasks the bridge knows publishes a range, with
+    /// when it was computed and what it rests on, when a task starts and when
+    /// one finishes; a refresh right after an estimate waits its minute.
+    #[test]
+    fn a_plan_with_known_tasks_publishes_a_range() {
+        use roko_core::task::TaskTier;
+
+        let (hub, bridge) = make_bridge();
+        let mut sub = hub.subscribe_events_from(0);
+        // No past task: each task is a guess of ten minutes.
+        bridge.use_eta_history(TaskDurations::new(Vec::new(), 600.0), 2);
+        bridge.plan_started("plan", 2);
+        let task = |id: &str, depends_on: &[&str]| EtaTask {
+            id: id.to_string(),
+            depends_on: depends_on.iter().map(|dep| (*dep).to_string()).collect(),
+            rung: Some("mid".to_string()),
+            tier: TaskTier::Focused,
+        };
+        bridge.plan_tasks("plan", vec![task("T1", &[]), task("T2", &["T1"])]);
+        bridge.node_started("plan", "T1", "first");
+        bridge.refresh_eta();
+        bridge.node_completed_with_verdict(
+            "plan",
+            "T1",
+            NodeStatus::Complete,
+            Some(TaskGateVerdict::Passed),
+        );
+
+        let mut etas = Vec::new();
+        while let Ok(envelope) = sub.live.try_recv() {
+            if let roko_core::DashboardEvent::CriticalPathEtaUpdated {
+                eta_minutes,
+                eta_p90_minutes,
+                computed_at_ms,
+                basis,
+                ..
+            } = envelope.payload
+            {
+                let p90 = eta_p90_minutes.expect("a range");
+                assert!(p90 > eta_minutes.expect("a median"), "{p90}");
+                assert!(computed_at_ms.is_some_and(|ms| ms > 0));
+                let basis = basis.expect("a basis");
+                etas.push((eta_minutes, basis.source, basis.tasks));
+            }
+        }
+        assert_eq!(
+            etas,
+            [
+                (Some(20), "guess".to_string(), 0),
+                (Some(10), "guess".to_string(), 0),
+            ],
+            "T1 and T2 in a row, then T2; the refresh waited"
+        );
     }
 
     #[test]

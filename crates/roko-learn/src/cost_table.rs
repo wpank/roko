@@ -510,8 +510,8 @@ mod tests {
     }
 
     /// backlog 6106: a Codex turn's cost estimate prices its model at the
-    /// built-in price snapshot's row. A model the snapshot does not list,
-    /// the Codex CLI's default gpt-5.6-sol included, has an unknown cost.
+    /// built-in price snapshot's row. A model the snapshot does not list has
+    /// an unknown cost.
     #[test]
     fn price_tables_agree_codex_turn_estimate_with_the_snapshot() {
         use roko_agent::AgentRuntimeEvent;

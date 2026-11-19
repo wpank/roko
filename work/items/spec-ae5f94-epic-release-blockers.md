@@ -3,13 +3,15 @@ id = "spec-ae5f94"
 kind = "spec"
 title = "Epic: release blockers"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p0"
 goal = "release"
 size = "L"
 subsystem = ["roko-gate/shell", "roko-serve/auth", "README", "Cargo.toml", ".github/workflows"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e16"
 discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§2 goal order; §3 E16)"
 anchors = ["crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-serve/src/routes/auth.rs::AuthRegistry", "README.md", "Cargo.toml", ".github/workflows/ci.yml"]
@@ -112,3 +114,5 @@ This is the implementation plan.
   `faults::dry_run` reads (so they can't act on real runs without the dry-run wrapper), but the deployed binary
   does carry the fault-injection code and its admin surface either way. Worth a decision on whether that's
   acceptable for the public image or should be a separate, non-fault-injection release build.
+
+Checked 2026-10-27: 2026-10-26 sweep: 17 of 20 children done; find-8cc7ac, bug-911361 and gap-452185 remain open. bug-911361 may already be substantively addressed (Cargo.toml now points at github.com/nunchi/roko, the project's current canonical org per its migration), but it has not been formally closed, and this item is out of this batch's scope to close. The epic's first verify command is stale on two of its five clauses (the literal 'env_clear()' string and the 'wpank/roko' target) and should be re-pointed before relying on it.

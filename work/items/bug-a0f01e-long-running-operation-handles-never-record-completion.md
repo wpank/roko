@@ -8,12 +8,12 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-serve/operations"]
 created = 2026-09-28
-updated = 2026-10-16
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-serve/src/routes/dream.rs:107", "crates/roko-serve/src/routes/research.rs:257", "crates/roko-serve/src/routes/templates.rs:207", "crates/roko-serve/src/routes/plans.rs:1151", "crates/roko-serve/src/routes/gateway.rs:708"]
+anchors = ["crates/roko-serve/src/state.rs::OperationStatus", "crates/roko-serve/src/operations.rs::spawn_operation", "crates/roko-serve/src/operations.rs::finish_operation"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -57,3 +57,5 @@ Re-verified 2026-09-29 at d9e79e9d8. Beyond the plan-generation producer, plan 0
   `the_kept_record_holds_only_the_newest_operations`, `plan_generation_status_outlives_its_handle`,
   `run_status_answers_for_a_collected_operation`. Still open: (2) a `Cancelled` status, which nothing produces yet
   (left on purpose until something does). An operation still running when the server stops keeps no record.
+
+Checked 2026-10-27: 2026-10-26: both [[verify]] commands likely pass today (the tests they name exist), so this item is close to eligible for done, but the title's problem ('handles never record completion') is not 100% gone: a cancelled operation or one in flight at shutdown still gets no terminal record. Frontmatter is stale -- last_verified/last_verified_rev (2026-10-01/ebdc0f5d5) predate the 2026-10-16 note already in the body. Suggest either closing this as done and filing a fresh p3 item for the Cancelled/shutdown-survival gap, or updating [[verify]] to also cover it, e.g. a test that stops the server mid-operation and asserts GET /api/operations/{id} still answers a terminal (not running) status after restart.

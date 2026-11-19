@@ -10,8 +10,9 @@ size = "M"
 hold = "needs the pilot runs: Pilot A (gap-c33709) and Pilot B (gap-327242)"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire 9315, 9316 (held in wave 12, PK82)"
 discovered_from = "gap-9ecd37"
 anchors = ["benchmarks/viabilitybench/showcase"]
@@ -65,3 +66,5 @@ The builder and verifier pass on a fixture bundle; Pilots A (gap-c33709) and B (
   against serve for real waits on this item (9316, held here on the pilot runs). No new item
   filed; this item is already the right place for 9333's remaining dependency once Pilot A/B
   run.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: dependency gap-dbe8e7 has since closed. Pilot A is done (G0 NO-GO) but Pilot B has not run live yet, so this item's hold now stands on Pilot B alone.

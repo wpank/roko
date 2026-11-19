@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use roko_core::config::harness_params::HarnessParamsHandle;
 use roko_core::error::{Result, RokoError};
@@ -24,7 +25,13 @@ use roko_graph::cells::{
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
+use crate::graph_task_dispatch::SLOT_WAIT_MS;
 use crate::runner::tui_bridge::TuiBridge;
+
+/// Milliseconds since `since`.
+fn waited_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// [`TaskDispatcher`] that runs at most `slots` tasks at a time through `inner`.
 pub struct AgentSlotDispatcher {
@@ -174,8 +181,12 @@ impl TaskDispatcher for AgentSlotDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        let waiting = Instant::now();
         let _slot = self.slot(&spec.plan_id, &spec.title).await?;
-        self.inner.dispatch(spec, input, ctx).await
+        // The attempt counts the wait as queue time (gap-6a319c).
+        SLOT_WAIT_MS
+            .scope(waited_ms(waiting), self.inner.dispatch(spec, input, ctx))
+            .await
     }
 
     async fn dispatch_request(
@@ -183,10 +194,16 @@ impl TaskDispatcher for AgentSlotDispatcher {
         request: &TaskDispatchRequest,
         ctx: &CellContext,
     ) -> Result<TaskDispatchOutcome> {
+        let waiting = Instant::now();
         let _slot = self
             .slot(&request.spec.plan_id, &request.spec.title)
             .await?;
-        self.inner.dispatch_request(request, ctx).await
+        SLOT_WAIT_MS
+            .scope(
+                waited_ms(waiting),
+                self.inner.dispatch_request(request, ctx),
+            )
+            .await
     }
 
     async fn dispatch_stream(
@@ -195,10 +212,16 @@ impl TaskDispatcher for AgentSlotDispatcher {
         ctx: &CellContext,
         event_tx: tokio::sync::mpsc::Sender<GraphTaskEvent>,
     ) -> Result<TaskDispatchOutcome> {
+        let waiting = Instant::now();
         let _slot = self
             .slot(&request.spec.plan_id, &request.spec.title)
             .await?;
-        self.inner.dispatch_stream(request, ctx, event_tx).await
+        SLOT_WAIT_MS
+            .scope(
+                waited_ms(waiting),
+                self.inner.dispatch_stream(request, ctx, event_tx),
+            )
+            .await
     }
 
     async fn reconcile_attempt(

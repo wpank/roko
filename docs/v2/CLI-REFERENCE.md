@@ -335,26 +335,42 @@ roko run "Deploy to staging" --serve
 
 ### `roko status`
 
-**When to use this:** After a run completes, or any time you want a quick health summary of
-the workspace — signal counts, most recent episode, gate pass/fail ratios.
+**When to use this:** Any time you want to know what is running in the workspace, how the last
+runs ended and what they spent.
 
 ```
-roko status [--workdir <path>] [--cfactor] [--surfaces]
+roko status [--workdir <path>] [--details] [--quick] [--cfactor] [--surfaces]
 ```
 
 | Flag | Description |
 |---|---|
 | `--workdir <path>` | Directory containing `.roko/` (default: cwd). |
+| `--details` | Add roko's internals: signal counts, efficiency events by role, prompt experiments, adaptive gate thresholds, and cost by model and plan. |
+| `--quick` | A compact three-line health summary: provider, learning state, workspace. |
 | `--cfactor` | Compute and persist the latest C-Factor snapshot. |
-| `--surfaces` | Print the CLI/TUI/backend surface inventory instead of session status. |
+| `--surfaces` | Print the CLI/TUI/backend surface inventory instead of the status. |
+
+A workspace after a build of 13 plans:
+
+```
+◆ roko  status undertow
+  13 plans · $0.00 today · $12.66 this month
+
+  ✓ p7-4-the-step-cell-outlines   done yesterday 11:37  2/2 tasks   $0.01
+  ✓ p7-3-the-playing-step-row-a…  done 13 Nov           3/3 tasks   $0.17
+  ✓ p7-2-the-window-as-designed…  done 13 Nov           5/5 tasks   $1.32
+  ✓ p7-1-silent-until-played      done 13 Nov           2/2 tasks   $0.11
+  ✓ p7-ship                       done 13 Nov           2/2 tasks   $0.01
+  and 6 earlier
+```
 
 <details>
 <summary>Examples</summary>
 
 ```bash
-roko status                        # Show workspace health summary
+roko status                        # What is running and how the last runs ended
+roko status --details              # The same, with roko's internals
 roko status --json                 # Output status as JSON for scripting
-roko status --cfactor              # Compute and show C-Factor metrics
 ```
 
 </details>
@@ -367,7 +383,10 @@ roko status --cfactor              # Compute and show C-Factor metrics
 for `.roko/`, `roko.toml`, agent command availability, secrets, and optionally the HTTP
 control plane. Its `routing_ladder` line names the `[routing.ladder]` rungs that cannot run on
 this machine and why (a run only logs them), since a task whose start rung cannot run starts on
-the next rung up that can.
+the next rung up that can, or, when no rung above it can, one runnable rung below the highest, so it
+can still climb once. Its detail also names each rung's `alternates` apart from the rungs: those
+that run here, which the rung draws among at `[routing] explore_epsilon` so the cascade router
+learns from plan runs, and those it goes without (gap-51d2ca).
 
 ```
 roko doctor [--workdir <path>] [--serve-url <url>]
@@ -382,8 +401,8 @@ roko doctor [--workdir <path>] [--serve-url <url>]
 
 ### `roko layer-check`
 
-Check workspace layer dependency rules — ensures crate imports follow the layered
-architecture. Run this before committing changes to `Cargo.toml` files.
+Deprecated: `roko doctor` runs this check. It checks workspace layer dependency rules, that crate
+imports follow the layered architecture.
 
 ```
 roko layer-check
@@ -444,6 +463,31 @@ roko plan validate [<dir>] [--strict] [--json] [--dag] [--spec-quality]
 | `--dag` | false | Show DAG analysis: plan, task and edge counts, waves, critical path, dangling dependency references. |
 | `--spec-quality` | false | Score each task's spec with the speclint rules; with `--strict`, a hard fail exits 1. |
 
+#### `roko plan status`
+
+Show a plan's last run, from any terminal, while it runs or after it ends: the four readings
+(tasks, time, spend against the cap, checks), each task as the run left it, the plan check,
+where the work went, and the next command.
+
+```
+roko plan status [<plan-dir>] [--workdir <path>] [--json]
+```
+
+A plan from a real build:
+
+```
+◆ roko  plan p7-3-the-playing-step-row-as-designed
+  plans/p7-3-the-playing-step-row-as-designed · done 13 Nov
+  3/3 tasks · 4m 59s · $0.17 of $2.00 · 10/10 checks
+
+  ✓ task 1  Rework the step cells and trace bands        1 try     2m 10s  $0.13
+  ✓ task 2  Rework knob glow and zero-arc behavior       1 try     1m 08s  $0.04
+  ✓ task 3  Regenerate the review images and strict log  1 try        57s <$0.01
+  ✓ plan check  tools/check.sh --plugin                            1m 16s
+
+  The work was delivered on roko/work/p7-3-the-playing-step-row-as-designed.
+```
+
 #### `roko plan run`
 
 **The primary execution command**, with every plan-run option; `roko run plans/<slug>` is the
@@ -453,10 +497,27 @@ agent/gate/replan/worktree/merge/persistence lifecycle. The legacy Runner-v2 eng
 
 ```
 roko plan run <plans-dir> [--engine graph] [--workdir <path>]
-             [--resume-plan [<snapshot>]] [--approval]
+             [--resume-plan [<snapshot>]] [--tui] [--no-serve]
              [--max-retries <n>] [--max-tasks <n>] [--dry-run]
              [--fresh] [--force-resume] [--budget-override <usd>] [--no-budget]
 ```
+
+On a terminal it shows the live view: a line per task with what its agent is doing, over a footer
+of tasks done, time and spend. In a pipe it prints one line per event. Part way through a small
+example plan:
+
+```
+◆ roko  run add-a-farewell-command
+  2 tasks · cap $3.00
+
+  ✓ task 1  Add farewell to the greeting module  1 try       4.2s  $0.10
+  ⠧ task 2  Say goodbye from the command line    reading cli.py
+
+   1/2   0:05   $0.13  of $3.00
+```
+
+The run ends with a summary: each task's tries, time and spend, the plan check, where the work
+went, and the next command (`roko plan status` shows the same summary later).
 
 <details>
 <summary>Full flag table</summary>
@@ -467,7 +528,11 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--engine <engine>` | `graph` | `graph` is the only engine. `legacy` (alias `runner-v2`) is rejected with an error. |
 | `--workdir <path>` | cwd | Working directory (repo root). |
 | `--resume-plan [<path>]` | — | Graph accepts a checkpoint root (one directory per plan) or a manifest file for a single-plan run; its default is `.roko/state/graph/`. Alias: `--resume-state`. |
-| `--approval` | false | Launch the connected approval TUI while the plan runs. |
+| `--tui` | false | Open the full-screen dashboard instead of the live view; it closes when the run ends. Alias: `--approval`. A plan with `[meta] approval = "per_task"` opens it by itself, to approve or reject each verified task. |
+| `--no-tui` | false | The live view, the default. Kept so scripts that pass it still work. |
+| `--no-serve` | false | Don't start the HTTP control plane in the background. |
+| `--no-audit` | false | Run no random audits for this run (`[audit] enabled = false` does the same for every run). |
+| `--rich-topology` | false | Run each task as the production subgraph, with a gate step that runs roko-gate's full pipeline. |
 | `--max-retries <n>` | from config | Maximum retry attempts per task (overrides per-task and config values). |
 | `--max-tasks <n>` | config/default | Maximum concurrent tasks per plan; `0` keeps configured behavior. |
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
@@ -481,7 +546,10 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 The Graph engine honors `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
 `--max-tasks`, `--budget-override`, and `--no-budget`. Its checkpoint manifest binds schema
 version, plan ID, converted-graph fingerprint, run ID, and Activity log; drift fails closed
-unless force-resume archives the old state and starts clean. Graph records actual provider
+unless force-resume archives the old state and starts clean. A resume after roko stopped with
+tasks in flight (a crash or a restart) charges those attempts what their model calls cost, the
+call cut off at an estimate, records them `abandoned`, and continues the run; the plan's ceiling
+counts that spend. Graph records actual provider
 cost from both successful and unsuccessful paid calls, routes against the tighter Cell or
 plan remainder, blocks later Activities at a configured ceiling, fails a hard-limit run if
 the last call crosses the ceiling, and reports per-plan and total spend.
@@ -490,9 +558,9 @@ the last call crosses the ceiling, and reports per-plan and total spend.
 <summary>How Graph plan run works (internal execution flow)</summary>
 
 1. Plans are loaded from `<plans-dir>`. Each plan is a directory containing `tasks.toml`.
-2. `ProductionPlanTopology` builds an 11-node subgraph per task (TaskContext + 6 enrichers + Compose + TaskExecutor + Gate + SuccessBoundary).
+2. By default each task becomes one Activity cell (`roko_graph::convert::plan_to_graph`); with `--rich-topology`, `ProductionPlanTopology` builds a subgraph per task (TaskContext, enrichers, Compose, TaskExecutor, Gate and SuccessBoundary).
 3. The `GraphEngine` executes nodes in bounded parallel topological waves.
-4. Each task runs an agent via `TaskExecutorCell`, then runs gate validation via `GatePipelineCell` (using `CellResources.gates`).
+4. Each task runs an agent, then its checks: the task's `verify` steps and the workspace's `[[gates.rungs]]`; with `--rich-topology`, `GatePipelineCell` also runs the gate pipeline (`CellResources.gates`).
 5. Gate failures trigger the replan controller. Failure context drives revised task generation.
 6. `run_one_plan` writes the checkpoint's terminal status, and on an interrupt stops in-flight agents.
 7. The 12-row `FeedbackSettler` settles completion sinks with exactly-once idempotency.
@@ -1254,13 +1322,13 @@ roko knowledge archive [--older-than <duration>] [--batch-size <n>] [--workdir <
 ## Learning and feedback
 
 **When to use this:** After a batch of runs, check `roko learn all` to see how the cascade
-router is adapting, whether any prompt experiments have concluded, and what the efficiency
-trend looks like. Use `roko learn tune` to view or adjust the adaptive thresholds that gate
-the plan executor.
+router is adapting, how often lessons and playbooks are reused, and what the knowledge store
+holds. `roko learn inspect` shows the adaptive thresholds that gate the plan executor.
 
 ### `roko learn all`
 
-Show all learning state: cascade router, experiments, efficiency, episodes, and knowledge.
+Show what roko has learned in the workspace, one part per line: routing, experiments, efficiency,
+episodes, reuse, reflexes, gate thresholds and knowledge, then the files it read.
 
 ```
 roko learn all [--workdir <path>]
@@ -1268,8 +1336,20 @@ roko learn all [--workdir <path>]
 
 ### `roko learn route`
 
-Show cascade router state from `.roko/learn/cascade-router.json`. Displays total
-observations, model slugs, stage transitions, and the latest transition.
+Show how roko picks a model, from `.roko/learn/cascade-router.json`: the router's observations and
+stage, and each model's tries and passes. Alias: `roko learn router`.
+
+```
+◆ roko  learn router
+  how roko picks a model
+
+  Routing  42 observations · static (it moves to confidence at 50 observations and to UCB at 200)
+           Graph tasks start on the model ladder's rung; the router's pick is recorded beside it
+           49 outcomes: gpt-5.4 10 tries, 9 passed · gpt-5.4-mini 39 tries, 35 passed
+           no outcomes yet: claude-sonnet-4-6, glm-4.7 (unavailable), gpt-5.6-luna, gpt-oss-120b
+
+  Read from .roko/learn/cascade-router.json.
+```
 
 The router moves through three stages as it accumulates data:
 - `static`: 0–49 observations (uses config defaults)
@@ -1309,23 +1389,35 @@ Displays episode count, date range, and most recent episode (model, task, pass/f
 roko learn episodes [--workdir <path>]
 ```
 
-### `roko learn tune`
+### `roko learn inspect`
 
-Display and optionally adjust adaptive thresholds.
+Read-only inspection of one learning subsystem. `roko learn tune` is a deprecated alias.
 
 ```
-roko learn tune [<subsystem>] [--dry-run] [--workdir <path>]
+roko learn inspect <gates|routing|budget> [--workdir <path>]
 ```
 
-| Arg | Default | Description |
-|---|---|---|
-| `<subsystem>` | `gates` | Subsystem to tune: `gates`, `routing`, `budget`. |
-| `--dry-run` | false | Display current values without modifying. |
+- `gates`: the adaptive gate thresholds in `.roko/learn/gate-thresholds.json` (an EMA pass rate per
+  rung)
+- `routing`: the cascade router's state and model statistics from `.roko/learn/cascade-router.json`
+- `budget`: the configured budget limits and the spend history
 
-Subsystem details:
-- `gates` — Reads `.roko/learn/gate-thresholds.json` (EMA-adjusted per rung)
-- `routing` — Reads `.roko/learn/cascade-router.json`
-- `budget` — Shows entry count from `.roko/learn/efficiency.jsonl`
+### Other learning views
+
+| Command | What it shows |
+|---|---|
+| `roko learn reflexes` | The T0 reflex rules: the count, the top five by hits, and recent demotions |
+| `roko learn patterns` | Failure patterns, most frequent first |
+| `roko learn rungs` | How each rung of the model ladder did: tries, verified passes, time and cost per try |
+| `roko learn probes` | The ladder's rung probe verdicts; `clear` has the next run probe a rung again |
+| `roko learn gates` | The adaptive gate threshold state |
+| `roko learn playbooks` | The learned playbooks: name, trigger pattern, successes and failures |
+| `roko learn sizing` | The first-try verified pass rate by task tier and size |
+| `roko learn self-model` | The self-model: fit it over the logs, or replay routing policies |
+| `roko learn econ prices` | The price snapshot's rows, with their source URLs |
+| `roko learn commits` | What the guarded stores committed, rolled back and restored |
+
+`roko learn --help` lists the rest.
 
 ---
 

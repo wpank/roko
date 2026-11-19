@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-21T08:30:08Z", "event": "closed", "item": "bug-a8a787", "executor": "claude-agent", "via": "manual", "session": "sync", "branch": "work/bug-a8a787", "concurrency": 4, "source": "reconciled", "status": "done", "commit": "e70eb3ff6", "forced": false}

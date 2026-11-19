@@ -13,15 +13,23 @@ jobs:
   test:
     name: Test + Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # After a Cargo.lock change the cache misses, and clippy plus a cold
+    # `cargo test --workspace` outlast 60 minutes. A cancelled job saves no
+    # cache, so every later run would start cold too (bug-623001).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # A run whose tests fail still saves its build for the next one.
+          cache-on-failure: true
       - run: cargo clippy --workspace --no-deps -- -D warnings
-      - run: cargo test --workspace
+      # Every test binary runs, so one run shows every failure; the step still
+      # fails if any test does (bug-eeadbb).
+      - run: cargo test --workspace --no-fail-fast
 
   golden-path:
     name: Golden-path canaries (C1-C8)
@@ -164,7 +172,12 @@ jobs:
   # a record on Linux runners; remove continue-on-error once it does.
   portal-browser:
     name: Portal browser check (fake agent)
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: that is ubuntu-26.04 now, and demo/demo-app's
+    # Playwright (1.59) has no Chromium for it ("Playwright does not support
+    # chromium on ubuntu26.04-x64"). Back to ubuntu-latest once the demo app's
+    # Playwright is 1.65 or later (bug-044a2d).
+    runs-on: ubuntu-24.04
+    # Without a Rust cache, building roko-cli takes about 15 minutes.
     timeout-minutes: 45
     continue-on-error: true
     env:
@@ -172,11 +185,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.1
-      # Same build as layer-check: reuse its dependency cache, save none.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: layer-check
-          save-if: false
+      # No Rust cache: layer-check's is built on ubuntu-latest, and rust-cache
+      # keys by OS name alone ("Linux"), so its target/ would land on this
+      # older image with native objects built against a newer glibc.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -195,6 +206,13 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Build roko-cli
         run: cargo build -p roko-cli
+      # roko merges a run's second plan into its branch with git commit-tree,
+      # which takes the person's git identity, and a runner has none: without
+      # one the parallel step's second delivery fails (bug-37a893).
+      - name: Give git an identity
+        run: |
+          git config --global user.name "portal check"
+          git config --global user.email portal-check@roko.invalid
       - name: Portal check
         run: bash plans/portal-programme/09-acceptance/portal-check.sh
       - name: Upload the check's evidence

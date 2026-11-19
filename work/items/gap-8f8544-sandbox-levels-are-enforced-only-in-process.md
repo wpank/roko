@@ -3,14 +3,16 @@ id = "gap-8f8544"
 kind = "gap"
 title = "Sandbox levels are enforced only in-process: no OS sandbox confines agent processes"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "L"
 hold = "Decided 2026-09-29 (spec-ba7bea): no OS sandbox in v1; revisit before any hosted demo"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:53, wk-wp-matrix); docs/whitepaper/data/mechanisms.toml (row IS6)"
 anchors = ["crates/roko-agent/src/safety/sandbox.rs::SandboxLevel", "crates/roko-agent/src/safety/mod.rs::pre_dispatch_check_with_context", "crates/roko-agent/src/safety/mod.rs::post_dispatch_check", "crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -82,3 +84,5 @@ After v1:
   gap-b72761, gap-abbd22) should reuse `post_dispatch_check`, which already covers secret leaks in output, output
   size and changed-file path escapes, rather than building the same checks again. gap-70e445 (parked) tracks the
   broader safety differences between dispatch paths.
+
+Checked 2026-10-27: 2026-10-26 sweep: still held; decision 9303 (shared with gap-93c748) remains undecided in DECISIONS.md. Context only, not a fix: post_dispatch_check is now called from the Graph path's red_flags.rs pre-verify screen, unlike the item's claim that only ACP calls it -- but it screens output, it does not isolate the process, so it does not touch this item's gap.

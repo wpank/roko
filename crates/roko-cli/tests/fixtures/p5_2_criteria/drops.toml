@@ -1,0 +1,58 @@
+[meta]
+plan = "phase-5-2-presets"
+title = "P5.2 · the presets as named"
+total = 1
+done = 0
+status = "ready"
+dropped_checks = [
+    "SC5: covered by the plan's final check `tools/check.sh --plugin`, which runs every spec test.",
+    "SC6: covered by the plan's final check `tools/check.sh --plugin`, which runs every spec test.",
+    "SC7: covered by the plan's final check `tools/check.sh --plugin`, which runs every spec test.",
+    "SC8: covered by the plan's final check `tools/check.sh --plugin`, which runs every spec test.",
+]
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "The presets as named"
+goal = "SUB Pure Foundation is a clean sine sub, every SUB preset is the sub, no preset leans below 20 Hz, and RUMBLE Sidechain Fog keeps its sidechain and fog."
+description = "In `core/src/presets.cpp`, change the six presets the spec names: SUB Pure Foundation as the clean sine sub alone, the other SUB presets without the saw, the sub-20 Hz limits, and RUMBLE Sidechain Fog's duck, send, decay and sequence. Rerun `tools/render-demos.sh` and commit the four showcase WAVs it writes."
+acceptance = [
+    "AC1: SC1, SC2, SC3 and SC4: `tools/spec.sh 5_2 presets` passes (P5.2.01-P5.2.04).",
+    "AC2: SC5: `tools/spec.sh 5 presets` still passes (P5.2.05).",
+    "AC3: SC6: `tools/spec.sh 5_1 render` still passes (P5.2.06).",
+    "AC4: SC7: `tools/render-demos.sh && tools/spec.sh 5_1 demos` still passes (P5.2.07).",
+    "AC5: SC8: `tools/render-demos.sh && tools/spec.sh 5 demos` still passes (P5.2.08).",
+]
+non_goals = ["Do not change the engine, and add no high-pass.", "Do not change presets the spec doesn't name."]
+open_questions = []
+status = "ready"
+tier = "mechanical"
+max_loc = 20
+files = [
+    "core/src/presets.cpp",
+    "artifacts/audio/init.wav",
+    "artifacts/audio/sub-pure-foundation.wav",
+    "artifacts/audio/bass-hypnotic-roller.wav",
+    "artifacts/audio/rumble-dark-room.wav",
+]
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "docs/specs/phase-5.2-presets.md", lines = "1-139", why = "What to change in the six presets, and the limits the checks hold." },
+    { path = "core/src/presets.cpp", lines = "1-240", why = "The presets to change." },
+    { path = "core/include/undertow/params.h", lines = "1-41", why = "The parameter ids the presets set." },
+]
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5_2 presets"
+timeout_ms = 900000
+covers = ["SC1", "SC2", "SC3", "SC4"]
+expect = "fail_on_base"

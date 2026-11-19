@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-17T05:21:35Z", "event": "closed", "item": "reg-48b7ba", "executor": "claude-session", "via": "manual", "session": "coordinator-2026-10-17", "branch": null, "concurrency": 4, "source": "live", "status": "done", "commit": "486f2c521", "forced": false}

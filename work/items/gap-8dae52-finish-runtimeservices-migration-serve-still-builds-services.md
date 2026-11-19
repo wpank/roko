@@ -8,11 +8,11 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-execution/runtime-services", "roko-serve"]
 created = 2026-09-01
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gaps-md#6-non-plan-runtime-services-migration-245"
-anchors = ["crates/roko-serve/src/state.rs:1029", "crates/roko-serve/src/service_factory.rs::ServiceFactory::build_with_runtime_services", "crates/roko-acp/src/session.rs:648", "crates/roko-execution/src/runtime_services.rs"]
+anchors = ["crates/roko-serve/src/state.rs:1580", "crates/roko-serve/src/service_factory.rs::ServiceFactory::build_with_runtime_services", "crates/roko-acp/src/session.rs:661", "crates/roko-execution/src/runtime_services.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -46,3 +46,5 @@ Re-checked 2026-09-29 at d9e79e9d8: unchanged apart from line moves. Serve calls
     feedback; (3) in `AppState::new`, build `RuntimeServices` with the journal-recovered router (`load_recovered_router`)
     and the registry serve already exposes, then call `build_with_runtime_services`; (4) per-profile conformance
     tests. ACP's `SessionManager` and chat's `ChatFeedbackRuntime` (2026-09-29 re-check) are separate follow-ups.
+
+Checked 2026-10-27: 2026-10-26 sweep: unchanged in substance since 2026-10-01; only the state.rs line number moved (1029/1039 -> 1580).

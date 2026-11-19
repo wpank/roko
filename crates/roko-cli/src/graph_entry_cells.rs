@@ -337,6 +337,7 @@ fn run(
             max_usd: Some(config.max_usd),
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })
@@ -590,6 +591,7 @@ fn run_plan(
                 no_cascade: false,
                 frozen_learning: false,
                 no_holdout: false,
+                no_audit: false,
                 metrics: None,
                 outbound_floor: None,
             },
@@ -663,6 +665,11 @@ sibling_settle_secs = 0
 [[gates.rungs]]
 name = "check"
 command = "test -f README.md"
+
+# Audits are on by default (decision 7103): a fixture runs none, so no test
+# writes to the operator's ~/.roko/audit.
+[audit]
+enabled = false
 "#,
                 provider = provider.display().to_string()
             ),

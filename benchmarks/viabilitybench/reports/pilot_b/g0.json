@@ -1,0 +1,269 @@
+{
+  "schema_version": "vb.gate/1",
+  "gate": "G0",
+  "experiments": [
+    "PILOT-A-RECAL",
+    "PILOT-B"
+  ],
+  "computed_at": "2026-10-21T01:24:08Z",
+  "analysis_commit": "967340b5dbdb2e89ddbf96525a32fce9847d95e1",
+  "verdict": "NO-GO",
+  "thresholds": {
+    "verifier_ci": {
+      "families": [
+        "f1",
+        "f4"
+      ],
+      "min_green": 1.0
+    },
+    "ledger_reconcile": {
+      "providers": [
+        "cerebras",
+        "openai"
+      ],
+      "tolerance": 0.05
+    },
+    "runaway_killed": {
+      "reasons": [
+        "model_calls",
+        "identical_calls",
+        "usd"
+      ],
+      "max_calls": 30
+    },
+    "canary_hits": {
+      "max": 0
+    },
+    "sc2_spot_check": {
+      "min_checked": 20,
+      "min_each_label": 10,
+      "min_agree_share": 0.95
+    },
+    "ladder_cheap_l1": {
+      "arm": "cheap_direct",
+      "model": "gpt-oss-120b",
+      "level": 1,
+      "min_vs": 0.6
+    },
+    "ladder_cheap_l5": {
+      "arm": "cheap_direct",
+      "model": "gpt-oss-120b",
+      "level": 5,
+      "max_vs": 0.3
+    },
+    "ladder_frontier_l5": {
+      "arm": "fd_claude",
+      "model": null,
+      "level": 5,
+      "min_vs": 0.4
+    },
+    "cost_per_task": {
+      "plan_usd": {
+        "cheap_direct": 0.06,
+        "fd_api": 0.3,
+        "roko_fixed": 0.075
+      },
+      "max_ratio": 2.0
+    },
+    "u_prime_and_r": {
+      "arm": "fd_claude",
+      "min_captured": 1.0
+    },
+    "fault_rates": {
+      "max_abs_diff": 0.02,
+      "min_requests": 20
+    },
+    "roko_ingest": {
+      "arm": "roko_fixed"
+    },
+    "direct_loop_choice": {
+      "choices": [
+        "mini-loop",
+        "mini-swe-agent"
+      ]
+    }
+  },
+  "thresholds_sha256": "sha256:0bc1857cf2bc9ef4ed80f4a9c3635ea13e86f21797bcac7b5c284fbe477d531a",
+  "evidence": {
+    "runs": [
+      "benchmarks/viabilitybench/reports/pilot_b",
+      "benchmarks/viabilitybench/reports/pilot_a_recal"
+    ],
+    "verifier_ci": "benchmarks/viabilitybench/reports/pilot_a_recal/verifier-ci.json",
+    "runaway": "benchmarks/viabilitybench/reports/pilot_a_recal/.runaway",
+    "budget": "benchmarks/viabilitybench/experiments/budget.toml"
+  },
+  "evidence_problems": [],
+  "checks": [
+    {
+      "id": "verifier_ci",
+      "title": "Verifier CI, F1 and F4",
+      "verdict": "pass",
+      "value": {
+        "f1": "100/100",
+        "f4": "100/100"
+      },
+      "threshold": "100% of cells green",
+      "run_ids": [],
+      "detail": "secret sha256:1675cc951cf12ce3"
+    },
+    {
+      "id": "ledger_reconcile",
+      "title": "Ledger against the providers' usage exports",
+      "verdict": "not evaluated",
+      "value": {},
+      "threshold": "every drift within ±5%",
+      "run_ids": [
+        "cheap-direct-1"
+      ],
+      "detail": "no reconcile JSON for cerebras (--reconcile)"
+    },
+    {
+      "id": "runaway_killed",
+      "title": "Synthetic runaway stopped",
+      "verdict": "pass",
+      "value": [
+        {
+          "run_id": "runaway-1",
+          "reason": "model_calls",
+          "calls": 30
+        }
+      ],
+      "threshold": "every run stopped by the runaway detector (model_calls, identical_calls, usd) within 30 calls",
+      "run_ids": [
+        "runaway-1"
+      ],
+      "detail": "the synthetic runaway's runs"
+    },
+    {
+      "id": "canary_hits",
+      "title": "Canary hits",
+      "verdict": "pass",
+      "value": 0,
+      "threshold": "at most 0",
+      "run_ids": [
+        "cheap-direct-1",
+        "fd-claude-s1-1",
+        "fd-claude-s2-1",
+        "fd-claude-s3-1"
+      ],
+      "detail": "over 120 runs"
+    },
+    {
+      "id": "sc2_spot_check",
+      "title": "SC2 spot check",
+      "verdict": "not evaluated",
+      "value": null,
+      "threshold": "at least 20 outputs (10 of each census label), 95% agreeing",
+      "run_ids": [],
+      "detail": "no hand-filled spot check (--sc2, vb.sc2/1 with [[item]] tables)"
+    },
+    {
+      "id": "ladder_cheap_l1",
+      "title": "Ladder: cheap_direct gpt-oss-120b at level 1",
+      "verdict": "fail",
+      "value": 0.5,
+      "threshold": "VS ≥ 0.6",
+      "run_ids": [
+        "cheap-direct-1"
+      ],
+      "detail": "12 runs on 4 tasks"
+    },
+    {
+      "id": "ladder_cheap_l5",
+      "title": "Ladder: cheap_direct gpt-oss-120b at level 5",
+      "verdict": "pass",
+      "value": 0.0,
+      "threshold": "VS ≤ 0.3",
+      "run_ids": [
+        "cheap-direct-1"
+      ],
+      "detail": "12 runs on 4 tasks"
+    },
+    {
+      "id": "ladder_frontier_l5",
+      "title": "Ladder: fd_claude at level 5",
+      "verdict": "pass",
+      "value": 1.0,
+      "threshold": "VS ≥ 0.4",
+      "run_ids": [
+        "fd-claude-s1-1",
+        "fd-claude-s2-1",
+        "fd-claude-s3-1"
+      ],
+      "detail": "12 runs on 4 tasks"
+    },
+    {
+      "id": "cost_per_task.cheap_direct",
+      "title": "Measured $/task, cheap_direct",
+      "verdict": "pass",
+      "value": 0.017615,
+      "threshold": "≤ 2 × the plan's $0.06",
+      "run_ids": [
+        "cheap-direct-1"
+      ],
+      "detail": "0.29 × the plan over 60 runs"
+    },
+    {
+      "id": "cost_per_task.fd_api",
+      "title": "Measured $/task, fd_api",
+      "verdict": "not evaluated",
+      "value": null,
+      "threshold": "≤ 2 × the plan's $0.3",
+      "run_ids": [],
+      "detail": "no fd_api run"
+    },
+    {
+      "id": "cost_per_task.roko_fixed",
+      "title": "Measured $/task, roko_fixed",
+      "verdict": "not evaluated",
+      "value": null,
+      "threshold": "≤ 2 × the plan's $0.075",
+      "run_ids": [],
+      "detail": "no roko_fixed run"
+    },
+    {
+      "id": "u_prime_and_r",
+      "title": "U′ and R for every fd_claude run",
+      "verdict": "pass",
+      "value": {
+        "captured": "60/60",
+        "u_r_gap": 0.0
+      },
+      "threshold": "100% captured; gap reported",
+      "run_ids": [
+        "fd-claude-s1-1",
+        "fd-claude-s2-1",
+        "fd-claude-s3-1"
+      ],
+      "detail": "ΣU′ $15.1947, ΣR $15.1947, |ΣU′ − ΣR|/ΣR over the runs with both"
+    },
+    {
+      "id": "fault_rates",
+      "title": "Injected fault rates",
+      "verdict": "not evaluated",
+      "value": null,
+      "threshold": "within ±2 points of each profile's p, over ≥ 20",
+      "run_ids": [],
+      "detail": "no provider_fault run with its proxy log in these runs"
+    },
+    {
+      "id": "roko_ingest",
+      "title": "Every roko_fixed record ingested",
+      "verdict": "not evaluated",
+      "value": null,
+      "threshold": "all planned runs recorded; no model mismatch kept",
+      "run_ids": [],
+      "detail": "no roko_fixed run"
+    },
+    {
+      "id": "direct_loop_choice",
+      "title": "Direct-loop choice (S08 decision 3)",
+      "verdict": "not evaluated",
+      "value": null,
+      "threshold": "one of mini-loop, mini-swe-agent, recorded",
+      "run_ids": [],
+      "detail": "not recorded: [direct_loop] choice in the --sc2 file"
+    }
+  ]
+}

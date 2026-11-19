@@ -833,6 +833,8 @@ impl AgentServeRuntimeConfig {
                 dangerously_skip_permissions: false,
                 name: self.agent_id.clone(),
                 role: None,
+                turn_budget: None,
+                max_budget_usd: None,
             },
             format!("create serving agent for {}", self.agent_id),
         )?;

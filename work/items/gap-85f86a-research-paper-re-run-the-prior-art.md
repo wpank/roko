@@ -3,14 +3,16 @@ id = "gap-85f86a"
 kind = "gap"
 title = "Research paper: re-run the prior-art listing sweep (Q13–Q15, Q17) in submission week and read the Li 2026 lead"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 hold = "runs in submission week"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:40, wk-prior-art's report on gap-bb619d)"
 anchors = ["tmp/cybernetic-harness/paper/PRIOR-ART-D13.md"]
@@ -53,3 +55,5 @@ The sweep and the lead are recorded as planned. gap-b4e597 applies the D13 edits
 ## Notes
 
 - Held until submission week (the `hold` line). Remove the hold when that week starts.
+
+Checked 2026-10-27: 2026-10-26: still correctly held; remove the hold only once submission week actually starts.

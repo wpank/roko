@@ -8,11 +8,15 @@ severity = "p2"
 goal = "tooling"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "[ -z \"$(python3 tools/work.py list --parent spec-0b3a32 --status open)\" ]"
 +++
 
 ## Problem
@@ -63,3 +67,5 @@ Every package of this phase is done.
 ## Notes
 
 - Held tasks and deferred decisions are not filed; see the backlog folder.
+
+Checked 2026-10-27: 2026-10-26 sweep: 16 of 23 child packages done (PK73-PK86, PK88). 7 remain open: PK87 (gap-00e882), PK89 (gap-93c748), PK90 (gap-fbd580, on hold), PK91 (gap-799698), PK92 (gap-ba9965), PK93 (gap-05c4c0), PK94 (gap-31e1b0).

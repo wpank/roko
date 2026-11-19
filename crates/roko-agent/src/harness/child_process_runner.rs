@@ -152,6 +152,13 @@ impl ChildProcessRunner {
         self
     }
 
+    /// Mark `cmd` as an agent's process (gap-31e8a7), before the caller's
+    /// variables so an explicit id wins: `ROKO_AGENT_ID` is the runner's
+    /// name (`hermes-oneshot`), or an unnamed agent's when it has none.
+    fn mark_agent(&self, cmd: &mut Command) {
+        roko_core::child_env::mark_agent_process(cmd.as_std_mut(), &self.name);
+    }
+
     /// Run a one-shot command, stream its output through a parser, and
     /// return the collected events.
     ///
@@ -185,6 +192,7 @@ impl ChildProcessRunner {
 
         set_process_group(&mut cmd);
         apply_credential_scrub(&mut cmd, &self.credential_scrub);
+        self.mark_agent(&mut cmd);
         self.env.apply(&mut cmd);
         let mut child = cmd.spawn().map_err(HarnessError::Io)?;
 
@@ -314,6 +322,7 @@ impl ChildProcessRunner {
 
         set_process_group(&mut cmd);
         apply_credential_scrub(&mut cmd, &self.credential_scrub);
+        self.mark_agent(&mut cmd);
         self.env.apply(&mut cmd);
         let child = cmd.spawn().map_err(HarnessError::Io)?;
 
@@ -396,6 +405,33 @@ mod tests {
             texts.iter().any(|t| t.contains("second line")),
             "expected 'second line' in output, got: {texts:?}"
         );
+    }
+
+    /// gap-31e8a7: the child is marked as an agent's: `ROKO_AGENT_ID` is the
+    /// runner's name, or an unnamed agent's when it has none.
+    #[tokio::test]
+    async fn the_child_is_marked_as_an_agents() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("id.sh");
+        write_script(&script, "#!/bin/sh\necho \"$ROKO_AGENT_ID\"\n");
+        let new_runner =
+            || ChildProcessRunner::new(script.as_os_str(), dir.path()).with_heartbeat(false);
+
+        for (runner, id) in [
+            (new_runner().with_name("hermes-oneshot"), "hermes-oneshot"),
+            (new_runner(), roko_core::child_env::UNNAMED_AGENT_ID),
+        ] {
+            let events = runner
+                .run_one_shot(&[], None, &mut EchoParser, None)
+                .await
+                .expect("run_one_shot should succeed");
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, HarnessEvent::Output(line) if line == id)),
+                "{id}: {events:?}"
+            );
+        }
     }
 
     #[tokio::test]

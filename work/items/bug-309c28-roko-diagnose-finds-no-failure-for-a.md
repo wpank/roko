@@ -9,10 +9,10 @@ goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/diagnose"]
 created = 2026-10-13
-updated = 2026-10-13
+updated = 2026-10-27
 last_verified = 2026-10-13
 source = "hermes-plugin-roko docs walkthrough 2026-10-13 (roko 5de43f9ab)"
-anchors = ["crates/roko-cli/src/commands"]
+anchors = ["crates/roko-cli/src/commands/diagnose.rs::build_report", "crates/roko-cli/src/commands/diagnose.rs::diagnose_tasks", "crates/roko-cli/src/commands/diagnose.rs::RunRecords::load"]
 links = { depends_on = [], blocks = [], related = ["bug-103bce"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -45,3 +45,5 @@ reads the wrong place and finds nothing.
 ## Done when
 
 `diagnose_names_a_prompt_runs_failed_task` passes (the `[[verify]]` command).
+
+Checked 2026-10-27: 2026-10-26 sweep: likely reworked substantially since filing (RunRecords reads global learn/run logs, not plans/), but settle by running `roko diagnose <run>` on a prompt run with no plan directory whose only attempt failed with verdict provider_error and no gate-failure/episode row, and checking whether the failed task is still reported.

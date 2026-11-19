@@ -1,0 +1,35 @@
+# Pilot A's cheap_direct block again, after the ℓ1–ℓ2 re-tune (gap-dd670b; Will's decision of 2026-10-19): gpt-oss-120b
+# on the pilot stream, seeds 1-3, 60 runs on BL0, with F1 at f1-1.2.0 and F4 at f4-1.2.0. Pilot A's G0 page failed its
+# cheap ladder check at level 1 (0.083 < 0.6); this experiment's page is reports/pilot_a_recal/go-no-go.md.
+#
+# The suite hash changes with the generators. ℓ3–ℓ5 instances render byte for byte as in Pilot A (the same pristine
+# trees and spec hashes; only the manifests' generator_version differs), so their cells repeat Pilot A's on new
+# seeds of the same tasks. The ℓ1–ℓ2 instances are new tasks and are not comparable with Pilot A's.
+#
+# Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/pilot_a_recal.toml --dry-run --max-cost-usd 2
+# The paid run adds --allow-network; the metering proxy reads the key file.
+#
+# The cap. The coordinator's hard cap is $2 billed, held by `vb campaign --max-cost-usd 2` and by this block's
+# `max_cost_usd`. The order is `as_listed`, one `vb run --seeds 1-3` unit, rather than Pilot A's daily units: a unit
+# starts a task only while its spend plus the task's worst case ($0.2893, `vb estimate`) fits its cap, and a $2 cap
+# split three ways ($0.667 a seed) would have refused the 20th task of Pilot A's seeds 1 and 3, whose first 19 tasks
+# cost $0.4034 and $0.4123. One $2 unit runs all 60 tasks as long as the first 59 average at most $0.029 a task, 1.5 x
+# Pilot A's $0.0193. With one arm there is nothing to interleave. The experiment books to the `pilot` cap ($15).
+schema_version = "vb.experiment/1"
+id = "PILOT-A-RECAL"
+title = "Pilot A re-run after the ℓ1–ℓ2 re-tune: cheap_direct gpt-oss-120b x 3 seeds on the pilot slice"
+requires_lock = false          # exploratory and before the pre-registration lock, as Pilot A (S09 G0)
+requires_live = []
+order = { kind = "as_listed" }
+
+[[block]]
+id = "cheap-direct"
+stream = "pilot"               # F1 and F4 at levels 1-5, two instances each: 20 tasks
+arm = "cheap_direct"
+model = "gpt-oss-120b"
+seeds = "1-3"
+line = "BL0"
+planned_usd = 1.20             # 60 runs at Pilot A's measured $0.0193 a task, rounded up; S09 §3 plans $0.06
+max_cost_usd = 2.00            # the coordinator's hard cap for the re-run

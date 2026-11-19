@@ -10,8 +10,8 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { PlanRail } from '@/components/rail/PlanRail';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanList } from '@/components/plans/PlanList';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { buildPlanRows } from '@/lib/planRows';
 import { initialRunState } from '@/lib/runState';
 import { foldEvents, renderWithClient, setStore } from '@/test/dom';
@@ -19,7 +19,7 @@ import { foldEvents, renderWithClient, setStore } from '@/test/dom';
 // jsdom ignores rules inside @layer, so lift the portal's button rules (and
 // the pointer-events utility) out of theirs.
 const globals = readFileSync(fileURLToPath(import.meta.url).replace(/components\/[^/]+$/, 'styles/globals.css'), 'utf8');
-const BUTTON_RULES = [...globals.matchAll(/^(?:button[^{\n]*|\.pointer-events-none) \{[^}]*\}/gm)].map((m) => m[0]);
+const BUTTON_RULES = [...globals.matchAll(/^\s*(?:button[^{\n]*|\.pointer-events-none) \{[^}]*\}/gm)].map((m) => m[0].trim());
 
 beforeAll(() => {
   const style = document.createElement('style');
@@ -69,10 +69,11 @@ const RUNNING: WireDashboardEvent[] = [
 ];
 
 describe('a disabled button', () => {
-  it('disabled reason is visible on the rail’s Run all and group ▶ while a run is active', () => {
+  it('disabled reason is visible on the plan list’s run all and a group’s run while a run is active', () => {
     render(
-      <PlanRail
-        result={buildPlanRows([PLAN], initialRunState(), { filter: '', nowMs: 0 })}
+      <PlanList
+        result={buildPlanRows([PLAN, { ...PLAN, id: 'bye', title: 'Goodbye' }], initialRunState(), { filter: '', nowMs: 0 })}
+        costs={{}}
         selectedPlanId={null}
         filter=""
         onFilterChange={() => {}}
@@ -84,17 +85,17 @@ describe('a disabled button', () => {
         runDisabledReason="A run is already in progress"
       />,
     );
-    expectReasonShown('▶ Run all', 'A run is already in progress');
-    expectReasonShown('▶', 'A run is already in progress');
+    expectReasonShown('run all', 'A run is already in progress');
+    expectReasonShown('run', 'A run is already in progress');
   });
 
-  it('disabled reason is visible on ✦ Revise and ✎ Edit while the plan runs', () => {
+  it('offers no revise while the plan runs, and says why edit is off', () => {
     setStore(foldEvents(RUNNING));
     renderWithClient(
-      <PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
+      <PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />,
       { seed: [[queryKeys.planTasks('hello'), TASKS], [queryKeys.validation('hello'), VALID]] },
     );
-    expectReasonShown('✦ Revise', 'Cannot revise while the plan is running');
-    expectReasonShown('✎ Edit', 'Cannot edit while the plan is running');
+    expect(screen.queryByRole('button', { name: 'revise' })).toBeNull();
+    expectReasonShown('edit tasks.toml', 'Cannot edit while the plan is running');
   });
 });

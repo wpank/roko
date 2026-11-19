@@ -172,8 +172,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             raise RunnerError(f"the planner's plan failed `plan validate --strict --dag` (exit "
                               f"{checked.returncode}): {(checked.stdout + checked.stderr).strip()[-300:]}")
         max_parallel = int(settings.get("max_parallel", MAX_PARALLEL_DEFAULT))
-        ran = run_roko._roko([*head, "plan", "run", str(plan_dir), "--no-tui", "--max-parallel", str(max_parallel)],
-                             ctx.workdir, env, _left(ctx, clock), jail)
+        ran = run_roko._roko([*head, "plan", "run", str(plan_dir), "--no-tui", "--max-parallel", str(max_parallel),
+                              *run_roko.run_switches(ctx.arm)], ctx.workdir, env, _left(ctx, clock), jail)
         transcript.append(ran.event("run"))
         execution, problems = _settle_plan(ctx, slug, build)
         attempts += execution

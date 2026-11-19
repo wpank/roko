@@ -10,6 +10,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::Isolated;
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -109,30 +110,16 @@ fn mock_strategist_writes_a_plan(workdir: &Path) {
 }
 
 /// Run `roko` in `workdir`, isolated from the user's config and API keys,
-/// and kill it after three minutes.
+/// with the mock agent shadowing every agent CLI on `PATH` so nothing can
+/// reach a real model, and kill it after three minutes.
 fn run_roko(workdir: &Path, args: &[&str]) -> Output {
-    // Shadow every agent CLI with the mock so nothing can reach a real model.
-    let shims = workdir.join("agent-shims");
-    if !shims.is_dir() {
-        std::fs::create_dir_all(&shims).expect("create agent shim dir");
-        for name in ["claude", "codex", "gemini"] {
-            std::os::unix::fs::symlink(workdir.join("mock-claude.sh"), shims.join(name))
-                .expect("link agent shim");
-        }
-    }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let path = std::env::join_paths(std::iter::once(shims).chain(std::env::split_paths(&path)))
-        .expect("join PATH");
     let mut child = Command::new(cargo_bin("roko"))
+        .isolated()
+        .with_mock_agents()
         .current_dir(workdir)
         .args(args)
         .env("HOME", workdir)
-        .env("PATH", path)
         .env("ROKO_LOG", "error")
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ROKO_FAST_MODE")
-        .env_remove("ROKO_EVIDENCE_RUN_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -64,7 +64,9 @@ pub use react::ReActTranslator;
 pub fn normalize_finish_reason(raw: &str) -> FinishReason {
     match raw {
         "stop" | "end_turn" => FinishReason::Stop,
-        "length" | "max_tokens" => FinishReason::Length,
+        // roko stops a reply that only reasons as the output limit would
+        // (gap-f3f950).
+        "length" | "max_tokens" | crate::streaming::REASONING_LIMIT_FINISH => FinishReason::Length,
         "tool_calls" | "tool_use" => FinishReason::ToolCalls,
         "content_filter" | "sensitive" => FinishReason::ContentFilter,
         "network_error" => FinishReason::Error("network_error".into()),

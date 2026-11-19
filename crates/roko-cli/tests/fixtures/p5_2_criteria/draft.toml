@@ -1,0 +1,106 @@
+[meta]
+plan = "p5-2-the-presets-as-named"
+title = "P5.2 · the presets as named"
+iteration = 0
+total = 1
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Retune the six named presets and refresh the demos"
+description = "Update the six named factory presets in core/src/presets.cpp so they match phase 5.2, then rerun tools/render-demos.sh and commit the four showcase WAVs it regenerates in artifacts/audio/."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 20
+files = [
+    "core/src/presets.cpp",
+    "artifacts/audio/sub-pure-foundation.wav",
+    "artifacts/audio/bass-hypnotic-roller.wav",
+    "artifacts/audio/rumble-dark-room.wav",
+    "artifacts/audio/init.wav",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 5_2 presets` passes, proving SUB Pure Foundation is the clean sine sub alone, every SUB preset stays sub-dominant, no preset exceeds 2% below 20 Hz, and RUMBLE Sidechain Fog keeps its sidechain and fog parameters.",
+    "AC2: `tools/spec.sh 5 presets` still passes on the base preset suite.",
+    "AC3: `tools/spec.sh 5_1 render` still passes on the base renderer check.",
+    "AC4: `tools/render-demos.sh && tools/spec.sh 5_1 demos` still passes and refreshes the committed showcase renders in artifacts/audio/.",
+    "AC5: `tools/render-demos.sh && tools/spec.sh 5 demos` still passes.",
+]
+sequence = 0
+goal = "The six named presets satisfy the phase 5.2 audio rules, and the regenerated showcase renders stay in sync."
+non_goals = [
+    "Do not change the engine, renderer, editor, or any preset other than SUB Pure Foundation, SUB Low Pressure, SUB Kick Companion, BASS Acid Undertow, BASS Warehouse Drone, and RUMBLE Sidechain Fog.",
+    "Do not add new files or new public API.",
+    "Do not change the step patterns or add an output high-pass filter.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = [
+    "Do not touch any preset entries outside the six named ones; the task scope is limited to the six named presets and the refreshed showcase renders.",
+    "Do not introduce a filter or other engine-side workaround; the spec explicitly forbids changing the engine or adding a high-pass.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-5.2-presets.md"
+lines = "1-140"
+why = "Confirm the phase 5.2 preset floors, the six named presets in scope, and the exact source checks the task must satisfy."
+
+[[task.context.read_files]]
+path = "core/src/presets.cpp"
+lines = "1-240"
+why = "Locate the six factory preset definitions and the committed showcase preset entries that must be retuned."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5_2 presets"
+timeout_ms = 900000
+covers = [
+    "SC1",
+    "SC2",
+    "SC3",
+    "SC4",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5 presets"
+timeout_ms = 900000
+covers = ["SC5"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 5_1 render"
+timeout_ms = 900000
+covers = ["SC6"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/render-demos.sh && tools/spec.sh 5_1 demos"
+timeout_ms = 900000
+covers = ["SC7"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/render-demos.sh && tools/spec.sh 5 demos"
+timeout_ms = 900000
+covers = ["SC8"]
+expect = "pass_on_base"

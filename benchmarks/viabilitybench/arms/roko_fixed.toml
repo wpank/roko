@@ -32,6 +32,8 @@ context_window = 128000
 tier = "focused"
 max_retries = 2
 skip_enrichment = true                # explicit per arm (B §2.3)
+audit = false                         # `plan run --no-audit`: audits are on by default since 22ac6f06b (gap-d76b1b),
+                                      # and an audit dispatches models besides the pin (bug-082810)
 
 [providers.cerebras]
 base_url = "https://api.cerebras.ai/v1"

@@ -2,8 +2,9 @@
 //!
 //! Run one check path in a child test process whose environment holds the
 //! person's credentials, and check what the path's command saw: no
-//! credential, the run's job cap and niceness (bug-b3849c), and no cargo
-//! build dir that other checkouts share (bug-be2a53).
+//! credential, the run's job cap and niceness (bug-b3849c), no cargo build
+//! dir that other checkouts share (bug-be2a53), and no cargo-llvm-cov rustc
+//! wrapper (bug-62b77a).
 //!
 //! The parent test calls [`run_child`] with the name of a child test. The
 //! child test starts with [`begin_child`], which returns `None` outside the
@@ -30,6 +31,10 @@ const PASSED_VALUE: &str = "postgres://probe";
 /// A provider key the child records as loaded from a `.env` file.
 const DOTENV_KEY: &str = "OPENAI_API_KEY";
 
+/// The variable that tells cargo-llvm-cov it was called as a rustc wrapper.
+/// `cargo llvm-cov` sets it beside `RUSTC_WRAPPER` for the cargo it runs.
+const LLVM_COV_MARKER: &str = "__CARGO_LLVM_COV_RUSTC_WRAPPER";
+
 /// The gate limits of the child's run: a check that shows them was
 /// throttled, rather than handed a job count or a niceness by its parent.
 const PROBE_JOBS: usize = 3;
@@ -39,8 +44,12 @@ const PROBE_NICE: i32 = 15;
 /// process whose environment holds every GitHub token, a `GH_CONFIG_DIR`
 /// with a `gh` login, a provider key, [`PASSED`], and each of
 /// [`CARGO_BUILD_DIR_VARS`] naming a directory outside every check's, as an
-/// exported `CARGO_TARGET_DIR` does, and assert it passed.
+/// exported `CARGO_TARGET_DIR` does, and assert it passed. The child runs as
+/// `cargo llvm-cov` runs tests: a stand-in cargo-llvm-cov, which runs the
+/// rustc it wraps, is its `RUSTC_WRAPPER`, with [`LLVM_COV_MARKER`] set.
 pub fn run_child(child: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let login = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         login.path().join("hosts.yml"),
@@ -48,6 +57,11 @@ pub fn run_child(child: &str) {
     )
     .expect("a gh login");
     let shared = tempfile::tempdir().expect("tempdir");
+    let coverage = tempfile::tempdir().expect("tempdir");
+    let llvm_cov = coverage.path().join("cargo-llvm-cov");
+    std::fs::write(&llvm_cov, "#!/bin/sh\nexec \"$@\"\n").expect("a stand-in cargo-llvm-cov");
+    std::fs::set_permissions(&llvm_cov, std::fs::Permissions::from_mode(0o755))
+        .expect("make the stand-in executable");
     let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
     command
         .args(["--exact", child, "--nocapture"])
@@ -55,6 +69,8 @@ pub fn run_child(child: &str) {
         .env(child_env::GH_CONFIG_DIR, login.path())
         .env(DOTENV_KEY, "sk-probe-not-real")
         .env(PASSED, PASSED_VALUE)
+        .env("RUSTC_WRAPPER", &llvm_cov)
+        .env(LLVM_COV_MARKER, "1")
         // The parent's job counts (heavy.sh sets them) must not stand in for
         // the throttle's.
         .env_remove("CARGO_BUILD_JOBS")
@@ -106,8 +122,8 @@ pub fn dump_env_command(out: &Path) -> String {
 /// Assert that the environment the check of `path` wrote to `out` holds no
 /// GitHub token and no key roko loaded, points `gh` at an empty directory,
 /// keeps [`PASSED`], builds in none of the shared cargo build dirs
-/// [`run_child`] set, and that the check ran with the run's job cap at its
-/// niceness or nicer.
+/// [`run_child`] set, has no cargo-llvm-cov as its rustc wrapper, and that
+/// the check ran with the run's job cap at its niceness or nicer.
 pub fn assert_check_env(out: &Path, path: &str) {
     let dump = std::fs::read_to_string(out)
         .unwrap_or_else(|error| panic!("{path}: the check wrote no environment: {error}"));
@@ -129,6 +145,13 @@ pub fn assert_check_env(out: &Path, path: &str) {
     assert!(
         !env.contains_key(DOTENV_KEY),
         "{path}: a provider key roko loaded reached the check"
+    );
+    // Without its marker, which no check inherits, cargo-llvm-cov takes a
+    // nested cargo's rustc call for a `cargo llvm-cov` command and refuses it
+    // (bug-62b77a).
+    assert!(
+        !env.contains_key("RUSTC_WRAPPER"),
+        "{path}: cargo-llvm-cov's rustc wrapper reached the check"
     );
     let login = std::env::var(CHILD).expect("the child's login directory");
     let gh_config = env

@@ -455,8 +455,9 @@ pub struct KnowledgeEntry {
     /// Used for tier promotion: 3+ distinct contexts for Working->Consolidated.
     #[serde(default)]
     pub distinct_contexts: Vec<String>,
-    /// Whether this entry has been explicitly deprecated.
-    /// Required for demoting Persistent entries.
+    /// Whether a person retired this entry (bug-2ad4fa): retrieval skips it,
+    /// and nothing automatic clears it, unlike `frozen`. Required for
+    /// demoting Persistent entries.
     #[serde(default)]
     pub deprecated: bool,
     /// NEURO-10: Freshness reserve balance for demurrage model.
@@ -1323,57 +1324,30 @@ pub fn demurrage_reference_boost(entry: &mut KnowledgeEntry, boost: f64) {
 // NEURO-11: Cold-tier freeze/thaw.
 // ---------------------------------------------------------------------------
 
-/// Freeze a knowledge entry for cold storage.
+/// Freeze a knowledge entry into the cold tier ([`KnowledgeEntry::freeze`]).
 ///
-/// Frozen entries are marked with `deprecated = true` and their confidence
-/// is preserved but they should not appear in active search results.
-/// The original confidence is recorded in a tag for thaw restoration.
+/// Retrieval skips it until a thaw. The cold tier is the one GC and
+/// demurrage reach too; a person's retirement is `deprecated`, which no
+/// thaw clears (bug-2ad4fa).
 pub fn freeze_entry(entry: &mut KnowledgeEntry) {
-    if entry.deprecated {
-        return; // Already frozen.
-    }
-    // Record pre-freeze confidence as a tag for thaw.
-    entry
-        .tags
-        .push(format!("__frozen_confidence:{:.6}", entry.confidence));
-    entry.deprecated = true;
+    entry.freeze();
 }
 
-/// Thaw a frozen knowledge entry, restoring it to active status.
+/// Thaw a frozen knowledge entry with [`THAW_STARTER_BALANCE`].
 ///
-/// Restores the pre-freeze confidence from the saved tag.
-/// Returns `true` if the entry was actually thawed.
+/// Returns `true` if the entry was frozen. A retired entry stays retired.
 pub fn thaw_entry(entry: &mut KnowledgeEntry) -> bool {
-    if !entry.deprecated {
-        return false; // Not frozen.
+    if !entry.frozen {
+        return false;
     }
-
-    // Restore pre-freeze confidence.
-    let mut restored_confidence = None;
-    entry.tags.retain(|tag| {
-        if let Some(val) = tag.strip_prefix("__frozen_confidence:") {
-            restored_confidence = val.parse::<f64>().ok();
-            false
-        } else {
-            true
-        }
-    });
-
-    if let Some(conf) = restored_confidence {
-        entry.confidence = conf.clamp(0.0, 1.0);
-    }
-    entry.deprecated = false;
+    entry.thaw(THAW_STARTER_BALANCE);
     true
 }
 
 /// Check if a knowledge entry is frozen (in cold storage).
 #[must_use]
 pub fn is_frozen(entry: &KnowledgeEntry) -> bool {
-    entry.deprecated
-        && entry
-            .tags
-            .iter()
-            .any(|t| t.starts_with("__frozen_confidence:"))
+    entry.frozen
 }
 
 // ---------------------------------------------------------------------------
@@ -1763,23 +1737,36 @@ mod tests {
         assert!((entry.confidence - 0.8).abs() < 1e-10);
     }
 
+    /// The free freeze functions are the cold tier (NEURO-11): they leave
+    /// `deprecated`, a person's retirement, alone (bug-2ad4fa).
     #[test]
     fn freeze_thaw_roundtrip() {
         let mut entry = KnowledgeEntry {
             id: "e1".to_string(),
             confidence: 0.75,
+            balance: 0.01,
             ..Default::default()
         };
         assert!(!is_frozen(&entry));
         freeze_entry(&mut entry);
         assert!(is_frozen(&entry));
-        assert!(entry.deprecated);
+        assert!(entry.frozen);
+        assert!(!entry.deprecated);
 
         let thawed = thaw_entry(&mut entry);
         assert!(thawed);
         assert!(!is_frozen(&entry));
-        assert!(!entry.deprecated);
+        assert!((entry.balance - THAW_STARTER_BALANCE).abs() < 1e-9);
         assert!((entry.confidence - 0.75).abs() < 1e-4);
+        assert!(!thaw_entry(&mut entry), "not frozen");
+
+        let mut retired = KnowledgeEntry {
+            deprecated: true,
+            ..entry
+        };
+        freeze_entry(&mut retired);
+        thaw_entry(&mut retired);
+        assert!(retired.deprecated, "a thaw does not lift a retirement");
     }
 
     #[test]
@@ -1790,9 +1777,11 @@ mod tests {
             ..Default::default()
         };
         freeze_entry(&mut entry);
-        let tag_count = entry.tags.len();
+        let frozen_at = entry.frozen_at;
+        let tags = entry.tags.clone();
         freeze_entry(&mut entry); // second freeze should be no-op
-        assert_eq!(entry.tags.len(), tag_count);
+        assert_eq!(entry.frozen_at, frozen_at);
+        assert_eq!(entry.tags, tags);
     }
 
     #[test]

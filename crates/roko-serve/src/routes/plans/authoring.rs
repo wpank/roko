@@ -168,17 +168,27 @@ pub(super) async fn plan_chat(
 
 /// Request body for `POST /api/plans/generate`: the request to plan from.
 ///
-/// `prompt` is required and must not be blank; the portal's "Generate…"
-/// field sends it. A `slug` naming a PRD to plan from is refused with 422:
-/// the PRD pipeline was removed on 2026-10-02, and plans come from a prompt.
+/// `prompt`, or a `spec_path` in the workspace whose text serve reads
+/// (gap-fe4225), is required and must not be blank; the portal's
+/// "Generate…" field sends a prompt. A `max_usd`, when given, must be a
+/// number above 0 (gap-33d458). A `slug` naming a PRD to plan from is
+/// refused with 422: the PRD pipeline was removed on 2026-10-02, and plans
+/// come from a request.
 #[derive(Deserialize, Validate)]
 pub(super) struct GenerateRequest {
     /// The removed PRD slug, read only to refuse it with a clear message.
     #[serde(default)]
     pub(super) slug: Option<String>,
-    /// The request to plan from. Non-blank.
+    /// The request to plan from, or instructions that follow the spec.
     #[serde(default)]
     pub(super) prompt: Option<String>,
+    /// A spec file in the workspace to plan from, read exactly as written.
+    #[serde(default)]
+    pub(super) spec_path: Option<String>,
+    /// The most writing the plan may spend, in USD (gap-33d458). Without
+    /// it, `[authoring] max_generation_usd` applies.
+    #[serde(default)]
+    pub(super) max_usd: Option<f64>,
 }
 
 impl RequestPayload for GenerateRequest {
@@ -189,8 +199,25 @@ impl RequestPayload for GenerateRequest {
                  from as 'prompt'",
             ));
         }
+        if self
+            .max_usd
+            .is_some_and(|usd| !(usd.is_finite() && usd > 0.0))
+        {
+            return Err(ApiError::unprocessable_entity(
+                "'max_usd' must be a number above 0",
+            ));
+        }
+        if self
+            .spec_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+        {
+            return Ok(());
+        }
         match &self.prompt {
-            None => Err(ApiError::unprocessable_entity("'prompt' is required")),
+            None => Err(ApiError::unprocessable_entity(
+                "'prompt' or 'spec_path' is required",
+            )),
             Some(prompt) if prompt.trim().is_empty() => {
                 Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
             }
@@ -199,14 +226,64 @@ impl RequestPayload for GenerateRequest {
     }
 }
 
+/// The largest spec a `spec_path` may name, in bytes.
+const MAX_SPEC_BYTES: u64 = 1024 * 1024;
+
+/// The text a plan is generated from (gap-fe4225): `prompt`, or the exact
+/// text of the workspace file at `spec_path`, with `prompt`'s instructions
+/// after it. A chat that copied a spec into `prompt` by hand reworded or
+/// mangled it (round v7: every row of phase 2's checks table arrived as
+/// `|| …`); serve reads the file instead, as `roko plan generate
+/// --from-file` does. The path must name a file of at most 1 MiB inside the
+/// workspace `workdir`.
+pub(crate) fn plan_request_text(
+    workdir: &std::path::Path,
+    prompt: Option<&str>,
+    spec_path: Option<&str>,
+) -> Result<String, ApiError> {
+    let prompt = prompt.map(str::trim).filter(|prompt| !prompt.is_empty());
+    let Some(spec_path) = spec_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return prompt
+            .map(str::to_string)
+            .ok_or_else(|| ApiError::unprocessable_entity("'prompt' or 'spec_path' is required"));
+    };
+    let outside = || {
+        ApiError::unprocessable_entity(format!(
+            "'spec_path' {spec_path} is not a file inside the workspace"
+        ))
+    };
+    let root = workdir.canonicalize().map_err(|_| outside())?;
+    let file = workdir
+        .join(spec_path)
+        .canonicalize()
+        .map_err(|_| outside())?;
+    let metadata = std::fs::metadata(&file).map_err(|_| outside())?;
+    if !file.starts_with(&root) || !metadata.is_file() {
+        return Err(outside());
+    }
+    if metadata.len() > MAX_SPEC_BYTES {
+        return Err(ApiError::unprocessable_entity(format!(
+            "'spec_path' {spec_path} is larger than {MAX_SPEC_BYTES} bytes"
+        )));
+    }
+    let spec = std::fs::read_to_string(&file).map_err(|error| {
+        ApiError::unprocessable_entity(format!("'spec_path' {spec_path} cannot be read: {error}"))
+    })?;
+    Ok(match prompt {
+        Some(prompt) => format!("{spec}\n\n---\n\n{prompt}\n"),
+        None => spec,
+    })
+}
+
 /// `POST /api/plans/generate` — spawn background plan generation from a prompt.
 ///
 /// Derives a unique plan slug from the prompt's first line, then runs the
 /// plan generator through `runtime.generate_plan_from_prompt`.
 ///
-/// Responds 202 with `{ "id": op_id, "plan_id": slug }`.  The slug is known
-/// before the background work starts so the portal's generate hook can use it
-/// immediately.
+/// Responds 202 with `{ "id": op_id, "plan_id": slug, "max_usd",
+/// "max_usd_source" }`: the cap that applies ([`GenerationCap`]). The slug is
+/// known before the background work starts so the portal's generate hook can
+/// use it immediately.
 ///
 /// The operation ends `Completed { result: {"slug", "task_count", "cost_usd"} }`
 /// only when plan `slug` loads afterwards. A generation that fails, or that
@@ -220,14 +297,62 @@ pub(super) async fn generate_plan(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<GenerateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // `validate_payload` guarantees a non-blank prompt.
-    let prompt_text = body.prompt.clone().unwrap_or_default();
-    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http, None).await;
+    // `validate_payload` guarantees a prompt or a spec path.
+    let prompt_text = plan_request_text(
+        &state.workdir,
+        body.prompt.as_deref(),
+        body.spec_path.as_deref(),
+    )?;
+    let cap = GenerationCap::resolve(&state, body.max_usd);
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        prompt_text,
+        &RunOrigin::Http,
+        None,
+        cap,
+        body.spec_path.as_deref(),
+    )
+    .await;
+    let mut answer = json!({ "id": op_id, "plan_id": slug });
+    cap.answer(&mut answer);
 
-    Ok((
-        axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": op_id, "plan_id": slug })),
-    ))
+    Ok((axum::http::StatusCode::ACCEPTED, Json(answer)))
+}
+
+/// The spend cap a plan generation runs under (gap-33d458), as its start
+/// answer gives it, so a host can tell the person the real cap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GenerationCap {
+    /// What its planner calls may cost together, in USD; `None` sets no cap.
+    pub(crate) max_usd: Option<f64>,
+    /// Where it comes from: `request`, or `config` for `[authoring]
+    /// max_generation_usd`.
+    pub(crate) source: &'static str,
+}
+
+impl GenerationCap {
+    /// The cap a request names, else the workspace's, where 0 sets none.
+    pub(crate) fn resolve(state: &AppState, requested: Option<f64>) -> Self {
+        match requested {
+            Some(max_usd) => Self {
+                max_usd: Some(max_usd),
+                source: "request",
+            },
+            None => {
+                let configured = state.load_roko_config().authoring.max_generation_usd;
+                Self {
+                    max_usd: (configured.is_finite() && configured > 0.0).then_some(configured),
+                    source: "config",
+                }
+            }
+        }
+    }
+
+    /// Adds `max_usd` (null when uncapped) and `max_usd_source` to `answer`.
+    pub(crate) fn answer(self, answer: &mut Value) {
+        answer["max_usd"] = json!(self.max_usd);
+        answer["max_usd_source"] = json!(self.source);
+    }
 }
 
 /// Start generating a plan from `prompt_text` in the background, as `POST
@@ -237,14 +362,27 @@ pub(super) async fn generate_plan(
 /// fenced as untrusted data ([`RunOrigin::request_text`], 9117).
 ///
 /// With a `title` (gap-c2efe7), the slug comes from the title, and the written
-/// plan's `[meta] title` is it.
+/// plan's `[meta] title` is it. The planner calls may cost `cap` together
+/// (gap-33d458). With a `spec_path` (the workspace file `prompt_text` was read
+/// from), every task of the plan reads that file (bug-60ad88).
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
     origin: &RunOrigin,
     title: Option<String>,
+    cap: GenerationCap,
+    spec_path: Option<&str>,
 ) -> (String, String) {
+    let options = crate::runtime::PlanGenerationOptions {
+        // The cap serve resolved, so the answer says what applies; 0 is none.
+        max_usd: Some(cap.max_usd.unwrap_or(0.0)),
+        spec_path: spec_path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| state.workdir.join(path)),
+    };
     let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
+    let row_title = write_title(title.as_deref(), &prompt_text);
     let prompt_text = origin.request_text(&prompt_text).into_owned();
     // bug-7a08a8: a chat host's plan runs with nobody to answer its questions.
     let for_chat_host = origin.is_chat();
@@ -263,9 +401,13 @@ pub(crate) async fn start_plan_generation(
     // gap-11d870: the generation reports what it is doing, and the
     // operation's status shows its latest report.
     let (progress_tx, progress_rx) = tokio::sync::watch::channel(Value::Null);
+    // bug-36ce72: a cancel stops the write while its planner works.
+    let cancel = tokio_util::sync::CancellationToken::new();
 
     let handle = tokio::spawn({
         let op_id = op_id.clone();
+        let cancel = cancel.clone();
+        let stage = progress_rx.clone();
         async move {
             // Wait until the caller has inserted the OperationHandle.
             let _ = start_rx.await;
@@ -299,15 +441,18 @@ pub(crate) async fn start_plan_generation(
             let report: ProgressReporter = Arc::new(move |progress| {
                 progress_tx.send_replace(progress);
             });
-            let generation = runtime
-                .generate_plan_reporting(
-                    &workdir,
-                    &slug_for_task,
-                    &prompt_text,
-                    for_chat_host,
-                    report,
-                )
-                .await;
+            let generation = runtime.generate_plan_reporting(
+                &workdir,
+                &slug_for_task,
+                &prompt_text,
+                for_chat_host,
+                options,
+                report,
+            );
+            let Some(generation) = unless_cancelled(generation, &cancel, &stage).await else {
+                end_cancelled_write(&state_for_task, &op_id, &slug_for_task).await;
+                return;
+            };
             let generated = match generation {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
                 Ok(gen_result) => {
@@ -317,6 +462,7 @@ pub(crate) async fn start_plan_generation(
                             summary.task_count,
                             gen_result.cost_usd,
                             gen_result.source_checks,
+                            gen_result.repairs,
                         )),
                         Ok(None) => Err(no_plan()),
                         Err(err) => Err(format!(
@@ -328,7 +474,7 @@ pub(crate) async fn start_plan_generation(
             };
 
             match generated {
-                Ok((task_count, cost_usd, source_checks)) => {
+                Ok((task_count, cost_usd, source_checks, repairs)) => {
                     // bug-a0432b: the result says what writing the plan cost,
                     // and gap-dc5d7c what became of the request's checks.
                     let mut result = json!({
@@ -338,6 +484,10 @@ pub(crate) async fn start_plan_generation(
                     });
                     if let Some(source_checks) = source_checks {
                         result["source_checks"] = source_checks;
+                    }
+                    // gap-0fb7d9: and what roko changed in its planner's draft.
+                    if !repairs.is_empty() {
+                        result["repairs"] = json!(repairs);
                     }
                     let result_json = serde_json::to_string(&result).unwrap_or_default();
 
@@ -413,6 +563,12 @@ pub(crate) async fn start_plan_generation(
         handle,
         started: std::time::Instant::now(),
         progress: Some(progress_rx),
+        write: Some(crate::state::PlanWrite {
+            plan_id: slug.clone(),
+            title: row_title,
+            max_usd: cap.max_usd,
+            cancel,
+        }),
     };
 
     state.operations.write().await.insert(op_id.clone(), op);
@@ -420,6 +576,219 @@ pub(crate) async fn start_plan_generation(
     let _ = start_tx.send(());
 
     (op_id, slug)
+}
+
+/// What a plan write's row in the plan list calls it (gap-6774b5): `title`,
+/// when it was given one, else the first line of its `request`, as a
+/// heading's text, cut at 80 characters.
+fn write_title(title: Option<&str>, request: &str) -> String {
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        return title.to_string();
+    }
+    let line = request
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .trim_start_matches('#')
+        .trim();
+    // At most 80 characters, cut at a character's boundary (bug-7feee7).
+    line.char_indices()
+        .nth(80)
+        .map_or(line, |(end, _)| &line[..end])
+        .to_string()
+}
+
+/// Drive a plan write's `generation` until it ends, or until `cancel` stops
+/// it while its planner works (bug-36ce72): `None` when it was stopped. The
+/// stopped generation's future is dropped, and the planner call with it: a
+/// CLI planner's child is killed on drop, and an HTTP stream is closed.
+///
+/// A cancel that comes once the plan is being saved, which the write's last
+/// `progress` says (stage `writing` or `recording`, gap-11d870), lets the
+/// write end as it would have, so a plan is never half written. Before that
+/// stage the generation has written nothing in the plan's directory.
+async fn unless_cancelled<T>(
+    generation: impl Future<Output = T>,
+    cancel: &tokio_util::sync::CancellationToken,
+    progress: &tokio::sync::watch::Receiver<Value>,
+) -> Option<T> {
+    let mut generation = std::pin::pin!(generation);
+    tokio::select! {
+        biased;
+        ended = &mut generation => return Some(ended),
+        () = cancel.cancelled() => {}
+    }
+    if plan_being_saved(&progress.borrow()) {
+        return Some(generation.await);
+    }
+    None
+}
+
+/// Whether a plan write's latest progress says its plan is being saved.
+fn plan_being_saved(progress: &Value) -> bool {
+    matches!(
+        progress.get("stage").and_then(Value::as_str),
+        Some("writing" | "recording")
+    )
+}
+
+/// End plan write `op_id`, for plan `slug`, as cancelled (bug-36ce72): in its
+/// handle and the kept record, which keep its last progress and so what its
+/// settled calls cost, and on both event streams.
+async fn end_cancelled_write(state: &AppState, op_id: &str, slug: &str) {
+    crate::operations::finish_operation(state, op_id, OperationStatus::Cancelled).await;
+    state
+        .state_hub
+        .publish_batch(vec![roko_core::DashboardEvent::EventLogEntry {
+            timestamp_ms: generate_now_millis(),
+            event_type: "plan_generate.cancelled".into(),
+            plan_id: slug.to_string(),
+            task_id: String::new(),
+            message: format!("op={op_id} cancelled"),
+        }]);
+    state.event_bus.publish(ServerEvent::OperationCompleted {
+        op_id: op_id.to_string(),
+        kind: "plan_generate".into(),
+        success: false,
+    });
+}
+
+/// How long a cancel waits for the plan write it stopped to end.
+const WRITE_CANCEL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Stop the plan write `id` names, as `run_cancel` and `POST
+/// /api/plans/{id}/cancel` do (bug-36ce72): `None` when `id` names no plan
+/// write, so the caller looks for a run. `id` is the write's operation id,
+/// the `run_id` `plan_generate` answers, or the id of the plan a running
+/// write writes.
+///
+/// Once the write has ended, the answer is `{ cancelled: true, run_id,
+/// plan_id, state: "cancelled", cost_usd }`, where `cost_usd` is what its
+/// settled calls cost (a planner call it stopped returned no usage). A cancel
+/// of a cancelled write answers the same, with `already_ended`. A write that
+/// was written or failed first, or that is saving its plan, is a 409 that
+/// says so.
+pub(crate) async fn cancel_plan_write(
+    state: &AppState,
+    id: &str,
+) -> Option<Result<Value, ApiError>> {
+    let found = {
+        let operations = state.operations.read().await;
+        let named = operations
+            .get(id)
+            .filter(|operation| operation.write.is_some());
+        let running = || {
+            operations.values().find(|operation| {
+                matches!(operation.status, OperationStatus::Running)
+                    && operation
+                        .write
+                        .as_ref()
+                        .is_some_and(|write| write.plan_id == id)
+            })
+        };
+        named.or_else(running).and_then(|operation| {
+            let write = operation.write.as_ref()?;
+            Some((
+                operation.id.clone(),
+                write.plan_id.clone(),
+                write.cancel.clone(),
+                operation.status.clone(),
+                crate::operations::latest_progress(operation),
+            ))
+        })
+    };
+    let Some((op_id, plan_id, cancel, status, progress)) = found else {
+        // A write whose handle was collected is in the kept record.
+        let finished = crate::operations::finished_operation(state, id)?;
+        let plan_id = finished.kind.strip_prefix("plan_generate:")?;
+        return Some(write_ended(
+            id,
+            plan_id,
+            &finished.status,
+            finished.progress,
+        ));
+    };
+    if !matches!(status, OperationStatus::Running) {
+        return Some(write_ended(&op_id, &plan_id, &status, progress));
+    }
+
+    cancel.cancel();
+    let deadline = tokio::time::Instant::now() + WRITE_CANCEL_WAIT;
+    loop {
+        let held = state.operations.read().await.get(&op_id).map(|operation| {
+            (
+                operation.status.clone(),
+                crate::operations::latest_progress(operation),
+            )
+        });
+        // A handle collected already left its kept record.
+        let (status, progress) = match held {
+            Some(held) => held,
+            None => crate::operations::finished_operation(state, &op_id)
+                .map_or((OperationStatus::Cancelled, None), |finished| {
+                    (finished.status, finished.progress)
+                }),
+        };
+        match status {
+            OperationStatus::Running if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            OperationStatus::Running => {
+                let what = if progress.as_ref().is_some_and(plan_being_saved) {
+                    "is saving its plan, so a cancel can't stop it now"
+                } else {
+                    "has not stopped yet; it stops at its next step"
+                };
+                return Some(Err(ApiError::conflict(format!(
+                    "the write of plan '{plan_id}' {what}"
+                ))));
+            }
+            OperationStatus::Cancelled => {
+                return Some(Ok(cancelled_write(&op_id, &plan_id, progress)));
+            }
+            status => return Some(write_ended(&op_id, &plan_id, &status, progress)),
+        }
+    }
+}
+
+/// The answer to a cancel of plan write `op_id` that ended with `status`
+/// before it: a cancelled write's own answer, else a 409 that says how it
+/// ended.
+fn write_ended(
+    op_id: &str,
+    plan_id: &str,
+    status: &OperationStatus,
+    progress: Option<Value>,
+) -> Result<Value, ApiError> {
+    let ended = match status {
+        OperationStatus::Cancelled => {
+            let mut answer = cancelled_write(op_id, plan_id, progress);
+            answer["already_ended"] = json!(true);
+            return Ok(answer);
+        }
+        OperationStatus::Running => "is still running",
+        OperationStatus::Completed { .. } => "had already written it",
+        OperationStatus::Failed { .. } => "had already failed",
+    };
+    Err(ApiError::conflict(format!(
+        "the write of plan '{plan_id}' {ended}"
+    )))
+}
+
+/// A cancelled plan write's answer, with what its settled calls cost, from
+/// its last `progress`.
+fn cancelled_write(op_id: &str, plan_id: &str, progress: Option<Value>) -> Value {
+    let cost_usd = progress
+        .and_then(|progress| progress.get("cost_usd").cloned())
+        .unwrap_or(Value::Null);
+    json!({
+        "cancelled": true,
+        "run_id": op_id,
+        "plan_id": plan_id,
+        "state": crate::state::RunState::Cancelled.as_str(),
+        "cost_usd": cost_usd,
+    })
 }
 
 /// Request body for `POST /api/plans/{id}/revise`.
@@ -660,6 +1029,7 @@ pub(super) async fn revise_plan(
         handle,
         started: std::time::Instant::now(),
         progress: None,
+        write: None,
     };
 
     state.operations.write().await.insert(op_id.clone(), op);

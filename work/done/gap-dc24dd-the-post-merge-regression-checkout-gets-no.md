@@ -1,0 +1,134 @@
++++
+id = "gap-dc24dd"
+kind = "gap"
+title = "The post-merge regression checkout gets no warm build trees from the person's checkout, so a workspace's first delivery check builds every CMake tree cold: roko-ladder's 5.1 rehearsal built core there from nothing while its attempt worktrees all got warm core and plugin trees"
+status = "done"
+triage = "verified"
+severity = "p3"
+goal = "golden-path"
+size = "M"
+subsystem = ["roko-cli/graph_execution"]
+created = 2026-10-26
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "e4665d964"
+source = "round-v7 roko-speed, the lead's question on roko-ladder's 5.1 rehearsal (tmp/hermes-roko-v7/roko-ladder/rehearsals/p51)"
+discovered_from = "agent:roko-speed (round v7)"
+anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::reset_regression_checkout", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees"]
+links = { depends_on = [], blocks = [], related = ["gap-6754ab", "gap-b6b7a1", "bug-8cf581"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn the_regression_checkout_starts_with_the_workdirs_build_trees' crates/roko-cli/src && cargo test -p roko-cli --lib the_regression_checkout_starts_with_the_workdirs_build_trees"
+
+[closed]
+at = 2026-10-27
+at_ts = "2026-10-27T01:12:55Z"
+commit = "e4665d964"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-26T19:30:29Z"
+forced = false
+evidence = "chain49 on main f5045c0e6 with the change (e4665d964): fmt and clippy (the six packages) green; 27 targeted tests pass, among them the_regression_checkout_starts_with_the_workdirs_build_trees (on APFS: the person's build tree given and relocated to the regression checkout, then kept by the next delivery, the check log saying which), a_cold_regression_check_starts_from_no_build_trees (a cold_verify check sees no build tree and an empty cargo target dir; summary and log say cold), key_sets_cover_every_parsed_field with cold_verify set, and the delivery and warm-tree tests; lib suites: roko-agent 2415, roko-core 2049, roko-learn 1405, roko-runtime 213, roko-serve 1086 green; roko-cli 4044 passed, 1 failed: the known load flake bug-5c77d6 (case 2 judged Unverified), which passed alone twice on the same build (chain49b)"
++++
+
+## Problem
+
+A plan's post-merge regression check runs in the workspace's regression checkout
+(`.roko/state/regression-checkout`, bug-8cf581). roko creates that checkout with `git worktree add` and resets it
+for each delivery with `checkout --force` and `clean -ffdq`. It never gives it the person's checkout's build trees,
+as gap-6754ab does for every attempt worktree. So the first delivery check in a workspace builds every CMake tree
+cold. Later deliveries reuse what earlier ones built there: the checkout stays, and `clean -ffdq` keeps ignored
+`build/`.
+
+Seen in roko-ladder's phase 5.1 rehearsal (workspace `tmp/hermes-roko-v7/roko-ladder/rehearsals/p51/ws`, binary
+74c3594bc):
+- The person's checkout had warm `build/core` and `build/plugin` from setup (setup built them in 173 s and 155 s
+  through the cpp-proof lane).
+- The regression checkout, created at the first delivery, had neither. check.sh built `build/core` there cold: 47
+  objects, from 17:53:17 to 17:53:23. It rendered `build/demos`, then failed before it built the plugin, because of
+  a check.sh order bug of undertow-spec's.
+- Undertow's live regression checkout has both trees only because phases 0 to 4 built them there over time.
+- The log shows no warm copy for the regression checkout. Every attempt worktree of the same run got both trees.
+
+## Why it matters
+
+Golden path, speed. On a C++ project, a workspace's first delivery check pays a full cold build: Undertow's core
+and JUCE plugin, minutes through the cpp lane. That is the cost gap-6754ab removed from attempts. A fresh
+workspace, or one whose regression checkout was removed, pays it again.
+
+## Where
+
+- `crates/roko-cli/src/graph_execution/delivery.rs::reset_regression_checkout`: the `git worktree add` branch, where
+  the checkout is made.
+- `crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees`: the clone and relocation attempt
+  worktrees get. It already skips a tree the checkout has, and honours `[gates] warm_build_dirs`.
+
+## The counter-case: a cold check finds what warm trees hide
+
+This rehearsal is exactly where a cold regression checkout earned its keep (the lead, 2026-10-26).
+- Built from nothing, check.sh failed on its own step order.
+- Undertow's warm, persistent trees had hidden that from phase 0 through phase 5: the plugin tree was already there
+  when its step ran.
+- A delivery check run only on warm trees can pass on build state no clean checkout reproduces.
+
+So the shape is **warm by default for speed, plus a way to force a cold delivery check**.
+
+## Plan
+
+1. **Warm by default.**
+   - After `reset_regression_checkout` adds or resets the checkout, give it the person's checkout's build trees with
+     `give_build_trees(workdir, checkout, warm_build_dirs)`, on a blocking thread as the workspace provider does.
+   - A tree the checkout already has, from an earlier delivery, is left alone, as `give_build_trees` does.
+   - So this costs only the first delivery's clone, about 1 s a tree on APFS.
+   - Log the trees given, as for attempt worktrees.
+2. **A cold check on demand.** One switch makes a delivery check start from no build trees at all: none given, and the
+   checkout's own removed (`git clean -ffdxq`, or a fresh checkout). Either:
+   - a config key such as `[delivery] cold_regression = true`, with a per-plan `[meta]` override, or
+   - a `plan run` flag (`--cold-delivery-check`), for a ship phase.
+   Pick whichever fits how plans are run. The run's records and the delivery's evidence log say which mode the
+   check ran in.
+3. **Which one a plan's final delivery uses** must be stated, in the docs and the delivery evidence:
+   - By default: warm, like every other delivery.
+   - A ship phase sets cold.
+   - Recommended for Undertow: its last phase, or any plan whose `[meta]` marks it as shipping, runs cold. That is
+     where a step-order or missing-artifact bug in the project's own check script must show up.
+
+## Done when
+
+- A new regression checkout holds the person's checkout's build trees, relocated to its own path, before its first
+  command runs. Test: `the_regression_checkout_starts_with_the_workdirs_build_trees`.
+- A delivery check can be forced cold, from no build trees, and its record says which mode it ran in.
+- The docs say which mode a plan's final delivery uses.
+- The `[[verify]]` passes.
+
+## What was built
+
+- **Warm by default.** `GitDeliveryBackend::prepare_build_trees` (`delivery.rs`) runs after the reset. The
+  regression checkout gets a warm copy of each of the person's checkout's build trees it lacks, through
+  `give_build_trees` and `[gates] warm_build_dirs`, which the plan run now passes to `deliver_plan_to_batch`. A tree
+  from an earlier delivery stays.
+- **A cold check on demand: `[meta] cold_verify = true`** in the plan's `tasks.toml` (`TaskMeta::cold_verify`, in
+  `META_KEYS`). The checkout's untracked and git-ignored files are removed (`git clean -ffdxq`), its build trees
+  with them. The regression's cargo target dir (`.roko/state/regression-target`) is emptied, and nothing is given.
+  It is a plan key, not a config key or run flag, because shipping is a property of the plan: a ship phase's
+  `tasks.toml` carries it. Without `--worktree-per-task` the whole-plan check runs in the person's checkout, which
+  roko never clears, so there it only logs a warning.
+- **Which mode ran.** The delivery's check log opens with the build trees the check started from: given, the
+  checkout's own, none, or cold. A cold check's summary in the receipt ends ", from no build trees (a cold check)".
+  - **Correction, 2026-10-27 (bug-2f70cd):** that held only for a failed check. A passed check's summary was kept
+    nowhere, so a passed cold check was recorded only in the plan's check log, which its next delivery overwrites.
+    Since bug-2f70cd every receipt whose check ran holds `roko.delivery.build_trees@1` (`cold`, `started_from`),
+    passed or failed, the pass log line carries the summary, and `roko plan status` shows `plan check from:`.
+- **Which mode a plan's final delivery uses** is stated in `docs/v3/depth/04-execution/worktree-isolation.md`
+  (Warm Build Trees): warm like every delivery, unless the plan sets `cold_verify`, as a project's last phase should.
+- **Tests:** `the_regression_checkout_starts_with_the_workdirs_build_trees` (given, relocated, then kept across
+  deliveries; skipped without copy-on-write), `a_cold_regression_check_starts_from_no_build_trees`, and
+  `key_sets_cover_every_parsed_field` with `cold_verify` set.
+
+## Notes
+
+- Found by the lead in roko-ladder's 5.1 rehearsal; roko-speed traced it (round v7). The check.sh order bug it
+  exposed is undertow-spec's.
+- Related: gap-6754ab (attempt worktrees' warm trees), gap-b6b7a1 (dependents' warm trees), bug-8cf581 (the
+  regression checkout).

@@ -1,10 +1,13 @@
 //! `[audit]` in `roko.toml` (S05 §5, §4.9): M4's random deep audits.
 //!
-//! Audits stay off until the audit worker lands (7123). Then decision 7's
-//! answer applies: 10% of green attempts on real work (`rho`), never below
-//! the 5% floor. The floor is locked, so an `eps_floor` below it is an error:
-//! only the author changes it. Only ρ and λ adapt at run time (S05 §4.9), and
-//! nothing in a learning loop writes this section.
+//! Audits run by default, at decision 7103's answer (gap-d76b1b): 10% of
+//! green attempts on real work (`rho`), never below the 5% floor, each audit
+//! within $0.30 and 15 CPU-minutes and all of a run's audits within 12% of
+//! its model spend. `roko run --no-audit` and `roko plan run --no-audit` turn
+//! them off for one run, and `enabled = false` for every run. The floor is
+//! locked, so an `eps_floor` below it is an error: only the author changes
+//! it. Only ρ and λ adapt at run time (S05 §4.9), and nothing in a learning
+//! loop writes this section.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +26,8 @@ pub const MAX_RHO: f64 = 0.5;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuditConfig {
-    /// Whether green attempts are drawn for audits at all.
+    /// Whether green attempts are drawn for audits at all: on by default
+    /// (decision 7103); `--no-audit` turns it off for one run.
     pub enabled: bool,
     /// The vault root, overriding `~/.roko/audit`; `ROKO_AUDIT_HOME` wins
     /// over it. A leading `~` is the home directory.
@@ -68,7 +72,7 @@ pub struct AuditConfig {
 impl Default for AuditConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             home: None,
             rho: 0.10,
             eps_floor: AUDIT_FLOOR,
@@ -247,9 +251,9 @@ mod tests {
 
     #[test]
     fn audit_config_locks_the_floor() {
-        // The defaults: off until the worker lands, decision 7's 10%, the 5% floor.
+        // The defaults: on (decision 7103), decision 7's 10%, the 5% floor.
         let defaults = AuditConfig::default();
-        assert!(!defaults.enabled);
+        assert!(defaults.enabled);
         assert_eq!((defaults.rho, defaults.eps_floor), (0.10, 0.05));
         assert_eq!(defaults.validate(), Ok(()));
         let empty = RokoConfig::from_toml("").expect("an empty config");
@@ -292,6 +296,28 @@ mod tests {
                 .is_err_and(|error| error.contains("two families"))
         );
         assert!(RokoConfig::from_toml("[audit]\nsurprise = 1\n").is_err());
+    }
+
+    /// gap-d76b1b: decision 7103's outcome is the default. A workspace with
+    /// no `[audit]` section audits 10% of its green attempts, never below the
+    /// 5% floor, each audit within $0.30 and 15 CPU-minutes, and all of a
+    /// run's audits within 12% of its spend; `enabled = false` turns audits
+    /// off for every run.
+    #[test]
+    fn default_audit_config_is_enabled_at_the_decided_rate() {
+        let empty = RokoConfig::from_toml("").expect("an empty config");
+        for config in [AuditConfig::default(), empty.audit] {
+            assert!(config.enabled);
+            assert_eq!((config.rho, config.eps_floor), (0.10, AUDIT_FLOOR));
+            assert_eq!(AUDIT_FLOOR, 0.05);
+            assert_eq!((config.per_audit_usd, config.budget_frac), (0.30, 0.12));
+            assert_eq!(config.per_audit_cpu_secs, 15 * 60);
+            assert_eq!(config.phase_b_rate, 0.5);
+            assert_eq!(config.validate(), Ok(()));
+        }
+        let off = RokoConfig::from_toml("[audit]\nenabled = false\n").expect("the section parses");
+        assert!(!off.audit.enabled);
+        assert_eq!(off.audit.rho, 0.10, "the other keys keep their defaults");
     }
 
     #[test]

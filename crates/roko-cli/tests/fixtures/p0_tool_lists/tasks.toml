@@ -1,0 +1,345 @@
+[meta]
+plan = "title-p0-undertow-foundation"
+title = "Title: P0 · Undertow foundation"
+iteration = 0
+total = 4
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[task]]
+id = "T1"
+title = "Set up the core-first CMake build and presets"
+description = "Create the top-level build files and the core library target so the project can configure, build, and test the plain C++ core before any plugin work. Assumption: the repository will use the Unix Makefiles generator everywhere, and the core preset must keep UNDERTOW_BUILD_PLUGIN=OFF while BUILD_TESTING stays ON."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "CMakeLists.txt",
+    "CMakePresets.json",
+    "cmake/Juce.cmake",
+    "core/CMakeLists.txt",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `cmake --preset core` configures successfully and produces a core build tree with UNDERTOW_BUILD_PLUGIN=OFF.",
+    "AC2: `cmake --build --preset core` builds the core library target and the spec harness without needing any JUCE package or include path.",
+    "AC3: `ctest --preset core` runs from the core preset and succeeds once the core-only tests are present.",
+]
+sequence = 0
+goal = "A core configure/build/test pass works from the repo's presets without configuring JUCE."
+non_goals = [
+    "Do not add any JUCE dependency or plugin target in the core preset.",
+    "Do not modify docs/, tests/spec/, third_party/, or any given tools scripts.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-0-foundation.md"
+lines = "1-220"
+why = "Capture the exact build-system requirements, preset names, and core/plugin dependency order."
+
+[[task.context.read_files]]
+path = "tests/spec/CMakeLists.txt"
+lines = "1-91"
+why = "Understand how the spec harness detects the core target and when tests enter the default build."
+
+[[task.context.read_files]]
+path = "README.md"
+lines = "1-45"
+why = "Confirm the repo's existing build-language and tool naming conventions."
+
+[[task.verify]]
+phase = "compile"
+command = "grep -q 'option(UNDERTOW_BUILD_PLUGIN' CMakeLists.txt && cmake --preset core"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "compile"
+command = "grep -q 'undertow_core' core/CMakeLists.txt && cmake --build --preset core"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'add_subdirectory(tests/spec)' CMakeLists.txt && ctest --preset core"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Implement the core parameter table"
+description = "Add undertow::params.h and its implementation so the core library exports the full parameter table, table indices, and exact-id lookup. Assumption: the parameter table must match docs/specs/phase-0-foundation.md and tests/spec/p0/params_test.cpp row for row, including choice labels and units."
+role = "implementer"
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = [
+    "core/include/undertow/params.h",
+    "core/src/params.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `undertow::kNumParams` is 57 and `undertow::paramSpec(i)` matches the documented row for every index.",
+    "AC2: `undertow::findParam(id)` returns the exact row index for each known id and -1 for unknown ids.",
+    "AC3: the `undertow::param` enumerators match the table indices used by the spec test.",
+]
+sequence = 1
+goal = "The core library exposes the full 57-row parameter specification in the exact spec order."
+non_goals = [
+    "Do not add engine logic here.",
+    "Do not introduce JUCE or plugin code.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-0-foundation.md"
+lines = "120-220"
+why = "Read the API block and parameter-table rules that define the required fields and types."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/params_test.cpp"
+lines = "1-164"
+why = "Use the acceptance test as the exact source of truth for the 57-row table and lookup behavior."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'kNumParams' core/include/undertow/params.h && tools/spec.sh 0 params 'P0.01*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'findParam' core/include/undertow/params.h && tools/spec.sh 0 params 'P0.02*'"
+timeout_ms = 900000
+covers = [
+    "AC2",
+    "AC3",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Build the engine skeleton and beat clock"
+description = "Add undertow::Engine with the pimpl-based skeleton, parameter storage, clamping/rounding rules, silence output, and beat-clock meters. Assumption: process may be chunked internally for blocks larger than maxBlockSize, and meters() must remain thread-safe via atomics."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/engine.h",
+    "core/src/engine.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: a new Engine reports every parameter's default value, clamps out-of-range writes, rounds Int and Choice values, maps Bool values, and ignores invalid indices.",
+    "AC2: process writes all requested samples of both channels, leaves sentinels beyond numSamples untouched, and stays finite for 0 to 1536-sample blocks with MIDI input.",
+    "AC3: process, setParam, getParam, meters, and reset perform no heap allocation over repeated blocks.",
+    "AC4: the beat clock follows the host transport when valid, stays at host ppq when stopped, and advances from 0 at seq_bpm when no transport is provided.",
+]
+sequence = 2
+goal = "The core library exposes an allocation-free engine skeleton with the required parameter and transport behavior."
+non_goals = [
+    "Do not add any audible DSP or voice handling.",
+    "Do not modify the plugin or check script yet.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-0-foundation.md"
+lines = "70-220"
+why = "Capture the engine API, transport behavior, meters, and no-allocation constraints."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/engine_test.cpp"
+lines = "1-186"
+why = "Use the engine acceptance checks for defaults, block processing, allocation, and clock behavior."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/params_test.cpp"
+lines = "1-164"
+why = "Cross-check parameter ids and defaults used by the engine skeleton."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'class Engine' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.03*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = '''grep -q 'process(float\* left, float\* right' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.04*''''
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'meters() const' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.05*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'Transport' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.06*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Add the JUCE plugin skeleton and check script"
+description = "Create the plugin target and its thin JUCE wrapper around undertow::Engine, then add tools/check.sh so the core and plugin checks run in the spec's order. Assumption: the plugin must expose the full core parameter table in order, state persistence through APVTS XML, a fixed placeholder editor, and the requested bundle identifiers and formats."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/CMakeLists.txt",
+    "plugin/PluginProcessor.h",
+    "plugin/PluginProcessor.cpp",
+    "plugin/PluginEditor.h",
+    "plugin/PluginEditor.cpp",
+    "tools/check.sh",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: createPluginFilter returns an UndertowProcessor whose metadata is Metakosmia Undertow, with MIDI in, no MIDI out, no inputs, and one stereo output.",
+    "AC2: the plugin exposes all 57 parameters in the core table order and restores them through state save/restore.",
+    "AC3: processBlock forwards host parameter values to the engine, remains finite, and avoids heap allocation during repeated calls.",
+    "AC4: createEditor returns a fixed 1200x760 UndertowEditor with the specified dark placeholder appearance.",
+    "AC5: the plugin build produces VST3, AU, and Standalone bundles with the requested bundle identifiers and AU codes.",
+    "AC6: tools/check.sh runs the core preset first, then the plugin preset and pluginval when invoked with --plugin, and stops on the first failure.",
+]
+sequence = 3
+goal = "The plugin wrapper, placeholder editor, and local check script all match phase-0 behavior."
+non_goals = [
+    "Do not change any tests/spec/, third_party/, docs/, or provided tools scripts other than tools/check.sh.",
+    "Do not add real DSP or a real editor; keep the plugin thin and the editor placeholder-only.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-0-foundation.md"
+lines = "1-260"
+why = "Capture the plugin target requirements, editor placeholder spec, and check-script behavior."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/plugin_test.cpp"
+lines = "1-253"
+why = "Use the acceptance checks for plugin metadata, parameters, state, processBlock, editor, and bundle outputs."
+
+[[task.context.read_files]]
+path = "tests/spec/CMakeLists.txt"
+lines = "1-91"
+why = "See how the plugin tests are gated on the Undertow target and what bundle paths they inspect."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'createPluginFilter' plugin/PluginProcessor.cpp && tools/spec.sh 0 plugin 'P0.08*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'AudioProcessorValueTreeState' plugin/PluginProcessor.h && tools/spec.sh 0 plugin 'P0.09*' && tools/spec.sh 0 plugin 'P0.10*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'processBlock' plugin/PluginProcessor.cpp && tools/spec.sh 0 plugin 'P0.11*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'UndertowEditor' plugin/PluginEditor.h && tools/spec.sh 0 plugin 'P0.12*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'juce_add_plugin(Undertow' plugin/CMakeLists.txt && tools/spec.sh 0 plugin 'P0.13*'"
+timeout_ms = 900000
+covers = ["AC5"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'check: OK' tools/check.sh && tools/check.sh --plugin"
+timeout_ms = 900000
+covers = ["AC6"]
+expect = "fail_on_base"

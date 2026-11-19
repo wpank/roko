@@ -210,6 +210,11 @@ struct DeclarativeToolHandler {
 
 const MAX_PLUGIN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
+/// The variable holding a declarative tool call's JSON arguments for the
+/// tool's command. It also marks the command as one an agent's tool call
+/// started, and `roko safety release` refuses to run under it (find-d05b5e).
+pub(crate) const TOOL_ARGS_ENV: &str = "ROKO_TOOL_ARGS";
+
 /// Kernel-backed containment available for arbitrary declarative-plugin
 /// subprocesses.  An unsupported host is a hard execution error: capability
 /// checks and path validation are not a substitute for an OS sandbox.
@@ -436,7 +441,7 @@ impl ToolHandler for DeclarativeToolHandler {
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .envs(&self.env)
-            .env("ROKO_TOOL_ARGS", arguments)
+            .env(TOOL_ARGS_ENV, arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

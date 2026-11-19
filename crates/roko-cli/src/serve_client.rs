@@ -3,14 +3,15 @@
 //! # Discovery
 //!
 //! [`discover_workspace_server`] reads the server's endpoint advertisement
-//! (`.roko/runtime/serve.json`) and validates it with two safety checks before
-//! returning:
+//! (`.roko/runtime/serve.json`) and accepts it only when the server is ours
+//! and alive ([`crate::serve_lifecycle::check_workspace_serve`], gap-fb1594):
 //!
-//! 1. The PID recorded in `.roko/runtime/roko.lock` matches the endpoint's PID.
-//!    A crashed server cannot clear its own lock, so a stale endpoint is detected
-//!    by the lock file still naming the dead PID.
-//! 2. `GET {url}/api/health` responds 200 within one second.  A non-responsive
-//!    server must never capture a CLI run.
+//! 1. The PID it records is alive and holds the workspace lock
+//!    (`.roko/runtime/roko.lock`, which records the holder's PID). A crashed
+//!    server leaves a stale endpoint whose PID is gone or no longer the holder.
+//! 2. `GET {url}/health` answers within one second with the `instance_id` the
+//!    endpoint records, so another project's server on the same port never
+//!    counts. A non-responsive server must never capture a CLI run.
 //!
 //! # Client
 //!
@@ -72,97 +73,34 @@ pub enum ServeClientError {
 /// Discover a live `roko-serve` process in `workdir`.
 ///
 /// Reads the endpoint advertisement from `.roko/runtime/serve.json` and
-/// validates it with two independent checks:
-///
-/// 1. **PID match** — `.roko/runtime/roko.lock` must contain the same PID as
-///    the endpoint.  A crashed server leaves a stale `serve.json` but does not
-///    clear the lock, so the PIDs diverge.
-/// 2. **Health probe** — `GET {url}/api/health` must respond 200 within one
-///    second.  A dead or unreachable server is rejected regardless of PID.
+/// returns it only when the server is ours and alive: its PID is alive and
+/// holds the workspace lock, and `GET {url}/health` answers within one second
+/// as that server ([`crate::serve_lifecycle::running_workspace_serve`]).
 ///
 /// Returns `None` for any failure; logs a `debug!` message explaining why the
 /// endpoint was rejected so callers can diagnose without noise on the happy
 /// path.
 ///
-/// A crashed server must never capture a CLI run — therefore both checks must
+/// A crashed server must never capture a CLI run — therefore every check must
 /// pass before `Some` is returned.
 #[must_use]
 pub fn discover_workspace_server(workdir: &Path) -> Option<ServeEndpoint> {
-    let endpoint = roko_serve::endpoint::read_endpoint(workdir)?;
-
-    // 1. PID check: read the workspace lock file and compare.
-    let lock_path = workdir.join(".roko").join("runtime").join("roko.lock");
-    let lock_pid: u32 = match std::fs::read_to_string(&lock_path) {
-        Ok(content) => match content.trim().parse::<u32>() {
-            Ok(pid) => pid,
-            Err(_) => {
-                debug!(
-                    path = %lock_path.display(),
-                    content = content.trim(),
-                    "workspace lock does not contain a valid PID; rejecting endpoint"
-                );
-                return None;
-            }
-        },
-        Err(err) => {
-            debug!(
-                path = %lock_path.display(),
-                error = %err,
-                "cannot read workspace lock file; rejecting endpoint"
-            );
-            return None;
-        }
-    };
-
-    if lock_pid != endpoint.pid {
+    let check = crate::serve_lifecycle::check_workspace_serve(workdir);
+    if check.state == crate::serve_lifecycle::ServeState::Running {
+        let endpoint = check.endpoint?;
         debug!(
-            lock_pid,
-            endpoint_pid = endpoint.pid,
-            "workspace lock PID does not match endpoint PID; rejecting stale endpoint"
+            url = %endpoint.url,
+            pid = endpoint.pid,
+            "workspace server discovered and healthy"
         );
-        return None;
+        return Some(endpoint);
     }
-
-    // 2. Health probe: connect to the server's TCP port within one second.
-    // We use a raw TcpStream instead of reqwest::blocking so that this sync
-    // function can be called safely from async tasks without creating a nested
-    // tokio::Runtime (which would panic in debug builds).
-    let health_url = format!("{}/api/health", endpoint.url.trim_end_matches('/'));
-    let addr_str = endpoint
-        .url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split('/')
-        .next()
-        .unwrap_or("");
-    match addr_str.parse::<std::net::SocketAddr>() {
-        Ok(addr) => match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
-            Ok(_) => {
-                debug!(
-                    url = %health_url,
-                    pid = endpoint.pid,
-                    "workspace server discovered and healthy (TCP probe)"
-                );
-                Some(endpoint)
-            }
-            Err(err) => {
-                debug!(
-                    url = %health_url,
-                    error = %err,
-                    "workspace server TCP probe failed; rejecting endpoint"
-                );
-                None
-            }
-        },
-        Err(err) => {
-            debug!(
-                url = %health_url,
-                error = %err,
-                "cannot parse server address from endpoint URL; rejecting endpoint"
-            );
-            None
-        }
-    }
+    debug!(
+        workdir = %workdir.display(),
+        state = check.state.as_str(),
+        "no live workspace server; rejecting endpoint"
+    );
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +155,31 @@ fn read_launch_token(workdir: &Path) -> Option<String> {
     }
 }
 
+/// The credentials a client may send to `workdir`'s serve, in the order
+/// [`WorkspaceServerClient`] tries them: a resolved API key, then the launch
+/// token in `.roko/runtime/serve.token` as a bearer token.
+fn credentials(resolved: Option<crate::auth::ResolvedApiKey>, workdir: &Path) -> Vec<HeaderMap> {
+    let mut credentials: Vec<HeaderMap> = resolved.iter().map(|key| key.headers()).collect();
+    if let Some(token) = read_launch_token(workdir) {
+        credentials.push(crate::auth::auth_headers_with_method(
+            &token,
+            crate::auth::AuthMethod::Bearer,
+        ));
+    }
+    credentials
+}
+
+/// The credentials for `workdir`'s serve, in the order a client tries them
+/// ([`WorkspaceServerClient::new`]), resolved from the workspace's
+/// `[serve.auth]` config. Empty when there is none.
+#[must_use]
+pub fn workspace_credentials(workdir: &Path) -> Vec<HeaderMap> {
+    let auth = roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.serve.auth)
+        .unwrap_or_default();
+    credentials(crate::auth::resolve_api_key(&auth, None), workdir)
+}
+
 impl WorkspaceServerClient {
     /// Create a new client for `endpoint`, resolving auth credentials from
     /// `auth_config`, with `workdir` used as a fallback for the launch token.
@@ -248,15 +211,10 @@ impl WorkspaceServerClient {
         resolved: Option<crate::auth::ResolvedApiKey>,
         workdir: &Path,
     ) -> Self {
-        let headers = match resolved {
-            Some(key) => key.headers(),
-            None => match read_launch_token(workdir) {
-                Some(token) => {
-                    crate::auth::auth_headers_with_method(&token, crate::auth::AuthMethod::Bearer)
-                }
-                None => HeaderMap::new(),
-            },
-        };
+        let headers = credentials(resolved, workdir)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -676,10 +634,13 @@ pub async fn run_plan_via_server(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    println!(
-        "submitted to roko serve at {} as run {}",
-        endpoint.url, submitted.id
-    );
+    // The run view names the server in its header instead (gap-2c87f0).
+    if json || (!no_tui && std::io::stdout().is_terminal()) {
+        println!(
+            "submitted to roko serve at {} as run {}",
+            endpoint.url, submitted.id
+        );
+    }
 
     let run_id = submitted.id.clone();
     let server_url = endpoint.url.clone();
@@ -689,8 +650,10 @@ pub async fn run_plan_via_server(
     // ── 4. Follow the run ─────────────────────────────────────────────────
     let final_outcome = if !no_tui && std::io::stdout().is_terminal() {
         follow_run_tui(wd, &mirror, &run_id, &order_set, &serve_client).await?
+    } else if json {
+        follow_run_text(true, &mirror, &run_id, &order_set, &serve_client).await?
     } else {
-        follow_run_text(json, &mirror, &run_id, &order_set, &serve_client).await?
+        follow_run_view(wd, plans_dir, &mirror, &run_id, &order_set, &serve_client).await?
     };
 
     // ── JSON summary ──────────────────────────────────────────────────────
@@ -843,8 +806,97 @@ async fn follow_run_tui(
 
 /// Follow a server-managed plan run in text mode (no TUI), printing one line
 /// per notable event and exiting when the run completes or is cancelled.
+/// Follow a server-managed run with the run view (gap-2c87f0): a header and
+/// a line per task on a terminal, or a line per event in a pipe, then the
+/// run's summary on stdout, as a local run ends.
+async fn follow_run_view(
+    wd: &Path,
+    plans_dir: &Path,
+    mirror: &crate::state_hub::SharedStateHub,
+    run_id: &str,
+    order_set: &std::collections::HashSet<String>,
+    serve_client: &WorkspaceServerClient,
+) -> anyhow::Result<String> {
+    use crate::graph_execution::run_view::{Outcome, RunHeader, RunModel, RunView, Summary};
+    use std::io::Write as _;
+
+    let style = crate::term_style::Style::stderr();
+    let plans: Vec<_> = crate::runner::plan_loader::load_plans(plans_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|plan| order_set.contains(&plan.id))
+        .collect();
+    let mut header = RunHeader::for_plans(&plans, plans_dir, wd, 0, None, style);
+    header.note = Some("on roko serve".to_string());
+    let started = std::time::Instant::now();
+    let view = RunView::start_replaying(mirror, header, style);
+    let outcome = follow_run_text(true, mirror, run_id, order_set, serve_client).await?;
+    let model = view.finish().await;
+
+    let shown = plans_dir
+        .strip_prefix(wd)
+        .unwrap_or(plans_dir)
+        .display()
+        .to_string();
+    let failed_plan = model.as_ref().and_then(|model| {
+        model
+            .tasks
+            .iter()
+            .find(|task| task.state == crate::graph_execution::run_view::TaskState::Failed)
+            .map(|task| task.plan_id.clone())
+    });
+    let (run_outcome, next) = match outcome.as_str() {
+        "succeeded" => (Outcome::Done, Some(format!("roko plan status {shown}"))),
+        "unverified" => (
+            Outcome::NotChecked,
+            Some(format!("roko plan status {shown}")),
+        ),
+        "cancelled" | "interrupted" => (
+            Outcome::Stopped("it was stopped".to_string()),
+            Some(format!("roko run {shown} --resume-plan")),
+        ),
+        _ => (
+            Outcome::Failed,
+            Some(format!(
+                "roko diagnose {}",
+                failed_plan
+                    .unwrap_or_else(|| plans.first().map_or(shown.clone(), |plan| plan.id.clone()))
+            )),
+        ),
+    };
+    let reason = match &run_outcome {
+        Outcome::Done => None,
+        Outcome::Stopped(cause) => Some(format!("{cause}; what passed is kept")),
+        Outcome::NotChecked => Some("some of the work had no check run on it".to_string()),
+        Outcome::Failed => model.as_ref().and_then(RunModel::first_failure),
+    };
+    let summary = Summary {
+        outcome: run_outcome,
+        reason,
+        tasks: model.as_ref().map_or((0, 0), RunModel::progress),
+        checks: model.as_ref().map_or((0, 0), RunModel::checks),
+        elapsed: started.elapsed(),
+        spent_usd: model.as_ref().map_or(0.0, RunModel::spent),
+        cap_usd: None,
+        delivered: None,
+        notes: Vec::new(),
+        next,
+    };
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out);
+    for line in crate::graph_execution::run_view::summary_lines(
+        &summary,
+        crate::term_style::Style::stdout(),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
+    Ok(outcome)
+}
+
+/// Follow a server-managed run in plain lines, one per notable event;
+/// `quiet` prints none (the run view or `--json` speaks instead).
 async fn follow_run_text(
-    json: bool,
+    quiet: bool,
     mirror: &crate::state_hub::SharedStateHub,
     run_id: &str,
     order_set: &std::collections::HashSet<String>,
@@ -869,7 +921,7 @@ async fn follow_run_text(
             msg = sub.live.recv() => {
                 match msg {
                     Ok(envelope) => {
-                        let print_line = !json;
+                        let print_line = !quiet;
                         match &envelope.payload {
                             roko_core::DashboardEvent::PlanSetLoaded { plans } => {
                                 if plans.iter().any(|p| order_set.contains(&p.plan_id)) {
@@ -991,6 +1043,7 @@ mod tests {
             url: url.to_string(),
             workdir: std::path::PathBuf::new(),
             started_at: "2026-09-28T00:00:00Z".to_string(),
+            ..Default::default()
         }
     }
 
@@ -1031,6 +1084,28 @@ mod tests {
         write_serve_json(dir.path(), &endpoint);
         // Write a different PID into the lock.
         write_lock_pid(dir.path(), 99999);
+        assert!(discover_workspace_server(dir.path()).is_none());
+    }
+
+    /// gap-fb1594: the serve that holds the workspace and answers `/health`
+    /// with its own instance id is discovered; one whose `/health` names
+    /// another instance (another project's serve on that port) is not.
+    #[test]
+    fn discovery_needs_the_serve_to_answer_as_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let _lock =
+            crate::workspace_lock::acquire_workspace_lock(&dir.path().join(".roko")).unwrap();
+        let health = crate::serve_lifecycle::test_support::FakeHealth::answering("instance-a");
+        let mut endpoint = make_endpoint(std::process::id(), &health.url());
+        endpoint.instance_id = "instance-a".to_string();
+        write_serve_json(dir.path(), &endpoint);
+        assert_eq!(
+            discover_workspace_server(dir.path()),
+            Some(endpoint.clone())
+        );
+
+        endpoint.instance_id = "instance-b".to_string();
+        write_serve_json(dir.path(), &endpoint);
         assert!(discover_workspace_server(dir.path()).is_none());
     }
 

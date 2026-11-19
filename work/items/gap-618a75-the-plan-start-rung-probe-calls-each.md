@@ -9,8 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-46"
 anchors = ["crates/roko-cli/src/dispatch/rung_probe.rs::run_probe", "crates/roko-cli/src/dispatch/rung_probe.rs::probe_rung", "crates/roko-cli/src/dispatch/rung_probe.rs::probe_ladder"]
 lane = "rust-hot"
@@ -66,3 +67,5 @@ so this is about the next streaming failure, not a live one.
 
 Evidence: `tmp/status-quo/2026-10-15/live/H-live-run.md` "Findings beyond D1-D16", row N2 (`:347`). Probe spend is a separate matter: it appears in no
 cost record (N3), and decision 3 (2026-10-15) keeps it charged to attempt 1 (q-85053f).
+
+Checked 2026-10-27: 2026-10-26: echo_tool moved from line 233 to 248. Commit 7440f7be7 (2026-10-21) touched this file for HTTP 4xx refusal classification (shared with gap-466060), not streaming.

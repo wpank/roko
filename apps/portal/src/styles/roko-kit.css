@@ -1,0 +1,341 @@
+/*
+ * roko's design components, shared with roko's pages in Hermes (hermes-plugin-roko) and its guides: one look for
+ * every surface. They come from round v8's design kit; change the kit and copy it here, not this copy alone.
+ */
+/*
+ * roko's components (round v8), as plain CSS on roko-tokens.css. roko-design-system.md §4 says what each is for;
+ * specimen.html shows each one in every state. Class names are rk-*; states are data attributes, so a framework
+ * only sets data-state, data-tone and data-size.
+ */
+
+/* ---- the page and its materials ------------------------------------------------------------------------------ */
+
+.rk-page {
+  margin: 0;
+  background: var(--rk-body);
+  color: var(--rk-ink);
+  font: 400 14px/1.5 var(--rk-sans);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+.rk-page :focus-visible { outline: 2px solid var(--rk-you); outline-offset: 2px; }
+
+/* The device: a page's one outer frame, the only thing that casts a shadow. */
+.rk-device {
+  position: relative;
+  background: var(--rk-module);
+  border: 1px solid var(--rk-line-2);
+  border-radius: var(--rk-r-4);
+  box-shadow: inset 0 1px 0 var(--rk-sheen), 0 34px 70px -40px var(--rk-shadow), 0 2px 0 var(--rk-line);
+  padding: var(--rk-4);
+}
+.rk-module {
+  background: var(--rk-module);
+  border: 1px solid var(--rk-line);
+  border-radius: var(--rk-r-3);
+  box-shadow: inset 0 1px 0 var(--rk-sheen);
+  padding: var(--rk-3) var(--rk-4);
+}
+.rk-sunk { background: var(--rk-module-2); border-radius: var(--rk-r-3); }
+
+/* ---- type ---------------------------------------------------------------------------------------------------- */
+
+.rk-display { margin: 0; font: 800 clamp(40px, 8vw, 104px)/0.88 var(--rk-sans); font-stretch: 70%; letter-spacing: -0.03em; text-wrap: balance; }
+.rk-title { margin: 0; font: 700 22px/1.15 var(--rk-sans); font-stretch: 88%; letter-spacing: -0.01em; }
+.rk-heading { margin: 0; font: 700 16px/1.3 var(--rk-sans); }
+.rk-small { font-size: 13px; line-height: 1.45; color: var(--rk-ink-2); }
+.rk-label {
+  font: 500 10px/1.2 var(--rk-mono);
+  font-stretch: 87.5%;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rk-ink-3);
+}
+.rk-data { font: 400 12px/1.45 var(--rk-mono); font-stretch: 87.5%; }
+.rk-ink-2 { color: var(--rk-ink-2); }
+.rk-ink-3 { color: var(--rk-ink-3); }
+.rk-code {
+  font: 400 0.82em var(--rk-mono);
+  font-stretch: 87.5%;
+  background: var(--rk-module-2);
+  border: 1px solid var(--rk-line);
+  border-radius: var(--rk-r-1);
+  padding: 0.05em 0.35em;
+}
+
+/* ---- the glass ----------------------------------------------------------------------------------------------- */
+
+.rk-glass {
+  background: var(--rk-glass);
+  color: var(--rk-px-on);
+  border-radius: var(--rk-r-3);
+  box-shadow: inset 0 0 0 1px #000, inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+:root[data-theme="dark"] .rk-glass { box-shadow: inset 0 0 0 1px #000, inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .rk-glass { box-shadow: inset 0 0 0 1px #000, inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+}
+.rk-cells { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+.rk-cell { display: grid; gap: 8px; align-content: start; padding: 11px 14px 12px; border-left: 1px solid var(--rk-glass-line); min-width: 0; }
+.rk-cell:first-child { border-left: 0; }
+.rk-cell-label { font: 500 9.5px/1 var(--rk-mono); font-stretch: 87.5%; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-px-faint); }
+.rk-cell-note { font: 400 10.5px/1.3 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-px-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 520px) {
+  .rk-cells { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rk-cell { border-top: 1px solid var(--rk-glass-line); }
+  .rk-cell:nth-child(odd) { border-left: 0; }
+  .rk-cell:nth-child(-n + 2) { border-top: 0; }
+}
+
+/* ---- dot-matrix (roko-dots.js draws the SVG) ----------------------------------------------------------------- */
+
+.rk-dots { display: block; overflow: visible; --rk-px: var(--rk-px-on); }
+[data-tone="live"] > .rk-dots, .rk-dots[data-tone="live"] { --rk-px: var(--rk-px-live); }
+[data-tone="pass"] > .rk-dots, .rk-dots[data-tone="pass"] { --rk-px: var(--rk-px-pass); }
+[data-tone="you"] > .rk-dots, .rk-dots[data-tone="you"] { --rk-px: var(--rk-px-you); }
+[data-tone="fail"] > .rk-dots, .rk-dots[data-tone="fail"] { --rk-px: var(--rk-px-fail); }
+[data-tone="dim"] > .rk-dots, .rk-dots[data-tone="dim"] { --rk-px: var(--rk-px-dim); }
+.rk-dots-off { fill: none; stroke: var(--rk-px-off); stroke-linecap: round; }
+.rk-dots-on {
+  fill: none;
+  stroke: var(--rk-px);
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 1.6px color-mix(in oklab, var(--rk-px) 70%, transparent));
+}
+.rk-dots-on[data-roll="true"] { animation: rk-roll 160ms var(--rk-ease); }
+[data-dots] { display: block; line-height: 0; min-height: 1px; }
+
+/* ---- keys ---------------------------------------------------------------------------------------------------- */
+
+.rk-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 13px;
+  font: 600 11px/1 var(--rk-mono);
+  font-stretch: 87.5%;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  color: var(--rk-key-ink);
+  background: var(--rk-key);
+  border: 1px solid var(--rk-key-edge);
+  border-radius: var(--rk-r-2);
+  box-shadow: 0 2px 0 var(--rk-key-edge), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform var(--rk-t-blip) var(--rk-ease), box-shadow var(--rk-t-blip) var(--rk-ease), border-color var(--rk-t-quick);
+}
+.rk-key:hover { border-color: var(--rk-ink-3); }
+.rk-key:active, .rk-key[aria-pressed="true"] { transform: translateY(2px); box-shadow: 0 0 0 var(--rk-key-edge), inset 0 1px 0 rgba(255, 255, 255, 0.15); }
+.rk-key[data-you] {
+  color: var(--rk-you-ink);
+  background: var(--rk-you);
+  border-color: var(--rk-you-edge);
+  box-shadow: 0 2px 0 var(--rk-you-edge), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.rk-key[data-you]:active { box-shadow: 0 0 0 var(--rk-you-edge); }
+.rk-key[data-size="s"] { height: 24px; padding: 0 9px; font-size: 10px; }
+.rk-key[data-size="l"] { height: 40px; padding: 0 18px; font-size: 12px; }
+.rk-key:disabled, .rk-key[aria-disabled="true"] { color: var(--rk-ink-3); box-shadow: none; transform: none; cursor: default; border-color: var(--rk-line-2); }
+.rk-key kbd { font: 500 9px/1 var(--rk-mono); border: 1px solid currentColor; opacity: 0.55; padding: 2px 4px; border-radius: 2px; }
+.rk-keys { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; }
+
+/* ---- LEDs, pills, meters, pips ------------------------------------------------------------------------------- */
+
+.rk-led {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  color: var(--rk-ink-3);
+}
+.rk-led[data-state="waiting"], .rk-led[data-state="idle"], .rk-led[data-state="off"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rk-line-2); }
+.rk-led[data-state="live"] { color: var(--rk-live); animation: rk-blink var(--rk-t-pulse) steps(1, end) infinite; }
+.rk-led[data-state="pass"] { color: var(--rk-pass); }
+.rk-led[data-state="you"] { color: var(--rk-you); animation: rk-blink 0.6s steps(1, end) infinite; }
+.rk-led[data-state="fail"] { color: var(--rk-fail); }
+.rk-glass .rk-led[data-state="live"] { color: var(--rk-px-live); box-shadow: 0 0 8px currentColor; }
+.rk-glass .rk-led[data-state="pass"] { color: var(--rk-px-pass); box-shadow: 0 0 8px currentColor; }
+.rk-glass .rk-led[data-state="you"] { color: var(--rk-px-you); box-shadow: 0 0 8px currentColor; }
+.rk-glass .rk-led[data-state="fail"] { color: var(--rk-px-fail); box-shadow: 0 0 8px currentColor; }
+
+.rk-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  font: 600 10px/1 var(--rk-mono);
+  font-stretch: 87.5%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--rk-ink-3);
+  border: 1px solid currentColor;
+  border-radius: var(--rk-r-1);
+}
+.rk-pill .rk-led { width: 7px; height: 7px; }
+.rk-pill[data-state="live"] { color: var(--rk-live); }
+.rk-pill[data-state="pass"] { color: var(--rk-pass); }
+.rk-pill[data-state="you"] { color: var(--rk-you-text); }
+.rk-pill[data-state="fail"] { color: var(--rk-fail); }
+.rk-pill .rk-led[data-state] { color: inherit; }
+
+.rk-meter { display: grid; grid-template-columns: repeat(20, 1fr); gap: 2px; height: 7px; }
+.rk-meter i { background: rgba(255, 255, 255, 0.08); border-radius: 1px; }
+.rk-meter i[data-on] { background: var(--rk-px-live); }
+.rk-meter[data-tone="pass"] i[data-on] { background: var(--rk-px-pass); }
+.rk-meter i[data-on="you"] { background: var(--rk-px-you); }
+
+.rk-pips { display: flex; flex-wrap: wrap; gap: 3px; max-width: calc(24 * 10px); }
+.rk-pips i { width: 7px; height: 7px; border-radius: 1px; background: rgba(255, 255, 255, 0.09); }
+.rk-pips i[data-state="pass"] { background: var(--rk-px-pass); }
+.rk-pips i[data-state="fail"] { background: var(--rk-px-fail); }
+.rk-pips i[data-state="live"] { background: var(--rk-px-live); animation: rk-blink var(--rk-t-pulse) steps(1, end) infinite; }
+.rk-pips i[data-state="you"] { background: var(--rk-px-you); }
+/* Pips on the panel (a pad's tries) */
+.rk-pad .rk-pips i { background: var(--rk-line); }
+.rk-pad .rk-pips i[data-state="pass"] { background: var(--rk-pass); }
+.rk-pad .rk-pips i[data-state="fail"] { background: var(--rk-fail); }
+.rk-pad .rk-pips i[data-state="live"] { background: var(--rk-live); }
+
+/* ---- the sequencer: a plan's tasks as pads, steps as columns ------------------------------------------------ */
+
+.rk-seq { position: relative; overflow-x: auto; padding: 2px 2px 6px; }
+/* A pad is 152–240px wide (the plugin's sequencer does the same): two steps on a wide page stay pads, not bars. */
+.rk-seq-grid { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(152px, 240px); justify-content: start; column-gap: 28px; min-width: min-content; }
+.rk-seq-col { display: grid; gap: 10px; align-content: start; position: relative; z-index: 1; }
+.rk-seq-head { display: flex; align-items: center; gap: 8px; height: 18px; }
+.rk-step {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font: 700 10px/1 var(--rk-mono);
+  color: var(--rk-ink-2);
+  border: 1px solid var(--rk-line-2);
+  border-radius: var(--rk-r-1);
+}
+.rk-step[data-state="live"] { background: var(--rk-live); border-color: var(--rk-live); color: #fff; }
+.rk-step[data-state="pass"] { background: var(--rk-pass); border-color: var(--rk-pass); color: #fff; }
+.rk-seq-edges { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: visible; }
+.rk-seq-edges path { fill: none; stroke: var(--rk-line-2); stroke-width: 1.2; }
+.rk-seq-edges path[data-state="pass"] { stroke: var(--rk-pass); stroke-opacity: 0.6; }
+.rk-seq-edges path[data-state="live"] { stroke: var(--rk-live); stroke-dasharray: 3 5; animation: rk-flow 0.9s linear infinite; }
+
+.rk-pad {
+  display: grid;
+  gap: 5px;
+  min-height: 56px;
+  padding: 8px 10px 9px;
+  background: var(--rk-key);
+  border: 1px solid var(--rk-line-2);
+  border-radius: var(--rk-r-2);
+  box-shadow: 0 2px 0 var(--rk-key-edge);
+  text-align: left;
+  color: var(--rk-ink);
+  cursor: pointer;
+  min-width: 0;
+}
+.rk-pad-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rk-pad-n { font: 700 12px/1 var(--rk-mono); font-stretch: 87.5%; }
+.rk-pad-title { font: 500 12.5px/1.25 var(--rk-sans); color: var(--rk-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-pad-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 500 10px/1 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-ink-3); }
+.rk-pad[data-state="waiting"] { background: transparent; border-style: dashed; box-shadow: none; }
+.rk-pad[data-state="waiting"] .rk-pad-n, .rk-pad[data-state="waiting"] .rk-pad-title { color: var(--rk-ink-3); }
+.rk-pad[data-state="live"] { border-color: var(--rk-live); box-shadow: 0 2px 0 var(--rk-key-edge), 0 0 0 0.6px var(--rk-live); }
+.rk-pad[data-state="live"] .rk-pad-foot { color: var(--rk-live); }
+.rk-pad[data-state="fail"] { border-color: var(--rk-fail); }
+.rk-pad[data-state="fail"] .rk-pad-foot { color: var(--rk-fail); }
+.rk-pad[data-state="you"] { border-color: var(--rk-you); }
+.rk-pad[data-state="you"] .rk-pad-foot { color: var(--rk-you-text); }
+.rk-pad[data-flash] { animation: rk-padflash 450ms var(--rk-ease) 1; }
+
+/* The strip: the sequencer at card or list width. One square per task; a gap between steps. */
+.rk-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rk-strip-step { display: flex; gap: 3px; }
+.rk-strip i { width: 12px; height: 12px; border-radius: 2px; border: 1px dashed var(--rk-line-2); }
+.rk-strip i[data-state="live"] { background: var(--rk-live); border: 0; animation: rk-blink var(--rk-t-pulse) steps(1, end) infinite; }
+.rk-strip i[data-state="pass"] { background: var(--rk-pass); border: 0; }
+.rk-strip i[data-state="fail"] { background: var(--rk-fail); border: 0; }
+.rk-strip i[data-state="you"] { background: var(--rk-you); border: 0; }
+.rk-glass .rk-strip i { border-color: rgba(255, 255, 255, 0.22); }
+.rk-glass .rk-strip i[data-state="live"] { background: var(--rk-px-live); }
+.rk-glass .rk-strip i[data-state="pass"] { background: var(--rk-px-pass); }
+.rk-glass .rk-strip i[data-state="fail"] { background: var(--rk-px-fail); }
+.rk-glass .rk-strip i[data-state="you"] { background: var(--rk-px-you); }
+.rk-cell .rk-strip i { width: 8px; height: 8px; border-radius: 1px; }
+.rk-cell .rk-strip { gap: 5px; }
+.rk-cell .rk-strip-step { gap: 2px; }
+
+/* ---- the run card -------------------------------------------------------------------------------------------- */
+
+.rk-card { display: grid; gap: 12px; padding: 14px 16px 12px; }
+.rk-card-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rk-card-title { flex: 1 1 auto; min-width: 0; margin: 0; font: 650 16px/1.3 var(--rk-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-card-when { flex: none; font: 400 11px/1 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-ink-3); }
+.rk-card-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rk-status { margin: 0; font-size: 13.5px; color: var(--rk-ink-2); min-width: 0; }
+.rk-status b { color: var(--rk-ink); font-weight: 600; }
+.rk-status[data-state="live"]::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--rk-live); vertical-align: 1px; animation: rk-blink var(--rk-t-pulse) steps(1, end) infinite; }
+
+/* ---- the fold ------------------------------------------------------------------------------------------------ */
+
+.rk-fold { border-top: 1px solid var(--rk-line); padding-top: 8px; }
+.rk-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  font: 500 10px/1.2 var(--rk-mono);
+  font-stretch: 87.5%;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rk-ink-3);
+}
+.rk-fold > summary::-webkit-details-marker { display: none; }
+.rk-fold > summary::before { content: "▸"; display: inline-block; width: 14px; transition: transform var(--rk-t-gesture) var(--rk-ease); }
+.rk-fold[open] > summary::before { transform: rotate(90deg); }
+.rk-fold-body { margin-top: 10px; padding: 12px 14px; background: var(--rk-module-2); border-radius: var(--rk-r-3); font-size: 13px; color: var(--rk-ink-2); }
+
+/* ---- lists ------------------------------------------------------------------------------------------------------ */
+
+.rk-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.rk-table th { text-align: left; font: 500 9.5px/1.2 var(--rk-mono); font-stretch: 87.5%; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-ink-3); padding: 10px 12px; background: var(--rk-module-2); border-bottom: 1px solid var(--rk-line); white-space: nowrap; }
+.rk-table td { height: 40px; padding: 0 12px; border-bottom: 1px solid var(--rk-line); color: var(--rk-ink-2); }
+.rk-table td:first-child { color: var(--rk-ink); }
+.rk-table td.rk-num, .rk-table th.rk-num { text-align: right; font-variant-numeric: tabular-nums; }
+.rk-table tbody tr { cursor: pointer; }
+.rk-table tbody tr:hover td { background: var(--rk-module-2); }
+
+/* ---- the status chip and the wordmark ---------------------------------------------------------------------- */
+
+.rk-wordmark { display: inline-block; background: var(--rk-glass); border-radius: var(--rk-r-2); padding: 6px 8px; line-height: 0; box-shadow: inset 0 0 0 1px #000, inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.rk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 4px 0 4px;
+  background: var(--rk-module);
+  border: 1px solid var(--rk-line);
+  border-radius: var(--rk-r-2);
+  font: 600 10.5px/1 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink-2);
+  cursor: pointer;
+}
+.rk-chip .rk-wordmark { padding: 4px 6px; }
+.rk-chip-glass { display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 7px; background: var(--rk-glass); border-radius: var(--rk-r-1); box-shadow: inset 0 0 0 1px #000; line-height: 0; }
+.rk-chip-word { padding-right: 6px; letter-spacing: 0.06em; }
+
+/* ---- motion ---------------------------------------------------------------------------------------------------- */
+
+@keyframes rk-blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0.28; } }
+@keyframes rk-roll { from { transform: translateY(-4px); opacity: 0.1; } to { transform: none; opacity: 1; } }
+@keyframes rk-flow { to { stroke-dashoffset: -16; } }
+@keyframes rk-padflash { 0% { background: color-mix(in oklab, var(--rk-pass) 30%, var(--rk-key)); } 100% { background: var(--rk-key); } }
+@media (prefers-reduced-motion: reduce) {
+  .rk-page *, .rk-page *::before, .rk-page *::after { animation: none !important; transition: none !important; }
+}

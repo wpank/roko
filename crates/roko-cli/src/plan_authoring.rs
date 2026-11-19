@@ -720,6 +720,7 @@ pub async fn revise_plan_source(
                 role: Some("strategist"),
                 allowed_tools: Some("Read,Grep,Glob"),
                 max_turns: Some(crate::plan_generate::PLANNER_MAX_TURNS),
+                spend_limit: None,
             })
             .await?;
             spend.record(&call).await;
@@ -804,6 +805,9 @@ pub struct AuthoringSpend {
     calls: AtomicU32,
     /// What the recorded calls cost together, in micro-USD (bug-a0432b).
     spent_micro_usd: AtomicU64,
+    /// What the costliest recorded call cost, in micro-USD: what the next is
+    /// expected to cost (bug-187c5c).
+    costliest_micro_usd: AtomicU64,
 }
 
 impl AuthoringSpend {
@@ -854,6 +858,7 @@ impl AuthoringSpend {
             live,
             calls: AtomicU32::new(0),
             spent_micro_usd: AtomicU64::new(0),
+            costliest_micro_usd: AtomicU64::new(0),
         }
     }
 
@@ -869,14 +874,24 @@ impl AuthoringSpend {
         self.calls.load(Ordering::Relaxed)
     }
 
+    /// What the costliest call recorded so far cost, in USD: what the next
+    /// one is expected to cost (bug-187c5c).
+    #[must_use]
+    pub fn costliest_call_usd(&self) -> f64 {
+        self.costliest_micro_usd.load(Ordering::Relaxed) as f64 / 1e6
+    }
+
     /// Record one agent call. Best-effort: a failed write is logged and never
     /// fails the operation.
     pub async fn record(&self, call: &AgentCapture) {
         let attempt = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let usage = call.usage;
         let cost_usd = f64::from(usage.cost_usd);
+        let cost_micro_usd = (cost_usd.max(0.0) * 1e6).round() as u64;
         self.spent_micro_usd
-            .fetch_add((cost_usd.max(0.0) * 1e6).round() as u64, Ordering::Relaxed);
+            .fetch_add(cost_micro_usd, Ordering::Relaxed);
+        self.costliest_micro_usd
+            .fetch_max(cost_micro_usd, Ordering::Relaxed);
         let input_tokens = u64::from(usage.input_tokens);
         let output_tokens = u64::from(usage.output_tokens);
         let cache_read_tokens = u64::from(usage.cache_read_tokens);
@@ -968,6 +983,28 @@ impl AuthoringSpend {
                 cache_write_tokens,
             );
             live.efficiency_event(&self.plan_id, &self.task_id, "cost_usd", cost_usd);
+            // gap-6774b5: the call priced as it settles, in the event a run's
+            // calls publish (gap-5c3347), so a host shows a plan write's spend
+            // as it shows a run's: the write's calls are one attempt's, and
+            // `attempt_cost_usd` is what they have cost so far. The snapshot
+            // doesn't count it, so the total above isn't counted twice.
+            live.publish_event(roko_core::DashboardEvent::CallCost {
+                plan_id: self.plan_id.clone(),
+                task_id: self.task_id.clone(),
+                attempt: 1,
+                call: attempt,
+                model: call.model.clone(),
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cost_usd: Some(cost_usd).filter(|cost| priced && cost.is_finite() && *cost >= 0.0),
+                attempt_cost_usd: self.spent_usd(),
+                reasoning_tokens: u64::from(usage.reasoning_tokens),
+                finish_reason: None,
+                wall_ms: Some(call.duration_ms),
+                first_token_ms: None,
+                outcome: Some(if succeeded { "ok" } else { "error" }.to_string()),
+            });
         }
     }
 
@@ -1254,7 +1291,7 @@ command = "cargo test -p x parse"
         let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
         checkpoint
             .take_cost_ledger()
-            .persist(0, 0)
+            .persist(0, 0, Vec::new())
             .expect("cost ledger");
         checkpoint
             .finish_with_status(GraphCheckpointStatus::Failed)
@@ -1712,6 +1749,7 @@ command = "echo ok"
                     task_id,
                     metric,
                     value,
+                    ..
                 } if metric == "cost_usd" => Some((plan_id, task_id, value)),
                 _ => None,
             })
@@ -1753,6 +1791,86 @@ command = "echo ok"
             assert_eq!(row["cost_usd"], cost);
             assert_eq!(row["cache_write_tokens"], 10);
         }
+    }
+
+    /// gap-6774b5: each plan-writing call is priced on the event stream as it
+    /// settles, in the `call_cost` a run's calls publish (gap-5c3347): its
+    /// model, tokens and price, its number in the write, and what the write's
+    /// calls have cost so far. The snapshot doesn't count it twice.
+    #[tokio::test]
+    async fn plan_writing_calls_publish_their_cost_as_they_settle() {
+        use roko_core::dashboard_snapshot::DashboardEvent;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = crate::state_hub::SharedStateHub::new_in_process();
+        let spend =
+            AuthoringSpend::generation(tmp.path(), "demo", Some(TuiBridge::new(hub.sender())));
+        let call = |exit_code: i32, cost_usd: f32| AgentCapture {
+            exit_code,
+            output: String::new(),
+            usage: roko_core::Usage {
+                input_tokens: 1_200,
+                output_tokens: 340,
+                cache_read_tokens: 50,
+                reasoning_tokens: 20,
+                cost_usd,
+                ..roko_core::Usage::zero()
+            },
+            api_equiv_usd: None,
+            price_snapshot_id: None,
+            model: "claude-sonnet-4-6".to_string(),
+            provider: "claude_cli".to_string(),
+            duration_ms: 20_500,
+        };
+        // Each call's cost as the hub has it: (call, cost, the write's spend
+        // so far, how the call ended).
+        let settled = || -> Vec<(u32, Option<f64>, f64, Option<String>)> {
+            hub.replay_from(0)
+                .into_iter()
+                .filter_map(|envelope| match envelope.payload {
+                    DashboardEvent::CallCost {
+                        plan_id,
+                        task_id,
+                        attempt,
+                        call,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cost_usd,
+                        attempt_cost_usd,
+                        reasoning_tokens,
+                        wall_ms,
+                        outcome,
+                        ..
+                    } => {
+                        assert_eq!((plan_id.as_str(), task_id.as_str()), ("demo", "generate"));
+                        assert_eq!(attempt, 1);
+                        assert_eq!(model, "claude-sonnet-4-6");
+                        assert_eq!((input_tokens, output_tokens), (1_200, 340));
+                        assert_eq!((cache_read_tokens, reasoning_tokens), (50, 20));
+                        assert_eq!(wall_ms, Some(20_500));
+                        Some((call, cost_usd, attempt_cost_usd, outcome))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        spend.record(&call(1, 0.25)).await;
+        assert_eq!(
+            settled(),
+            [(1, Some(0.25), 0.25, Some("error".to_string()))]
+        );
+        spend.record(&call(0, 0.5)).await;
+        assert_eq!(
+            settled(),
+            [
+                (1, Some(0.25), 0.25, Some("error".to_string())),
+                (2, Some(0.5), 0.75, Some("ok".to_string())),
+            ]
+        );
+        assert_eq!(hub.current_snapshot().stats.cost_usd_total, 0.75);
     }
 
     /// Revision spend is attributed to the plan under its own pseudo task, and

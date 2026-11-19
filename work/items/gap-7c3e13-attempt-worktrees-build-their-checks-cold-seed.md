@@ -57,3 +57,13 @@ Each attempt worktree starts with no `target/`. The delivery's regression check 
 
 - [ ] A new attempt worktree's first check reuses third-party builds and never a workspace crate built from other
   sources.
+
+## Notes
+
+- 2026-10-19 (gap-6754ab, round v7 roko-speed): attempt worktrees now get warm CMake build trees through
+  `crates/roko-cli/src/orchestrator/worktree/build_trees.rs`. It runs from
+  `WorktreeExecutionWorkspaceProvider::acquire`, outside the manager's lock, and its config is
+  `[gates] warm_build_dirs`. It clones, relocates paths and syncs the mtimes of unchanged tracked files to the
+  source checkout's. A cargo `target/` can hook in at the same place. It still needs this item's own step 2: drop
+  the clone's workspace-member fingerprints, or clone before the sources are written. Path relocation does not
+  apply, since cargo's paths are relative.

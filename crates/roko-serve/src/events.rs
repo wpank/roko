@@ -202,6 +202,10 @@ pub enum ServerEvent {
     EfficiencyEvent {
         plan_id: String,
         task_id: String,
+        /// The try the metric is of, from 1, when it is one try's
+        /// (gap-1430ea).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
         metric: String,
         value: f64,
     },

@@ -9,8 +9,9 @@ goal = "hermes"
 size = "M"
 subsystem = ["roko-serve/plans", "roko-cli/plan_generate"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-11d870's steps 4 and 5 and leftovers (roko-planner, 2026-10-16)"
 discovered_from = "gap-11d870"
 anchors = ["crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/agent_exec.rs::persist_capture_episode_distilled_by"]
@@ -69,3 +70,5 @@ plan writing take minutes; and an uncounted call understates what a request cost
 
 `[[verify]]` passes: a generated plan whose planner proposes a slug is named after it, and the result's `slug` is
 that name.
+
+Checked 2026-10-27: 2026-10-26 sweep: checked only the slug sub-problem (the one the [[verify]]/Done-when covers); the volume, distillation-cost and tool-loop-timeout sub-problems in the Problem section were not independently re-verified this sweep.

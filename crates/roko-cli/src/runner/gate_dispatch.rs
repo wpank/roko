@@ -1848,6 +1848,17 @@ fn build_rung_execution_config(
     }
 }
 
+/// The variables a rung's commands get besides the gate environment: the
+/// plan, the task, the rung, and the attempt's sentinel file. They also mark
+/// the command, and the tests it runs, as roko's, and `roko safety release`
+/// refuses to run under any of them (find-d05b5e).
+pub(crate) const GATE_RUNG_ENV: [&str; 4] = [
+    "ROKO_GATE_PLAN_ID",
+    "ROKO_GATE_TASK_ID",
+    "ROKO_GATE_RUNG",
+    "ROKO_GATE_ATTEMPT_SENTINEL",
+];
+
 /// The gate payload signal of one rung. Its commands get `env_passthrough`
 /// (`[gates] env_passthrough`) on top of the gate allowlist, as Graph verify
 /// steps do (gap-bbbfbc).
@@ -1867,17 +1878,15 @@ fn gate_signal(
             sanitize_gate_env_segment(plan_id),
             sanitize_gate_env_segment(task_id)
         ));
+    let [plan_env, task_env, rung_env, sentinel_env] = GATE_RUNG_ENV;
     let mut payload = GatePayload::in_dir(workdir)
         .with_label(format!("{plan_id}:{task_id}:rung-{rung}"))
         .with_target_crates(target_crates.to_vec())
         .with_env_passthrough(env_passthrough.iter().cloned())
-        .with_env("ROKO_GATE_PLAN_ID", plan_id)
-        .with_env("ROKO_GATE_TASK_ID", task_id)
-        .with_env("ROKO_GATE_RUNG", rung.to_string())
-        .with_env(
-            "ROKO_GATE_ATTEMPT_SENTINEL",
-            attempt_sentinel.to_string_lossy().to_string(),
-        )
+        .with_env(plan_env, plan_id)
+        .with_env(task_env, task_id)
+        .with_env(rung_env, rung.to_string())
+        .with_env(sentinel_env, attempt_sentinel.to_string_lossy().to_string())
         .with_env("CARGO_BUILD_JOBS", cargo_build_jobs());
 
     if fast_mode_enabled() {

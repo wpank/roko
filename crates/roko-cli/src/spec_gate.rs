@@ -4,9 +4,11 @@
 //! [`check_plans`] scores every task with the spec-quality rules
 //! ([`roko_gate::spec_quality`]) and decides per task. In every
 //! `[spec_quality] mode` but `off`, a task blocks its plan when a verify step
-//! can never fail (HF2), or when every step already passes on the unchanged
-//! base (HF3, known only when the red-on-base check ran). Nothing else refuses
-//! those two. The other hard fails are refused before the gate runs, in their
+//! can never fail (HF2), when every step already passes on the unchanged base
+//! (HF3, known only when the red-on-base check ran), or when its tests or
+//! acceptance criteria assert one call to two values that no one result meets
+//! (HF6, gap-ba2841), a task no agent can do. Nothing else refuses those
+//! three. The other hard fails are refused before the gate runs, in their
 //! own words: an implementer without a verify step by plan validation
 //! (PLAN_035, unless the plan sets `allow_unverified`), a greenfield claim by
 //! plan validation (PLAN_033), and a missing context file by the plan loader
@@ -49,7 +51,7 @@ use roko_learn::telemetry::{Arm, AssignmentUnit, LayerSpec, assign};
 use serde::Serialize;
 
 /// The hard fails that block a plan at the gate: nothing else refuses them.
-pub const BLOCKING_HARD_FAILS: [&str; 2] = ["HF2", "HF3"];
+pub const BLOCKING_HARD_FAILS: [&str; 3] = ["HF2", "HF3", "HF6"];
 
 /// The file in a run's directory that holds its `spec.quality` and
 /// `spec.gate` records (3231).
@@ -82,7 +84,7 @@ pub enum SpecGateAction {
 /// Why the gate blocks a task, or what it advises.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SpecGateFinding {
-    /// The hard fail (`HF2`, `HF3`), `score` under `enforce`, or
+    /// The hard fail (`HF2`, `HF3`, `HF6`), `score` under `enforce`, or
     /// [`REFINE_RULE`] for the self-model's open refine request.
     pub rule: &'static str,
     /// What triggered it, such as ``step 1: ends in `|| echo PASS` ``.
@@ -181,13 +183,42 @@ pub fn gate_plans(
     workdir: &Path,
     config: &SpecQualityConfig,
 ) -> Result<SpecGateReport, crate::spec_red_on_base::Interrupted> {
-    let red_on_base = crate::spec_red_on_base::gate_results(files, workdir, config)?;
+    gate_plans_with(files, workdir, config, &GateRun::default()).map(|(report, _)| report)
+}
+
+/// How the plan-load gate runs its red-on-base check (gap-e02ec4).
+#[derive(Default)]
+pub struct GateRun<'a> {
+    /// `[gates] warm_build_dirs`: the build trees a base checkout keeps
+    /// between runs and starts from; every CMake build tree when `None`.
+    pub warm_build_dirs: Option<&'a [String]>,
+    /// Told of each step of the check as it ends.
+    pub on_step: Option<&'a dyn Fn(&crate::spec_red_on_base::StepDone)>,
+}
+
+/// [`gate_plans`] as `run` asks, with what its red-on-base check did.
+pub fn gate_plans_with(
+    files: &[PathBuf],
+    workdir: &Path,
+    config: &SpecQualityConfig,
+    run: &GateRun<'_>,
+) -> Result<
+    (SpecGateReport, crate::spec_red_on_base::CheckCounts),
+    crate::spec_red_on_base::Interrupted,
+> {
+    let (red_on_base, counts) = crate::spec_red_on_base::gate_results_with(
+        files,
+        workdir,
+        config,
+        run.warm_build_dirs,
+        run.on_step.unwrap_or(&|_| {}),
+    )?;
     let mut report = check_plans(files, workdir, config, &red_on_base);
     if config.is_on() {
         apply_refine_requests(&mut report, &workspace_refine_requests(workdir));
     }
     apply_holdout(&mut report, config.holdout_frac, &holdout_epoch());
-    Ok(report)
+    Ok((report, counts))
 }
 
 /// The self-model's refine requests in every run of the workspace at
@@ -655,6 +686,57 @@ verify = [{{ phase = "test", command = "{verify}" }}]
         let blocked: Vec<&SpecGateDecision> = report.blocked().collect();
         assert_eq!(blocked.len(), 1, "{report:?}");
         assert_eq!(blocked[0].findings[0].rule, "score");
+    }
+
+    /// gap-ba2841: a task whose request asks for a test asserting one call
+    /// to two values (find-2ba86d: `round_to_dollars(150) == 2` and `== 3`)
+    /// cannot be done, so the gate refuses its plan before dispatch in every
+    /// mode but `off`, naming the call and both values; the holdout never
+    /// lets it through. The same task asking for `== 2` alone runs.
+    #[test]
+    fn spec_gate_blocks_a_task_whose_tests_contradict_themselves() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let none = BTreeMap::new();
+        let plan = write_plan(temp.path(), "python3 -m unittest tests.test_money");
+        let text = std::fs::read_to_string(&plan).expect("read the plan");
+        let ask = |request: &str| {
+            let asked = text.replace("Add the retry limit to `parse_config`.", request);
+            assert_ne!(asked, text);
+            std::fs::write(&plan, asked).expect("write the plan");
+        };
+        ask("Add `round_to_dollars(cents)` and a test asserting both \
+             `round_to_dollars(150) == 2` and `== 3`.");
+        let enforce = SpecQualityConfig {
+            block_threshold: 0.0,
+            ..config(SpecQualityMode::Enforce)
+        };
+        for settings in [config(SpecQualityMode::Advise), enforce] {
+            let plans = std::slice::from_ref(&plan);
+            let mut report = check_plans(plans, temp.path(), &settings, &none);
+            apply_holdout(&mut report, 1.0, "2026-10-27");
+            let blocked: Vec<&SpecGateDecision> = report.blocked().collect();
+            assert_eq!(blocked.len(), 1, "{report:?}");
+            assert_eq!(
+                blocked[0].findings,
+                [SpecGateFinding {
+                    rule: "HF6",
+                    detail: "the description asserts `round_to_dollars(150)` to return both 2 \
+                             and 3, which no one result meets"
+                        .to_string(),
+                }],
+                "{:?}",
+                settings.mode
+            );
+        }
+
+        ask("Add `round_to_dollars(cents)` and a test asserting `round_to_dollars(150) == 2`.");
+        let report = check_plans(
+            &[plan],
+            temp.path(),
+            &config(SpecQualityMode::Advise),
+            &none,
+        );
+        assert!(!report.blocks(), "{report:?}");
     }
 
     /// bug-9a5970: a run the gate refuses records why in its events: an

@@ -10,8 +10,9 @@ size = "S"
 hold = "needs Pilot A's G0 checks first and the key file (with ZAI_API_KEY); spend approved within the $21 for pilots A-C (Will re-confirmed 2026-10-15, decision 1)"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-03
-updated = 2026-10-15
-last_verified = 2026-10-03
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire 3315 (blocked in wave 7, PK36)"
 discovered_from = "gap-31c0e8"
 anchors = ["benchmarks/viabilitybench/experiments"]
@@ -58,3 +59,5 @@ C only after Pilot A's G0 direct-arm checks pass. PK36's offline shakedown (3314
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3315-pilot-c-roko-ladder-on-the-pilot-tasks.md`.
 - Left PK36's package item at gate 7a (2026-10-03), as 3236 and 6107 left theirs.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: Pilot A (gap-c33709) closed 2026-10-19 with G0 NO-GO (gap-dd670b filed for the l1 check miss; several checks unevaluated). Pilot B (gap-327242) is open but its campaign has only been dry-run, not executed live. reports/pilot_c/ still does not exist. The hold's literal text ('needs Pilot A's G0 checks first') has technically been satisfied (the checks ran, just NO-GO), but Pilot C is still queued behind Pilot B actually running.

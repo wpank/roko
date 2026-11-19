@@ -124,8 +124,22 @@ plans_empty_authed() {
         'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])) == [] else 1)' \
         "$WS/plans-check.json"
 }
+# delivered CAPTURE PLAN: the branch roko delivered PLAN's work to, from an events capture. roko works on its own
+# branch, so a run's files land there, not in the checkout, until someone merges them.
+delivered() {
+    python3 "$HARNESS_DIR/sse.py" "$1" last delivery_finished target "plan_id=$2"
+}
 hello_prints_hello() {
-    (cd "$FLOW_WS" && ./hello/hello-bin 2>/dev/null | grep -q 'hello world')
+    local branch
+    branch="$(delivered "$FLOW_WS/events.sse" "$SLUG")" || return 1
+    git -C "$FLOW_WS" show "$branch:hello/main.rs" >"$FLOW_WS/delivered-main.rs" 2>/dev/null || return 1
+    rustc "$FLOW_WS/delivered-main.rs" -o "$FLOW_WS/delivered-hello" 2>/dev/null &&
+        "$FLOW_WS/delivered-hello" | grep -q 'hello world'
+}
+delivered_has() {
+    local branch
+    branch="$(delivered "$PAR_WS/par-events.sse" "$1")" || return 1
+    git -C "$PAR_WS" cat-file -e "$branch:$2"
 }
 
 run_flow_check() {
@@ -205,7 +219,7 @@ run_flow_check() {
         | sed 's/^BROWSER-ACTIONS //' | head -1)"
 
     # ── Post-flow checks ──────────────────────────────────────────────────
-    check "hello/hello-bin prints hello world" hello_prints_hello
+    check "the delivered branch's hello/main.rs prints hello world" hello_prints_hello
     check "BROWSER-ACTIONS <= 2" \
         bash -c '[ -n "$1" ] && [ "$1" -le 2 ]' _ "$ACTIONS"
 
@@ -227,6 +241,9 @@ run_flow_check() {
             sse positive run_completed duration_ms outcome=succeeded
         check "sse: at least 2 plan_started events (two runs: generate + run-again)" \
             sse count plan_started "plan_id=$SLUG" --ge 2
+        # gap-f8c57a: the write the browser stopped ended cancelled, and wrote no plan.
+        check "sse: the stopped plan write ended cancelled" \
+            sse has event_log_entry event_type=plan_generate.cancelled
     fi
 
     stop_capture
@@ -294,8 +311,8 @@ run_parallel_check() {
 
     check "sse: second plan_started before first plan_completed" \
         sse between plan_started -- plan_started -- plan_completed
-    check "out/par-a.txt exists" test -f "$WS/out/par-a.txt"
-    check "out/par-b.txt exists" test -f "$WS/out/par-b.txt"
+    check "par-a's delivered branch has out/par-a.txt" delivered_has par-a out/par-a.txt
+    check "par-b's delivered branch has out/par-b.txt" delivered_has par-b out/par-b.txt
 
     stop_capture
     check "server stops on Ctrl-C (parallel)" stop_server

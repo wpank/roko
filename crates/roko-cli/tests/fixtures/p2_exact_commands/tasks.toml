@@ -1,0 +1,348 @@
+[meta]
+plan = "p2-undertow-rumble-3"
+title = "P2 · Undertow rumble"
+iteration = 0
+total = 4
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh"
+fail_msg = "SC24: `tools/check.sh` (every present spec test, phases 0 to 2) is the plan's final check, not any one task's. Phases 0"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Add the tempo-synced LFO and globbed core sources"
+description = "Assumption: phase 1 already provides the existing core library layout, so this task only updates the build list and adds undertow/lfo.h and core/src/lfo.cpp. Implement the 17 rate choices, the six shapes, phase offset, seedable sample-and-hold, and the exact beat-position semantics."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/CMakeLists.txt",
+    "core/include/undertow/lfo.h",
+    "core/src/lfo.cpp",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `core/CMakeLists.txt` uses a globbed `src/*.cpp` source list so newly added core sources are compiled without editing the file again.",
+    "AC2: `lfoCycleBeats(rate)` returns the 17 cycle lengths in beats required by the spec.",
+    "AC3: `Lfo::valueAt(ppq)` matches the requested phase formulas for all shapes, including phase offset and seeded sample-and-hold, and repeats only by beat position.",
+]
+sequence = 0
+goal = "The core library builds from a globbed source list and exposes a stateless LFO with the requested rates and shapes."
+non_goals = [
+    "Do not implement rumble, output stage, voice modulation, or engine wiring in this task.",
+    "Do not change the phase 0 or phase 1 tests.",
+]
+
+[task.context]
+symbols = ["undertow_core — the library target to convert to file(GLOB ...)"]
+anti_patterns = ["Do NOT add a second core library target or hardcode the source list in a new helper target."]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-17"
+why = "Find the existing undertow_core target and current source list."
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Match the project’s public header style and include patterns."
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+lines = "1-53"
+why = "Match naming and namespace conventions used by the core API."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'file(GLOB' core/CMakeLists.txt && tools/spec.sh 2 lfo 'P2.01*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'class Lfo' core/include/undertow/lfo.h && tools/spec.sh 2 lfo 'P2.02*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'valueAt' core/src/lfo.cpp && tools/spec.sh 2 lfo 'P2.03*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Implement the rumble generator"
+description = "Assumption: the LFO task is complete and the existing project already exposes the transport and parameter infrastructure. Add undertow/rumble.h and core/src/rumble.cpp, including preparation-sized delay lines, beat-grid kick scheduling, duck gain, the feedback delay network, tone shaping, saturation, denormal flushing, and exact silence at level 0."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/rumble.h",
+    "core/src/rumble.cpp",
+    "core/CMakeLists.txt",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `Rumble::process(send, ppq, bpm, running)` emits the ghost kick only on the specified beat-grid crossings and never while stopped.",
+    "AC2: `Rumble::duckGain()` follows the requested kick-and-recovery envelope and reports 1 before the first kick.",
+    "AC3: The rumble tail is driven by kick plus send, stays finite and bounded under full settings, and reaches exact zero after stop with denormals flushed.",
+]
+sequence = 1
+goal = "The new rumble module produces the ghost kick, ducking, reverb tail, and bounded output described by the phase 2 spec."
+non_goals = [
+    "Do not modify the output stage, voice, engine, or build list in this task.",
+    "Do not change the rumble specification tests.",
+]
+
+[task.context]
+symbols = ["kNumParams — needed to size parameter access correctly"]
+anti_patterns = ["Do NOT allocate in Rumble::process or depend on any editor/sequencer code."]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+lines = "1-53"
+why = "Read the transport and meter types that rumble will be wired through later."
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Match the project’s existing stateful audio-object style."
+
+[[task.context.read_files]]
+path = "core/src/params.cpp"
+lines = "1-158"
+why = "Reuse the existing parameter conventions and rumble parameter names."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'class Rumble' core/include/undertow/rumble.h && tools/spec.sh 2 rumble 'P2.04*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'duckGain' core/src/rumble.cpp && tools/spec.sh 2 rumble 'P2.05*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'prepare' core/src/rumble.cpp && tools/spec.sh 2 rumble 'P2.06*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'process' core/src/rumble.cpp && tools/spec.sh 2 rumble 'P2.07*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'flush' core/src/rumble.cpp && tools/spec.sh 2 rumble 'P2.08*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Implement the output stage"
+description = "Assumption: the LFO and rumble modules already exist. Add undertow/output_stage.h and core/src/output_stage.cpp with the DC blocker, saturation, smoothed master gain, Linkwitz-Riley crossover, width processing, softClip, clipping meter timing, and exact ceiling behavior."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/output_stage.h",
+    "core/src/output_stage.cpp",
+    "core/CMakeLists.txt",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `softClip(x)` is exactly transparent to 0.5, odd and rising, reaches 0.869 at 1.0, and never exceeds 0.966.",
+    "AC2: `OutputStage::process(mono, left, right)` keeps quiet signals at unity gain when drive is zero and applies the requested saturation behavior at higher drive.",
+    "AC3: The mono/width crossover leaves the low band mono, widens the high band, and preserves level in the requested ranges.",
+    "AC4: `clipped()` latches for 0.5 s after an over-full-scale sample before the clipper and then clears.",
+    "AC5: `master_gain` is smoothed and the DC blocker removes steady offsets while leaving low-frequency content essentially intact.",
+]
+sequence = 2
+goal = "The output stage soft-clips, smooths master gain, applies the mono/width crossover, and reports clipping correctly."
+non_goals = [
+    "Do not modify rumble, voice modulation, or engine wiring in this task.",
+    "Do not edit the spec tests.",
+]
+
+[task.context]
+symbols = ["Meters — the structure that later exposes clipping and rumble"]
+anti_patterns = ["Do NOT route the output stage around the existing engine meters or add any new DSP allocation in process."]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+lines = "1-53"
+why = "Match the Meters fields and transport-facing API used by the engine."
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Match public class layout and private helper patterns used elsewhere."
+
+[[task.context.read_files]]
+path = "core/src/params.cpp"
+lines = "1-158"
+why = "Reuse parameter names, defaults, and units for sat_drive, width, mono_freq, and master_gain."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'softClip' core/include/undertow/output_stage.h && tools/spec.sh 2 output 'P2.09*,P2.10*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'process' core/src/output_stage.cpp && tools/spec.sh 2 output 'P2.11*,P2.12*'"
+timeout_ms = 900000
+covers = [
+    "AC3",
+    "AC4",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'master_gain' core/src/output_stage.cpp && tools/spec.sh 2 output 'P2.20*,P2.21*'"
+timeout_ms = 900000
+covers = ["AC5"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Add voice modulation and wire the engine"
+description = "Assumption: the LFO, rumble, and output stage tasks are complete. Extend undertow/voice.h and core/src/voice.cpp with VoiceModulation and MonoVoice::setModulation, then wire core/src/engine.cpp and core/src/params.cpp so the per-sample path computes ppq/running/tempo, applies LFO destinations, mixes voice and rumble, moves master gain into the output stage, resets all sound off, and exposes the requested meters."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "core/include/undertow/voice.h",
+    "core/src/voice.cpp",
+    "core/src/engine.cpp",
+    "core/src/params.cpp",
+]
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `VoiceModulation` exists and `MonoVoice::setModulation` changes cutoff, resonance, pulse width, pitch, and gain as described, with neutral modulation as the default.",
+    "AC2: The engine computes ppq, running, and tempo from the host transport or internal clock and feeds the voice, rumble, and output stage in the requested order.",
+    "AC3: LFO 1 and LFO 2 are wired to all requested destinations, including rumble send and amp, with the specified phase and seed behavior.",
+    "AC4: Controller 120 resets rumble and the output stage so the output becomes silent at once, and the master gain default is -12 dB.",
+    "AC5: The engine meters expose clipping and rumble, and the default patch peaks in the requested range while remaining below the clipper knee.",
+]
+sequence = 3
+goal = "The engine accepts VoiceModulation, drives both LFO destinations, routes rumble and output stage processing, and updates the master gain default."
+non_goals = [
+    "Do not add sequencer phase 3 behavior or editor phase 4 behavior.",
+    "Do not change the spec tests.",
+]
+
+[task.context]
+symbols = [
+    "MonoVoice — the synthesis voice that receives modulation",
+    "Transport — the host timing input that drives ppq and running",
+    "Meters — the struct that carries clipping and rumble telemetry",
+]
+anti_patterns = ["Do NOT invent a new transport abstraction or bypass the current parameter table."]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "core/include/undertow/voice.h"
+lines = "1-81"
+why = "Add the modulation API to the existing voice class without breaking its current layout."
+
+[[task.context.read_files]]
+path = "core/src/engine.cpp"
+lines = "1-171"
+why = "Wire the per-sample render path, MIDI handling, transport timing, and meters."
+
+[[task.context.read_files]]
+path = "core/src/params.cpp"
+lines = "1-158"
+why = "Update the master gain default and verify parameter names and defaults used by the engine."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'VoiceModulation' core/include/undertow/voice.h && tools/spec.sh 2 engine 'P2.13*,P2.14*,P2.23*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'master_gain' core/src/params.cpp && tools/spec.sh 2 engine 'P2.15*,P2.16*'"
+timeout_ms = 900000
+covers = [
+    "AC2",
+    "AC4",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'meters()' core/src/engine.cpp && tools/spec.sh 2 engine 'P2.17*,P2.22*'"
+timeout_ms = 900000
+covers = ["AC5"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'AllocationCounter' core/src/engine.cpp && tools/spec.sh 2 engine 'P2.18*,P2.19*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"

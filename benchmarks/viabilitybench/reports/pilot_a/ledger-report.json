@@ -1,0 +1,300 @@
+{
+  "source": "S09 v1.5 §4.6 (2026-10-02)",
+  "budget_file": "/Users/will/dev/nunchi/roko/roko/.claude/worktrees/agent-adc02717dbb19b822/benchmarks/viabilitybench/experiments/budget.toml",
+  "lines": [
+    {
+      "id": "BL0",
+      "gate": "G0",
+      "content": "Pilot: verifiers and cost accounting (F1, F4); ≈ 105 billed and 20 subscription runs",
+      "planned_usd": 6.0,
+      "cap_usd": 14.0,
+      "spent_usd": 1.157858,
+      "reserved_usd": 0,
+      "left_usd": 12.842142,
+      "rows": 82,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL1",
+      "gate": "G2",
+      "content": "LOG1 blocks A–F: 2,156 billed and 612 (+ 210 optional) subscription runs",
+      "planned_usd": 152.0,
+      "cap_usd": 160.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 160.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": 162.0,
+      "confirm": "lock"
+    },
+    {
+      "id": "BL2",
+      "gate": "G3",
+      "content": "Replays: no billed runs",
+      "planned_usd": 0.0,
+      "cap_usd": 0.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 0.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL3",
+      "gate": "G4",
+      "content": "H6 Stage B live (9 × 40)",
+      "planned_usd": 27.0,
+      "cap_usd": 30.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 30.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL4",
+      "gate": "G4",
+      "content": "H5 live: H5-A1 and H5-A3 (2 × 160), concurrent H5-A0 (120) and ≈ 70 reviews",
+      "planned_usd": 36.0,
+      "cap_usd": 40.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 40.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL5",
+      "gate": "G4",
+      "content": "H7 E3: the S1 stream and the harmful stream",
+      "planned_usd": 23.0,
+      "cap_usd": 26.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 26.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL6",
+      "gate": "G5",
+      "content": "P1 live roko_full: 360 + 60, plus audit spend ≤ 12% (S05 SC6)",
+      "planned_usd": 42.0,
+      "cap_usd": 44.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 44.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": 46.0,
+      "confirm": "lock"
+    },
+    {
+      "id": "BL7",
+      "gate": "G5",
+      "content": "P1-ext SWE-bench Verified 60: cheap_direct and roko_full; 60 subscription runs",
+      "planned_usd": 24.0,
+      "cap_usd": 26.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 26.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": 28.0,
+      "confirm": "lock"
+    },
+    {
+      "id": "BL8",
+      "gate": "G0, G5",
+      "content": "Billed frontier check, fd_api gpt-5.4: 5 pilot runs and a 15-run billed-accounting check",
+      "planned_usd": 6.0,
+      "cap_usd": 8.0,
+      "spent_usd": 0.141741,
+      "reserved_usd": 0,
+      "left_usd": 7.858258,
+      "rows": 5,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL9",
+      "gate": "G6",
+      "content": "Demo live sessions (S11 server-side caps)",
+      "planned_usd": 15.0,
+      "cap_usd": 20.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 20.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL10",
+      "gate": "G5",
+      "content": "Drift anchor: 20 P1-core tasks × 1 seed on cheap_direct (billed) and fd_claude (subscription)",
+      "planned_usd": 1.2,
+      "cap_usd": 2.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 2.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL11",
+      "gate": "G5",
+      "content": "T5 leave-one-mechanism-out ablation: roko_full minus S04 routing, the S07 gate or S05 feedback; 60 tasks",
+      "planned_usd": 16.2,
+      "cap_usd": 17.6,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 17.6,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL13",
+      "gate": "after G0",
+      "content": "Plan-level slice, exploratory (S09 §4.9): roko_plan's executors on 6–10 features × 1 seed",
+      "planned_usd": 5.0,
+      "cap_usd": 6.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 6.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": "lock"
+    },
+    {
+      "id": "BL14",
+      "gate": "after G0",
+      "content": "Pilot C, exploratory (decision 3302): roko_ladder's cheap-model ladder on the pilot slice × 3 seeds",
+      "planned_usd": 5.4,
+      "cap_usd": 6.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 6.0,
+      "rows": 0,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    },
+    {
+      "id": "BL15",
+      "gate": "none",
+      "content": "Refiner cost sample (S07.4, task 3236): specops/refine.py live on gpt-oss-120b over 20 band C/D tasks",
+      "planned_usd": 0.4,
+      "cap_usd": 0.4,
+      "spent_usd": 0.054636,
+      "reserved_usd": 0,
+      "left_usd": 0.345364,
+      "rows": 20,
+      "over_cap": false,
+      "proposed_cap_usd": null,
+      "was_cap_usd": null,
+      "confirm": null
+    }
+  ],
+  "held_back": {
+    "BL12": "D43's proposed line for S05's first slice, still open"
+  },
+  "experiments": [
+    {
+      "id": "pilot",
+      "experiment_ids": [
+        "PILOT-A",
+        "PILOT-B"
+      ],
+      "lines": [
+        "BL0",
+        "BL8"
+      ],
+      "cap_usd": 15.0,
+      "spent_usd": 1.2996,
+      "reserved_usd": 0,
+      "left_usd": 13.7004,
+      "rows": 78,
+      "over_cap": false
+    },
+    {
+      "id": "pilot_c",
+      "experiment_ids": [
+        "PILOT-C"
+      ],
+      "lines": [
+        "BL14"
+      ],
+      "cap_usd": 6.0,
+      "spent_usd": 0,
+      "reserved_usd": 0,
+      "left_usd": 6.0,
+      "rows": 0,
+      "over_cap": false
+    },
+    {
+      "id": "refiner_cost",
+      "experiment_ids": [
+        "REFINE-COST"
+      ],
+      "lines": [
+        "BL15"
+      ],
+      "cap_usd": 0.4,
+      "spent_usd": 0.054636,
+      "reserved_usd": 0,
+      "left_usd": 0.345364,
+      "rows": 20,
+      "over_cap": false
+    }
+  ],
+  "unfunded": [],
+  "programme": {
+    "total_usd": 500.0,
+    "never_allocated_min_usd": 100.0,
+    "planned_usd": 359.2,
+    "caps_usd": 400.0,
+    "unallocated_usd": 100.0,
+    "caps_with_proposals_usd": 400.0,
+    "spent_usd": 1.354236,
+    "reserved_usd": 0,
+    "left_usd": 398.645764,
+    "rows": 107,
+    "over_cap": false,
+    "stop_usd": 400.0
+  },
+  "over": [],
+  "ok": true
+}

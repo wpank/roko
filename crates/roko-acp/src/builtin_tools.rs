@@ -7,9 +7,10 @@
 //! file tools, `grep` and `bash` refuse key files such as `.roko/.env`
 //! ([`refuse_key_file`], [`refuse_key_file_in_command`]), and `bash` runs with
 //! the gate policy's environment, as roko-std's `bash` does
-//! ([`roko_gate::gate_env::inherit_tool_env_from`]). `bash` also refuses the
-//! git commands that discard work or move branches ([`check_git_command`]), as
-//! roko's own tool loop does.
+//! ([`roko_gate::gate_env::inherit_tool_env_from`]), marked as the session
+//! agent's ([`roko_core::child_env::mark_agent_process`]). `bash` also refuses
+//! the git commands that discard work or move branches ([`check_git_command`]),
+//! as roko's own tool loop does.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -374,12 +375,15 @@ fn resolve_path_for_write(workdir: &Path, raw: &str) -> Result<PathBuf, String> 
 /// so the ACP layer can gate on it.
 ///
 /// `env_passthrough` (`[agent] env_passthrough`) names the variables `bash`
-/// inherits besides what the gate policy admits.
+/// inherits besides what the gate policy admits, and `agent_id` is the
+/// session's agent, whose id `bash` marks its command with
+/// ([`roko_core::child_env::AGENT_ID_ENV`], gap-31e8a7).
 pub async fn execute_acp_builtin_tool(
     name: &str,
     args: &serde_json::Value,
     workdir: &Path,
     env_passthrough: &[String],
+    agent_id: &str,
     event_sender: &mpsc::Sender<CognitiveEvent>,
 ) -> String {
     let tool_call_id = Uuid::new_v4().to_string();
@@ -404,7 +408,7 @@ pub async fn execute_acp_builtin_tool(
         "edit_file" => exec_edit_file(args, workdir).await,
         "glob" => exec_glob(args, workdir).await,
         "grep" => exec_grep(args, workdir).await,
-        "bash" => exec_bash(args, workdir, env_passthrough, None).await,
+        "bash" => exec_bash(args, workdir, env_passthrough, agent_id, None).await,
         "ls" => exec_ls(args, workdir).await,
         "web_fetch" => exec_web_fetch(args).await,
         "retrieve" => exec_retrieve(args, workdir).await,
@@ -955,12 +959,14 @@ async fn manual_grep(path: &Path, pattern: &str) -> Result<String, String> {
     .map_err(|e| format!("grep: join: {e}"))?
 }
 
-/// Run the `bash` tool. The command inherits `parent_env` in place of the
-/// ACP server's own environment when given, filtered by the same policy.
+/// Run the `bash` tool for agent `agent_id`. The command inherits
+/// `parent_env` in place of the ACP server's own environment when given,
+/// filtered by the same policy.
 async fn exec_bash(
     args: &serde_json::Value,
     workdir: &Path,
     env_passthrough: &[String],
+    agent_id: &str,
     parent_env: Option<Vec<(String, OsString)>>,
 ) -> Result<String, String> {
     let command = require_str(args, "command")?;
@@ -986,6 +992,8 @@ async fn exec_bash(
     // command unless `env_passthrough` names it.
     let inherited = parent_env.unwrap_or_else(roko_core::child_env::process_env);
     roko_gate::gate_env::inherit_tool_env_from(&mut cmd, inherited, env_passthrough);
+    // The command, and every script it runs, is the agent's (gap-31e8a7).
+    roko_core::child_env::mark_agent_process(cmd.as_std_mut(), agent_id);
     let mut child = cmd.spawn().map_err(|e| format!("bash: spawn: {e}"))?;
 
     // Read stdout/stderr concurrently with wait to avoid pipe deadlocks.
@@ -1210,7 +1218,7 @@ mod tests {
         let args = serde_json::json!({ "command": command });
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(exec_bash(&args, workdir, &[], None))
+            .block_on(exec_bash(&args, workdir, &[], "", None))
     }
 
     // ── web_fetch safety ─────────────────────────────────────────────────
@@ -1316,7 +1324,7 @@ mod tests {
             let args = serde_json::json!({ "command": command });
             tokio::runtime::Runtime::new()
                 .expect("runtime")
-                .block_on(exec_bash(&args, repo.path(), &[], None))
+                .block_on(exec_bash(&args, repo.path(), &[], "", None))
         };
         run("git init --quiet").expect("git init runs");
 
@@ -1359,7 +1367,13 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
 
         let output = runtime
-            .block_on(exec_bash(&args, &workdir, &passthrough, Some(parent)))
+            .block_on(exec_bash(
+                &args,
+                &workdir,
+                &passthrough,
+                "acp-session-1",
+                Some(parent),
+            ))
             .expect("env runs");
 
         for leaked in [
@@ -1376,6 +1390,13 @@ mod tests {
         ] {
             assert!(output.contains(kept), "{kept} missing:\n{output}");
         }
+        // gap-31e8a7: the command is marked as the session agent's.
+        assert!(
+            output
+                .lines()
+                .any(|line| line == "ROKO_AGENT_ID=acp-session-1"),
+            "agent mark missing:\n{output}"
+        );
     }
 
     // ── key files ────────────────────────────────────────────────────────
@@ -1423,7 +1444,7 @@ mod tests {
         // bash refuses a command that names a key file.
         let cat = serde_json::json!({ "command": "cat .roko/.env" });
         let err = runtime
-            .block_on(exec_bash(&cat, workdir, &[], None))
+            .block_on(exec_bash(&cat, workdir, &[], "", None))
             .expect_err("cat .roko/.env refused");
         assert!(err.contains("provider key file blocked"), "{err}");
 

@@ -417,6 +417,25 @@ impl Episode {
             .insert(COST_KNOWN_KEY.to_string(), serde_json::Value::Bool(false));
     }
 
+    /// Place the episode in time: its work began at `started_at` and lasted
+    /// `duration_ms` (bug-41e2de).
+    ///
+    /// `started_at` is the clock read as the work began, never a time worked
+    /// back from the duration. The episode completes `duration_ms` after it,
+    /// so `completed_at - started_at` is the duration `duration_secs` records.
+    /// The id and `timestamp`, set at construction, stay.
+    pub fn set_timing(&mut self, started_at: DateTime<Utc>, duration_ms: u64) {
+        self.started_at = started_at;
+        self.duration_secs = duration_ms as f64 / 1000.0;
+        let completed_at = i64::try_from(duration_ms)
+            .ok()
+            .and_then(chrono::TimeDelta::try_milliseconds)
+            .and_then(|duration| started_at.checked_add_signed(duration));
+        if let Some(completed_at) = completed_at {
+            self.completed_at = completed_at;
+        }
+    }
+
     /// Attach an emotional tag to the episode.
     #[must_use]
     pub fn with_emotional_tag(mut self, emotional_tag: EmotionalTag) -> Self {

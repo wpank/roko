@@ -69,7 +69,9 @@ pub(crate) fn apply_ws_size_limits(ws: WebSocketUpgrade) -> WebSocketUpgrade {
 
 /// `GET /ws` — upgrade to a WebSocket connection.
 async fn ws_upgrade(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    apply_ws_size_limits(ws).on_upgrade(move |socket| handle_ws(state, socket))
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
+    apply_ws_size_limits(ws).on_upgrade(move |socket| open.hold(handle_ws(state, socket)))
 }
 
 /// Back-pressure mode for a WebSocket subscription channel.

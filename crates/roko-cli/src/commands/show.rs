@@ -552,7 +552,7 @@ fn render_plans(state: &ShowState) -> String {
         push_empty(&mut out, "No plans found in plans/ or .roko/plans.");
     } else {
         for plan in &state.data.plans {
-            let status = plan_status(plan.completed, plan.tasks_done, plan.tasks_failed);
+            let status = plan_state(plan);
             push_kv(
                 &mut out,
                 &plan.id,
@@ -1042,7 +1042,7 @@ fn plans_json(state: &ShowState) -> Value {
             serde_json::json!({
                 "id": plan.id,
                 "title": plan.title,
-                "status": plan_status(plan.completed, plan.tasks_done, plan.tasks_failed),
+                "status": plan_state(plan),
                 "task_count": plan.task_count,
                 "tasks_done": plan.tasks_done,
                 "tasks_failed": plan.tasks_failed,
@@ -1206,7 +1206,7 @@ fn collect_work_items(
             WorkItemSummary {
                 id: plan.id.clone(),
                 kind: String::from("plan"),
-                status: plan_status(plan.completed, plan.tasks_done, plan.tasks_failed),
+                status: plan_state(plan),
                 prompt: plan.title.clone(),
                 tasks_done: Some(plan.tasks_done),
                 tasks_total: Some(plan.task_count),
@@ -1616,6 +1616,19 @@ fn push_empty(out: &mut String, message: &str) {
     let _ = writeln!(out, "  {message}");
 }
 
+/// How `plan` stands: the stop its Graph checkpoint records, when it
+/// stopped short (interrupted, cancelled) or ran unverified, else what its
+/// task counts say (bug-df0e79).
+fn plan_state(plan: &roko_cli::plan::PlanSummary) -> String {
+    ["interrupted", "cancelled", "unverified"]
+        .into_iter()
+        .find(|state| plan.status.starts_with(state))
+        .map_or_else(
+            || plan_status(plan.completed, plan.tasks_done, plan.tasks_failed),
+            str::to_string,
+        )
+}
+
 fn plan_status(completed: bool, tasks_done: usize, tasks_failed: usize) -> String {
     if completed {
         String::from("done")
@@ -1774,6 +1787,38 @@ fn truncate(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-df0e79: `show plans` says the stop a plan's checkpoint records,
+    /// interrupted with a task passed included, not a state its task counts
+    /// guess.
+    #[test]
+    fn a_plans_state_is_the_stop_its_checkpoint_records() {
+        let plan = |status: &str, tasks_done: usize, completed: bool| roko_cli::plan::PlanSummary {
+            id: "p".into(),
+            title: "p".into(),
+            task_count: 2,
+            tasks_done,
+            tasks_failed: 0,
+            completed,
+            status: status.into(),
+            superseded_by: None,
+            fixture: false,
+            old_format: false,
+            last_error: None,
+            group: None,
+        };
+        assert_eq!(
+            plan_state(&plan("interrupted (3s ago)", 1, false)),
+            "interrupted"
+        );
+        assert_eq!(
+            plan_state(&plan("cancelled (1m ago)", 1, false)),
+            "cancelled"
+        );
+        assert_eq!(plan_state(&plan("running", 1, false)), "running");
+        assert_eq!(plan_state(&plan("ready", 0, false)), "pending");
+        assert_eq!(plan_state(&plan("done (1m ago)", 2, true)), "done");
+    }
 
     fn at(text: &str) -> DateTime<Utc> {
         event_time(text).expect("an RFC 3339 test time")

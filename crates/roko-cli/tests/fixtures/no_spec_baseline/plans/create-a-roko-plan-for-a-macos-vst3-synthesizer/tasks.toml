@@ -1,0 +1,237 @@
+[meta]
+done = 0
+plan = "create-a-roko-plan-for-a-macos-vst3-synthesizer"
+title = "Create a roko plan for a macOS VST3 synthesizer plugin…"
+status = "ready"
+total = 5
+
+[[task]]
+acceptance = [
+    "AC1: The plan contains a product-definition task group or section that states the plugin target, core use cases, and differentiation in one place.",
+    "AC2: The plan includes explicit assumption statements for all major scope choices, and every task has an empty open_questions array.",
+]
+allowed_tools = []
+denied_tools = []
+depends_on = []
+description = "Assumption: this is a new product plan, not an immediate code change. Define the synth as a macOS-only VST3 plugin for hypnotic techno basslines, sub, and rumbles; set the sonic target, audience, differentiators, non-goals, and success criteria; and record the packaging and delivery assumptions that the rest of the plan depends on."
+files = []
+goal = "A clear product definition exists for the macOS VST3 synth and all open choices are resolved as explicit assumptions."
+id = "T1"
+max_loc = 40
+non_goals = [
+    "Do not implement DSP, UI, packaging, or tests.",
+    "Do not leave product scope or delivery assumptions implicit.",
+]
+open_questions = []
+role = "strategist"
+status = "ready"
+tier = "focused"
+title = "Define product scope and release assumptions"
+
+[task.context]
+anti_patterns = [
+    "Do not create or modify source files; this task only writes the plan artifact content.",
+    "Do not defer any product scope choice to later tasks without writing the assumption here.",
+]
+read_files = []
+symbols = []
+
+[[task.verify]]
+command = "grep -q 'product definition' plans/demos/demo-hello-world/plan.md"
+covers = ["AC1"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task.verify]]
+command = '''grep -q 'open_questions = \[\]' plans/demos/demo-hello-world/tasks.toml'''
+covers = ["AC2"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task]]
+acceptance = [
+    "AC1: The plan includes a sound-engine architecture section that names the oscillator, filter, modulation, distortion, and low-end support blocks.",
+    "AC2: The plan includes staged implementation milestones that move from core voice generation to performance polish.",
+]
+allowed_tools = []
+denied_tools = []
+depends_on = ["T1"]
+description = "Assumption: the instrument is a polyphonic subtractive/FM hybrid optimized for low-end techno rather than a general-purpose synth. Define oscillator, filter, envelope, modulation, saturation, glide, unison, sub-layer, rumble generation, preset/state model, and CPU budget choices, with implementation milestones that keep the audio engine shippable in stages."
+files = []
+goal = "The plan defines a practical synth architecture for bass, sub, rumble, modulation, and CPU-sane voice management."
+id = "T2"
+max_loc = 50
+non_goals = [
+    "Do not write DSP code or choose specific third-party audio libraries.",
+    "Do not broaden the synth into pads, leads, or sample playback.",
+]
+open_questions = []
+role = "strategist"
+status = "ready"
+tier = "focused"
+title = "Specify the sound engine architecture"
+
+[task.context]
+anti_patterns = [
+    "Do not add implementation code in the plan.",
+    "Do not omit the low-end special handling for sub and rumble generation.",
+]
+read_files = []
+symbols = []
+
+[[task.verify]]
+command = "grep -q 'sound engine architecture' plans/demos/demo-hello-world/plan.md"
+covers = ["AC1"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'implementation milestones' plans/demos/demo-hello-world/plan.md"
+covers = ["AC2"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task]]
+acceptance = [
+    "AC1: The plan includes a UI/UX direction section that describes the visual style and interaction model.",
+    "AC2: The plan states how the main controls are grouped for bass/sub/rumble workflow and how preset browsing fits the interface.",
+]
+allowed_tools = []
+denied_tools = []
+depends_on = ["T1"]
+description = "Assumption: the UI should feel dark, minimal, tactile, and performance-oriented, with visual cues inspired by bardo/prd/18-interfaces without copying any specific asset set. Define the control surface, parameter grouping, macro controls, preset browsing, metering, accessibility basics, and interaction principles for macOS-native usage."
+files = []
+goal = "The plan describes the plugin's interface language, layout, and interaction model for fast sound design."
+id = "T3"
+max_loc = 45
+non_goals = [
+    "Do not design pixel-perfect artwork or create UI code.",
+    "Do not require external design tools or asset production in this planning step.",
+]
+open_questions = []
+role = "strategist"
+status = "ready"
+tier = "focused"
+title = "Define UI, UX, and visual direction"
+
+[task.context]
+anti_patterns = [
+    "Do not leave the aesthetic direction vague; it must be stated as a decision.",
+    "Do not invent brand assets or licensing assumptions.",
+]
+read_files = []
+symbols = []
+
+[[task.verify]]
+command = "grep -q 'UI/UX direction' plans/demos/demo-hello-world/plan.md"
+covers = ["AC1"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'preset browsing' plans/demos/demo-hello-world/plan.md"
+covers = ["AC2"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task]]
+acceptance = [
+    "AC1: The plan explicitly names the plugin format and macOS packaging path, including VST3 and the intended macOS architecture target.",
+    "AC2: The plan includes a verification strategy section that covers build, audio behavior, UI regression, and packaging checks.",
+    "AC3: The plan includes a risk section that identifies format, packaging, and platform-compatibility risks with mitigation ideas.",
+]
+allowed_tools = []
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+description = "Assumption: the deliverable is a standalone macOS VST3 plugin bundle, packaged for Apple Silicon first with a clear path for universal builds. Define the build targets, signing/notarization packaging assumptions, install layout, test strategy for audio and UI regressions, and risk controls for compatibility, distribution, and macOS entitlements."
+files = []
+goal = "The plan locks down the shipping format and how it will be built, packaged, and verified on macOS."
+id = "T4"
+max_loc = 50
+non_goals = [
+    "Do not create build scripts, signing certificates, or packaging automation.",
+    "Do not run build or test commands now.",
+]
+open_questions = []
+role = "strategist"
+status = "ready"
+tier = "focused"
+title = "Set plugin format, macOS packaging, and verification strategy"
+
+[task.context]
+anti_patterns = [
+    "Do not omit signing/notarization assumptions if packaging is mentioned.",
+    "Do not blur VST3 packaging with AU or standalone deliverables.",
+]
+read_files = []
+symbols = []
+
+[[task.verify]]
+command = "grep -q 'plugin format' plans/demos/demo-hello-world/plan.md"
+covers = ["AC1"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'verification strategy' plans/demos/demo-hello-world/plan.md"
+covers = ["AC2"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'risk' plans/demos/demo-hello-world/plan.md"
+covers = ["AC3"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task]]
+acceptance = [
+    "AC1: The final plan presents a sequenced roadmap that connects product definition, engine architecture, UI/UX, packaging, and verification into milestones.",
+    "AC2: The plan explicitly preserves the cost cap assumption and states that no external execution is required for planning.",
+]
+allowed_tools = []
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+    "T4",
+]
+description = "Assumption: planning spend is capped at $0.40 total by staying fully local and avoiding any external execution. Consolidate the prior sections into a sequenced milestone roadmap with dependencies, release gates, and a concise delivery narrative that makes the plan actionable for later implementation."
+files = []
+goal = "The plan reads as one coherent roadmap from concept to release."
+id = "T5"
+max_loc = 35
+non_goals = [
+    "Do not add new technical scope beyond what the earlier tasks already defined.",
+    "Do not create implementation code or run commands.",
+]
+open_questions = []
+role = "strategist"
+status = "ready"
+tier = "focused"
+title = "Assemble the milestone roadmap and delivery narrative"
+
+[task.context]
+anti_patterns = [
+    "Do not introduce unresolved dependencies between milestones.",
+    "Do not omit the budget assumption from the final narrative.",
+]
+read_files = []
+symbols = []
+
+[[task.verify]]
+command = "grep -q 'milestone roadmap' plans/demos/demo-hello-world/plan.md"
+covers = ["AC1"]
+expect = "pass_on_base"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'cost cap' plans/demos/demo-hello-world/plan.md"
+covers = ["AC2"]
+expect = "pass_on_base"
+phase = "structural"

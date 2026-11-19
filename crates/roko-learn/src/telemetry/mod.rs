@@ -35,6 +35,7 @@ pub mod census;
 pub mod manifest;
 pub mod records;
 pub mod report;
+pub mod rung_stats;
 pub mod writer;
 
 pub use assign::{Arm, Assignment, AssignmentUnit, LayerSpec, assign};

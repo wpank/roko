@@ -257,6 +257,14 @@ pub struct PlanHandle {
     pub handle: JoinHandle<()>,
     /// Cancel token for pausing / stopping the execution.
     pub cancel: CancelToken,
+    /// What the run may spend, in USD: the cap its request set (9116), which
+    /// nothing else records, so a host can show spend against it
+    /// (gap-acfe4b). `None` when the request set none.
+    pub max_usd: Option<f64>,
+    /// When the run started: roko accepted it and its task began
+    /// (gap-c1726f). A host counts the run's time from it, as the run's own
+    /// `run_completed.duration_ms` does.
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl PlanHandle {
@@ -331,6 +339,25 @@ pub struct OperationHandle {
     /// What the operation is doing, for a producer that reports it as it
     /// moves on (plan generation, gap-11d870): its latest JSON object.
     pub progress: Option<tokio::sync::watch::Receiver<serde_json::Value>>,
+    /// A plan write's own parts, which other operations don't have
+    /// (bug-36ce72).
+    pub write: Option<PlanWrite>,
+}
+
+/// What a plan write has beside its operation (bug-36ce72).
+pub struct PlanWrite {
+    /// The plan it writes.
+    pub plan_id: String,
+    /// What its row in the plan list calls it (gap-6774b5): the title it was
+    /// given, else its request's first line.
+    pub title: String,
+    /// The most its planner calls may cost together, in USD; `None` sets no
+    /// cap.
+    pub max_usd: Option<f64>,
+    /// Stops the write while its planner works. Once the plan is being
+    /// saved, the write ends as it would have, so a plan is never half
+    /// written.
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 /// Status of an async operation.
@@ -349,6 +376,9 @@ pub enum OperationStatus {
         /// Error description.
         error: String,
     },
+    /// The operation was stopped before it ended: a plan write that
+    /// `run_cancel` or `POST /api/plans/{id}/cancel` stopped (bug-36ce72).
+    Cancelled,
 }
 
 /// The state of a run, in the words every run route reports.
@@ -1217,9 +1247,15 @@ pub struct AppState {
     /// (S10 §4.5).
     pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
 
-    /// When the last request arrived, and what keeps a showcase serve from its idle exit
-    /// (S11 §4.6, G10).
+    /// When the last request arrived, and what keeps a showcase serve, or one
+    /// started with `--idle-exit`, from its idle exit (S11 §4.6, G10,
+    /// gap-fb1594).
     pub showcase_idle: crate::showcase::idle::IdleTracker,
+
+    /// Who this server is and where it listens, set once the listener is
+    /// bound: what `serve.json` records and `/health` reports on a loopback
+    /// bind (gap-fb1594).
+    endpoint: std::sync::OnceLock<crate::endpoint::ServeEndpoint>,
 
     /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
     /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
@@ -1832,6 +1868,7 @@ impl AppState {
             local_access: LocalAccess::new(None),
             showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
             showcase_idle: crate::showcase::idle::IdleTracker::new(chrono::Utc::now()),
+            endpoint: std::sync::OnceLock::new(),
             job_execution,
         })
     }
@@ -1926,6 +1963,18 @@ impl AppState {
     /// Whether the listener is bound to a loopback address, as recorded at startup.
     pub fn listener_is_loopback(&self) -> bool {
         self.listener_security.bound_to_loopback()
+    }
+
+    /// Record who this server is once its listener is bound (gap-fb1594).
+    /// The first record wins.
+    pub fn set_endpoint(&self, endpoint: crate::endpoint::ServeEndpoint) {
+        let _ = self.endpoint.set(endpoint);
+    }
+
+    /// Who this server is and where it listens; `None` before its listener
+    /// is bound, and for a server started without the builder.
+    pub fn endpoint(&self) -> Option<&crate::endpoint::ServeEndpoint> {
+        self.endpoint.get()
     }
 
     /// Record the effective live-agent-output level chosen at startup.

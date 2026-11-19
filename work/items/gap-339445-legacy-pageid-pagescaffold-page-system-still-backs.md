@@ -8,9 +8,9 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/tui"]
 created = 2026-08-31
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gaps-md#partial-10/122"
 anchors = ["crates/roko-cli/src/tui/pages/mod.rs::PageId", "crates/roko-cli/src/tui/pages/mod.rs::PageScaffold", "crates/roko-cli/src/commands/dashboard.rs::render_page_text", "crates/roko-cli/src/tui/app/mod.rs::tab_to_page"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }

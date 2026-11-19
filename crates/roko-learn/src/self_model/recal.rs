@@ -28,6 +28,12 @@ pub const MIN_OUTCOMES: usize = 30;
 pub struct IsotonicMap {
     /// The blocks' (mean forecast, mean outcome), both increasing.
     knots: Vec<(f64, f64)>,
+    /// The least, and one less the most, the map returns: 1/(n + 2) for a fit on outcomes of
+    /// total weight n, as Laplace's rule would put a block that saw no pass (bug-bce0ed). A block
+    /// of a few failures is not evidence of a probability of exactly 0. A map saved without it
+    /// takes 0.
+    #[serde(default)]
+    floor: f64,
 }
 
 impl IsotonicMap {
@@ -54,36 +60,44 @@ impl IsotonicMap {
                 merged.2 += last.2;
             }
         }
+        let total: f64 = sorted.iter().map(|point| point.2).sum();
         Self {
             knots: blocks
                 .into_iter()
                 .map(|(sum_p, sum_y, weight)| (sum_p / weight, (sum_y / weight).clamp(0.0, 1.0)))
                 .collect(),
+            floor: 1.0 / (total + 2.0),
         }
     }
 
-    /// The recalibrated forecast for `p`; `p` itself when the map has no knots.
+    /// The recalibrated forecast for `p`, kept within the map's floor of 0 and 1; `p` itself
+    /// when the map has no knots.
     #[must_use]
     pub fn apply(&self, p: f64) -> f64 {
         let (Some(first), Some(last)) = (self.knots.first(), self.knots.last()) else {
             return p;
         };
-        if p <= first.0 {
-            return first.1;
-        }
-        if p >= last.0 {
-            return last.1;
-        }
-        for pair in self.knots.windows(2) {
-            let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
-            if x0 <= p && p <= x1 {
-                if x1 == x0 {
-                    return y1;
-                }
-                return y0 + (y1 - y0) * (p - x0) / (x1 - x0);
-            }
-        }
-        p
+        let floor = self.floor.clamp(0.0, 0.5);
+        let mapped = if p <= first.0 {
+            first.1
+        } else if p >= last.0 {
+            last.1
+        } else {
+            self.knots
+                .windows(2)
+                .find_map(|pair| {
+                    let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                    (x0 <= p && p <= x1).then(|| {
+                        if x1 == x0 {
+                            y1
+                        } else {
+                            y0 + (y1 - y0) * (p - x0) / (x1 - x0)
+                        }
+                    })
+                })
+                .unwrap_or(p)
+        };
+        mapped.clamp(floor, 1.0 - floor)
     }
 
     /// Whether the map never decreases.
@@ -179,6 +193,22 @@ mod tests {
     use crate::self_model::features::FeatureVector;
     use crate::self_model::logit::{OnlineLogit, sigmoid};
     use crate::self_model::metrics::{ECE_BINS, Scored, ece};
+
+    /// bug-bce0ed: a block of a few failures maps to 1/(n + 2) for a fit on n outcomes, not to
+    /// exactly 0, and a block of a few passes to one less, not to 1. Undertow's maps returned 0
+    /// for a retry whose raw forecast sat in a block of failures, so its P(VS) read 0.
+    #[test]
+    fn a_few_outcomes_never_map_to_exactly_zero_or_one() {
+        let points: Vec<(f64, bool, f64)> = (1..=5)
+            .map(|i| (1e-30 * f64::from(i), false, 1.0))
+            .chain((1..=5).map(|i| (1.0 - 1e-9 * f64::from(i), true, 1.0)))
+            .collect();
+        let map = IsotonicMap::fit(&points);
+        assert!(map.is_monotone(), "{map:?}");
+        let floor = 1.0 / 12.0;
+        assert!((map.apply(1e-40) - floor).abs() < 1e-12, "{map:?}");
+        assert!((map.apply(1.0) - (1.0 - floor)).abs() < 1e-12, "{map:?}");
+    }
 
     #[test]
     fn prequential_ece_below_003_after_isotonic() {

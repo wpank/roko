@@ -104,8 +104,10 @@ class RokoApiClient {
       throw new ApiError(response.status, response.statusText, errorBody);
     }
 
-    // Some endpoints return 204 No Content.
+    // Some endpoints return 204 No Content. Read the empty body anyway: Chrome reports a response nobody read as
+    // an aborted request.
     if (response.status === 204) {
+      await response.arrayBuffer().catch(() => undefined);
       return undefined as unknown as T;
     }
 

@@ -375,8 +375,8 @@ async fn run_build_test(
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = crate::output_text::output_text(&output.stdout);
+    let stderr = crate::output_text::output_text(&output.stderr);
     let combined = truncate_detail(&stdout, &stderr);
     let counts = parse_cargo_style_counts(&combined);
     let digest = extract_failure_digest(&combined);
@@ -439,8 +439,8 @@ async fn run_script(
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = crate::output_text::output_text(&output.stdout);
+    let stderr = crate::output_text::output_text(&output.stderr);
     let combined = truncate_detail(&stdout, &stderr);
 
     if output.status.success() {

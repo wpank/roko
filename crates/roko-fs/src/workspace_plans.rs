@@ -6,9 +6,9 @@
 //! the two. roko-cli (`plan::plans_dir`) and roko-serve (`routes::plans`) both
 //! call it, so a new plan is written where plan listing looks for it.
 //!
-//! `.roko/plans/` also exists in workspaces that have never held a plan:
-//! `roko init` creates it, and the enrichment pipeline keeps per-plan artifacts
-//! there. Only a plan inside it makes it the plans directory.
+//! `.roko/plans/` also exists in workspaces that have never held a plan: an
+//! older `roko init` created it, and the enrichment pipeline keeps per-plan
+//! artifacts there. Only a plan inside it makes it the plans directory.
 
 use std::fs;
 use std::path::{Path, PathBuf};

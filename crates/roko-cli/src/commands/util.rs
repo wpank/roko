@@ -1,7 +1,7 @@
 //! util command handlers.
 
 use crate::*;
-use roko_cli::status::{StatusDiagnostic, collect_session_status};
+use roko_cli::status::{StatusDiagnostic, collect_session_status, unpriced_calls_summary};
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
@@ -59,8 +59,8 @@ pub(crate) enum CompletionShell {
 /// Print a dim next-step hint to stderr, only when stdout is a TTY.
 pub(crate) fn print_next_step_hint(msg: &str) {
     if std::io::stdout().is_terminal() {
-        // \x1b[2m = dim, \x1b[0m = reset
-        eprintln!("\x1b[2m{msg}\x1b[0m");
+        let style = roko_cli::term_style::Style::stderr();
+        eprintln!("{}", style.paint(roko_cli::term_style::Role::Dim, msg));
     }
 }
 
@@ -261,63 +261,10 @@ pub(crate) async fn cmd_init(
             .with_context(|| format!("create {}", extra.display()))?;
     }
 
-    let engrams_path = roko_dir.join("engrams.jsonl");
-    if !engrams_path.exists() {
-        // Migrate from legacy name if present, but only rows that parse as
-        // Engram.  Non-Engram rows (e.g. GateVerdict) stay in signals.jsonl
-        // to avoid schema-mixing in the engram store.
-        let legacy = roko_dir.join("signals.jsonl");
-        if legacy.exists() {
-            let content = tokio::fs::read_to_string(&legacy)
-                .await
-                .with_context(|| format!("read legacy {}", legacy.display()))?;
-
-            let mut signal_lines = Vec::new();
-            let mut kept_lines = Vec::new();
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if serde_json::from_str::<roko_core::Signal>(trimmed).is_ok() {
-                    signal_lines.push(line.to_string());
-                } else {
-                    kept_lines.push(line.to_string());
-                }
-            }
-
-            // Write valid signal rows to engrams.jsonl.
-            if signal_lines.is_empty() {
-                tokio::fs::write(&engrams_path, b"")
-                    .await
-                    .with_context(|| format!("create {}", engrams_path.display()))?;
-            } else {
-                let mut out = signal_lines.join("\n");
-                out.push('\n');
-                tokio::fs::write(&engrams_path, out.as_bytes())
-                    .await
-                    .with_context(|| {
-                        format!("write migrated engrams to {}", engrams_path.display())
-                    })?;
-            }
-
-            // If all rows migrated, remove the legacy file; otherwise leave
-            // the non-Engram rows in place for the gate-verdicts migration.
-            if kept_lines.is_empty() {
-                let _ = tokio::fs::remove_file(&legacy).await;
-            } else {
-                let mut remainder = kept_lines.join("\n");
-                remainder.push('\n');
-                tokio::fs::write(&legacy, remainder.as_bytes())
-                    .await
-                    .with_context(|| format!("rewrite non-Engram rows to {}", legacy.display()))?;
-            }
-        } else {
-            tokio::fs::write(&engrams_path, b"")
-                .await
-                .with_context(|| format!("create {}", engrams_path.display()))?;
-        }
-    }
+    // The signal log is `signals.jsonl` (bug-a1c99a). A workspace an older
+    // roko made may keep it as `engrams.jsonl`, which the log reads only while
+    // `signals.jsonl` is absent: it moves into `signals.jsonl`.
+    ensure_signal_log(&roko_dir).await?;
 
     let demo_config = if let Some(options) = &options {
         // The template is checked like `roko config validate` before it is
@@ -436,6 +383,49 @@ pub(crate) async fn cmd_init(
     Ok(())
 }
 
+/// Give the workspace whose state is `roko_dir` its signal log,
+/// `signals.jsonl` (bug-a1c99a), empty when it has none. A legacy
+/// `engrams.jsonl` moves into it: its rows go first, then those the log
+/// holds already, which are newer, and the old file goes. The log is
+/// replaced whole, through a temporary file, so a stop part way leaves it as
+/// it was or with every row.
+async fn ensure_signal_log(roko_dir: &Path) -> Result<()> {
+    let log = roko_dir.join("signals.jsonl");
+    let legacy = roko_dir.join("engrams.jsonl");
+    if !legacy.exists() {
+        if !log.exists() {
+            tokio::fs::write(&log, b"")
+                .await
+                .with_context(|| format!("create {}", log.display()))?;
+        }
+        return Ok(());
+    }
+    let mut rows = tokio::fs::read_to_string(&legacy)
+        .await
+        .with_context(|| format!("read the legacy signal log {}", legacy.display()))?;
+    if log.exists() {
+        let current = tokio::fs::read_to_string(&log)
+            .await
+            .with_context(|| format!("read the signal log {}", log.display()))?;
+        if !rows.is_empty() && !rows.ends_with('\n') {
+            rows.push('\n');
+        }
+        rows.push_str(&current);
+    }
+    let staged = roko_dir.join("signals.jsonl.migrating");
+    tokio::fs::write(&staged, rows.as_bytes())
+        .await
+        .with_context(|| format!("write {}", staged.display()))?;
+    tokio::fs::rename(&staged, &log)
+        .await
+        .with_context(|| format!("move {} to {}", staged.display(), log.display()))?;
+    tokio::fs::remove_file(&legacy)
+        .await
+        .with_context(|| format!("remove the legacy signal log {}", legacy.display()))?;
+    println!("moved {} into {}", legacy.display(), log.display());
+    Ok(())
+}
+
 /// Print the project `roko init` found, the gate rungs and model ladder it
 /// wrote, and what it left out.
 fn print_init_summary(gates: &roko_cli::init::ProjectGates, models: &roko_cli::init::InitModels) {
@@ -471,7 +461,12 @@ fn print_ladder_skips(target: &Path) {
     ) else {
         return;
     };
-    let report = roko_cli::dispatch::model_routing::ladder_report(loaded.config());
+    // A rung's alternates are not rungs: a rung goes without one that cannot
+    // run (gap-51d2ca).
+    let report: Vec<_> = roko_cli::dispatch::model_routing::ladder_report(loaded.config())
+        .into_iter()
+        .filter(|rung| !rung.alternate)
+        .collect();
     let skipped: Vec<_> = report
         .iter()
         .filter_map(|rung| rung.dispatch.as_ref().err().map(|reason| (rung, reason)))
@@ -510,6 +505,7 @@ pub(crate) async fn cmd_run(
     engine: Option<String>,
     domain: Option<roko_core::TaskDomain>,
     no_holdout: bool,
+    no_audit: bool,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -589,6 +585,7 @@ pub(crate) async fn cmd_run(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout,
+        no_audit,
         // The server this command started, if any, decides as for its own
         // runs (gap-5fda00).
         live_agent_output: server_guard.as_ref().map_or_else(
@@ -700,6 +697,7 @@ pub(crate) async fn cmd_status(
     quick: bool,
     cfactor: bool,
     surfaces: bool,
+    details: bool,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
 
@@ -739,6 +737,23 @@ pub(crate) async fn cmd_status(
         let inventory = roko_cli::surface_inventory::full_inventory();
         roko_cli::surface_inventory::print_table(&inventory, cli.json);
         return Ok(EXIT_SUCCESS);
+    }
+
+    // What a person asks status for (gap-7a3f11): what is running, how the
+    // last runs ended, what they spent, and the one thing to do next.
+    // `--details` and `--cfactor` add roko's internals below.
+    if !cli.json {
+        let status = roko_cli::status_view::collect(&workdir).await;
+        let style = roko_cli::term_style::Style::stdout();
+        for line in
+            roko_cli::status_view::lines(&status, style, chrono::Utc::now().timestamp_millis())
+        {
+            println!("{line}");
+        }
+        if !details && !cfactor {
+            return Ok(EXIT_SUCCESS);
+        }
+        println!();
     }
 
     if !cli.quiet {
@@ -803,7 +818,12 @@ pub(crate) async fn cmd_status(
         None
     };
     // Calls whose cost is unknown, which the total leaves out (backlog 2109).
-    let unpriced_calls = costs_log.unpriced_calls().await.unwrap_or(0);
+    // Text and JSON both report them (gap-2bec05).
+    let unpriced_calls = if total_cost_usd.is_some() {
+        costs_log.unpriced_calls().await.ok()
+    } else {
+        None
+    };
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -936,6 +956,7 @@ pub(crate) async fn cmd_status(
         status.cfactor = cfactor_snapshot;
         status.total_cost_usd = total_cost_usd;
         status.estimated_cost_usd = estimated_cost_usd;
+        status.unpriced_calls = unpriced_calls;
         status.today_cost_usd = today_cost_usd;
         status.diagnostics.extend(cost_diagnostics.iter().cloned());
 
@@ -1194,10 +1215,8 @@ pub(crate) async fn cmd_status(
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
         }
-        if unpriced_calls > 0 {
-            println!(
-                "  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total"
-            );
+        if let Some(calls) = unpriced_calls.filter(|calls| *calls > 0) {
+            println!("  Unpriced: {}", unpriced_calls_summary(calls));
         }
         if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
             println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");
@@ -1485,10 +1504,9 @@ pub(crate) async fn cmd_doctor(
     let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
         Some(roko_cli::workspace_lock::acquire_workspace_lock(&roko_dir)?)
     } else {
-        match roko_cli::workspace_lock::acquire_workspace_lock_shared(&roko_dir) {
-            Ok(lock) => Some(lock),
-            Err(error) => {
-                let serve = roko_cli::doctor::serve_holding_workspace(&workdir).ok_or(error)?;
+        match roko_cli::workspace_lock::acquire_read_lock(&workdir)? {
+            roko_cli::workspace_lock::ReadLock::Shared(lock) => Some(lock),
+            roko_cli::workspace_lock::ReadLock::BesideServe(serve) => {
                 beside_serve = Some(serve);
                 None
             }

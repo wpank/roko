@@ -36,11 +36,22 @@ use roko_learn::telemetry::{AttemptLadder, AttemptVerdictRecord, Blame, LadderRe
 
 use super::attempt::AttemptContext;
 use super::retry_feedback::LadderStanding;
-use super::try_allowance::RungAllowance;
+use super::try_allowance::{RungAllowance, RungBounds};
 use super::*;
 use crate::dispatch::model_routing::SELF_MODEL_LOOP;
+use crate::dispatch::rung_probe::{SkippedRung, skipped_rungs};
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
 use crate::runtime_feedback::homeostasis::HarnessDecision;
+
+/// What the refusal of a task the ladder routes says when every rung failed
+/// its probe ([`GraphTaskDispatcher::unroutable`]), by which its try settles
+/// as `all_rungs_skipped` (gap-b856d3).
+pub(super) const NO_RUNG_CAN_RUN: &str = "no rung of the routing ladder can run";
+
+/// Whether `error` is [`GraphTaskDispatcher::unroutable`]'s refusal.
+pub(super) fn refused_for_no_rung(error: &RokoError) -> bool {
+    matches!(error, RokoError::Rejected(message) if message.contains(NO_RUNG_CAN_RUN))
+}
 
 /// Agent-blamed failures on one rung before the task climbs to the next.
 pub(crate) const FAILURES_PER_RUNG: u32 = 2;
@@ -132,6 +143,19 @@ impl GraphTaskDispatcher {
         self.factory.dispatcher().routing_ladder()
     }
 
+    /// The rung `task` starts on by the ladder alone, which a plan run's
+    /// time-left estimate keys past tasks by (gap-c1045f). `None` for a task
+    /// a model hint pins, and without a ladder rung that runs here.
+    pub(crate) fn planned_start_rung(&self, task: &TaskDef) -> Option<String> {
+        if task.model_hint.is_some() || task.hints.preferred_model.is_some() {
+            return None;
+        }
+        let role = task.role.as_deref().unwrap_or("implementer");
+        self.routing_ladder()?
+            .start(role, task.tier_class(), task.hints.rung.as_deref())
+            .map(|rung| rung.name)
+    }
+
     /// Least retry budget of a task that does not author `max_retries`:
     /// enough to climb the ladder while it routes tasks (`--model` stops
     /// that), else none.
@@ -168,6 +192,38 @@ impl GraphTaskDispatcher {
             || is_express_task(&self.config, task)
             || task.model_hint.is_some()
             || task.hints.preferred_model.is_some()
+    }
+
+    /// Why an attempt at `task` is refused before its agent runs: every rung
+    /// of the routing ladder failed its tool-use probe at plan start, and the
+    /// ladder would route the task (gap-20301d). The router would pick a
+    /// model the ladder never names, as it picked glm-4.7 on an account out
+    /// of balance in the pilot's fenced check, so the task fails plainly
+    /// instead, naming each rung's reason. A pinned task, and one whose role
+    /// the ladder does not route, still run. The refusal is not retried; a
+    /// resume runs the task again.
+    pub(super) fn unroutable(&self, task: &TaskDef) -> Option<RokoError> {
+        let (ladder, failed) = self.factory.lost_ladder()?;
+        if self.model_pinned(task) {
+            return None;
+        }
+        let role = task.role.as_deref().unwrap_or("implementer");
+        ladder.start(role, task.tier_class(), task.hints.rung.as_deref())?;
+        let rungs: Vec<String> = skipped_rungs(&self.config, ladder, failed, &self.workdir)
+            .iter()
+            .map(SkippedRung::named)
+            .collect();
+        Some(RokoError::Rejected(format!(
+            "task `{}` was not run: {NO_RUNG_CAN_RUN}, as every rung's model failed its tool-use \
+             probe at plan start: {}. roko does not send a task the ladder routes to a model \
+             outside it: fix those providers, or pin a model (`--model`, or the task's \
+             `model_hint`), then resume the plan. A rung refused on its provider's billing is \
+             probed again when the next run starts, so recharge and resume; any other probe \
+             verdict stands for a day, and `roko learn probes clear <model>` (or `--all`) has \
+             the next run probe it again",
+            task.id,
+            rungs.join("; ")
+        )))
     }
 
     /// The bounds M1's `decision` puts on `task`'s rungs: the rungs its θ
@@ -262,7 +318,7 @@ impl GraphTaskDispatcher {
         };
         let role = task.role.as_deref().unwrap_or("implementer");
         let (record, last_chance) = match plan.source {
-            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => {
+            ModelChoiceSource::Ladder { rung, .. } | ModelChoiceSource::SelfModel { rung } => {
                 // A `rung` hint that names one of the task's rungs replaced
                 // its start rung (gap-dbf2a6).
                 let hinted = task
@@ -278,6 +334,15 @@ impl GraphTaskDispatcher {
                 } else if matches!(plan.source, ModelChoiceSource::SelfModel { .. }) {
                     // An active self-model chose the start rung (6130).
                     LadderReason::SelfModel
+                } else if ladder.start_unreachable(
+                    role,
+                    task.tier_class(),
+                    task.hints.rung.as_deref(),
+                ) {
+                    // No rung at or above the task's start rung can run here,
+                    // so it starts one runnable rung below the highest
+                    // (gap-ff2c38).
+                    LadderReason::StartUnreachable
                 } else if hinted {
                     LadderReason::Hint
                 } else {
@@ -421,6 +486,9 @@ impl GraphTaskDispatcher {
     ) {
         let verdict = &settled.verdict;
         let reason = self.take_try_reason(verdict);
+        // A rung whose tries spend minutes on each model call says so once
+        // (gap-3217a0).
+        self.note_rung_speed(&spec.plan_id, &task.id, verdict);
         let Some(tui) = &self.tui_bridge else {
             return;
         };
@@ -482,13 +550,17 @@ impl GraphTaskDispatcher {
                 reasoning: verdict.usage.tokens_reasoning,
             },
             // What the plan's budget counted: a CLI agent's own figure, else
-            // the provider's charge, else the snapshot's price.
-            cost_usd: cost.vendor_usd.or(cost.billed_usd).or(cost.api_equiv_usd),
+            // the provider's charge, else the snapshot's price, and the calls
+            // a provider refused before failover (bug-8bcd98).
+            cost_usd: cost.plus_refused(cost.vendor_usd.or(cost.billed_usd).or(cost.api_equiv_usd)),
             duration_ms: timing
                 .settled_at
                 .zip(timing.attempt_started_at)
                 .and_then(|(settled, started)| u64::try_from(settled - started).ok()),
             exhausted: ladder.is_some_and(|ladder| ladder.exhausted),
+            // Where its time went, as its verdict row says (gap-6a319c).
+            phases: timing.phases.clone(),
+            workspace: verdict.workspace,
         };
         tui.publish_event(roko_core::DashboardEvent::AttemptSettled {
             plan_id: spec.plan_id.clone(),
@@ -522,10 +594,10 @@ impl GraphTaskDispatcher {
 
     /// What one try of `task` may use on the rung `plan` routed `attempt`
     /// to, `step` rungs above its start rung, when its tier gives an attempt
-    /// `tier_turns` (gap-3e770b): the rung's turns and spend allowance from
-    /// `[routing.ladder]`. `None` for an attempt the ladder did not route (a
-    /// pin among them), and on a rung with neither bound, such as the
-    /// highest one the task can reach.
+    /// `tier_turns` (gap-3e770b) and it may run `tier_secs` (bug-f0007b): the
+    /// rung's turns, time and spend allowance from `[routing.ladder]`. `None`
+    /// for an attempt the ladder did not route (a pin among them), and on a
+    /// rung with no bound, such as the highest one the task can reach.
     pub(super) fn rung_allowance(
         &self,
         task: &TaskDef,
@@ -533,21 +605,82 @@ impl GraphTaskDispatcher {
         plan: &RunnerDispatchPlan,
         step: u32,
         tier_turns: u32,
+        tier_secs: u64,
     ) -> Option<RungAllowance> {
         let rung = match plan.source {
-            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
+            ModelChoiceSource::Ladder { rung, .. } | ModelChoiceSource::SelfModel { rung } => rung,
             _ => return None,
         };
+        let decision = attempt.harness_decision();
+        self.allowance_on(task, decision, rung, step, tier_turns, tier_secs)
+    }
+
+    /// What a try of `task` that failover moves up from `route`'s rung may
+    /// use on each runnable rung above it (bug-62ae1e): what a try the
+    /// ladder routed there would get, `route.step` plus the rungs it moved
+    /// above the start rung, with the attempt's turn cap `turn_cap` (its
+    /// tier's `tier_turns`, raised after a turn-cap stop) and time
+    /// `tier_secs`.
+    pub(super) fn bounds_above(
+        &self,
+        task: &TaskDef,
+        attempt: &AttemptContext,
+        route: &super::failover::LadderRoute,
+        turn_cap: u32,
+        tier_turns: u32,
+        tier_secs: u64,
+    ) -> Vec<RungBounds> {
+        let Some(routing) = self.routing_ladder() else {
+            return Vec::new();
+        };
+        routing
+            .rung_models_above(&route.role, route.rung)
+            .into_iter()
+            .map(|rung| {
+                let moved =
+                    u32::try_from(rung.index.saturating_sub(route.rung)).unwrap_or(u32::MAX);
+                let step = route.step.saturating_add(moved);
+                let decision = attempt.harness_decision();
+                let allowance =
+                    self.allowance_on(task, decision, rung.index, step, tier_turns, tier_secs);
+                let max_turns = allowance
+                    .as_ref()
+                    .and_then(|allowance| allowance.turns)
+                    .map_or(turn_cap, |turns| turn_cap.min(turns));
+                RungBounds {
+                    index: rung.index,
+                    allowance,
+                    max_turns,
+                }
+            })
+            .collect()
+    }
+
+    /// What one try of `task` may use on rung `rung`, `step` rungs above its
+    /// start rung, when its tier gives an attempt `tier_turns` and it may run
+    /// `tier_secs`: the rung's turns, time and spend allowance from
+    /// `[routing.ladder]`. `None` on a rung with no bound.
+    fn allowance_on(
+        &self,
+        task: &TaskDef,
+        decision: Option<&HarnessDecision>,
+        rung: usize,
+        step: u32,
+        tier_turns: u32,
+        tier_secs: u64,
+    ) -> Option<RungAllowance> {
         let role = task.role.as_deref().unwrap_or("implementer");
         let name = self.routing_ladder()?.rung_name(role, rung)?;
-        let climbs_left = self.climbs_left(task, attempt.harness_decision(), rung, step);
+        let climbs_left = self.climbs_left(task, decision, rung, step);
         let ladder = &self.config.routing.ladder;
         let allowance = RungAllowance {
             rung: name.to_string(),
             turns: ladder.try_turns(name, climbs_left, tier_turns),
             usd: ladder.try_usd(name),
+            secs: ladder.try_secs(name, climbs_left, tier_secs),
         };
-        (allowance.turns.is_some() || allowance.usd.is_some()).then_some(allowance)
+        (allowance.turns.is_some() || allowance.usd.is_some() || allowance.secs.is_some())
+            .then_some(allowance)
     }
 
     /// Count `settled`, an attempt of `task`, toward the task's standing on
@@ -556,8 +689,10 @@ impl GraphTaskDispatcher {
     /// task one runnable rung up, unless it already climbed
     /// [`MAX_ESCALATIONS`] rungs or stands on its top rung. Other failures,
     /// pinned attempts, and attempts a failover substitute ran in place of
-    /// the rung's model (backlog 1118), change nothing. Returns whether the
-    /// attempt exhausted the ladder, which it reports.
+    /// the rung's model (backlog 1118), change nothing, except a substitute's
+    /// failure after the rung's provider turned the try away for a rate limit
+    /// or an open circuit, which counts on the rung (bug-62ae1e). Returns
+    /// whether the attempt exhausted the ladder, which it reports.
     pub(super) fn note_ladder_outcome(
         &self,
         spec: &TaskExecutionSpec,
@@ -569,6 +704,12 @@ impl GraphTaskDispatcher {
             self.gate_retry_context
                 .clear_ladder(&spec.plan_id, &task.id);
             self.tries.lock().infra_runs.remove(&task_key);
+            return false;
+        }
+        // A try handed back for a blocker in another task's file is not the
+        // rung's failure: the task's next try runs on the same rung, with
+        // that task's files (bug-3b3bb6).
+        if self.take_uncounted_try(&task_key) {
             return false;
         }
         let verdict = &settled.verdict;
@@ -585,21 +726,41 @@ impl GraphTaskDispatcher {
             return false;
         }
         self.tries.lock().infra_runs.remove(&task_key);
-        if !verdict.executed.failover_chain.is_empty() {
-            tracing::debug!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                rung = ladder.rung.as_deref().unwrap_or("-"),
-                substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
-                "a substitute ran; the rung's standing is unchanged"
-            );
-            return false;
-        }
         let Some(routing) = self.routing_ladder() else {
             return false;
         };
         let role = task.role.as_deref().unwrap_or("implementer");
-        let index = ladder.index.and_then(|index| usize::try_from(index).ok());
+        // A substitute's failure counts on the rung the ladder routed the try
+        // to only when that rung's provider turned it away for its capacity:
+        // its model could not run the task, so a task its provider keeps
+        // turning away climbs instead of looping on substitutes (bug-62ae1e).
+        let moved = !verdict.executed.failover_chain.is_empty();
+        let index = if moved {
+            let routed = verdict
+                .executed
+                .failover_refusals
+                .first()
+                .filter(|refusal| {
+                    super::failover::COUNTS_ON_ROUTED_RUNG.contains(&refusal.class.as_str())
+                })
+                .and_then(|refusal| routing.rung_of_model(role, &refusal.model));
+            if routed.is_none() {
+                tracing::debug!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    rung = ladder.rung.as_deref().unwrap_or("-"),
+                    substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
+                    "a substitute ran; the rung's standing is unchanged"
+                );
+                return false;
+            }
+            routed
+        } else {
+            ladder.index.and_then(|index| usize::try_from(index).ok())
+        };
+        let rung_name = index
+            .and_then(|index| routing.rung_name(role, index))
+            .unwrap_or("-");
         // The cap of the θ the attempt ran stops the climb as the top rung
         // does (8124); a task already above a cap M1 lowered keeps its rung.
         let bounds = self.tier_bounds(task, settled.harness.as_deref());
@@ -608,10 +769,11 @@ impl GraphTaskDispatcher {
             .ladder_standing(&spec.plan_id, &task.id);
         standing.failures_on_rung = standing.failures_on_rung.saturating_add(1);
         // M3 (6131): when an active self-model started the chain, its re-forecast may climb
-        // after one failure; every other chain keeps the two-failure rule.
+        // after one failure; every other chain, and a substitute's failure,
+        // keeps the two-failure rule.
         let two_failures = standing.failures_on_rung >= FAILURES_PER_RUNG;
         let step = match index {
-            Some(index) if !two_failures => {
+            Some(index) if !two_failures && !moved => {
                 self.self_model_step(spec, task, verdict, index, standing.escalations)
             }
             _ => None,
@@ -637,9 +799,10 @@ impl GraphTaskDispatcher {
             tracing::info!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
-                rung = ladder.rung.as_deref().unwrap_or("-"),
+                rung = rung_name,
                 escalations = standing.escalations,
                 reason,
+                substitute_failed = moved,
                 two_failure_rule = two_failures,
                 self_model_step = ?step,
                 "the task climbs the ladder; its next attempt runs higher"
@@ -939,10 +1102,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
 "#;
 
     fn rung(name: &str, model: &str) -> LadderRung {
-        LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        }
+        LadderRung::new(name, model)
     }
 
     /// Batch fixture with a two-rung ladder that starts mechanical tasks on
@@ -1103,6 +1263,177 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         assert_eq!(diagnoses, ["ladder_exhausted:stream-plan/T-EXP"]);
     }
 
+    /// gap-ff2c38: when no rung at or above a task's start rung can run (a
+    /// chat run drops the CLI rung at the top), the task starts one runnable
+    /// rung below the highest, its tries there say why, and it climbs once
+    /// after two failures. A task whose start rung runs starts there, as
+    /// before.
+    #[tokio::test]
+    async fn a_try_on_an_unreachable_start_says_so() {
+        const MID: &str = "ladder-mid-slug";
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let (dispatcher, task) = ladder_fixture_with(&temp, |config| {
+            config
+                .models
+                .insert("mid-model".to_string(), model("batch-cli", MID, None));
+            // No `[models]` entry runs the top rung's model here.
+            config.routing.ladder.rungs = vec![
+                rung("cheap", "cheap-model"),
+                rung("mid", "mid-model"),
+                rung("strong", "batch-model"),
+                rung("top", "unreachable-model"),
+            ];
+        })
+        .await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        let mut architectural = task.clone();
+        architectural.id = "T-ARCH".to_string();
+        architectural.tier = "architectural".to_string();
+        let mut spec = make_spec(&architectural);
+        spec.max_retries = 3;
+        let mut mechanical = task.clone();
+        mechanical.id = "T-MECH".to_string();
+        let mut mechanical_spec = make_spec(&mechanical);
+        mechanical_spec.max_retries = 0;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        for _ in 0..=spec.max_retries {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails");
+        }
+        dispatcher
+            .dispatch(&mechanical_spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the mechanical attempt fails");
+        assert_eq!(called_models(&temp), [MID, MID, TOP, TOP, CHEAP]);
+
+        dispatcher.close_run_attempts(RUN);
+        let verdicts: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let places: Vec<(&str, &str, &str, bool)> = verdicts.iter().map(place).collect();
+        assert_eq!(
+            places,
+            [
+                ("agent", "mid", "start_unreachable", false),
+                ("agent", "mid", "start_unreachable", false),
+                ("agent", "strong", "escalated", false),
+                ("agent", "strong", "escalated", true),
+                ("agent", "cheap", "start", false),
+            ]
+        );
+    }
+
+    /// gap-20301d: when every rung of the ladder failed its tool-use probe at
+    /// plan start, a task the ladder routes is refused before any model call,
+    /// its error naming each rung and why, rather than sent to a model the
+    /// ladder never names. Its try settles as `all_rungs_skipped`
+    /// (gap-b856d3). A pinned task still runs.
+    #[tokio::test]
+    async fn a_task_the_ladder_routes_is_refused_when_every_rung_failed_its_probe() {
+        let temp = tempdir().expect("tempdir");
+        let (fixture, task) = ladder_fixture(&temp).await;
+        let config = Arc::clone(&fixture.config);
+        let failed: BTreeMap<String, String> = fixture
+            .factory
+            .dispatcher()
+            .routing_ladder()
+            .expect("the fixture's ladder")
+            .rung_models()
+            .into_iter()
+            .map(|model| {
+                let reason = format!("insufficient_credits: batch-cli refused {model} (HTTP 402)");
+                (model, reason)
+            })
+            .collect();
+        assert_eq!(failed.len(), 2, "both rungs fail: {failed:?}");
+        drop(fixture);
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .skip_failed_rungs(&failed);
+        let runs_dir = temp.path().join(".roko/runs");
+        let dispatcher =
+            GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf())
+                .with_feedback(GraphFeedbackContext {
+                    runs_dir: Some(runs_dir.clone()),
+                    ..GraphFeedbackContext::default()
+                });
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("no rung can run the task");
+        assert!(matches!(error, RokoError::Rejected(_)), "{error}");
+        let message = error.to_string();
+        for named in [
+            "no rung of the routing ladder can run".to_string(),
+            format!("cheap ({CHEAP} on batch-cli): insufficient_credits"),
+            format!("top ({TOP} on batch-cli): insufficient_credits"),
+            "billing is probed again when the next run starts".to_string(),
+        ] {
+            assert!(message.contains(&named), "{named}: {message}");
+        }
+        assert!(
+            !temp.path().join("provider-models").exists(),
+            "no model ran the task"
+        );
+
+        let mut pinned = task.clone();
+        pinned.id = "T-PINNED".to_string();
+        pinned.model_hint = Some("batch-model".to_string());
+        let error = dispatcher
+            .dispatch(&make_spec(&pinned), Vec::new(), &ctx)
+            .await
+            .expect_err("its verify step fails");
+        assert!(!matches!(error, RokoError::Rejected(_)), "{error}");
+        assert_eq!(called_models(&temp), [TOP], "the pinned model ran it");
+
+        dispatcher.close_run_attempts(RUN);
+        let verdicts: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let settled: Vec<(&str, &str, &str, &str)> = verdicts
+            .iter()
+            .map(|verdict| {
+                (
+                    verdict["task_id"].as_str().unwrap_or_default(),
+                    verdict["outcome"].as_str().unwrap_or_default(),
+                    verdict["failure_class"]["kind"]
+                        .as_str()
+                        .unwrap_or_default(),
+                    verdict["blame"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                (
+                    task.id.as_str(),
+                    "all_rungs_skipped",
+                    "all_rungs_skipped",
+                    "harness"
+                ),
+                ("T-PINNED", "gate_failed", "gate_failed", "agent"),
+            ]
+        );
+    }
+
     /// A settled turn-cap stop of `task` on the cheap rung. `substitute`
     /// names the routed model failover replaced, when a substitute ran.
     fn turn_cap_on_cheap_rung(
@@ -1159,6 +1490,43 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         for _ in 0..FAILURES_PER_RUNG {
             dispatcher.note_ladder_outcome(&spec, &task, &own);
         }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+    }
+
+    /// bug-62ae1e: a substitute's failure after the routed rung's provider
+    /// turned the try away for a rate limit or an open circuit counts on that
+    /// rung, so two of them climb the task; after any other refusal it still
+    /// counts nothing.
+    #[tokio::test]
+    async fn a_substitutes_failure_counts_when_its_rung_turned_the_try_away() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let refused = |class: &str| {
+            let mut settled = turn_cap_on_cheap_rung(&spec, &task, Some("cheap-model"));
+            Arc::make_mut(&mut settled.verdict)
+                .executed
+                .failover_refusals = vec![roko_learn::telemetry::FailoverRefusal {
+                model: CHEAP.to_string(),
+                provider: "batch-cli".to_string(),
+                class: class.to_string(),
+                called: true,
+                ..roko_learn::telemetry::FailoverRefusal::default()
+            }];
+            settled
+        };
+
+        dispatcher.note_ladder_outcome(&spec, &task, &refused("provider_exhausted"));
+        let standing = dispatcher
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        assert_eq!(
+            standing.failures_on_rung, 0,
+            "an exhausted provider counts nothing"
+        );
+        dispatcher.note_ladder_outcome(&spec, &task, &refused("rate_limited"));
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 0);
+        dispatcher.note_ladder_outcome(&spec, &task, &refused("circuit_open"));
         assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
     }
 
@@ -1618,12 +1986,14 @@ exit 1
 "#;
 
     /// What tries of a task left: what each call was given, each prompt,
-    /// the outcome, blame, rung and ladder reason of each verdict, each
+    /// the outcome, blame, rung and ladder reason of each verdict, the bound
+    /// each verdict says its try ended at (`-` for none), each
     /// `attempt_settled` event, and the output of the try that passed.
     struct Tries {
         calls: Vec<String>,
         prompts: Vec<String>,
         verdicts: Vec<[String; 4]>,
+        bounds: Vec<String>,
         settled: Vec<serde_json::Value>,
         passed: Option<String>,
     }
@@ -1677,13 +2047,17 @@ exit 1
             })
             .collect();
         dispatcher.close_run_attempts(RUN);
-        let verdicts = std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
-            .expect("the run's attempt log")
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|line| line["schema_version"] == "roko.verdict/1")
+        let rows: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let field = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_string();
+        let verdicts = rows
+            .iter()
             .map(|verdict| {
-                let field = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_string();
                 [
                     field(&verdict["outcome"]),
                     field(&verdict["blame"]),
@@ -1692,10 +2066,15 @@ exit 1
                 ]
             })
             .collect();
+        let bounds = rows
+            .iter()
+            .map(|verdict| field(&verdict["bound"]))
+            .collect();
         Tries {
             calls,
             prompts,
             verdicts,
+            bounds,
             settled: published(&mut events, &["attempt_settled"]),
             passed,
         }
@@ -1871,6 +2250,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
             settled["detail"], "passed its checks after reaching its 30-turn bound",
             "{settled}"
         );
+        // The run's own records say so too (gap-f465ce).
+        assert_eq!(right.bounds, ["turns"]);
 
         let wrong = bounded_tries(JUDGED_PROVIDER, ANSWER_CHECK, 3, work("41\n"), |_| {}).await;
         assert_eq!(
@@ -1893,6 +2274,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
             ]
         );
         assert!(wrong.passed.is_some(), "the top rung passes");
+        assert_eq!(wrong.bounds, ["turns", "turns", "-"]);
         let check_line = "AssertionError: answer.txt holds 41, not 42";
         assert!(!wrong.prompts[0].contains(check_line));
         for prompt in &wrong.prompts[1..] {
@@ -1924,6 +2306,122 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
                 serde_json::json!(["cheap", "gate_failed", true, true]),
                 serde_json::json!(["top", "passed", false, false]),
             ]
+        );
+    }
+
+    /// Fake Claude CLI that records each call as [`JUDGED_PROVIDER`] does.
+    /// Below the tier's 60 turns it writes what `cheap-work` beside it holds
+    /// to `answer.txt`, then keeps working, a line every 200 ms, until it is
+    /// stopped; given 60 turns it writes the right answer, 42, and finishes.
+    const SLOW_PROVIDER: &str = r#"#!/bin/sh
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+printf '%s\n---\n' "$*" > "$dir/prompt-$n"
+cat >> "$dir/prompt-$n"
+previous=
+model=-
+turns=-
+for arg in "$@"; do
+  case "$previous" in
+    --model) model=$arg ;;
+    --max-turns) turns=$arg ;;
+  esac
+  previous=$arg
+done
+printf '%s %s -\n' "$model" "$turns" >> "$dir/provider-calls"
+if [ "$turns" != 60 ]; then
+  cat "$dir/cheap-work" > answer.txt
+  i=0
+  while [ "$i" -lt 300 ]; do
+    i=$((i + 1))
+    printf '%s\n' '{"type":"content_block_delta","delta":{"text":"still thinking"}}'
+    sleep 0.2
+  done
+  exit 1
+fi
+echo 42 > answer.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote answer.txt"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// bug-f0007b: a try that runs its rung's time is stopped there and
+    /// judged by the task's checks on the work it left, as one that reaches
+    /// its turns or spend is (gap-2c9412). Work that passes them is accepted
+    /// on the cheap rung. Work that fails them fails the try on its check;
+    /// the next try is told it was stopped and why, and two such tries climb
+    /// to the top rung, which has no time bound and passes.
+    #[tokio::test]
+    async fn a_try_that_runs_its_time_is_judged_by_its_checks() {
+        let work = |answer: &'static str| {
+            move |dir: &std::path::Path| {
+                std::fs::write(dir.join("cheap-work"), answer).expect("write the cheap work");
+            }
+        };
+        let two_seconds = |config: &mut RokoConfig| {
+            config
+                .routing
+                .ladder
+                .max_secs
+                .insert("cheap".to_string(), 2);
+        };
+
+        let started = std::time::Instant::now();
+        let right = bounded_tries(SLOW_PROVIDER, ANSWER_CHECK, 3, work("42\n"), two_seconds).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the try stops at its bound, not the provider's 60 s: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(right.calls, [format!("{CHEAP} 30 -")]);
+        assert_eq!(
+            right.verdicts,
+            [["passed", "none", "cheap", "start"].map(str::to_string)]
+        );
+        let output = right.passed.expect("the stopped try passes its check");
+        assert!(
+            output.contains("at its 2 s time bound; the task's checks passed on the work it left"),
+            "{output}"
+        );
+        let [settled] = right.settled.as_slice() else {
+            panic!("one attempt_settled: {:?}", right.settled);
+        };
+        assert_eq!(
+            settled["detail"], "passed its checks after reaching its 2 s time bound",
+            "{settled}"
+        );
+        assert_eq!(
+            right.bounds,
+            ["time"],
+            "the verdict says so too (gap-f465ce)"
+        );
+
+        let wrong = bounded_tries(SLOW_PROVIDER, ANSWER_CHECK, 3, work("41\n"), two_seconds).await;
+        assert_eq!(
+            wrong.calls,
+            [
+                format!("{CHEAP} 30 -"),
+                format!("{CHEAP} 30 -"),
+                format!("{TOP} 60 -"),
+            ]
+        );
+        let place = |outcome: &str, blame: &str, rung: &str, reason: &str| {
+            [outcome, blame, rung, reason].map(str::to_string)
+        };
+        assert_eq!(
+            wrong.verdicts,
+            [
+                place("gate_failed", "agent", "cheap", "start"),
+                place("gate_failed", "agent", "cheap", "start"),
+                place("passed", "none", "top", "escalated"),
+            ]
+        );
+        assert!(
+            wrong.prompts[1]
+                .contains("was stopped: the try reached its time bound on rung `cheap`: 2 s")
+                && wrong.prompts[1].contains("AssertionError: answer.txt holds 41, not 42"),
+            "{}",
+            wrong.prompts[1]
         );
     }
 
@@ -2422,6 +2920,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
             ("T-READ", READ, true),
             ("T-429", THROTTLED, false),
         ] {
+            let mut other = task.clone();
+            other.id = id.to_string();
+            for attempt in 1..=2 {
+                let settled =
+                    infra_failure_on_cheap_rung(&spec, &other, attempt, failure, None, false);
+                dispatcher.note_ladder_outcome(&spec, &other, &settled);
+            }
+            assert_eq!(
+                dispatcher.ladder_step(&spec, &other),
+                u32::from(climbs),
+                "{failure}"
+            );
+        }
+    }
+
+    /// bug-80f0d0: a request the rung's provider refused (bug-35b190) is the
+    /// request's fault or its model's, not the provider's, so it leaves the
+    /// provider's circuit alone; the same refusal twice in a row on a rung
+    /// climbs the task past the model instead. So does a 403 that refuses
+    /// the model; one that says the key is bad is the account's, and never
+    /// climbs.
+    #[tokio::test]
+    async fn a_refused_request_twice_on_a_rung_climbs() {
+        const REFUSED: &str = "provider: agent error (openai): provider error: openai refused the \
+                               request (HTTP 400): Function tools with reasoning_effort are not \
+                               supported for gpt-5.4-mini in /v1/chat/completions. (param \
+                               reasoning_effort)";
+        const NO_ACCESS: &str = "provider: agent error (openai): provider error: openai refused \
+                                 the request (HTTP 403): Project `proj_1` does not have access to \
+                                 model `gpt-5.4` (code model_not_found)";
+        const REVOKED: &str = "provider: agent error (openai): provider error: openai refused the \
+                               request (HTTP 403): Invalid API key: this key has been revoked. \
+                               (code invalid_api_key)";
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let settled = infra_failure_on_cheap_rung(&spec, &task, 1, REFUSED, None, false);
+        assert_eq!(
+            infra_failure_class(&settled).as_deref(),
+            Some("provider_error:request_refused")
+        );
+        dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 0);
+        let settled = infra_failure_on_cheap_rung(&spec, &task, 2, REFUSED, None, false);
+        dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+
+        for (id, failure, climbs) in [("T-403", NO_ACCESS, true), ("T-KEY", REVOKED, false)] {
             let mut other = task.clone();
             other.id = id.to_string();
             for attempt in 1..=2 {

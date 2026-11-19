@@ -141,11 +141,13 @@ mod check_env_probe;
 #[cfg(all(test, unix))]
 mod check_process_probe;
 pub mod clean;
+pub mod cli_signals;
 /// Subcommand implementations that live in the library; the `roko` binary's
 /// own `commands` module re-exports them.
 pub mod commands {
     pub mod diagnose;
     pub mod learn_loops;
+    pub mod safety;
 }
 pub mod config;
 pub mod config_cmd;
@@ -185,6 +187,7 @@ pub mod inline;
 pub(crate) mod knowledge_helpers;
 #[path = "../../../scripts/layer_check.rs"]
 pub mod layer_check;
+pub mod learn_view;
 pub mod learning_helpers;
 pub mod loop_canary;
 pub mod model_selection;
@@ -205,7 +208,9 @@ pub mod plan_generate;
 pub mod plan_generator;
 pub mod plan_import;
 pub mod plan_policy;
+pub mod plan_status_view;
 pub mod plan_validate;
+pub mod plan_write_view;
 pub mod projection;
 pub mod prompting;
 pub mod repl;
@@ -228,11 +233,13 @@ pub mod spec_gate;
 pub mod spec_red_on_base;
 pub mod spinner;
 pub mod status;
+pub mod status_view;
 pub mod subscriptions;
 pub mod surface_inventory;
 pub mod task_accept;
 pub mod task_helpers;
 pub mod task_parser;
+pub mod term_style;
 pub mod transcript;
 pub mod tui;
 pub mod unified;
@@ -242,6 +249,7 @@ pub mod workspace_lock;
 pub mod workspace_paths;
 
 pub mod serve_client;
+pub mod serve_lifecycle;
 pub mod serve_runtime;
 pub mod state_hub_ipc;
 

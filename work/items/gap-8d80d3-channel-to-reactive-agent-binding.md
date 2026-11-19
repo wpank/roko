@@ -10,16 +10,16 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-runtime"]
 created = 2026-09-21
-updated = 2026-10-17
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/archive/428-channel-to-reactive-agent-binding.md#428 — Channel-to-Reactive-Agent Binding"
 discovered_from = "audit:tmp/backlog/archive/428-channel-to-reactive-agent-binding.md#428 — Channel-to-Reactive-Agent Binding"
 anchors = ["crates/roko-runtime/src/channel_binding.rs::ChannelBindingRouter", "crates/roko-runtime/src/lib.rs", "crates/roko-runtime/src/reactive_agent.rs::ReactiveAgentSupervisor", "crates/roko-runtime/src/reactive_agent.rs::TriggerCondition", "crates/roko-core/src/config/channels.rs::ChannelConfig", "crates/roko-serve/src/routes/webhooks.rs::slack_webhook", "crates/roko-serve/src/state.rs::AppState"]
 links = { depends_on = ["spec-743a7e"], blocks = [], related = ["spec-743a7e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -qE '^pub mod channel_binding' crates/roko-runtime/src/lib.rs && grep -rqE 'ChannelBindingRouter' crates/roko-serve/src crates/roko-cli/src && grep -rqw 'fn channel_message_wakes_bound_reactive_agent' crates/roko-runtime/ && cargo test -p roko-runtime channel_message_wakes_bound_reactive_agent"
+command = "grep -qE '^pub mod channel_binding' crates/roko-runtime/src/lib.rs && grep -rqE 'ChannelBindingRouter::new' crates/roko-serve/src crates/roko-cli/src && grep -rqw 'fn channel_message_wakes_bound_reactive_agent' crates/roko-runtime/ && cargo test -p roko-runtime --features channels channel_message_wakes_bound_reactive_agent"
 +++
 
 ## Problem
@@ -145,3 +145,5 @@ Re-verified 2026-09-29: unchanged. The router, the adapters it would bind (roko-
 2026-10-15 (status-quo decision 12, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): stays held. The files this item anchors (crates/roko-runtime/src/platforms.rs, channel_binding.rs, adapters/) are not declared in crates/roko-runtime/src/lib.rs at b42578bab, so they are never compiled; gap-7ebc4f parks them behind an off-by-default `channels` feature so they build and test on demand. Reviving this item starts from that feature.
 
 2026-10-17 (gap-7ebc4f): parked, still not wired. `crates/roko-runtime/src/lib.rs` now declares `channel_binding`, `platforms` and `adapters` behind roko-runtime's `channels` feature, which is off by default and also turns on roko-core's `channels` (so `config::channels::ChannelConfig` compiles). `ChannelBindingRouter` compiled as it was apart from rustfmt, and its 4 tests pass with `cargo test -p roko-runtime --features channels channel_binding`. A default build still leaves it out, and it still has no caller. The other channel-layer orphans in `src/` (`command_dispatcher.rs`, `delivery.rs`, …) remain undeclared: gap-092d24.
+
+Checked 2026-10-27: 2026-10-26 sweep: unchanged since the 2026-10-17 gap-7ebc4f note. Flagging a verify soundness issue: the suggested verify's cargo test -p roko-runtime channel_message_wakes_bound_reactive_agent would match 0 tests (exit 0, vacuously pass) unless --features channels is added, since the whole module only compiles under that feature; channel_binding.rs's actual tests are named router_starts_empty, add_binding_registers_entry, route_publishes_pulse_on_bus and route_with_no_binding_does_not_panic, not channel_message_wakes_bound_reactive_agent (which still doesn't exist anywhere).

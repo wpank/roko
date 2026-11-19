@@ -9,8 +9,9 @@ goal = "learning"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-learn/telemetry"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "paper-review-2026-10-16 (gap-aed6f1)"
 discovered_from = "gap-aed6f1"
 anchors = ["crates/roko-learn/src/telemetry/records.rs::AttemptVerdictRecord", "crates/roko-cli/src/graph_task_dispatch/attempt.rs"]
@@ -70,3 +71,5 @@ The `[[verify]]` command passes: the named test exists and passes.
 
 Found by the research-paper review (gap-aed6f1) at `5e32264ce`; still true at `1b8b62fb9`. Do not change what
 `output_sha256` hashes.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: unchanged; both fields are still always null in every settled verdict.

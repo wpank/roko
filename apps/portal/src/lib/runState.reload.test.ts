@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { WireDashboardEvent, WireDashboardSnapshot, WirePlanSummary } from '@/api/contracts';
 import { buildPlanRows } from '@/lib/planRows';
 import { applyEvent, fromSnapshot, initialRunState } from '@/lib/runState';
-import { statusFields } from '@/lib/statusLine';
+import { money } from '@/lib/words';
 
 function snapshot(
   plans: WireDashboardSnapshot['plans'],
@@ -99,22 +99,7 @@ describe('reload from a snapshot', () => {
     expect(row('hello').state).toBe('accepted');
 
     const hello = run.plans['hello']!;
-    const cost = statusFields({
-      hasRun: true,
-      running: false,
-      taskCount: 3,
-      waveCount: 1,
-      estimatedMinutes: null,
-      parallel: null,
-      tasksDone: hello.tasksDone,
-      tasksTotal: hello.tasksTotal,
-      elapsedMs: hello.finishedAtMs! - hello.startedAtMs!,
-      etaMinutes: null,
-      costUsd: hello.costUsd,
-      busyAgents: 0,
-      maxParallel: null,
-    }).find((f) => f.key === 'cost');
-    expect(cost?.text).toBe('$0.21');
+    expect(money(hello.costUsd)).toBe('$0.21');
   });
 
   it('keeps plan times, cost and accepted counts that the live events built', () => {

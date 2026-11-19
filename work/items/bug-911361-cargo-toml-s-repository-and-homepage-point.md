@@ -9,9 +9,9 @@ size = "S"
 goal = "release"
 subsystem = ["workspace/cargo"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 anchors = ["Cargo.toml:106", "Cargo.toml:107", "crates/roko-cli/src/deployment.rs::new_for_roko", "crates/roko-agent/src/provider/openrouter_meta.rs::HTTP_REFERER", "crates/roko-cli/src/daemon/systemd.rs", "crates/roko-cli/src/share.rs", "Dockerfile", "docker/roko.Dockerfile", "docs/v3/.vitepress/config.ts"]
@@ -148,3 +148,5 @@ measured it as it is. Other owner-like strings are a separate item; see Notes.
 `repository` and `homepage` are `https://github.com/nunchi/roko`. `nunchi` is an unrelated person's account; roko lives at `github.com/wpank/roko` (Nous decision D-02 recommends keeping `wpank`). Every crate inherits these URLs, so published metadata and docs links point at the wrong owner.
 
 Re-checked 2026-09-29: unchanged. Beyond Cargo.toml, 34 more tracked files contain github.com/nunchi/roko: code (roko-agent openrouter_meta.rs and safety/path.rs, roko-cli daemon/systemd.rs, deployment.rs, share.rs and worker/cloud.rs, roko-serve events.rs), Dockerfile and docker/*.Dockerfile labels, docs/v1 and docs/v3 (including .vitepress/config.ts and CrateLink.vue), examples/ and plans/demo-full-stack. Decide whether this item covers them or only the workspace metadata.
+
+Checked 2026-10-27: Re-verified 2026-10-26: two files not in the item's original 'Where' list also still match and would block the verify command even after the listed files are fixed: crates/roko-fs/src/observability.rs and benchmarks/viabilitybench/reports/refiner-cost/refine.jsonl (likely a generated artifact; confirm before editing a report file). Add both to Plan step 2's file list or its exclude set.

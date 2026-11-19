@@ -91,6 +91,36 @@ def test_a_round_that_would_lower_the_score_is_rejected(name):
     assert result.spec == spec
 
 
+def test_a_round_that_adds_a_hard_fail_is_rejected():
+    # bug-d0906c: a round must never be kept if it adds a hard fail (S07 §4.2), even one that raises the score.
+    # The NAMES fixtures all carry a baseline HF4 (their read_files name a synthetic workspace's files, missing
+    # against the real repository root that `context()` scores them against), so a hand-built spec with no hard
+    # fail at all isolates "added" from "already had".
+    spec = {
+        "id": "T1", "role": "implementer", "title": "Add a clamp helper",
+        "goal": "Add a clamp helper that bounds a value between a low and high limit for the calculator module.",
+        "description": "The calculator module needs a clamp(value, low, high) helper used by later features.",
+        "files": ["src/thing.py"],
+        "acceptance": ["AC1: clamp(5, 0, 10) returns 5 and clamp(-1, 0, 10) returns 0"],
+        "verify": [{"phase": "test", "command": "python3 -m pytest tests/test_thing.py::test_ac1", "covers": ["AC1"]}],
+    }
+    assert speclint.score_task(spec, context(spec))["hard_fail"] == []
+
+    # HF2: a new verify step that covers the new criterion but can never fail (it ends in `|| exit 0`).
+    vacuous = [refine.Addition("acceptance", "AC2: a bonus, independently observable criterion", source="s"),
+              refine.Addition("verify", {"phase": "test", "command": "echo checking || exit 0", "covers": ["AC2"]},
+                              source="s")]
+    result = refine.refine(spec, stub(vacuous), context(spec), max_rounds=1)
+    assert result.rounds == [] and result.stopped == "adds a hard fail: HF2" and result.spec == spec
+
+    # HF4: a new read_files entry naming a file that is not in the repository.
+    missing_file = [refine.Addition(
+        "context.read_files", {"path": "nonexistent/path.py", "why": "shows the pattern clamp should follow"},
+        source="s")]
+    result = refine.refine(spec, stub(missing_file), context(spec), max_rounds=1)
+    assert result.rounds == [] and result.stopped == "adds a hard fail: HF4" and result.spec == spec
+
+
 def test_a_round_naming_a_hidden_suite_path_is_rejected():
     spec = load("f2_api_pager")
     for bad_path in (".vb/task.json", "tests/hidden/secret.py", "task.json"):
@@ -111,6 +141,14 @@ def test_an_addition_to_a_non_additive_field_is_rejected():
     bad = [refine.Addition("files", ["extra.py"], source="s")]
     result = refine.refine(spec, stub(bad), context(spec))
     assert result.rounds == [] and result.stopped == "changed files"
+
+
+def test_an_addition_under_a_list_is_rejected_not_raised():
+    """A live model can name a field under a list (`acceptance.extra`); the round is rejected, and nothing raises."""
+    spec = load("f1_pyconv_errors")
+    for name in ("acceptance.extra", "verify.extra"):
+        result = refine.refine(spec, stub([refine.Addition(name, "AC9: x", source="s")]), context(spec))
+        assert result.rounds == [] and "no list there" in result.stopped and result.spec == spec, name
 
 
 def test_refinement_stops_at_at_most_two_rounds():

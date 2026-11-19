@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "whitepaper-review-2026-10-16 (gap-6a83de)"
 discovered_from = "gap-6a83de"
 anchors = ["crates/roko-core/src/config/self_model.rs::SelfModelConfig"]
@@ -58,3 +59,7 @@ The `[[verify]]` command passes: the stale phrase is gone and the field comment 
 
 Doc-only; no behaviour change and no test change needed. Found by the whitepaper review (gap-6a83de) on 2026-10-16
 at `5e32264ce`.
+
+Checked 2026-10-27: Re-verified 2026-10-26 at 15335e2f9: unchanged. The verify command's first clause (grep '(the default) or') also matches an unrelated line-86 comment about the start-rule policy field ('`expected_total` (the default) or `break_even`'), so it is not scoped to the mode field; it still correctly fails today only because its second clause (! grep -qF '`off` (the default)') catches the stale phrase.
+
+The [[verify]] command is unsound. Proposed replacement, not yet validated: `grep -B1 -F 'pub mode: SelfModelMode,' crates/roko-core/src/config/self_model.rs | head -1 | grep -q 'shadow` (the default)'`.

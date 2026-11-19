@@ -219,26 +219,6 @@ pub fn agents_instructions_section(agents_md: &str) -> PromptSection {
 
 // ─── Reusable stanza constants ───────────────────────────────────────────────
 
-/// Describes the canonical plans context layout for agents.
-///
-/// Injected into prompts so agents know where to find plan artifacts
-/// without relying on `find`/`ls`.
-pub const CONTEXT_LAYOUT_STANZA: &str = "\
-## Plans context layout
-
-- `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
-- `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
-- `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
-- `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
-- `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
-- `.roko/plans/<plan-base>/tasks.toml` — task checklists.
-- `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
-- `.roko/plans/<plan-base>/verify.sh` — invariant runner when generated (optional).
-- `.roko/plans/<plan-base>/brief.md` — implementation brief when present.
-- `.roko/plans/<plan-base>/reviews/` — per-plan review outputs when present.
-";
-
 /// MCP tools stanza — describes the free tools available to agents.
 ///
 /// Injected into prompts so agents prefer MCP tools over shelling out.
@@ -380,15 +360,6 @@ mod tests {
         assert_eq!(b.workspace_map, 8_000);
         assert_eq!(b.context, 4_000);
         assert_eq!(b.brief, 4_000);
-    }
-
-    #[test]
-    fn context_layout_stanza_contains_key_paths() {
-        assert!(!CONTEXT_LAYOUT_STANZA.contains("prd"));
-        assert!(CONTEXT_LAYOUT_STANZA.contains("`.roko/plans/`"));
-        assert!(!CONTEXT_LAYOUT_STANZA.contains(".mori"));
-        assert!(CONTEXT_LAYOUT_STANZA.contains("workspace-map.md"));
-        assert!(CONTEXT_LAYOUT_STANZA.contains("CONTEXT.md"));
     }
 
     #[test]

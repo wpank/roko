@@ -104,7 +104,13 @@ pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
 
 impl App {
     /// Run the terminal UI until the user quits.
-    pub fn run(mut self) -> Result<()> {
+    pub fn run(self) -> Result<()> {
+        self.run_to_exit().map(|_| ())
+    }
+
+    /// Run the terminal UI until it closes, and say why it closed: the
+    /// person quit, it finished, or its owner stopped it (bug-a362b8).
+    pub fn run_to_exit(mut self) -> Result<TuiExit> {
         let log_path = tui_log_path(&self.workdir);
         let log_dispatch =
             tui_log_dispatch(&self.workdir).context("initialize TUI file logging")?;
@@ -135,7 +141,7 @@ impl App {
         let cleanup = terminal_guard.restore();
 
         match (result, cleanup) {
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Ok(())) => Ok(self.exit),
             (Err(err), Ok(())) => Err(err),
             (Ok(()), Err(err)) => Err(err),
             (Err(err), Err(_cleanup_err)) => Err(err),

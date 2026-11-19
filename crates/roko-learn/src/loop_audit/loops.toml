@@ -268,6 +268,7 @@ receipt = "included_ids"
 notes = [
     "Built (S02.P1-10). Graph-only (decision 4115): a droppable section is excluded with p in [0.05, 0.2] for its first 100 opportunities, then [0.05, 0.5]; the built-in pinned sections and [sections] pinned never.",
     "Measured since gap-6f31c3: each sections row carries S03's fields, with the sections a prompt includes under the bandit and under π⁰ on both arms (on the arm that runs π⁰ the bandit's draws are logged, not applied). The bandit leaves sections out whether or not the token budget binds, so S03 §4.2's 'and the token budget binds', written for L-bid, is no part of its opportunity. Its read is its posteriors: a bandit that has learned from no labelled outcome reads as empty state.",
+    "Influence (q-beea61, Will's option b): measured on the odds the bandit leaves each droppable section out at, which every sections row logs on both arms, against the floor policy (every section left out at the 0.05 floor), not on one draw of each against π⁰. One draw of a policy that explores differs from a second as much as from π⁰, so S03 §4.4's A/A floor on draws would read the bandit inert whatever its posteriors say. Against the floor policy ι is the mean excess of its odds over the floor, the exclusions its posteriors add, with no draw left for an A/A floor: a bandit that has learned that every section helps sits at the floor and reads inert, one with flat posteriors sits at the cap. Rows from before the odds were logged count for ε alone.",
 ]
 
 [[loop.static_findings]]

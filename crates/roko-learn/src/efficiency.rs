@@ -962,18 +962,31 @@ pub fn compute_fleet_cfactor(events: &[AgentEfficiencyEvent]) -> FleetCFactor {
 /// empty) to `gate_passed: null`, and atomically replaces the file.
 /// Lines that cannot be parsed are preserved verbatim.
 ///
+/// It holds the log's append lock ([`roko_fs::log_rotation::lock_jsonl`])
+/// from the read through the replacement, so an append or a rotation made
+/// meanwhile waits for it, and it replaces nothing when no line needs
+/// patching, as in every log written since P0-GA-1. `roko learn all` and
+/// `roko learn efficiency` run it on every call, beside the runs that append
+/// to the log (bug-399240).
+///
 /// # Returns
 ///
 /// The number of lines that were patched.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be read or the replacement write fails.
+/// Returns an error if the lock cannot be taken, the file cannot be read or
+/// the replacement write fails.
 pub fn null_ambiguous_gate_failed_entries(
     path: &std::path::Path,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use std::io::Write as _;
 
+    let _lock = match roko_fs::log_rotation::lock_jsonl(path) {
+        Ok(lock) => lock,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(Box::new(err)),
+    };
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -1023,6 +1036,9 @@ pub fn null_ambiguous_gate_failed_entries(
         }
 
         writeln!(output, "{}", serde_json::to_string(&value)?)?;
+    }
+    if patched == 0 {
+        return Ok(0);
     }
 
     // Write atomically using a .tmp sibling.
@@ -1977,5 +1993,77 @@ mod tests {
         // Second run should see gate_passed=null and patch nothing.
         let second = null_ambiguous_gate_failed_entries(&path).unwrap();
         assert_eq!(second, 0, "second migration run must be idempotent");
+    }
+
+    /// bug-399240: a log with nothing to patch, as every log written since
+    /// P0-GA-1 is, is left as it is: the same bytes in the same file.
+    #[cfg(unix)]
+    #[test]
+    fn the_gate_passed_migration_leaves_a_clean_log_alone() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("efficiency.jsonl");
+        let content = concat!(
+            r#"{"schema":"agent_efficiency_event/v1","gate_passed":true,"outcome":"success"}"#,
+            "\n",
+            r#"{"schema":"agent_efficiency_event/v1","gate_passed":false,"outcome":"failure"}"#,
+            "\n",
+        );
+        std::fs::write(&path, content).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+
+        assert_eq!(null_ambiguous_gate_failed_entries(&path).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            inode,
+            "the migration replaced a log it had nothing to patch in"
+        );
+    }
+
+    /// bug-399240: the migration holds the lock the log's appenders hold, so
+    /// it waits for one, and a row appended meanwhile is kept.
+    #[test]
+    fn the_gate_passed_migration_waits_for_the_append_lock() {
+        use std::io::Write as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("efficiency.jsonl");
+        std::fs::write(&path, "{\"gate_passed\":false,\"outcome\":\"\"}\n").unwrap();
+
+        let appender = roko_fs::log_rotation::lock_jsonl(&path).unwrap();
+        let migration = std::thread::spawn({
+            let path = path.clone();
+            move || null_ambiguous_gate_failed_entries(&path).unwrap()
+        });
+        let finished = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            migration.is_finished()
+        });
+        assert!(
+            !finished,
+            "the migration rewrote the log while an appender held its lock"
+        );
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(log, "{{\"gate_passed\":true,\"outcome\":\"success\"}}").unwrap();
+        drop(appender);
+
+        assert_eq!(migration.join().unwrap(), 1);
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the row appended meanwhile was lost: {rows:?}"
+        );
+        assert!(rows[0]["gate_passed"].is_null());
+        assert_eq!(rows[1]["gate_passed"], serde_json::json!(true));
     }
 }

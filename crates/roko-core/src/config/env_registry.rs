@@ -1214,6 +1214,19 @@ fn runner_gate() -> Vec<EnvVarSpec> {
 fn agent_dispatch() -> Vec<EnvVarSpec> {
     vec![
         EnvVarSpec {
+            name: "ROKO_OPENAI_RESPONSES",
+            owner: "Agent dispatch",
+            purpose: "0 calls every OpenAI model through chat completions, never the Responses \
+                      API, whatever its [models.*] api says (gap-1ba0ac)",
+            value_type: ValueType::Bool,
+            default: "true",
+            precedence: "env > [models.*] api",
+            scope: Scope::Agent,
+            sensitivity: Sensitivity::Public,
+            stability: Stability::Stable,
+            replacement: None,
+        },
+        EnvVarSpec {
             name: "ROKO_MCP_CONFIG",
             owner: "Agent dispatch",
             purpose: "Explicit path to .mcp.json configuration",

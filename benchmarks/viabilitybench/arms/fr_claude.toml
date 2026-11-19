@@ -36,6 +36,8 @@ context_window = 200000
 tier = "architectural"                # claude-opus-5-5's own tier in roko.toml
 max_retries = 2
 skip_enrichment = true                # explicit per arm (B §2.3)
+audit = false                         # `plan run --no-audit`: Roko audits by default since 22ac6f06b, and an
+                                      # audit dispatches models outside the arm (gap-c7c462, bug-082810)
 egress_allow = ["api.anthropic.com:443"]   # 3305's allowlist (egress.DEFAULT_ALLOW); explicit here too
 
 [providers.anthropic]                 # what `vb run` admits as a network provider; claude signs in by itself

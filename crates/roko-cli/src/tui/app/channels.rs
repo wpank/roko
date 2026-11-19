@@ -431,6 +431,7 @@ impl App {
             Ok(()) | Err(std_mpsc::TryRecvError::Disconnected) => {
                 tracing::info!("TUI exiting: shutdown signal received");
                 self.running = false;
+                self.exit = TuiExit::Stopped;
             }
             Err(std_mpsc::TryRecvError::Empty) => {}
         }
@@ -455,9 +456,11 @@ impl App {
         if snapshot.plan_set_complete() {
             tracing::info!("TUI exiting: selected plan set completed");
             self.running = false;
+            self.exit = TuiExit::Finished;
         } else if snapshot.run_outcome.is_some() {
             tracing::info!("TUI exiting: run finished");
             self.running = false;
+            self.exit = TuiExit::Finished;
         }
     }
 

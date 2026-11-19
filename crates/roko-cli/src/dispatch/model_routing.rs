@@ -21,7 +21,11 @@
 //! 3. **Ladder**. With a [`RoutingLadder`] attached (`[routing.ladder]`, on
 //!    by default), the task's role and tier pick its start rung, unless its
 //!    `rung` hint names one. The cascade router's pick is only logged beside
-//!    it (shadow).
+//!    it (shadow). A rung that names `alternates` draws among its models that
+//!    can run, ε-greedy around its own model (gap-51d2ca, decision 4111
+//!    option B1): the row logs each model's propensity, and the router
+//!    learns from the outcome at its inverse-propensity weight
+//!    ([`RungDraw`]).
 //! 4. **CascadeRouter**. Only consulted when no override, hint or ladder
 //!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
 //!    The guards mask the models that cannot run here before its argmax
@@ -173,18 +177,23 @@ impl RoutingInputs {
 // ─── Outputs ───────────────────────────────────────────────────────────
 
 /// Why the router picked this model — preserved for feedback writers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModelChoiceSource {
     /// Operator override via the unified `--model` flag.
     Override,
     /// Author intent (`task.model_hint`).
     TaskHint,
-    /// The task's start rung on `[routing.ladder]` ([`RoutingLadder`]).
-    /// Its outcome teaches the cascade router nothing (decision 4111): the
-    /// router learns only from its own picks.
+    /// The task's rung on `[routing.ladder]` ([`RoutingLadder`]). A rung that
+    /// runs its own model with certainty teaches the cascade router nothing
+    /// (decision 4111 (A)). A rung that drew its model among two or more
+    /// (`draw`, gap-51d2ca) teaches it the outcome at the draw's
+    /// inverse-propensity weight (option B1).
     Ladder {
         /// Index of the rung among the task's rungs, cheapest first.
         rung: usize,
+        /// The rung's draw among its models; `None` when the rung ran its
+        /// own model with certainty.
+        draw: Option<RungDraw>,
     },
     /// Returned by [`CascadeRouter`].
     Router,
@@ -201,12 +210,49 @@ pub enum ModelChoiceSource {
     /// replaced its argmax with a model drawn among the eligible ones.
     Explore,
     /// The start rung an active self-model chose on `[routing.ladder]`, drawn
-    /// through S03's route table (S04, 6130). Like a ladder rung, it teaches
-    /// the cascade router nothing.
+    /// through S03's route table (S04, 6130). It runs the rung's own model,
+    /// with no draw among the rung's models, and teaches the cascade router
+    /// nothing: the self-model's route is its own.
     SelfModel {
         /// Index of the rung among the task's rungs, cheapest first.
         rung: usize,
     },
+}
+
+/// How a `[routing.ladder]` rung with two or more models that can run drew
+/// the one an attempt runs (gap-51d2ca, decision 4111 option B1): ε-greedy
+/// around the rung's own model, so each of its k models has probability at
+/// least ε/k ([`explore_route`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RungDraw {
+    /// The probability the draw gave the model it chose, below 1: the route
+    /// row's `chosen_propensity`.
+    pub propensity: f64,
+    /// The weight the cascade router learns the outcome at: the inverse
+    /// propensity 1/p scaled by the smallest probability the draw gave any of
+    /// the rung's models, ε/k. A model drawn at ε/k counts as one observation,
+    /// and the rung's own model, drawn more often, as (ε/k)/p of one, so the
+    /// router hears each of the rung's models about as often. In (0, 1].
+    pub weight: f64,
+}
+
+impl RungDraw {
+    /// The draw `route` made among a rung's models.
+    #[must_use]
+    pub fn of(route: &ExploredRoute) -> Self {
+        let propensity = route.propensity(&route.chosen);
+        let floor = route
+            .propensities
+            .iter()
+            .map(|(_, p)| *p)
+            .fold(propensity, f64::min);
+        let weight = if propensity > 0.0 {
+            (floor / propensity).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Self { propensity, weight }
+    }
 }
 
 impl ModelChoiceSource {
@@ -362,6 +408,10 @@ pub struct ModelRouter {
     /// ε of the exploration draw of a route the cascade router decides
     /// (S02.P1-3, `[routing] explore_epsilon`); 0 takes its argmax.
     explore_epsilon: f64,
+    /// Whether a ladder rung with two or more models that can run draws
+    /// among them at `explore_epsilon` (gap-51d2ca). Off until the caller
+    /// turns it on; a run with learning frozen leaves it off.
+    explore_rungs: bool,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -382,6 +432,7 @@ impl std::fmt::Debug for ModelRouter {
             .field("ladder", &self.ladder)
             .field("knowledge", &self.knowledge.is_some())
             .field("explore_epsilon", &self.explore_epsilon)
+            .field("explore_rungs", &self.explore_rungs)
             .finish()
     }
 }
@@ -403,6 +454,7 @@ impl ModelRouter {
             knowledge: None,
             state_digest: Arc::default(),
             explore_epsilon: 0.0,
+            explore_rungs: false,
         }
     }
 
@@ -413,6 +465,16 @@ impl ModelRouter {
     #[must_use]
     pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
         self.explore_epsilon = epsilon;
+        self
+    }
+
+    /// Let a ladder rung with two or more models that can run draw among
+    /// them at the router's ε, on each route with an attempt key to draw for
+    /// (gap-51d2ca, decision 4111 option B1). A run whose learning is frozen
+    /// leaves it off: nothing would learn from the draw.
+    #[must_use]
+    pub fn with_rung_exploration(mut self, on: bool) -> Self {
+        self.explore_rungs = on;
         self
     }
 
@@ -589,8 +651,15 @@ impl ModelRouter {
             return Ok(self.decide_self_model(inputs, &route, assigned_at));
         }
         let (choice, learned) = self.choose(inputs);
+        // The rung's own model: its draw among its models may run another
+        // (gap-51d2ca), and the row's ladder proposal names the rung's own.
+        let rung_model = matches!(choice.source, ModelChoiceSource::Ladder { .. })
+            .then(|| choice.model.slug.clone());
         let (choice, explored) = self.explore(inputs, choice);
         let mut decision = self.decision_row(inputs, &choice, learned, explored.as_ref());
+        if rung_model.is_some() {
+            decision.proposals.ladder = rung_model;
+        }
         // A decision made in its draw's millisecond still follows the draw.
         let decided_at = chrono::Utc::now().timestamp_millis().max(assigned_at + 1);
         decision.audit = route_audit_fields(inputs, &decision, assigned_at, decided_at);
@@ -777,13 +846,17 @@ impl ModelRouter {
     /// `choice` made ε-greedy (S02.P1-3): when the cascade router decided it,
     /// exploration is on and the route has an attempt key, the attempt's
     /// draw may replace the router's pick with a model drawn among the ones
-    /// the guards accept, as an [`ModelChoiceSource::Explore`] choice.
+    /// the guards accept, as an [`ModelChoiceSource::Explore`] choice. A
+    /// ladder rung draws among its own models ([`Self::explore_within_rung`]).
     /// Returns the choice and, for an ε-greedy route, its draw.
     fn explore(
         &self,
         inputs: &RoutingInputs,
         choice: ModelChoice,
     ) -> (ModelChoice, Option<ExploredRoute>) {
+        if let ModelChoiceSource::Ladder { rung, draw: None } = choice.source {
+            return self.explore_within_rung(inputs, choice, rung);
+        }
         let route = if choice.source == ModelChoiceSource::Router {
             self.explored_route(inputs, &choice.model.slug)
         } else {
@@ -820,6 +893,68 @@ impl ModelRouter {
         let epsilon = self.explore_epsilon;
         let route = explore_route(&eligible, argmax, epsilon, EXPLORE_SEED, &epoch, key);
         Some(route)
+    }
+
+    /// `choice`, a try the ladder routed to rung `rung`, drawn among the
+    /// rung's models that can run here (gap-51d2ca, decision 4111 option
+    /// B1): ε-greedy around the rung's own model, labelled with the
+    /// [`RungDraw`], with the draw. The choice as it was, and no draw, when
+    /// [`Self::within_rung_draw`] makes none.
+    fn explore_within_rung(
+        &self,
+        inputs: &RoutingInputs,
+        choice: ModelChoice,
+        rung: usize,
+    ) -> (ModelChoice, Option<ExploredRoute>) {
+        let Some(route) = self.within_rung_draw(inputs, rung, &choice.model.slug) else {
+            return (choice, None);
+        };
+        let draw = Some(RungDraw::of(&route));
+        let drawn = ModelChoice {
+            model: ModelSpec::from_slug(&route.chosen),
+            source: ModelChoiceSource::Ladder { rung, draw },
+        };
+        (drawn, Some(route))
+    }
+
+    /// The attempt's ε-greedy draw among the models of rung `rung` that can
+    /// run here, around `own`, the rung's own model. `None` when rung draws
+    /// are off (a run with learning frozen), ε is 0 (exploration off, or
+    /// maximize mode), the route has no attempt key, the chain's route layer
+    /// holds it out (it runs π⁰, the rung's own model), or fewer than two of
+    /// the rung's models can run: such a rung runs its own model with
+    /// certainty.
+    fn within_rung_draw(
+        &self,
+        inputs: &RoutingInputs,
+        rung: usize,
+        own: &str,
+    ) -> Option<ExploredRoute> {
+        let key = inputs.attempt_key.as_ref()?;
+        let epsilon = self.explore_epsilon;
+        if !self.explore_rungs || epsilon.is_nan() || epsilon <= 0.0 {
+            return None;
+        }
+        let held_out = inputs
+            .arm_set
+            .as_deref()
+            .is_some_and(|arms| arms.takes_default(ROUTE_LAYER));
+        if held_out {
+            return None;
+        }
+        let models = self.ladder.as_ref()?.rung_choices(&inputs.role, rung);
+        if models.len() < 2 || models.first().map(String::as_str) != Some(own) {
+            return None;
+        }
+        let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        Some(explore_route(
+            &models,
+            own,
+            epsilon,
+            EXPLORE_SEED,
+            &epoch,
+            key,
+        ))
     }
 
     /// `choice` as a route decision row, with `learned` the cascade router's
@@ -1007,7 +1142,10 @@ impl ModelRouter {
         );
         let choice = ModelChoice {
             model: ModelSpec::from_slug(rung.model),
-            source: ModelChoiceSource::Ladder { rung: rung.index },
+            source: ModelChoiceSource::Ladder {
+                rung: rung.index,
+                draw: None,
+            },
         };
         Some((choice, shadow))
     }
@@ -1342,7 +1480,8 @@ impl ModelRouter {
     /// decision row with L-M3's opportunity, a⁰ and a^L as its default and
     /// learned proposals, and every runnable rung's composed propensity
     /// (S03 §4.3). A held-out chain's row has the ladder as its source, an
-    /// explored one ε's.
+    /// explored one ε's. The chosen rung runs its own model: a rung's draw
+    /// among its models (gap-51d2ca) is not part of the self-model's route.
     fn decide_self_model(
         &self,
         inputs: &RoutingInputs,
@@ -1351,7 +1490,7 @@ impl ModelRouter {
     ) -> (ModelChoice, RoutingDecisionLog) {
         let rung = route.chosen.index;
         let source = if route.held_out {
-            ModelChoiceSource::Ladder { rung }
+            ModelChoiceSource::Ladder { rung, draw: None }
         } else {
             ModelChoiceSource::SelfModel { rung }
         };
@@ -1476,6 +1615,13 @@ impl RoutingLadder {
                 Ok(model) => {
                     runnable.insert(rung.model, model);
                 }
+                Err(reason) if rung.alternate => tracing::info!(
+                    rung = %rung.rung,
+                    model = %rung.model,
+                    %reason,
+                    "routing ladder: a rung's alternate cannot run here; the rung draws among \
+                     its other models"
+                ),
                 Err(reason) => tracing::info!(
                     rung = %rung.rung,
                     model = %rung.model,
@@ -1488,10 +1634,57 @@ impl RoutingLadder {
             tracing::info!("routing ladder: no rung can run in this workspace; the router picks");
             return None;
         }
-        Some(Self {
+        let ladder = Self {
             config: ladder.clone(),
             runnable,
-        })
+        };
+        ladder.note_unreachable_starts();
+        Some(ladder)
+    }
+
+    /// Say which tiers' start rung cannot run here, nor any rung above it,
+    /// so their tasks start one runnable rung below the highest (gap-ff2c38):
+    /// one line wherever a run sets or narrows its ladder, when any does.
+    fn note_unreachable_starts(&self) {
+        let runnable = |model: &str| self.runnable.contains_key(model);
+        let roles: BTreeSet<&str> = std::iter::once("implementer")
+            .chain(self.config.roles.iter().map(|entry| entry.role.trim()))
+            .collect();
+        let mut moved = Vec::new();
+        for role in roles {
+            for tier in TaskTier::ALL {
+                let Some(resolved) = self.config.resolve(role, tier, None, runnable) else {
+                    continue;
+                };
+                if !resolved.start_unreachable() {
+                    continue;
+                }
+                let name = |index: usize| resolved.rungs[index].name.as_str();
+                let tasks = if role == "implementer" {
+                    format!("{tier} tasks")
+                } else {
+                    format!("{tier} {role} tasks")
+                };
+                let highest = resolved.usable.last().copied().unwrap_or(resolved.start);
+                let climb = if highest == resolved.start {
+                    "with no rung above it to climb to".to_string()
+                } else {
+                    format!("and can climb to {}", name(highest))
+                };
+                moved.push(format!(
+                    "{tasks} start on {} instead of {}, {climb}",
+                    name(resolved.start),
+                    name(resolved.requested),
+                ));
+            }
+        }
+        if !moved.is_empty() {
+            tracing::info!(
+                tiers = %moved.join("; "),
+                "routing ladder: a start rung cannot run here, nor any rung above it, so its tasks \
+                 start one runnable rung below the highest"
+            );
+        }
     }
 
     /// The rung a task of `tier` in `role` starts on, or `None` when no rung
@@ -1513,6 +1706,18 @@ impl RoutingLadder {
             name: rung.name.clone(),
             model: self.runnable.get(&rung.model)?.clone(),
         })
+    }
+
+    /// Whether no rung at or above the start rung of a task of `tier` in
+    /// `role` can run here, so it starts one runnable rung below the highest
+    /// ([`LadderConfig::resolve`], gap-ff2c38).
+    #[must_use]
+    pub fn start_unreachable(&self, role: &str, tier: TaskTier, rung_hint: Option<&str>) -> bool {
+        self.config
+            .resolve(role, tier, rung_hint, |model| {
+                self.runnable.contains_key(model)
+            })
+            .is_some_and(|resolved| resolved.start_unreachable())
     }
 }
 
@@ -1557,10 +1762,25 @@ impl RoutingLadder {
         models.into_iter().cloned().collect()
     }
 
+    /// The names of the rungs, its roles' own rungs included, whose model
+    /// dispatch runs as `model`, each once, in the order the ladder lists
+    /// them.
+    #[must_use]
+    pub fn rungs_running(&self, model: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for rung in self.config.all_rungs() {
+            let runs = self.runnable.get(&rung.model).map(String::as_str);
+            if runs == Some(model) && !names.contains(&rung.name) {
+                names.push(rung.name.clone());
+            }
+        }
+        names
+    }
+
     /// This ladder without the rungs whose model `failed` names, each logged
     /// with the reason it gives: rungs whose agent-work probe failed (backlog
-    /// 1121). `None` when no rung is left, which leaves routing to the
-    /// router.
+    /// 1121). `None` when no rung is left: the tasks the ladder routes are
+    /// then refused rather than routed outside it (gap-20301d).
     #[must_use]
     pub fn without_models(mut self, failed: &BTreeMap<String, String>) -> Option<Self> {
         self.runnable.retain(|rung_model, model| {
@@ -1575,9 +1795,10 @@ impl RoutingLadder {
             false
         });
         if self.runnable.is_empty() {
-            tracing::warn!("routing ladder: no rung passed its probe; the router picks");
+            tracing::warn!("routing ladder: no rung passed its probe");
             return None;
         }
+        self.note_unreachable_starts();
         Some(self)
     }
 
@@ -1610,6 +1831,7 @@ impl RoutingLadder {
             );
             return None;
         }
+        self.note_unreachable_starts();
         Some(self)
     }
 
@@ -1639,6 +1861,55 @@ impl RoutingLadder {
         rungs.iter().any(|rung| rung.name == name)
     }
 
+    /// Index of the cheapest runnable rung on `role`'s ladder whose model
+    /// dispatch runs as `model`, or that names it so: the rung a try routed
+    /// to `model` was on, as the first model failover passed over names it
+    /// (bug-62ae1e). A rung's own model is matched first, then the
+    /// alternates a rung may draw (gap-51d2ca).
+    #[must_use]
+    pub fn rung_of_model(&self, role: &str, model: &str) -> Option<usize> {
+        let rungs = self.config.role_rungs(role);
+        let runs_as = |configured: &str| {
+            self.runnable
+                .get(configured)
+                .is_some_and(|runs| runs == model || configured == model)
+        };
+        rungs
+            .iter()
+            .position(|rung| runs_as(&rung.model))
+            .or_else(|| {
+                rungs.iter().position(|rung| {
+                    self.runnable.contains_key(&rung.model)
+                        && rung.alternates.iter().any(|alternate| runs_as(alternate))
+                })
+            })
+    }
+
+    /// The models dispatch runs for rung `index` on `role`'s ladder, each
+    /// once: the rung's own model first, then its alternates that can run
+    /// here, in the order the rung names them (gap-51d2ca). Empty when the
+    /// rung's own model cannot run: such a rung is skipped whatever its
+    /// alternates.
+    #[must_use]
+    pub fn rung_choices(&self, role: &str, index: usize) -> Vec<String> {
+        let rungs = self.config.role_rungs(role);
+        let Some(rung) = rungs.get(index) else {
+            return Vec::new();
+        };
+        let Some(own) = self.runnable.get(&rung.model) else {
+            return Vec::new();
+        };
+        let mut choices = vec![own.clone()];
+        for alternate in &rung.alternates {
+            if let Some(model) = self.runnable.get(alternate)
+                && !choices.contains(model)
+            {
+                choices.push(model.clone());
+            }
+        }
+        choices
+    }
+
     /// Index of the rung named `name` on `role`'s ladder, cheapest first,
     /// runnable or not: where M1's tier floor and cap sit (8124).
     #[must_use]
@@ -1655,16 +1926,20 @@ pub struct LadderRungReport {
     pub rung: String,
     /// Rung model as configured.
     pub model: String,
+    /// The model is one of the rung's alternates (gap-51d2ca), not its own:
+    /// when it cannot run, the rung draws without it.
+    pub alternate: bool,
     /// The model name dispatch runs for it, or why the rung cannot run here.
     pub dispatch: Result<String, String>,
 }
 
 /// Each rung model of `config.routing.ladder` (its own rungs, then its
-/// roles'; a model twice only once), with the model name dispatch runs for
-/// it or why it cannot run in this workspace, decided as a run binds the
-/// ladder ([`RoutingLadder::from_config`]). Empty when the ladder is off.
-/// `roko doctor` and `roko init` show it, because a run only logs the rungs
-/// it skips.
+/// roles'; each rung's own model, then its alternates; a model twice in one
+/// part only once), with the model name dispatch runs for it or why it
+/// cannot run in this workspace, decided as a run binds the ladder
+/// ([`RoutingLadder::from_config`]). Empty when the ladder is off. `roko
+/// doctor` and `roko init` show it, because a run only logs the rungs it
+/// skips.
 #[must_use]
 pub fn ladder_report(config: &RokoConfig) -> Vec<LadderRungReport> {
     ladder_report_with(config, |key| config.provider_available_for_model_key(key))
@@ -1683,11 +1958,18 @@ fn ladder_report_with(
     let mut seen = HashSet::new();
     ladder
         .all_rungs()
-        .filter(|rung| seen.insert(rung.model.as_str()))
-        .map(|rung| LadderRungReport {
+        .flat_map(|rung| {
+            let alternates = rung.alternates.iter().map(|model| (model.as_str(), true));
+            std::iter::once((rung.model.as_str(), false))
+                .chain(alternates)
+                .map(move |(model, alternate)| (rung, model, alternate))
+        })
+        .filter(|&(_, model, alternate)| seen.insert((model, alternate)))
+        .map(|(rung, model, alternate)| LadderRungReport {
             rung: rung.name.clone(),
-            model: rung.model.clone(),
-            dispatch: rung_dispatch_model(config, &models, &rung.model, builtins, &available),
+            model: model.to_string(),
+            alternate,
+            dispatch: rung_dispatch_model(config, &models, model, builtins, &available),
         })
         .collect()
 }
@@ -1881,11 +2163,13 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            warm_build_trees: Vec::new(),
             attempt_key: None,
             arm_set: None,
             knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
+            source_documents: Vec::new(),
         }
     }
 
@@ -2118,13 +2402,25 @@ mod tests {
         let choice = ladder_route(everywhere.clone(), &t, &ctx());
         assert_eq!(
             routed(&choice),
-            ("gpt-5.4-mini", ModelChoiceSource::Ladder { rung: 2 })
+            (
+                "gpt-5.4-mini",
+                ModelChoiceSource::Ladder {
+                    rung: 2,
+                    draw: None
+                }
+            )
         );
         let no_mini = ladder(&ladder_config(), |key| key != "gpt-5-4-mini");
         let choice = ladder_route(no_mini, &t, &ctx());
         assert_eq!(
             routed(&choice),
-            ("claude-sonnet-4-6", ModelChoiceSource::Ladder { rung: 3 })
+            (
+                "claude-sonnet-4-6",
+                ModelChoiceSource::Ladder {
+                    rung: 3,
+                    draw: None
+                }
+            )
         );
         t.model_hint = Some("claude-haiku-4-5".into());
         let choice = ladder_route(everywhere, &t, &ctx());
@@ -2192,7 +2488,13 @@ mod tests {
         let choice = ladder_route(everywhere.clone(), &t, &ctx());
         assert_eq!(
             routed(&choice),
-            ("gpt-oss-120b", ModelChoiceSource::Ladder { rung: 0 })
+            (
+                "gpt-oss-120b",
+                ModelChoiceSource::Ladder {
+                    rung: 0,
+                    draw: None
+                }
+            )
         );
         assert!(!choice.forced());
         for (tier, slug, rung) in [
@@ -2204,7 +2506,7 @@ mod tests {
             let choice = ladder_route(everywhere.clone(), &t, &ctx());
             assert_eq!(
                 routed(&choice),
-                (slug, ModelChoiceSource::Ladder { rung }),
+                (slug, ModelChoiceSource::Ladder { rung, draw: None }),
                 "{tier}"
             );
         }
@@ -2240,7 +2542,13 @@ mod tests {
         let choice = ladder_route(with_reviewer.clone(), &t, &reviewer);
         assert_eq!(
             routed(&choice),
-            ("gpt-5.4-mini", ModelChoiceSource::Ladder { rung: 2 })
+            (
+                "gpt-5.4-mini",
+                ModelChoiceSource::Ladder {
+                    rung: 2,
+                    draw: None
+                }
+            )
         );
         let choice = ladder_route(with_reviewer, &t, &ctx());
         assert_eq!(choice.model.slug, "gpt-oss-120b");
@@ -2251,7 +2559,13 @@ mod tests {
         let choice = ladder_route(no_cerebras, &t, &ctx());
         assert_eq!(
             routed(&choice),
-            ("glm-4.7", ModelChoiceSource::Ladder { rung: 1 })
+            (
+                "glm-4.7",
+                ModelChoiceSource::Ladder {
+                    rung: 1,
+                    draw: None
+                }
+            )
         );
         let mut config = ladder_config();
         config.routing.disabled_providers = vec!["cerebras".to_string()];
@@ -2355,10 +2669,7 @@ mod tests {
         .expect("parse");
         config.routing.ladder.rungs = [("cheap", "sonar"), ("strong", "gpt-5.4-mini")]
             .into_iter()
-            .map(|(name, model)| roko_core::config::routing::LadderRung {
-                name: name.to_string(),
-                model: model.to_string(),
-            })
+            .map(|(name, model)| roko_core::config::routing::LadderRung::new(name, model))
             .collect();
         config.routing.disabled_providers = vec!["openai".to_string()];
         let report = ladder_report_with(&config, |_| true);
@@ -2469,7 +2780,7 @@ mod tests {
             let choice = ladder_route(no_glm.clone(), &t, &climbing);
             assert_eq!(
                 routed(&choice),
-                (slug, ModelChoiceSource::Ladder { rung }),
+                (slug, ModelChoiceSource::Ladder { rung, draw: None }),
                 "step {step}"
             );
         }
@@ -2813,7 +3124,13 @@ mod tests {
         let mut on_ladder = RoutingInputs::from_task(&t, &ctx());
         on_ladder.routing_context = Some(routing_context());
         let (choice, row) = decided(&laddered, &on_ladder);
-        assert_eq!(choice.source, ModelChoiceSource::Ladder { rung: 0 });
+        assert_eq!(
+            choice.source,
+            ModelChoiceSource::Ladder {
+                rung: 0,
+                draw: None
+            }
+        );
         assert_eq!(row.proposals.ladder.as_deref(), Some("gpt-oss-120b"));
         assert_eq!(
             row.proposals.learned.as_deref(),
@@ -2974,6 +3291,259 @@ mod tests {
         let p: Vec<Option<f64>> = row.candidates.iter().map(|c| c.p).collect();
         assert_eq!(p, [Some(0.5), Some(0.5)]);
         assert!(row.proposals.aa.is_some());
+    }
+
+    /// gap-51d2ca (decision 4111 option B1): on a ladder rung with two models
+    /// that can run, each attempt draws between them, ε-greedy around the
+    /// rung's own model. Over many attempts every route logs a propensity
+    /// below 1 with candidate probabilities that sum to 1, the draws land on
+    /// both models, and the routing sink credits the router with every
+    /// outcome, its bandit at the draw's inverse-propensity weight. A
+    /// one-model rung logs 1.0 and credits nothing; so does a two-model rung
+    /// for a route without an attempt key, with ε or rung draws off, or on a
+    /// chain held out on the route layer.
+    #[tokio::test]
+    async fn ladder_rung_exploration_logs_propensity_below_one() {
+        use crate::dispatch::AgentOutcome;
+        use crate::runtime_feedback::{FeedbackEvent, FeedbackSink, RoutingObservationSink};
+        use roko_learn::model_call_feedback::ModelCallJournal;
+        use roko_learn::telemetry::{
+            Arm, Assignment, AttemptIdentity, AttemptOutcome, AttemptVerdictRecord,
+        };
+
+        const EPSILON: f64 = 0.1;
+        const ATTEMPTS: u32 = 400;
+        // The mid rung runs glm-4.7, or kimi-k2.6 in its place.
+        let mut config = ladder_config();
+        config.models.insert(
+            "kimi-k2-5".to_string(),
+            ModelProfile {
+                provider: "moonshot".to_string(),
+                slug: "kimi-k2.6".to_string(),
+                supports_tools: true,
+                ..ModelProfile::default()
+            },
+        );
+        config.routing.ladder.rungs[1].alternates = vec!["kimi-k2-5".to_string()];
+        let bound = ladder(&config, |_| true);
+        assert_eq!(
+            bound.rung_choices("implementer", 1),
+            ["glm-4.7", "kimi-k2.6"]
+        );
+        assert_eq!(bound.rung_choices("implementer", 0), ["gpt-oss-120b"]);
+        assert_eq!(bound.rung_of_model("implementer", "kimi-k2.6"), Some(1));
+        let router = ModelRouter::new(None)
+            .with_default_slug("default-model")
+            .with_routing_ladder(bound)
+            .with_explore_epsilon(EPSILON)
+            .with_rung_exploration(true);
+
+        // The router the outcomes teach, journaled as a Graph run's is.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = temp.path().join("learn").join("cascade-router.json");
+        let journal = Arc::new(ModelCallJournal::for_snapshot(&snapshot));
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "glm-4.7".into(),
+            "kimi-k2.6".into(),
+            "gpt-oss-120b".into(),
+        ]));
+        let sink = RoutingObservationSink::new(Arc::clone(&cascade)).with_journal(journal);
+        let attempt_on = |tier: &str, attempt: u32| {
+            let mut t = task();
+            t.tier = tier.into();
+            let mut inputs = RoutingInputs::from_task(&t, &ctx());
+            inputs.routing_context = Some(routing_context());
+            inputs.attempt_key = Some(AttemptKey::new("gr-rung", "p", "t", attempt));
+            inputs
+        };
+        let passed = |source: ModelChoiceSource, model: &str, attempt: u32| {
+            let key = AttemptKey::new("gr-rung", "p", "t", attempt);
+            let verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::Passed,
+                true,
+            );
+            FeedbackEvent::TaskCompleted {
+                plan_id: "p".into(),
+                task_id: "t".into(),
+                outcome: AgentOutcome {
+                    task_id: "t".into(),
+                    plan_id: "p".into(),
+                    model: model.to_string(),
+                    provider: String::new(),
+                    output: String::new(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost_usd: 0.01,
+                    duration_ms: 1_000,
+                    exit_code: Some(0),
+                    is_error: false,
+                },
+                model_source: source,
+                succeeded: true,
+                routing_context: Some(routing_context()),
+                prompt_text: None,
+                cache_read_tokens: 0,
+                knowledge_ids: Vec::new(),
+                playbook_ids: Vec::new(),
+                initial_model: model.to_string(),
+                turns: 0,
+                failure_reason: None,
+                settled: Some(Arc::new(verdict)),
+            }
+        };
+
+        // The rung's own model has P = 1 − ε + ε/2, the other ε/2.
+        let own = 1.0 - EPSILON + EPSILON / 2.0;
+        let floor = EPSILON / 2.0;
+        let mut landed: BTreeMap<String, u32> = BTreeMap::new();
+        for attempt in 1..=ATTEMPTS {
+            let (choice, row) = router.decide(&attempt_on("integrative", attempt)).unwrap();
+            let ModelChoiceSource::Ladder {
+                rung: 1,
+                draw: Some(draw),
+            } = choice.source
+            else {
+                panic!(
+                    "attempt {attempt} draws on the mid rung: {:?}",
+                    choice.source
+                );
+            };
+            let model = choice.model.slug.clone();
+            let expected = if model == "glm-4.7" { own } else { floor };
+            assert!(
+                (draw.propensity - expected).abs() < 1e-12,
+                "{model}: {draw:?}"
+            );
+            assert!(
+                (draw.weight - floor / expected).abs() < 1e-12,
+                "{model}: {draw:?}"
+            );
+            assert!(draw.propensity < 1.0);
+            assert_eq!(row.propensity, Some(draw.propensity));
+            assert_eq!(row.source, Some(DecisionSource::Ladder));
+            assert_eq!(row.selected_model, model);
+            assert_eq!(row.proposals.ladder.as_deref(), Some("glm-4.7"));
+            assert!(row.proposals.aa.is_some(), "the draw's A/A proposal");
+            let p = |slug: &str| {
+                let candidate = row.candidates.iter().find(|c| c.model == slug);
+                candidate.and_then(|c| c.p).unwrap_or_default()
+            };
+            assert!((p("glm-4.7") - own).abs() < 1e-12, "{:?}", row.candidates);
+            assert!(
+                (p("kimi-k2.6") - floor).abs() < 1e-12,
+                "{:?}",
+                row.candidates
+            );
+            let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
+            assert!((total - 1.0).abs() < 1e-9, "p sums to {total}");
+            let opportunity = row.audit.opportunity.as_ref().expect("the opportunity");
+            assert_eq!(opportunity.reason, "ladder_rung", "no L-route opportunity");
+            *landed.entry(model.clone()).or_default() += 1;
+
+            let event = passed(choice.source, &model, attempt);
+            assert!(crate::runtime_feedback::routing::credits_router(
+                choice.source
+            ));
+            assert!(sink.interested(&event));
+            sink.on_event(&event).await.unwrap();
+        }
+        let (glm, kimi) = (landed["glm-4.7"], landed.get("kimi-k2.6").copied());
+        let kimi = kimi.expect("some draws land on the rung's other model");
+        assert!(glm > kimi, "{landed:?}");
+
+        // Every outcome is a full confidence trial ...
+        let confidence = cascade.confidence_snapshot();
+        for (model, times) in &landed {
+            let times = u64::from(*times);
+            assert_eq!(
+                confidence.get(model).copied(),
+                Some((times, times)),
+                "{model}"
+            );
+        }
+        assert_eq!(cascade.total_observations(), u64::from(ATTEMPTS));
+        // ... and a bandit update at its inverse-propensity weight: a model
+        // drawn at ε/2 counts as one observation, the rung's own model as
+        // (ε/2)/P of one.
+        let growth = |slug: &str| {
+            let trace = |router: &CascadeRouter, slug: &str| {
+                let arms = router.linucb().arm_stats();
+                let arm = arms.iter().find(|arm| arm.slug == slug).expect("an arm");
+                (0..arm.a_matrix.len())
+                    .map(|i| arm.a_matrix[i][i])
+                    .sum::<f64>()
+            };
+            let fresh = CascadeRouter::new(vec![slug.to_string()]);
+            trace(cascade.as_ref(), slug) - trace(&fresh, slug)
+        };
+        let unit = growth("kimi-k2.6") / f64::from(kimi);
+        let expected = f64::from(glm) * floor / own * unit;
+        let relative = (growth("glm-4.7") - expected).abs() / expected;
+        assert!(
+            relative < 1e-9,
+            "the own model's arm grew {relative} off its weight"
+        );
+
+        // A one-model rung runs its own model with certainty and credits
+        // nothing.
+        for attempt in 1..=32 {
+            let (choice, row) = router.decide(&attempt_on("mechanical", attempt)).unwrap();
+            let fixed = ModelChoiceSource::Ladder {
+                rung: 0,
+                draw: None,
+            };
+            assert_eq!(routed(&choice), ("gpt-oss-120b", fixed));
+            assert_eq!(row.propensity, Some(1.0));
+            assert!(!crate::runtime_feedback::routing::credits_router(fixed));
+            let event = passed(choice.source, "gpt-oss-120b", attempt);
+            sink.on_event(&event).await.unwrap();
+        }
+        assert_eq!(cascade.total_observations(), u64::from(ATTEMPTS));
+        assert_eq!(cascade.confidence_snapshot().get("gpt-oss-120b"), None);
+
+        // Nor does the two-model rung draw for a route without an attempt
+        // key, with ε 0, with rung draws off (a run with learning frozen), or
+        // on a chain the route layer holds out, which runs π⁰.
+        let mut keyless = attempt_on("integrative", 1);
+        keyless.attempt_key = None;
+        let mut held_out = attempt_on("integrative", 1);
+        let default_arm = Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: "route".to_string(),
+            salt_id: "route@2026-10-21".to_string(),
+            u: 0.1,
+            h: 0.2,
+            g: 0.0,
+            arm: Arm::Default,
+            propensity: 0.2,
+        };
+        held_out.arm_set = Some(Arc::new(ArmSet {
+            chain_key: "gr-rung:p:t".to_string(),
+            arms: [("route".to_string(), default_arm)].into(),
+            condition_id: "normal".to_string(),
+        }));
+        let no_draw = [
+            (router.clone(), keyless),
+            (
+                router.clone().with_explore_epsilon(0.0),
+                attempt_on("integrative", 1),
+            ),
+            (
+                router.clone().with_rung_exploration(false),
+                attempt_on("integrative", 1),
+            ),
+            (router.clone(), held_out),
+        ];
+        for (router, inputs) in no_draw {
+            let (choice, row) = router.decide(&inputs).unwrap();
+            let fixed = ModelChoiceSource::Ladder {
+                rung: 1,
+                draw: None,
+            };
+            assert_eq!(routed(&choice), ("glm-4.7", fixed), "{router:?}");
+            assert_eq!(row.propensity, Some(1.0), "{router:?}");
+        }
     }
 
     /// The learned state `router`'s decision for `inputs` names.
@@ -3201,7 +3771,7 @@ mod tests {
         let mut inputs = RoutingInputs::from_task(&task(), &ctx());
         inputs.attempt_key = Some(AttemptKey::new("gr-m3", "p", "t", 1));
         let (own, _) = router.decide(&inputs).unwrap();
-        let ModelChoiceSource::Ladder { rung: start } = own.source else {
+        let ModelChoiceSource::Ladder { rung: start, .. } = own.source else {
             panic!("the ladder routes an unpinned task: {:?}", own.source);
         };
         let own_model = own.model.slug.as_str();
@@ -3279,7 +3849,10 @@ mod tests {
             condition_id: "normal".to_string(),
         }));
         let (choice, row) = router.decide(&inputs).unwrap();
-        let ladder_source = ModelChoiceSource::Ladder { rung: start };
+        let ladder_source = ModelChoiceSource::Ladder {
+            rung: start,
+            draw: None,
+        };
         assert_eq!(routed(&choice), (own_model, ladder_source));
         assert_eq!(row.source, Some(DecisionSource::Ladder));
         assert_eq!(row.propensity, Some(0.2));

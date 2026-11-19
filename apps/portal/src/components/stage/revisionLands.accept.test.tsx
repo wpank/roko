@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { PlanView } from '@/components/stage/PlanView';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { initialRunState } from '@/lib/runState';
 import { renderWithClient, setStore } from '@/test/dom';
 
@@ -62,7 +62,7 @@ afterEach(() => {
 describe('a revision', () => {
   it('shows its new task once it lands, and closes the prompt', async () => {
     stubServer();
-    renderWithClient(<PlanView plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />, {
+    renderWithClient(<PlanPage plan={PLAN} selectedTaskId={null} onSelectTask={() => {}} onRequestError={() => {}} />, {
       seed: [
         [queryKeys.planTasks('hello'), BEFORE],
         [queryKeys.validation('hello'), VALID],

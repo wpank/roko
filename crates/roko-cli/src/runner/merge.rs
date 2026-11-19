@@ -46,8 +46,9 @@ pub(crate) async fn git_output(workdir: &std::path::Path, args: &[&str]) -> Resu
 pub(crate) enum MergeTree {
     /// The merge is clean; `tree` is the OID of the merged tree.
     Clean { tree: String },
-    /// The merge conflicts in these paths.
-    Conflicted { paths: Vec<String> },
+    /// The merge conflicts in these paths; `tree` holds the merge, with
+    /// conflict markers in them.
+    Conflicted { tree: String, paths: Vec<String> },
 }
 
 /// Merge `theirs` into `ours` in the object database with
@@ -92,7 +93,8 @@ pub(crate) fn merge_tree_result(output: &std::process::Output) -> Result<MergeTr
         }),
         // Exit 1 also means "not something we can merge"; only a conflict
         // prints the merged tree first.
-        (Some(1), Some(_)) => Ok(MergeTree::Conflicted {
+        (Some(1), Some(tree)) => Ok(MergeTree::Conflicted {
+            tree: tree.to_string(),
             paths: fields.map(ToOwned::to_owned).collect(),
         }),
         _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),

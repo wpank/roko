@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "backlog wave reports 2026-10-02 (PK28 gap-c06ff3)"
 discovered_from = "gap-c06ff3 (backlog task 7107)"
 anchors = ["benchmarks/viabilitybench/schema/validate.py::KINDS", "benchmarks/viabilitybench/audit/__init__.py::label_errors", "benchmarks/viabilitybench/README.md"]
@@ -81,3 +82,5 @@ list are out of date relative to it.
 - No LLM spend; this is a small, self-contained fix in two files.
 - 2026-10-02 (filer-grpD): filed from backlog wave reports (PK28 gap-c06ff3), confirmed directly against
   `validate.py` and `README.md` at HEAD (both checks below return nonzero today).
+
+Checked 2026-10-27: 2026-10-26: unchanged since 2026-10-02 filing.

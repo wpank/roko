@@ -766,10 +766,7 @@ mod tests {
             ("top", "claude-sonnet-4-6"),
         ]
         .into_iter()
-        .map(|(name, model)| roko_core::config::routing::LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        })
+        .map(|(name, model)| roko_core::config::routing::LadderRung::new(name, model))
         .collect();
 
         // The chain's planner, Claude on claude_cli, runs its own tools: the

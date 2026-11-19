@@ -88,7 +88,9 @@ mod unix {
         /// Boxed to reduce the enum stack size (DashboardSnapshot is ~1360 bytes).
         Snapshot(Box<DashboardSnapshot>),
         /// One event to be applied incrementally after the snapshot.
-        Event(DashboardEvent),
+        ///
+        /// Boxed too: the largest event (`call_cost`) is over 200 bytes.
+        Event(Box<DashboardEvent>),
     }
 
     /// The first frame a client sends: the token it read from `hub.token`.
@@ -452,18 +454,20 @@ mod unix {
         // Replay any ring-buffered events the client missed between the
         // snapshot and now (typically zero for a fresh connection).
         for envelope in subscription.replay {
-            write_frame(&mut stream, &HubIpcMessage::Event(envelope.payload))
-                .await
-                .context("send replay event frame")?;
+            write_frame(
+                &mut stream,
+                &HubIpcMessage::Event(Box::new(envelope.payload)),
+            )
+            .await
+            .context("send replay event frame")?;
         }
 
         // Stream live events.
         loop {
             match live_rx.recv().await {
                 Ok(envelope) => {
-                    if let Err(err) =
-                        write_frame(&mut stream, &HubIpcMessage::Event(envelope.payload)).await
-                    {
+                    let event = HubIpcMessage::Event(Box::new(envelope.payload));
+                    if let Err(err) = write_frame(&mut stream, &event).await {
                         // Broken pipe / client disconnected — log at debug, not warn.
                         debug!(error = %err, "StateHub IPC stream write failed; closing connection");
                         break;
@@ -561,7 +565,7 @@ mod unix {
             loop {
                 match read_frame::<HubIpcMessage>(&mut stream, u32::MAX).await {
                     Ok(HubIpcMessage::Event(event)) => {
-                        hub_clone.sender().publish(event);
+                        hub_clone.sender().publish(*event);
                     }
                     Ok(HubIpcMessage::Snapshot(snap)) => {
                         // Server sent a re-snapshot (client lagged).

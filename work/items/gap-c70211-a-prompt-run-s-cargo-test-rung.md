@@ -9,8 +9,9 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-roko-gates#bug-5089fb-cargo"
 discovered_from = "agent:roko-gates (round v6, bug-5089fb, 2026-10-17)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs::prompt_base_checks", "crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs::baseline_run", "crates/roko-cli/src/graph_task_dispatch/diff_snapshot.rs::snapshot_tree"]
@@ -79,3 +80,5 @@ common mid-refactor. Related: bug-5089fb, gap-161be1.
 - Never share a target directory between two checkouts: memory `shared_cargo_target_dir_worktrees`.
 - The base run must race the run's interrupt, as `run_prompt` does for Python (`tokio::select!` on
   `interrupt.stopped()`).
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: unchanged; cargo rungs are still excluded from prompt_base_checks by design (test_runners.rs::runs_files), confirmed by the module's own doc comment.

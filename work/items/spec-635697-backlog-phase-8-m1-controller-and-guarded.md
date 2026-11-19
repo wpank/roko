@@ -8,11 +8,15 @@ severity = "p2"
 goal = "cybernetic"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "for id in gap-8b67de gap-f7bab8 gap-eb39c1 gap-2e4a81 gap-4cbd80 gap-414e56 gap-ed1a08 gap-681741 gap-11cec6 gap-fa4d4b gap-099513 gap-309b26; do grep -rqw \"id = \\\"$id\\\"\" work/done/ || exit 1; done"
 +++
 
 ## Problem
@@ -53,3 +57,5 @@ Every package of this phase is done.
 ## Notes
 
 - Held tasks and deferred decisions are not filed; see the backlog folder.
+
+Checked 2026-10-27: 2026-10-26 sweep: 10/12 packages done. PK68/gap-681741 and PK69/gap-11cec6 (both live ViabilityBench campaign runs) remain open, consistent with the live-run/provider-billing blockers also noted on spec-567e52 and spec-446a41.

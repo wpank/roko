@@ -44,6 +44,10 @@ pub struct SessionStatus {
     /// The part of `total_cost_usd` priced from estimated usage, which no
     /// provider reported (gap-288e38).
     pub estimated_cost_usd: Option<f64>,
+    /// Recorded calls whose cost is unknown, which `total_cost_usd` leaves
+    /// out (backlog 2109, gap-2bec05). `None` when the costs log was not
+    /// read.
+    pub unpriced_calls: Option<usize>,
     /// Recorded cost for the current UTC day in USD.
     pub today_cost_usd: Option<f64>,
     /// Remaining ETA minutes from the critical-path computation.
@@ -75,6 +79,7 @@ impl SessionStatus {
             cfactor: None,
             total_cost_usd: None,
             estimated_cost_usd: None,
+            unpriced_calls: None,
             today_cost_usd: None,
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -127,6 +132,9 @@ impl SessionStatus {
         }
         if let Some(cost) = self.estimated_cost_usd.filter(|cost| *cost > 0.0) {
             lines.push(format!("  of which estimated: ${cost:.4}"));
+        }
+        if let Some(calls) = self.unpriced_calls.filter(|calls| *calls > 0) {
+            lines.push(format!("  unpriced: {}", unpriced_calls_summary(calls)));
         }
         if let Some(cost) = self.today_cost_usd {
             lines.push(format!("today cost: ${:.4}", cost.max(0.0)));
@@ -199,6 +207,7 @@ impl SessionStatus {
             "cfactor": &self.cfactor,
             "total_cost_usd": self.total_cost_usd,
             "estimated_cost_usd": self.estimated_cost_usd,
+            "unpriced_calls": self.unpriced_calls,
             "today_cost_usd": self.today_cost_usd,
             "critical_path_eta_minutes": self.critical_path_eta_minutes,
             "runner_phase": &self.runner_phase,
@@ -212,6 +221,14 @@ impl SessionStatus {
         })
         .to_string()
     }
+}
+
+/// `calls` recorded calls with an unknown cost, as `roko status` words them
+/// beside the total they are left out of (backlog 2109).
+#[must_use]
+pub fn unpriced_calls_summary(calls: usize) -> String {
+    let noun = if calls == 1 { "call" } else { "calls" };
+    format!("{calls} {noun}, whose cost is unknown and not in the total")
 }
 
 /// Collect a lightweight status snapshot from on-disk workspace state.
@@ -271,6 +288,7 @@ pub fn collect_session_status_with_process_ledger(
         cfactor: None,
         total_cost_usd: None,
         estimated_cost_usd: None,
+        unpriced_calls: None,
         today_cost_usd: None,
         critical_path_eta_minutes: None,
         runner_phase,
@@ -369,6 +387,7 @@ mod tests {
             cfactor: None,
             total_cost_usd: Some(12.5),
             estimated_cost_usd: None,
+            unpriced_calls: None,
             today_cost_usd: Some(1.25),
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -407,6 +426,7 @@ mod tests {
             cfactor: None,
             total_cost_usd: Some(4.2),
             estimated_cost_usd: None,
+            unpriced_calls: None,
             today_cost_usd: Some(0.7),
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -429,6 +449,38 @@ mod tests {
         let json = status.display_json();
         assert!(json.contains(r#""session":null"#));
         assert!(json.contains(r#""signal_count":null"#));
+        assert!(json.contains(r#""unpriced_calls":null"#));
+    }
+
+    /// gap-2bec05: the status says how many recorded calls have an unknown
+    /// cost, which its total leaves out: in its JSON always, and in its text
+    /// when there are any.
+    #[test]
+    fn unpriced_calls_show_beside_the_total() {
+        let status = |unpriced_calls| SessionStatus {
+            total_cost_usd: Some(0.25),
+            unpriced_calls,
+            ..SessionStatus::offline(PathBuf::from("/w"))
+        };
+        let json = |status: &SessionStatus| -> serde_json::Value {
+            serde_json::from_str(&status.display_json()).expect("status JSON")
+        };
+
+        let one = status(Some(1));
+        assert_eq!(json(&one)["unpriced_calls"], 1);
+        let text = one.display_text();
+        let line = "  unpriced: 1 call, whose cost is unknown and not in the total";
+        assert!(
+            text.contains(&format!("total cost: $0.2500\n{line}")),
+            "{text}"
+        );
+        let three = status(Some(3)).display_text();
+        assert!(three.contains("  unpriced: 3 calls, whose cost"), "{three}");
+
+        let none = status(Some(0));
+        assert_eq!(json(&none)["unpriced_calls"], 0);
+        let text = none.display_text();
+        assert!(!text.contains("unpriced"), "{text}");
     }
 
     #[test]

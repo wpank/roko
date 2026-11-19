@@ -11,8 +11,9 @@ size = "L"
 hold = "waits on Will's deferred decision(s) 3346, 7101, 9303 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["demo-app/showcase"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK93"
 anchors = ["demo/demo-app/src/main.tsx"]
 lane = "rust-cold"
@@ -104,3 +105,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   404s) — self-documented in the script's own header (lines 21-24). No fix needed in
   preflight.sh; once 9356 lands here, P8 becomes a hard check (a real SSE frame within 5s)
   automatically. Flagging for the same reason as the note above.
+
+Checked 2026-10-27: 2026-10-26 sweep: still fully blocked, none of the 8 tasks' files exist yet; decisions 3346 and 9303 remain open/deferred.

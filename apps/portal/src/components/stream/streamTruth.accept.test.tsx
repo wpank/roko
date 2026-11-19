@@ -12,7 +12,7 @@ import { cleanup, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanTasks } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { Checks } from '@/components/stream/Checks';
-import { StreamPane } from '@/components/stream/StreamPane';
+import { renderPlanPage } from '@/test/plan';
 import { Transcript } from '@/components/stream/Transcript';
 import { initialRunState } from '@/lib/runState';
 import type { CheckRun } from '@/lib/runState';
@@ -57,19 +57,15 @@ const FINISHED_SILENT: WireDashboardEvent[] = [
   { type: 'task_completed', plan_id: 'hello', task_id: 'T01', outcome: 'passed' },
 ];
 
+/** The plan's page with `selected` open: its transcript sits in the task's detail. */
 function pane(events: WireDashboardEvent[], selected: string | null) {
-  setStore(foldEvents(events));
-  return renderWithClient(<StreamPane planId="hello" selectedTaskId={selected} open onToggle={() => {}} />, {
-    seed: [
-      [queryKeys.planTasks('hello'), TASKS],
-      [queryKeys.workspace, { name: 'hello', path: '/tmp/hello', branch: null }],
-    ],
-  });
+  const plan = { id: 'hello', title: 'Hello', task_count: 2, tasks_done: 0, tasks_failed: 0, completed: false, status: 'pending', old_format: false };
+  return renderPlanPage(plan, TASKS, events, { selected });
 }
 
 const transcriptText = (root: ParentNode) => textOf(root.querySelector('[data-region="transcript"]')!);
 
-describe('truthful stream', () => {
+describe('the truthful transcript, in a task’s detail', () => {
   it('shows agent working while the agent runs', () => {
     const { container } = pane([...STARTED, text('Reading the plan.')], 'T01');
     expect(transcriptText(container)).toContain('Reading the plan.');

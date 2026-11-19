@@ -407,7 +407,9 @@ pub fn summarize_discovered_plans(workdir: &Path) -> Result<Vec<PlanSummary>, Di
 /// `.roko/state/graph/<plan-id>/checkpoint.json` rather than updating
 /// `tasks.toml`.  This function reads those checkpoints and promotes
 /// `completed` / `tasks_done` / `tasks_failed` / `status` when a terminal
-/// checkpoint is present.
+/// checkpoint is present. A checkpoint still `running` whose run has
+/// stopped, because its process died, reads `interrupted`, and a run that
+/// stopped part way counts the tasks it passed (bug-693bb3).
 pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSummary]) {
     let graph_root = workdir.join(".roko/state/graph");
     if !graph_root.is_dir() {
@@ -461,6 +463,14 @@ pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSumm
                 }
             })
             .unwrap_or_default();
+        // The tasks the checkpoint committed a pass for: tasks.toml never
+        // records a Graph run's progress (bug-693bb3).
+        if status_str != "succeeded"
+            && let Ok(Some(inspection)) =
+                crate::graph_checkpoint::inspect_canonical_checkpoint(workdir, &summary.id)
+        {
+            summary.tasks_done = summary.tasks_done.max(inspection.passed_tasks());
+        }
         match status_str {
             "succeeded" => {
                 summary.completed = true;
@@ -480,6 +490,19 @@ pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSumm
             // Every task ran, but some ran no verify step: not done.
             "unverified" => {
                 summary.status = format!("unverified{age_suffix}");
+            }
+            // A run whose process died never wrote its end: it stopped, so it
+            // reads as interrupted, as its summary does (bug-693bb3).
+            "running"
+                if crate::graph_checkpoint::running_checkpoint_has_stopped(
+                    workdir,
+                    value
+                        .get("run_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                ) =>
+            {
+                summary.status = format!("interrupted{age_suffix}");
             }
             "running" => {
                 if summary.status == "ready" || summary.status == "pending" {

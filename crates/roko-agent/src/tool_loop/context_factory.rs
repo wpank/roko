@@ -43,6 +43,7 @@ pub struct ToolExecutionContextFactory {
     worktree_path: PathBuf,
     immune_root_path: Option<PathBuf>,
     timeout: Duration,
+    max_timeout: Duration,
     capabilities: ToolPermission,
     audit_sink: Arc<dyn AuditSink>,
     trace_sink: Arc<dyn TraceSink>,
@@ -56,15 +57,20 @@ pub struct ToolExecutionContextFactory {
 impl ToolExecutionContextFactory {
     /// Create a factory rooted at the given worktree.
     ///
-    /// Starts with safe defaults: 60-second timeout, full local capabilities
-    /// (no network), noop sinks, never-cancel token, `External` taint. Replace
-    /// these with the `with_*` builders before the first `build()`.
+    /// Starts with safe defaults: the default tool timeout (120 s, a call
+    /// asking for its own up to 600 s: `[timeouts] tool_execution_ms` and
+    /// `tool_execution_max_ms`), full local capabilities (no network), noop
+    /// sinks, never-cancel token, `External` taint. Replace these with the
+    /// `with_*` builders before the first `build()`.
     #[must_use]
     pub fn new(worktree_path: impl Into<PathBuf>) -> Self {
         Self {
             worktree_path: worktree_path.into(),
             immune_root_path: None,
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_millis(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS),
+            max_timeout: Duration::from_millis(
+                roko_core::config::timeouts::DEFAULT_TOOL_EXECUTION_MAX_MS,
+            ),
             capabilities: ToolPermission {
                 read: true,
                 write: true,
@@ -94,6 +100,14 @@ impl ToolExecutionContextFactory {
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Let a call that asks for its own budget get up to `max_timeout`
+    /// (bug-c22bd9).
+    #[must_use]
+    pub const fn with_max_timeout(mut self, max_timeout: Duration) -> Self {
+        self.max_timeout = max_timeout;
         self
     }
 
@@ -176,6 +190,7 @@ impl ToolExecutionContextFactory {
         )
         .with_taint_level(self.taint_level)
         .with_env_passthrough(self.env_passthrough.clone())
+        .with_max_timeout(self.max_timeout)
     }
 }
 
@@ -185,6 +200,7 @@ impl std::fmt::Debug for ToolExecutionContextFactory {
             .field("worktree_path", &self.worktree_path)
             .field("immune_root_path", &self.immune_root_path)
             .field("timeout", &self.timeout)
+            .field("max_timeout", &self.max_timeout)
             .field("capabilities", &self.capabilities)
             .field("taint_level", &self.taint_level)
             .field("correlation", &self.correlation)
@@ -203,7 +219,8 @@ mod tests {
         let factory = ToolExecutionContextFactory::new("/tmp/factory");
         let ctx = factory.build();
         assert_eq!(ctx.worktree(), Path::new("/tmp/factory"));
-        assert_eq!(ctx.timeout, Duration::from_secs(60));
+        assert_eq!(ctx.timeout, Duration::from_secs(120));
+        assert_eq!(ctx.max_timeout, Duration::from_secs(600));
         assert!(ctx.capabilities.read);
         assert!(ctx.capabilities.write);
         assert!(ctx.capabilities.exec);
@@ -272,5 +289,88 @@ mod tests {
         let factory = ToolExecutionContextFactory::new("/tmp/debug");
         let s = format!("{factory:?}");
         assert!(s.contains("ToolExecutionContextFactory"));
+    }
+
+    /// The dispatcher and the real `bash` tool, as an agent's tool loop runs
+    /// them for a role that may use bash: the default safety layer under a
+    /// permissive contract.
+    fn bash_dispatcher() -> crate::dispatcher::ToolDispatcher {
+        let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+            Arc::new(roko_core::tool::VecToolRegistry::from_tools(vec![
+                roko_std::tool::builtin::bash::tool_def(),
+            ]));
+        let resolver: Arc<dyn crate::dispatcher::HandlerResolver> = Arc::new(|name: &str| {
+            (name == "bash").then(|| {
+                Arc::new(roko_std::tool::builtin::bash::Handler)
+                    as Arc<dyn roko_core::tool::ToolHandler>
+            })
+        });
+        crate::dispatcher::ToolDispatcher::new(registry, resolver).with_safety(
+            crate::safety::SafetyLayer::with_defaults().with_contract(
+                crate::safety::contract::AgentContract::permissive("bug-c22bd9"),
+            ),
+        )
+    }
+
+    /// bug-c22bd9: an agent's bash call that asks for 90 s runs a 70 s
+    /// command to its end. Every tool call used to be cut at 60 s, whatever it
+    /// asked for, so an agent never saw a JUCE plugin build finish.
+    #[tokio::test]
+    async fn a_bash_call_runs_past_sixty_seconds_when_asked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolExecutionContextFactory::new(dir.path()).build();
+        let call = roko_core::tool::ToolCall::new(
+            "c1",
+            "bash",
+            serde_json::json!({"command": "sleep 70 && echo built", "timeout_ms": 90_000}),
+        );
+        let started = std::time::Instant::now();
+
+        let result = bash_dispatcher().dispatch(call, &ctx).await;
+
+        assert!(started.elapsed() >= Duration::from_secs(70), "{result:?}");
+        assert!(result.text_content().contains("built"), "{result:?}");
+    }
+
+    /// bug-c22bd9: a call that asks for more than `[timeouts]
+    /// tool_execution_max_ms` runs until the cap and is told so; one that asks
+    /// for nothing gets `tool_execution_ms`.
+    #[tokio::test]
+    async fn a_bash_call_asking_past_the_cap_is_cut_at_it_and_told() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolExecutionContextFactory::new(dir.path())
+            .with_timeout(Duration::from_secs(1))
+            .with_max_timeout(Duration::from_secs(2))
+            .build();
+        let asked = roko_core::tool::ToolCall::new(
+            "c1",
+            "bash",
+            serde_json::json!({"command": "sleep 30", "timeout_ms": 600_000}),
+        );
+        let started = std::time::Instant::now();
+
+        let result = bash_dispatcher().dispatch(asked, &ctx).await;
+
+        assert!(started.elapsed() < Duration::from_secs(10), "{result:?}");
+        match result {
+            roko_core::tool::ToolResult::Err(roko_core::tool::ToolError::Other(message)) => {
+                assert!(message.contains("asked for 600000 ms"), "{message}");
+                assert!(message.contains("tool_execution_max_ms"), "{message}");
+            }
+            other => panic!("expected the cap's timeout, got {other:?}"),
+        }
+        let plain = roko_core::tool::ToolCall::new(
+            "c2",
+            "bash",
+            serde_json::json!({"command": "sleep 30"}),
+        );
+        let result = bash_dispatcher().dispatch(plain, &ctx).await;
+        assert!(
+            matches!(
+                result,
+                roko_core::tool::ToolResult::Err(roko_core::tool::ToolError::Timeout { .. })
+            ),
+            "{result:?}"
+        );
     }
 }

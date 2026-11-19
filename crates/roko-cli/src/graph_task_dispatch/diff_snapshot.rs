@@ -389,7 +389,7 @@ fn attempt_chain(attempt_key: &str) -> &str {
 
 /// Whether `path` is roko's own state, which the harness writes throughout
 /// a run.
-fn is_roko_state(path: &str) -> bool {
+pub(super) fn is_roko_state(path: &str) -> bool {
     path == ".roko" || path.starts_with(".roko/")
 }
 
@@ -397,26 +397,17 @@ fn is_roko_state(path: &str) -> bool {
 /// the untracked ones `.gitignore` keeps, hashed into the object store
 /// through a copy of the repository's index, which is left untouched.
 /// `None` outside a git work tree, or when git fails.
-async fn snapshot_tree(workdir: &Path) -> Option<String> {
-    let index = git_line(workdir, &["rev-parse", "--git-path", "index"], None).await?;
-    let scratch = tempfile::tempdir().ok()?;
-    let scratch_index = scratch.path().join("index");
-    // The copy keeps the index's stat cache, so `git add` rehashes only what
-    // changed. A repository without an index yet starts from an empty one.
-    let _ = tokio::fs::copy(workdir.join(index), &scratch_index).await;
-    git_bytes(
-        workdir,
-        &["add", "--all", "--", "."],
-        Some(&scratch_index),
-        RAW_LIMIT,
-    )
-    .await?;
-    git_line(workdir, &["write-tree"], Some(&scratch_index)).await
+pub(super) async fn snapshot_tree(workdir: &Path) -> Option<String> {
+    roko_std::tool::builtin::checkout_tree::snapshot_tree(workdir).await
 }
 
 /// Trimmed stdout of git in `workdir`, or `None` when it fails or prints
 /// nothing.
-async fn git_line(workdir: &Path, args: &[&str], index: Option<&Path>) -> Option<String> {
+pub(super) async fn git_line(
+    workdir: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+) -> Option<String> {
     let (stdout, _) = git_bytes(workdir, args, index, 64 * 1024).await?;
     let line = String::from_utf8_lossy(&stdout).trim().to_string();
     (!line.is_empty()).then_some(line)
@@ -426,7 +417,7 @@ async fn git_line(workdir: &Path, args: &[&str], index: Option<&Path>) -> Option
 /// index at `index` when given, and whether the output was cut there (git is
 /// then killed). `None` when git cannot start, fails, or runs past
 /// [`GIT_TIMEOUT`].
-async fn git_bytes(
+pub(super) async fn git_bytes(
     workdir: &Path,
     args: &[&str],
     index: Option<&Path>,
@@ -462,7 +453,7 @@ async fn git_bytes(
 
 /// Parse `git diff --raw -z`: a `:<mode> <mode> <blob> <blob> <status>`
 /// header, then one path, or two for a rename or copy, each NUL-terminated.
-fn parse_raw_diff(raw: &[u8]) -> Vec<ChangedPath> {
+pub(super) fn parse_raw_diff(raw: &[u8]) -> Vec<ChangedPath> {
     let mut fields = raw
         .split(|byte| *byte == 0)
         .map(|field| String::from_utf8_lossy(field).into_owned());

@@ -1,7 +1,8 @@
 //! Where a finished run's verified work is (gap-8409d0).
 //!
 //! roko never commits into the operator's checkout. A run whose tasks each ran
-//! in their own git worktree has a batch branch, `roko/batch/<run-id>`, started
+//! in their own git worktree has a batch branch, named from its plans as
+//! `roko/work/<slug>` (gap-b67fdd; `roko/batch/<run-id>` before), started
 //! at the operator's `HEAD`, which the run's manifest records as
 //! `workspace.base_commit`. Each plan whose tasks all passed is delivered into
 //! the batch, and the plan's checkpoint records that delivery under
@@ -25,7 +26,8 @@ use std::process::{Command, Stdio};
 use roko_fs::RokoLayout;
 use serde_json::{Value, json};
 
-/// roko-cli's `BATCH_BRANCH_PREFIX`.
+/// roko-cli's `BATCH_BRANCH_PREFIX`: a run's batch branch before gap-b67fdd,
+/// `roko/batch/<run-id>`, for a run whose batch records don't name it.
 const BATCH_BRANCH_PREFIX: &str = "roko/batch/";
 
 /// roko-cli's `RUN_TAG_PREFIX`.
@@ -71,7 +73,8 @@ pub(super) fn graph_plan_state_dir(workdir: &Path, plan_id: &str) -> PathBuf {
 /// and, when it can be told, the commit the batch started from. The summary's
 /// `result` and the run's diff both read it, so they agree (gap-0d6d21).
 pub(super) struct ResultRange {
-    /// `roko/batch/<run-id>`.
+    /// The batch branch its plans' batch records name: `roko/work/<slug>`,
+    /// or `roko/batch/<run-id>`.
     pub(super) branch: String,
     /// The branch's tip.
     pub(super) commit: String,
@@ -93,7 +96,12 @@ pub(super) fn result_range(
     if run_id.is_empty() {
         return None;
     }
-    let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
+    // The branch no longer names the run (gap-b67fdd): its plans' batch
+    // records do.
+    let branch = batch_records(workdir, run_id, plan_ids)
+        .into_iter()
+        .find_map(|(_, record)| record["branch"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{BATCH_BRANCH_PREFIX}{run_id}"));
     let commit = rev_parse(workdir, &format!("refs/heads/{branch}"))?;
     let head = rev_parse(workdir, "HEAD");
     let base = recorded_base(workdir, run_id, plan_ids, &commit).or_else(|| {
@@ -405,8 +413,9 @@ pub(super) fn unverified_diff(
 
 /// Each file `commit` changes from `base`, with its status, line counts,
 /// whether it is binary and its unified patch (`null` for a binary file),
-/// within `limits`, plus totals over every file. `None` when git cannot
-/// tell.
+/// within `limits`, plus totals over every file. A binary file, which counts
+/// no lines, gives its size instead: `bytes_before` and `bytes_after`, `null`
+/// on the side it is missing from (gap-0a126f). `None` when git cannot tell.
 fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> Option<Value> {
     let entries = diff_entries(workdir, base, commit)?;
     let kept = &entries[..entries.len().min(limits.max_files)];
@@ -415,6 +424,19 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
         .filter(|entry| !entry.binary)
         .map(|entry| entry.path.as_str())
         .collect::<Vec<_>>();
+    let binaries = kept
+        .iter()
+        .filter(|entry| entry.binary)
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    let (sizes_before, sizes_after) = if binaries.is_empty() {
+        (HashMap::new(), HashMap::new())
+    } else {
+        (
+            blob_sizes(workdir, base, &binaries)?,
+            blob_sizes(workdir, commit, &binaries)?,
+        )
+    };
     let mut patches = if paths.is_empty() {
         HashMap::new()
     } else {
@@ -430,7 +452,7 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
                     .remove(&entry.path)
                     .map_or((json!(""), false), |(patch, cut)| (json!(patch), cut))
             };
-            json!({
+            let mut file = json!({
                 "path": entry.path,
                 "status": entry.status,
                 "additions": entry.additions,
@@ -438,7 +460,12 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
                 "binary": entry.binary,
                 "patch": patch,
                 "truncated": truncated,
-            })
+            });
+            if entry.binary {
+                file["bytes_before"] = json!(sizes_before.get(&entry.path));
+                file["bytes_after"] = json!(sizes_after.get(&entry.path));
+            }
+            file
         })
         .collect::<Vec<_>>();
     let additions = entries
@@ -458,6 +485,38 @@ fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> O
         },
         "truncated": kept.len() < entries.len(),
     }))
+}
+
+/// The size in bytes of each of `paths` that `tree` holds, by path; a path it
+/// does not hold is left out. `None` when git fails.
+fn blob_sizes(workdir: &Path, tree: &str, paths: &[&str]) -> Option<HashMap<String, u64>> {
+    let mut args = vec![
+        "--literal-pathspecs",
+        "ls-tree",
+        "-r",
+        "-l",
+        "-z",
+        tree,
+        "--",
+    ];
+    args.extend_from_slice(paths);
+    let listing = git(workdir, &args)?;
+    let mut sizes = HashMap::new();
+    for record in listing.split(|byte| *byte == 0) {
+        // `<mode> SP <type> SP <object> SP+ <size> TAB <path>`
+        let record = String::from_utf8_lossy(record);
+        let Some((meta, path)) = record.split_once('\t') else {
+            continue;
+        };
+        if let Some(size) = meta
+            .split_whitespace()
+            .nth(3)
+            .and_then(|size| size.parse::<u64>().ok())
+        {
+            sizes.insert(path.to_string(), size);
+        }
+    }
+    Some(sizes)
 }
 
 /// Each file `tip` changes from `base`, in git's path order: its status from

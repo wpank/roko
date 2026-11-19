@@ -1,0 +1,95 @@
++++
+id = "bug-082810"
+kind = "bug"
+title = "A chat-host run's B1 audit dispatches its suite author to the person's Claude CLI (roko-audit-b1 on claude_cli / claude-sonnet-4-6), though a chat host's work must use only tool-loop API models"
+status = "done"
+triage = "verified"
+severity = "p1"
+goal = "golden-path"
+size = "S"
+subsystem = ["roko-cli/audit"]
+created = 2026-10-19
+updated = 2026-10-19
+last_verified = 2026-10-19
+last_verified_rev = "597da7d1d"
+source = "round-v7-hermes-pilot#C-p0-run2"
+discovered_from = "agent:hermes-pilot (round v7 phase 0, run e578cf71, after T1 passed)"
+anchors = ["crates/roko-cli/src/audit/b1.rs::FactoryAuthor", "crates/roko-cli/src/graph_task_dispatch/audit_select.rs::GraphTaskDispatcher::audit_phase_b", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::select_cheap_model_key", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::AuditCallRows"]
+links = { depends_on = [], blocks = [], related = ["gap-3d37e8"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_chat_host_runs_audit_uses_only_tool_loop_models' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_chat_host_runs_audit_uses_only_tool_loop_models"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T18:26:39Z"
+commit = "597da7d1d"
+size = "S"
+claimed_at = "2026-10-19T17:40:04Z"
+forced = false
+evidence = "597da7d1d: in a run whose tasks hold their outbound tool calls for approval, as a chat host run does (GraphTaskDispatcher::outbound_floor), every side call now uses only the models roko own tool loop runs with credentials set (RokoConfig::tool_loop_models), the rule the ladder keeps (gap-cf427e): the audit B1 suite authors and B3 reviewers (audit_select.rs audit_authors, audit_reviewers), the cheap helper (error enrichment, reflections, judge step) and the pack-rung judge (routing_context select_cheap_model_key and select_judge_model_key take an allowed filter). B1 is null with no allowed family and there is no helper with no allowed model; command-line runs are unchanged. In such a run the audit worker calls, which elsewhere charge no budget (decision 7103 audit line), are settled on the plan budget (AuditCallRows) and an audit is given no more than the plan has left (CallLog::headroom_usd in the worker take()), so the run stays within the cap its chat set. Tests: a_chat_host_runs_audit_uses_only_tool_loop_models (red at 7a67b6781: the chat run authors were claude-sonnet-4-6, glm-4.7, gpt-5.4-mini), a_chat_host_runs_audit_spend_counts_against_its_cap (red: headroom None, plan spend unchanged), an_audit_is_given_no_more_than_its_plan_has_left (red: given 0.30 with 0.05 left). Checks at 597da7d1d: roko-cli lib 3880 passed, 3 failed in the first run: my test fixture (its CLI command did not exist, fixed) plus delivery a_cancel_stops_the_post_merge_regression_check (lock WouldBlock under load; passes alone) and build_trees seeded_worktree_builds_nothing (roko-speed, flaky alone: 1 of 3; reported); after the fix audit_select, helper_calls, pack_rungs, routing_context and audit::worker suites 42 of 43 (the same build_trees flake); clippy -D warnings (roko-cli) clean; nightly rustfmt clean."
++++
+
+## Problem
+
+Round v7, Undertow phase 0, run `e578cf71`, a run a Hermes chat started (roko f33fd217c).
+
+- T1 passed on mid (glm-4.7). Twenty seconds later roko started the B1 audit's suite author:
+
+  ```
+  roko_agent::claude_cli_agent: agent started agent=roko-audit-b1 pid=6941 timeout_s=120
+  roko_agent::claude_cli_agent: agent failed agent=roko-audit-b1 exit_code=127 elapsed_s=0
+  ```
+
+- `costs.jsonl` gained a row: model `claude-sonnet-4-6`, provider `claude_cli`, role `audit`, task T1, 0 tokens,
+  `success: false`.
+- It failed only because the round's harness fences off the `claude` binary. On a person's machine, a run started
+  from chat would have launched their own Claude Code login, outside the run's cap and outside the data-model
+  boundary.
+
+## Why it matters
+
+A chat host's work goes only to models roko's own tool loop runs (gap-cf427e, bug-a0432b): no person's CLI agent or
+login, and every call under the run's cap and the boundary. The page and the plugin promise the person this ("not for
+chat runs: its agent runs its own tools"). The audit breaks it silently. It also chooses a CLI agent for a job
+(writing a test suite) that roko's own tool loop can do.
+
+## Where
+
+- `crates/roko-cli/src/audit/b1.rs`: `FactoryAuthor` dispatches the suite author through the shared agent factory,
+  with whatever model the audit config chose.
+- The B1 author is "a configured model of another family than the implementer's" (`AuditConfig::family_of`). With
+  glm-4.7 implementing, it picked claude-sonnet-4-6, the ladder's top rung, a `claude_cli` model.
+
+## Plan
+
+1. For a run whose origin is a chat host, choose the B1 author only among the models `RokoConfig::tool_loop_models`
+   lists, still of another family than the implementer's (gpt-5.4-mini for a glm-4.7 implementer here). With none,
+   B1 is null, as decision 7102 already allows.
+2. Apply the same filter to every audit phase that calls a model (A2's rerun is check-only; B2 and B3 if they call
+   one).
+
+## Done when
+
+A chat-host run's audit never dispatches to a CLI provider. Checked by the test in `[[verify]]`.
+
+## Notes
+
+- Evidence:
+  - `~/dev/undertow/.roko/learn/costs.jsonl`: the `role: audit` row at 2026-10-19T15:10:27Z;
+  - `.roko/roko.log.2026-10-19`: `roko-audit-b1`.
+- Related:
+  - gap-cf427e, bug-a0432b: chat hosts use only tool-loop models;
+  - gap-3d37e8: the B1 hidden suites.
+
+## Scope (2026-10-19, lead, round v7)
+
+Raised to p1 and treated as a safety bug. The fix covers every side call of a chat host's run, not only B1:
+
+- the audit's B1 authors and B3 reviewers, and the helper calls (error enrichment, reflections, the judge step, the
+  pack-rung judge), use only API models the run may use: the ladder's rule (`RokoConfig::tool_loop_models`);
+- they never pick a CLI agent there, and they degrade (B1 null, no helper) rather than step out of bounds;
+- they stay within the run's cap and record their spend: the audit worker's calls, which charge no budget elsewhere
+  (decision 7103's audit line), are settled on a chat host's run's plan budget, and an audit gets no more than the
+  plan has left.
+

@@ -3,13 +3,15 @@ id = "spec-f09094"
 kind = "spec"
 title = "Epic: golden-path acceptance tests"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-cli/tests", ".github/workflows"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e11"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canaries C1-C8 and GP)"
 anchors = ["crates/roko-cli/tests/common/mod.rs", ".github/workflows/ci.yml"]
@@ -86,3 +88,5 @@ This is the implementation plan. These are tests of Roko, not the way the backlo
 - Real-model runs cost money and draw on the same subscription limits as the Claude workers (W8 risk 7). Budget them
   separately. tldr/05 decision 9 defines "cheaper".
 - W8 proposed a canary *plan* (`plans/golden-path-canary/`); `PLAN.md` E11 uses Rust integration tests instead.
+
+Checked 2026-10-27: 'Current state' is stale and should say the golden-path suite and fixture plan now exist in CI (crates/roko-cli/tests/golden_path_suite.rs, golden_path_acceptance.rs); the only remaining gap is gap-f30b8e's live pass^3 run, which has not happened.

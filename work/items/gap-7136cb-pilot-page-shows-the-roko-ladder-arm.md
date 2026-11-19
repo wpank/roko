@@ -9,8 +9,9 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire 3316 (blocked in wave 7, PK36)"
 discovered_from = "gap-31c0e8"
 anchors = ["benchmarks/viabilitybench/analysis"]
@@ -53,3 +54,5 @@ Neither file exists at main after wave 7. PK36's worker stopped at this task.
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3316-pilot-page-shows-ladder-arm-and-v7-bar.md`.
 - It doesn't need 3315's data: the test can use a fixture bundle.
+
+Checked 2026-10-27: 2026-10-26: still correctly blocked on gap-d9e9fe, which has not landed.

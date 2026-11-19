@@ -1,0 +1,438 @@
+[meta]
+plan = "p1-undertow-voice"
+title = "P1 · Undertow voice"
+iteration = 0
+total = 5
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[task]]
+id = "T1"
+title = "Implement oscillators and register them"
+description = "Assumption: the oscillator APIs and PolyBLEP band-limiting behavior must match the phase-1 spec exactly. Add the oscillator and sine oscillator headers and implementation, and list the new source in undertow_core so the oscillator checks can build and pass."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/oscillator.h",
+    "core/src/oscillator.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "edit_file",
+    "grep",
+    "bash",
+    "write_file",
+]
+denied_tools = []
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 oscillator 'P1.01*'` passes, proving saw and square frequency tracking are correct.",
+    "AC2: `tools/spec.sh 1 oscillator 'P1.02*'` passes, proving saw and square band-limiting is correct.",
+    "AC3: `tools/spec.sh 1 oscillator 'P1.03*'` passes, proving square pulse width and harmonic behavior are correct.",
+    "AC4: `tools/spec.sh 1 oscillator 'P1.04*'` passes, proving sine purity and reset phase behavior are correct.",
+]
+sequence = 0
+goal = "The oscillator module builds and passes all four phase-1 oscillator checks."
+non_goals = [
+    "Do not implement filter, envelope, voice, or engine logic in this task.",
+    "Do not edit tests/spec/.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "220-235"
+why = "Confirm the phase-1 scope and oscillator requirements."
+
+[[task.context.read_files]]
+path = "tests/spec/p1/oscillator_test.cpp"
+lines = "1-124"
+why = "Use the exact acceptance checks and expected oscillator behaviors."
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-13"
+why = "See where to add the oscillator source after the shared library edit task."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 oscillator 'P1.01*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 oscillator 'P1.02*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 oscillator 'P1.03*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 oscillator 'P1.04*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Implement the low-pass filter"
+description = "Assumption: the low-pass filter may use the recommended two-stage topology-preserving design as long as it meets the phase-1 checks. Add the filter header and implementation; the shared build registration is handled by a later engine-task edit."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/filter.h",
+    "core/src/filter.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "edit_file",
+    "grep",
+    "bash",
+    "write_file",
+]
+denied_tools = []
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 filter 'P1.05*'` passes, proving the cutoff response is correct at resonance 0.",
+    "AC2: `tools/spec.sh 1 filter 'P1.06*'` passes, proving resonance creates a peak near cutoff.",
+    "AC3: `tools/spec.sh 1 filter 'P1.07*'` passes, proving drive, stability, and denormal flushing are correct.",
+]
+sequence = 1
+goal = "The filter module builds and passes all three phase-1 filter checks."
+non_goals = [
+    "Do not implement oscillators, envelope, voice, or engine logic in this task.",
+    "Do not edit tests/spec/.",
+    "Do not modify core/CMakeLists.txt in this task.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "235-255"
+why = "Confirm the phase-1 filter behavior and constraints."
+
+[[task.context.read_files]]
+path = "tests/spec/p1/filter_test.cpp"
+lines = "1-126"
+why = "Use the exact acceptance checks and expected filter behaviors."
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-13"
+why = "See the current library source list and the later shared build edit point."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 filter 'P1.05*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 filter 'P1.06*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 filter 'P1.07*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Implement the envelope"
+description = "Assumption: the envelope stages and timing rules follow the phase-1 spec exactly, including retriggering from the current level and exact idle zeroing. Add the envelope header and implementation; the shared build registration is handled by a later engine-task edit."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/envelope.h",
+    "core/src/envelope.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "edit_file",
+    "grep",
+    "bash",
+    "write_file",
+]
+denied_tools = []
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 envelope 'P1.08*'` passes, proving attack timing and shape are correct.",
+    "AC2: `tools/spec.sh 1 envelope 'P1.09*'` passes, proving decay and sustain hold are correct.",
+    "AC3: `tools/spec.sh 1 envelope 'P1.10*'` passes, proving release, retrigger, and idle zeroing are correct.",
+]
+sequence = 2
+goal = "The envelope module builds and passes all three phase-1 envelope checks."
+non_goals = [
+    "Do not implement oscillators, filter, voice, or engine logic in this task.",
+    "Do not edit tests/spec/.",
+    "Do not modify core/CMakeLists.txt in this task.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "255-266"
+why = "Confirm the phase-1 envelope timing and clamp requirements."
+
+[[task.context.read_files]]
+path = "tests/spec/p1/envelope_test.cpp"
+lines = "1-126"
+why = "Use the exact acceptance checks and expected envelope behaviors."
+
+[[task.context.read_files]]
+path = "core/CMakeLists.txt"
+lines = "1-13"
+why = "See the current library source list and the later shared build edit point."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 envelope 'P1.08*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 envelope 'P1.09*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 envelope 'P1.10*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Implement the mono voice and wire it into the engine"
+description = "Assumption: the mono voice owns the oscillator, filter, and envelopes internally, uses last-note priority, and follows the phase-1 glide, accent, bend, smoothing, and phase-reset rules exactly. Add the voice header and implementation, then update engine.cpp so the engine can call the real voice path."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/voice.h",
+    "core/src/voice.cpp",
+    "core/src/engine.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "edit_file",
+    "grep",
+    "bash",
+    "write_file",
+]
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 voice 'P1.11*'` passes, proving pitch, sub routing, and post-filter mix behavior are correct.",
+    "AC2: `tools/spec.sh 1 voice 'P1.12*'` passes, proving legato, last-note priority, and glide modes are correct.",
+    "AC3: `tools/spec.sh 1 voice 'P1.13*'` passes, proving accent and pitch bend are correct.",
+    "AC4: `tools/spec.sh 1 voice 'P1.14*'` passes, proving smoothing is present and settles in time.",
+    "AC5: `tools/spec.sh 1 voice 'P1.15*'` passes, proving note-from-silence phase reset and legato continuity are correct.",
+]
+sequence = 3
+goal = "The mono voice and engine-facing wiring compile together and satisfy the voice checks."
+non_goals = [
+    "Do not add the engine's MIDI parsing and meter finalization logic yet.",
+    "Do not edit tests/spec/.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+why = "Confirm the full phase-1 mono voice behavior, including glide, accent, bend, and smoothing."
+
+[[task.context.read_files]]
+path = "tests/spec/p1/voice_test.cpp"
+lines = "1-291"
+why = "Use the exact acceptance checks and parameter assumptions for the voice."
+
+[[task.context.read_files]]
+path = "tests/spec/support/spec_engine.h"
+lines = "1-141"
+why = "See the cleanPatch and subPatch defaults used by the voice tests."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 voice 'P1.11*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 voice 'P1.12*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 voice 'P1.13*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 voice 'P1.14*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 voice 'P1.15*'"
+timeout_ms = 900000
+covers = ["AC5"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T5"
+title = "Wire engine MIDI, parameters, meters, and performance behavior"
+description = "Assumption: the engine already owns a single voice instance and should forward parameter values, sample-accurate MIDI, and meter updates without allocating in process. Update engine.cpp and core/CMakeLists.txt so MIDI on any channel, controller behavior, pitch bend, parameter delivery, master gain, meters, and long-run performance match the phase-1 checks."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/src/engine.cpp",
+    "core/CMakeLists.txt",
+]
+allowed_tools = [
+    "read_file",
+    "edit_file",
+    "grep",
+    "bash",
+]
+denied_tools = []
+depends_on = ["T4"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 1 engine 'P1.16*'` passes, proving MIDI handling and meters are correct.",
+    "AC2: `tools/spec.sh 1 engine 'P1.17*'` passes, proving engine parameters and master gain reach the voice.",
+    "AC3: `tools/spec.sh 1 engine 'P1.18*'` passes, proving the engine does not allocate over the long run.",
+    "AC4: `tools/spec.sh 1 engine 'P1.19*'` passes, proving random notes remain finite and idle output reaches exact zero.",
+    "AC5: `tools/spec.sh 1 engine 'P1.20*'` passes, proving the busy bassline meets the CPU budget.",
+]
+sequence = 4
+goal = "The engine runs the voice correctly through MIDI and parameter updates and passes the engine checks."
+non_goals = [
+    "Do not add phase-2 output-stage features or phase-3 sequencer logic.",
+    "Do not edit tests/spec/.",
+]
+
+[task.context]
+symbols = []
+anti_patterns = []
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+why = "Confirm the engine MIDI, meters, and performance requirements."
+
+[[task.context.read_files]]
+path = "tests/spec/p1/engine_test.cpp"
+lines = "1-202"
+why = "Use the exact acceptance checks for engine MIDI, parameters, allocation, silence, and speed."
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+lines = "1-53"
+why = "See the Engine API and meter fields that must be updated."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine 'P1.16*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine 'P1.17*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine 'P1.18*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine 'P1.19*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 1 engine 'P1.20*'"
+timeout_ms = 900000
+covers = ["AC5"]
+expect = "fail_on_base"

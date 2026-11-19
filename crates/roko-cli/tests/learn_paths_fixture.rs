@@ -15,6 +15,13 @@ use chrono::{DateTime, Utc};
 use roko_learn::cascade::CascadeStage;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::episode_logger::{Episode, Usage};
+use roko_learn::error_pattern_store::{
+    ERROR_PATTERNS_FILE, ErrorPatternStore, GateFailureObservation, GateFailureSource,
+};
+use roko_learn::telemetry::{
+    AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord, AttemptOutcome,
+    AttemptVerdictRecord, CostSource, LadderReason, TelemetryWriter, TelemetryWriterConfig,
+};
 use tempfile::TempDir;
 
 fn utc(timestamp: &str) -> DateTime<Utc> {
@@ -207,6 +214,57 @@ fn write_learn_fixture(workdir: &Path) {
     );
 }
 
+/// When `timestamp` was, as `roko learn` says it (the design system's §6.3
+/// forms: `10 Apr`), so the test reads like the view in any time zone.
+fn day(timestamp: DateTime<Utc>) -> String {
+    roko_cli::status_view::ago(timestamp.timestamp_millis(), Utc::now().timestamp_millis())
+}
+
+/// A span of days as `roko learn` says it: `10 Apr`, or `9 Apr to 10 Apr`.
+fn span(first: DateTime<Utc>, last: DateTime<Utc>) -> String {
+    let (first, last) = (day(first), day(last));
+    if first == last {
+        first
+    } else {
+        format!("{first} to {last}")
+    }
+}
+
+/// The facts of `roko learn`'s part `label`, one per line: what its labelled
+/// line says after the label, then each line under it, up to the next label
+/// or the closing line.
+fn part(stdout: &str, label: &str) -> Vec<String> {
+    let mut lines = stdout.lines().skip_while(|line| {
+        line.trim_start()
+            .strip_prefix(label)
+            .is_none_or(|rest| !rest.starts_with("  "))
+    });
+    let Some(first) = lines.next() else {
+        panic!("no {label} part: {stdout}");
+    };
+    let indent = first.len() - first.trim_start().len();
+    let first = first.trim_start().strip_prefix(label).unwrap_or_default();
+    std::iter::once(first)
+        .chain(lines.take_while(|line| line.len() - line.trim_start().len() > indent))
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+/// The files `roko learn` names on its closing line.
+fn read_from(stdout: &str) -> String {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("Read from "))
+        .unwrap_or_else(|| panic!("no closing line naming the files read: {stdout}"))
+        .to_string()
+}
+
+/// gap-cb1a87: `roko learn all` gives each fixture's facts in its part, in
+/// the run view's style: the router's observations, models and stage changes,
+/// the efficiency events and episodes with their span and latest one, and the
+/// knowledge entries; the files read are named on its closing line, relative
+/// to the workspace, and no part reads empty.
 #[test]
 fn learn_all_reads_the_expected_fixtures() {
     let tmp = TempDir::new().expect("tempdir");
@@ -215,14 +273,6 @@ fn learn_all_reads_the_expected_fixtures() {
 
     let stdout = run_roko(workdir, &["learn", "all"]);
 
-    let router_path = workdir
-        .join(".roko")
-        .join("learn")
-        .join("cascade-router.json");
-    let efficiency_path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
-    let episodes_path = workdir.join(".roko").join("episodes.jsonl");
-    let knowledge_path = workdir.join(".roko").join("neuro").join("knowledge.jsonl");
-
     let router_first = utc("2026-04-10T08:00:00Z");
     let router_last = utc("2026-04-10T09:30:00Z");
     let efficiency_first = utc("2026-04-10T10:00:00Z");
@@ -230,102 +280,367 @@ fn learn_all_reads_the_expected_fixtures() {
     let episodes_first = utc("2026-04-10T12:00:00Z");
     let episodes_last = utc("2026-04-10T12:45:00Z");
 
-    assert!(
-        stdout.contains(&format!(
-            "Cascade router: 75 observations, 2 models at {}",
-            router_path.display()
-        )),
+    let routing = part(&stdout, "Routing");
+    assert_eq!(
+        routing[0],
+        format!(
+            "75 observations · 2 stage changes since {}, the last {}: confidence to ucb after 75 \
+             observations",
+            day(router_first),
+            day(router_last)
+        ),
         "router summary missing or incorrect: {stdout}"
     );
-    assert!(
-        stdout.contains(&format!(
-            "  Range: {} .. {}",
-            router_first.to_rfc3339(),
-            router_last.to_rfc3339()
-        )),
-        "router range missing or incorrect: {stdout}"
-    );
-    assert!(
-        stdout.contains(&format!(
-            "  Latest: {} confidence -> ucb after 75 observations",
-            router_last.to_rfc3339()
-        )),
-        "router latest line missing or incorrect: {stdout}"
-    );
+    for model in ["claude-sonnet-4-6", "claude-haiku-4-5"] {
+        assert!(
+            routing.iter().any(|fact| fact.contains(model)),
+            "router model {model} missing: {stdout}"
+        );
+    }
 
-    assert!(
-        stdout.contains(&format!(
-            "Efficiency: 2 events at {}",
-            efficiency_path.display()
-        )),
+    let efficiency = part(&stdout, "Efficiency");
+    assert_eq!(
+        efficiency[0],
+        format!("2 events, {}", span(efficiency_first, efficiency_last)),
         "efficiency summary missing or incorrect: {stdout}"
     );
-    assert!(
-        stdout.contains(&format!(
-            "  Range: {} .. {}",
-            efficiency_first.to_rfc3339(),
-            efficiency_last.to_rfc3339()
-        )),
-        "efficiency range missing or incorrect: {stdout}"
-    );
-    assert!(
-        stdout.contains(&format!(
-            "  Latest: {} model=claude-haiku-4-5 task=task-b plan=plan-b fail cost=$0.0034",
-            efficiency_last.to_rfc3339()
-        )),
+    assert_eq!(
+        efficiency[1],
+        format!(
+            "latest: {}, claude-haiku-4-5 on plan-b task task-b, failed, <$0.01",
+            day(efficiency_last)
+        ),
         "efficiency latest line missing or incorrect: {stdout}"
     );
 
-    assert!(
-        stdout.contains(&format!(
-            "Episodes: 2 entries at {}",
-            episodes_path.display()
-        )),
+    let episodes = part(&stdout, "Episodes");
+    assert_eq!(
+        episodes[0],
+        format!("2 episodes, {}", span(episodes_first, episodes_last)),
         "episode summary missing or incorrect: {stdout}"
     );
-    assert!(
-        stdout.contains(&format!(
-            "  Range: {} .. {}",
-            episodes_first.to_rfc3339(),
-            episodes_last.to_rfc3339()
-        )),
-        "episode range missing or incorrect: {stdout}"
-    );
-    assert!(
-        stdout.contains(&format!(
-            "  Latest: {} model=claude-haiku-4-5 task=task-b fail cost=$0.0022",
-            episodes_last.to_rfc3339()
-        )),
+    assert_eq!(
+        episodes[1],
+        format!(
+            "latest: {}, claude-haiku-4-5 on task task-b, failed, <$0.01",
+            day(episodes_last)
+        ),
         "episode latest line missing or incorrect: {stdout}"
     );
 
     assert!(
-        stdout.contains(&format!(
-            "Knowledge: 1 durable entries at {}",
-            knowledge_path.display()
-        )),
+        part(&stdout, "Knowledge")[0].starts_with("1 live, 0 retired"),
         "knowledge summary missing or incorrect: {stdout}"
     );
-    assert!(
-        !stdout.contains("No data at"),
-        "fixture should have satisfied every learn path: {stdout}"
-    );
+
+    let read = read_from(&stdout);
+    for path in [
+        ".roko/learn/cascade-router.json",
+        ".roko/learn/efficiency.jsonl",
+        ".roko/episodes.jsonl",
+        ".roko/neuro/knowledge.jsonl",
+    ] {
+        assert!(
+            read.contains(path),
+            "{path} missing from the files read: {stdout}"
+        );
+    }
+    for empty in [
+        "no router state yet",
+        "no observations yet",
+        "no events yet",
+        "no episodes yet",
+        "no lessons yet",
+    ] {
+        assert!(
+            !stdout.contains(empty),
+            "fixture should have satisfied every learn path: {stdout}"
+        );
+    }
 }
 
+/// gap-cb1a87: `roko learn efficiency` without an efficiency file says it has
+/// no events, names the file it read, and makes up no count.
 #[test]
 fn learn_missing_efficiency_reports_no_data_instead_of_fake_counts() {
     let tmp = TempDir::new().expect("tempdir");
     let workdir = tmp.path();
-    let expected_path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
 
     let stdout = run_roko(workdir, &["learn", "efficiency"]);
 
+    assert_eq!(
+        part(&stdout, "Efficiency"),
+        ["no events yet: each try records what it spent"],
+        "missing efficiency file should say it has no events: {stdout}"
+    );
     assert!(
-        stdout.contains(&format!("No data at {}", expected_path.display())),
+        read_from(&stdout).contains(".roko/learn/efficiency.jsonl"),
         "missing efficiency file should report the read path: {stdout}"
     );
     assert!(
-        !stdout.contains("Efficiency:"),
+        !stdout.contains(" events, ") && !stdout.contains("latest:"),
         "missing efficiency file must not produce a fake summary: {stdout}"
+    );
+}
+
+/// One try of a fixture run: task `task`'s `attempt` on `rung` (`index` on
+/// the implementer ladder) and `model`, `secs` long and costing `usd`.
+struct Try {
+    task: &'static str,
+    attempt: u32,
+    rung: &'static str,
+    index: u32,
+    model: &'static str,
+    outcome: AttemptOutcome,
+    secs: i64,
+    usd: f64,
+}
+
+/// Write `tries` as run `run`'s attempt records, each try's open line and
+/// its verdict, with roko's own telemetry writer.
+fn write_run(workdir: &Path, run: &str, tries: &[Try]) {
+    let run_dir = workdir.join(".roko").join("runs").join(run);
+    let writer = TelemetryWriter::spawn(run_dir, TelemetryWriterConfig::default())
+        .expect("start the telemetry writer");
+    for t in tries {
+        let identity = AttemptIdentity::new(&AttemptKey::new(run, "plan-a", t.task, t.attempt));
+        let mut open = AttemptOpenRecord::new(identity.clone(), 1_000);
+        open.role = Some("implementer".to_string());
+        assert!(writer.submit(open), "queue the open line");
+        let mut verdict = AttemptVerdictRecord::settle(identity, t.outcome, true);
+        verdict.ladder = Some(AttemptLadder {
+            rung: Some(t.rung.to_string()),
+            index: Some(t.index),
+            step: 0,
+            reason: LadderReason::Start,
+            exhausted: false,
+            router_pick: None,
+        });
+        verdict.executed.model_dispatched = Some(t.model.to_string());
+        verdict.timing.attempt_started_at = Some(1_000);
+        verdict.timing.settled_at = Some(1_000 + t.secs * 1_000);
+        verdict.cost.api_equiv_usd = Some(t.usd);
+        verdict.cost.source = CostSource::ProviderUsage;
+        assert!(writer.submit(verdict), "queue the verdict");
+    }
+    let stats = writer.close();
+    assert_eq!(stats.written, 2 * tries.len() as u64, "{stats:?}");
+}
+
+/// The failure patterns of two failed verify steps, keyed as roko keys
+/// them: one seen three times in two plans with the fix a try found, one
+/// seen once with a key of its own.
+fn write_patterns(workdir: &Path, at: DateTime<Utc>) {
+    let learn_dir = workdir.join(".roko").join("learn");
+    fs::create_dir_all(&learn_dir).expect("create learn dir");
+    let mut store = ErrorPatternStore::empty();
+    let digest = "verify[0:test] (`cargo test -p beta`): exit code: 101";
+    for plan in ["plan-a", "plan-a", "plan-b"] {
+        store.observe_gate_failure_at(
+            GateFailureObservation::new(
+                format!("verify::{digest}"),
+                plan,
+                Some("T1".to_string()),
+                "cargo test -p beta",
+                "verify",
+                digest,
+                GateFailureSource::GateClassification,
+            ),
+            at,
+        );
+    }
+    assert!(store.record_resolution(
+        &format!("verify::{digest}"),
+        "Lesson: import the trait before calling its method. (files: crates/beta/src/lib.rs)",
+        "run-a:plan-b:T1:2",
+    ));
+    store.observe_gate_failure_at(
+        GateFailureObservation::new(
+            "verify::E0425",
+            "plan-a",
+            Some("T2".to_string()),
+            "cargo clippy -p beta",
+            "verify",
+            "error[E0425]: cannot find value `total` in this scope",
+            GateFailureSource::GateClassification,
+        ),
+        at,
+    );
+    store
+        .save(&learn_dir.join(ERROR_PATTERNS_FILE))
+        .expect("save the failure patterns");
+}
+
+/// gap-407f38: `roko learn rungs`, `roko learn patterns` and its
+/// `--graduate` list read like the other learn views, from a real run's
+/// records and a real pattern file: the header and its line of context, a
+/// part per rung or pattern with the facts the old formats gave, and the
+/// files read on the closing line. Neither old format is left: no "Rungs
+/// over" line, no prompt text.
+#[test]
+fn learn_rungs_and_patterns_read_as_learn_views() {
+    let tmp = TempDir::new().expect("tempdir");
+    let workdir = tmp.path();
+    let try_on = |task, attempt, rung, index, model, outcome, secs, usd| Try {
+        task,
+        attempt,
+        rung,
+        index,
+        model,
+        outcome,
+        secs,
+        usd,
+    };
+    write_run(
+        workdir,
+        "run-a",
+        &[
+            try_on(
+                "T1",
+                1,
+                "cheap",
+                0,
+                "cerebras-gptoss",
+                AttemptOutcome::GateFailed,
+                40,
+                0.002,
+            ),
+            try_on(
+                "T1",
+                2,
+                "mid",
+                1,
+                "glm-4.7",
+                AttemptOutcome::Passed,
+                90,
+                0.03,
+            ),
+            try_on(
+                "T2",
+                1,
+                "cheap",
+                0,
+                "cerebras-gptoss",
+                AttemptOutcome::Passed,
+                20,
+                0.001,
+            ),
+        ],
+    );
+
+    let rungs = run_roko(workdir, &["learn", "rungs"]);
+    let lines: Vec<&str> = rungs.lines().collect();
+    assert_eq!(
+        lines[..2],
+        [
+            "◆ roko  learn rungs",
+            "  how each rung of the model ladder did, over 1 run"
+        ],
+        "{rungs}"
+    );
+    assert_eq!(
+        part(&rungs, "cheap"),
+        [
+            "cerebras-gptoss, implementer: 2 tries · 1 verified pass",
+            "median 30s a try · 20s per verified pass",
+            "<$0.01 a try · <$0.01 per verified pass",
+        ],
+        "{rungs}"
+    );
+    assert_eq!(
+        part(&rungs, "mid"),
+        [
+            "glm-4.7, implementer: 1 try · 1 verified pass",
+            "median 1m 30s a try · 1m 30s per verified pass",
+            "$0.03 a try · $0.03 per verified pass",
+        ],
+        "{rungs}"
+    );
+    assert_eq!(
+        read_from(&rungs),
+        "Read from .roko/runs/ and .roko/learn/costs.jsonl.",
+        "{rungs}"
+    );
+    assert!(!rungs.contains("Rungs over"), "{rungs}");
+
+    let seen_at = Utc::now() - chrono::Duration::hours(3);
+    write_patterns(workdir, seen_at);
+    let last = day(seen_at);
+    let digest = "verify[0:test] (`cargo test -p beta`): exit code: 101";
+    let fix =
+        "fix: Lesson: import the trait before calling its method. (files: crates/beta/src/lib.rs)";
+
+    let patterns = run_roko(workdir, &["learn", "patterns"]);
+    let lines: Vec<&str> = patterns.lines().collect();
+    assert_eq!(
+        lines[..2],
+        [
+            "◆ roko  learn patterns",
+            "  the failures roko's checks found, most frequent first · 2 patterns"
+        ],
+        "{patterns}"
+    );
+    assert_eq!(
+        part(&patterns, "1"),
+        [
+            digest.to_string(),
+            format!("verify · 3 times in 2 plans · last seen {last}"),
+            fix.to_string(),
+        ],
+        "{patterns}"
+    );
+    assert_eq!(
+        part(&patterns, "2"),
+        [
+            "error[E0425]: cannot find value `total` in this scope".to_string(),
+            format!("verify · 1 time in 1 plan · last seen {last}"),
+            "check: cargo clippy -p beta".to_string(),
+            "key: verify::E0425".to_string(),
+        ],
+        "{patterns}"
+    );
+    assert_eq!(
+        read_from(&patterns),
+        "Read from .roko/learn/error-patterns.json.",
+        "{patterns}"
+    );
+    assert_eq!(
+        lines.last().map(|line| line.trim()),
+        Some("Next  roko learn patterns --graduate"),
+        "{patterns}"
+    );
+    assert!(
+        !patterns.contains("Prior Verify Failure Patterns"),
+        "{patterns}"
+    );
+
+    let graduate = run_roko(workdir, &["learn", "patterns", "--graduate"]);
+    let lines: Vec<&str> = graduate.lines().collect();
+    assert_eq!(
+        lines[..2],
+        [
+            "◆ roko  learn patterns --graduate",
+            "  failures ready to become a check: 3+ times in 2+ plans, with a verified fix"
+        ],
+        "{graduate}"
+    );
+    assert_eq!(
+        part(&graduate, "1"),
+        [
+            digest,
+            "3 times in 2 plans",
+            fix,
+            "suggested check: a regression test for this failure that `cargo test -p beta` runs",
+        ],
+        "{graduate}"
+    );
+    assert!(
+        !graduate.contains("  2  "),
+        "only one pattern is ready: {graduate}"
+    );
+    assert_eq!(
+        read_from(&graduate),
+        "Read from .roko/learn/error-patterns.json.",
+        "{graduate}"
     );
 }

@@ -70,7 +70,9 @@ async fn relay_agents_ws(
             .replace("https://", "wss://")
     );
 
-    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| bridge_ws(socket, upstream)))
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
+    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| open.hold(bridge_ws(socket, upstream))))
 }
 
 /// `GET /relay/events/ws` — proxy relay events WebSocket.
@@ -86,7 +88,9 @@ async fn relay_events_ws(
             .replace("https://", "wss://")
     );
 
-    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| bridge_ws(socket, upstream)))
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
+    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| open.hold(bridge_ws(socket, upstream))))
 }
 
 /// `GET|POST|DELETE /relay/{*path}` — proxy relay HTTP endpoints.

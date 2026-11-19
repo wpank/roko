@@ -823,6 +823,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             provider_semaphores: None,
             env: vec![("CLAUDE_TEST_ENV".to_string(), "env-value".to_string())],
             env_passthrough: Vec::new(),
+            tool_timeout: None,
+            tool_timeout_max: None,
+            essential_tools: Vec::new(),
             extra_args: vec!["--option-flag".to_string(), "option-value".to_string()],
             effort: Some("high".to_string()),
             bare_mode: false,
@@ -845,6 +848,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             thinking: None,
             data_llm: None,
             turn_budget: None,
+            hand_off_check: None,
             max_budget_usd: None,
             pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         };

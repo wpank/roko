@@ -792,6 +792,13 @@ async fn batch_status(
                 results: Some(results),
             }))
         }
+        OperationStatus::Cancelled => Ok(Json(BatchStatusResponse {
+            batch_id,
+            status: "cancelled".to_string(),
+            completed: 0,
+            total: 0,
+            results: None,
+        })),
         OperationStatus::Failed { error } => Ok(Json(BatchStatusResponse {
             batch_id: batch_id.clone(),
             status: "failed".to_string(),
@@ -1370,6 +1377,7 @@ mod tests {
                 handle: tokio::spawn(async {}),
                 started: std::time::Instant::now(),
                 progress: None,
+                write: None,
             },
         );
 

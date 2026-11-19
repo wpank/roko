@@ -1,0 +1,530 @@
+/*
+ * The portal's frame, on roko's design kit (roko-kit.css): the top bar, the plan list, the stage, the empty
+ * project, the request box, the sign-in page and the phone layout. Classes are pt-*; states are data attributes.
+ */
+
+/* ---- the frame --------------------------------------------------------------------------------------- */
+
+.pt {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.pt-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 56px;
+  padding: 0 20px;
+  background: var(--rk-module);
+  border-bottom: 1px solid var(--rk-line);
+  box-shadow: inset 0 1px 0 var(--rk-sheen);
+  min-width: 0;
+}
+
+.pt-project {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pt-project-name {
+  overflow: hidden;
+  font: 700 15px/1 var(--rk-sans);
+  font-stretch: 88%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pt-project-branch {
+  font: 400 11px/1 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink-3);
+  white-space: nowrap;
+}
+
+.pt-spacer { flex: 1; }
+
+/* The status chip in the top bar is a button: it opens the plan it is about. */
+.pt-top .rk-chip { padding-right: 2px; }
+.pt-top .rk-chip:disabled { opacity: 1; cursor: default !important; }
+
+.pt-theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  font: 500 10px/1 var(--rk-mono);
+  font-stretch: 87.5%;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rk-ink-3);
+}
+
+.pt-theme i {
+  position: relative;
+  width: 32px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--rk-glass);
+  box-shadow: inset 0 0 0 1px #000;
+}
+
+.pt-theme i::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--rk-px-on);
+  transition: transform var(--rk-t-quick) var(--rk-ease);
+}
+
+.pt-theme[aria-checked="true"] i::after { transform: translateX(16px); }
+.pt-theme[aria-checked="false"] [data-side="day"],
+.pt-theme[aria-checked="true"] [data-side="night"] { color: var(--rk-ink); }
+
+.pt-body {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.pt-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pt-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 30px 40px 56px;
+}
+
+.pt-page {
+  display: grid;
+  gap: 20px;
+  max-width: 1060px;
+  margin: 0 auto;
+}
+
+/* ---- the plan list ------------------------------------------------------------------------------------ */
+
+.pt-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 12px;
+  border-right: 1px solid var(--rk-line);
+}
+
+.pt-plans-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 10px;
+}
+
+.pt-plans-foot {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding: 14px 8px 0;
+}
+
+.pt-filter {
+  margin: 0 8px 8px;
+  padding: 7px 10px;
+  font: 400 13px/1.2 var(--rk-sans);
+  color: var(--rk-ink);
+  background: var(--rk-body);
+  border: 1px solid var(--rk-line-2);
+  border-radius: var(--rk-r-2);
+}
+
+.pt-plans-empty {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--rk-ink-3);
+}
+
+.pt-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 2px 8px 4px;
+}
+
+.pt-group-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.pt-group-toggle .rk-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt-group-mark { width: 12px; color: var(--rk-ink-3); font: 500 10px/1 var(--rk-mono); }
+
+.pt-plan {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 5px;
+  align-items: center;
+  width: 100%;
+  padding: 11px 12px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--rk-r-3);
+  background: transparent;
+  color: var(--rk-ink);
+  text-align: left;
+}
+
+.pt-plan:hover { background: var(--rk-module-2); }
+
+.pt-plan[aria-current="true"] {
+  background: var(--rk-module);
+  border-color: var(--rk-line);
+  box-shadow: inset 0 1px 0 var(--rk-sheen);
+}
+
+.pt-plan-title {
+  overflow: hidden;
+  font: 600 14px/1.25 var(--rk-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pt-plan-line {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  font: 400 11px/1.2 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink-3);
+}
+
+.pt-plan-line > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt-plan-word { font-weight: 500; }
+.pt-plan[data-signal="live"] .pt-plan-word { color: var(--rk-live); }
+.pt-plan[data-signal="pass"] .pt-plan-word { color: var(--rk-pass); }
+.pt-plan[data-signal="fail"] .pt-plan-word { color: var(--rk-fail); }
+.pt-plan[data-signal="you"] .pt-plan-word { color: var(--rk-you-text); }
+
+.pt-strip { display: inline-flex; flex: none; align-items: center; gap: 6px; }
+.pt-plan .rk-strip { flex: none; gap: 2px; }
+.pt-plan .rk-strip i { width: 9px; height: 9px; }
+.pt-plan-more { font: 500 10px/1 var(--rk-mono); color: var(--rk-ink-3); }
+
+/* ---- the plan's page: the run card at full width ------------------------------------------------------ */
+
+/* Not .pt-plan: that is a row in the plan list. */
+.pt-planpage { display: grid; gap: 20px; }
+.pt-readout .rk-cell { padding: 14px 18px 15px; gap: 10px; }
+.pt-readout { min-height: 104px; }
+.pt-readout .pt-dots { min-height: 24px; }
+.pt-seq { padding: 18px 18px 14px; }
+/* The portal's own floor, under the kit's 240px cap: a pad, never a bar. */
+.pt-seq .rk-seq-grid { grid-auto-columns: minmax(220px, 240px); column-gap: 40px; }
+.pt-seq .rk-pad { min-height: 64px; }
+.rk-pad[data-state="still"] .rk-pad-foot { color: var(--rk-ink-3); }
+.rk-pad[data-state="skipped"] { border-style: dotted; box-shadow: none; }
+.rk-pad[data-selected] { outline: 2px solid var(--rk-ink); outline-offset: 2px; }
+
+.pt-sentence { margin: 0; max-width: 72ch; font-size: 15px; line-height: 1.5; color: var(--rk-ink-2); }
+.pt-sentence b { color: var(--rk-ink); font-weight: 650; }
+.pt-reason { font: 400 12px/1.3 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-ink-3); }
+
+.pt-now { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; min-width: 0; flex: 1 1 420px; }
+.pt-now li { display: grid; grid-template-columns: 10px auto minmax(0, 1fr) auto; gap: 10px; align-items: baseline; font-size: 13.5px; color: var(--rk-ink-2); }
+.pt-now li::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--rk-live); align-self: center; animation: rk-blink var(--rk-t-pulse) steps(1, end) infinite; }
+.pt-now b { color: var(--rk-ink); font-weight: 600; }
+.pt-now li > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt-now .pt-t { font: 400 11px/1 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-ink-3); }
+
+.pt-task { display: grid; gap: 14px; padding: 18px 20px 16px; }
+.pt-task-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pt-task-head .rk-pad-n { font-size: 13px; }
+.pt-task-head h2 { flex: 1 1 280px; min-width: 0; margin: 0; font: 700 18px/1.25 var(--rk-sans); }
+.pt-task-what { margin: 0; max-width: 78ch; font-size: 14px; color: var(--rk-ink-2); white-space: pre-wrap; }
+.pt-rows { display: grid; border-top: 1px solid var(--rk-line); }
+.pt-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--rk-line); }
+.pt-row > span:first-child { font: 500 9.5px/1.6 var(--rk-mono); font-stretch: 87.5%; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-ink-3); }
+.pt-row ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13.5px; color: var(--rk-ink-2); }
+.pt-row li { overflow-wrap: anywhere; }
+.pt-row li b { color: var(--rk-ink); font-weight: 600; }
+.pt-g { display: inline-block; width: 16px; font-weight: 700; color: var(--rk-ink-3); }
+.pt-g[data-state="pass"] { color: var(--rk-pass); }
+.pt-g[data-state="fail"] { color: var(--rk-fail); }
+.pt-g[data-state="live"] { color: var(--rk-live); }
+.pt-dim { color: var(--rk-ink-3); }
+
+.pt-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pt-table th { padding: 0 10px 8px 0; text-align: left; font: 500 9.5px/1.2 var(--rk-mono); font-stretch: 87.5%; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-ink-3); border-bottom: 1px solid var(--rk-line); }
+.pt-table td { padding: 8px 10px 8px 0; color: var(--rk-ink-2); border-bottom: 1px solid var(--rk-line); }
+.pt-table td:first-child { color: var(--rk-ink); }
+.pt-table .n { text-align: right; }
+.pt-table td.n { font: 400 12px/1 var(--rk-mono); font-stretch: 87.5%; }
+.pt-table tr:last-child td { border-bottom: 0; }
+.pt-kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px 16px; margin: 14px 0 0; font-size: 13px; }
+.pt-kv:empty { display: none; }
+.pt-kv dt { font: 500 9.5px/1.6 var(--rk-mono); font-stretch: 87.5%; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-ink-3); }
+.pt-kv dd { margin: 0; min-width: 0; color: var(--rk-ink-2); overflow-wrap: anywhere; }
+
+/* ---- notices: one sentence, in the page ------------------------------------------------------------- */
+
+.pt-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 13.5px;
+  color: var(--rk-ink-2);
+  background: var(--rk-module);
+  border-bottom: 1px solid var(--rk-line);
+}
+
+.pt-notice b { color: var(--rk-ink); font-weight: 650; }
+.pt-notice-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- the empty project and the request box ---------------------------------------------------------- */
+
+.pt-intro { display: grid; gap: 20px; padding: 24px 0 8px; }
+.pt-intro .rk-display { font-size: clamp(44px, 6.4vw, 88px); }
+.pt-intro p { margin: 0; max-width: 62ch; font-size: 17px; line-height: 1.55; color: var(--rk-ink-2); }
+.pt-intro p b { color: var(--rk-ink); font-weight: 650; }
+
+.pt-how {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pt-how li {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding-top: 12px;
+  border-top: 2px solid var(--rk-ink);
+  font-size: 13.5px;
+  color: var(--rk-ink-2);
+}
+
+.pt-how b { display: block; color: var(--rk-ink); font: 700 15px/1.3 var(--rk-sans); }
+
+.pt-head { display: flex; align-items: center; gap: 14px; min-width: 0; }
+
+.pt-head h1 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font: 700 26px/1.15 var(--rk-sans);
+  font-stretch: 88%;
+  letter-spacing: -0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pt-ask { display: grid; gap: 14px; padding: 20px; }
+
+.pt-ask textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  padding: 14px 16px;
+  font: 400 16px/1.5 var(--rk-sans);
+  color: var(--rk-ink);
+  background: var(--rk-body);
+  border: 1px solid var(--rk-line-2);
+  border-radius: var(--rk-r-3);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.pt-ask textarea:focus { outline: 2px solid var(--rk-you); outline-offset: 2px; }
+.pt-ask textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+.pt-examples { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.pt-example {
+  padding: 7px 11px;
+  font: 400 13px/1.2 var(--rk-sans);
+  color: var(--rk-ink-2);
+  background: transparent;
+  border: 1px dashed var(--rk-line-2);
+  border-radius: var(--rk-r-2);
+}
+
+.pt-example:hover { border-style: solid; color: var(--rk-ink); }
+.pt-line { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.pt-hint { margin: 0; font-size: 13px; color: var(--rk-ink-3); }
+.pt-waiting { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--rk-ink-2); }
+
+.pt-error {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  font-size: 14px;
+  color: var(--rk-ink-2);
+  background: var(--rk-module-2);
+  border-left: 2px solid var(--rk-fail);
+  border-radius: var(--rk-r-3);
+}
+
+.pt-error b { color: var(--rk-ink); font-weight: 650; }
+
+/* ---- where the work went: the merge command, the changed files and their patches (gap-6d2dd2) --------- */
+
+.pt-merge { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: -8px; }
+.pt-merge .pt-code { padding: 6px 10px; font-size: 12.5px; user-select: all; overflow-wrap: anywhere; }
+.pt-file b { font: 500 13px/1.4 var(--rk-mono); font-stretch: 87.5%; color: var(--rk-ink); }
+.pt-add { color: var(--rk-pass); font: 500 12px/1 var(--rk-mono); }
+.pt-del { color: var(--rk-fail); font: 500 12px/1 var(--rk-mono); }
+.pt-changes { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pt-changes .rk-fold { border-top: 0; }
+/* A file's fold names the file as it is spelled, not in the folds' capitals. */
+.pt-changes .rk-fold > summary { text-transform: none; letter-spacing: normal; }
+/* Why a run's changes need a closer look before a merge: unchecked tasks, or only part of the work (§4.8). */
+.pt-banner { margin: 0; padding: 8px 12px; font-size: 13.5px; color: var(--rk-ink); background: var(--rk-module-2); border-left: 2px solid var(--rk-you); border-radius: var(--rk-r-1); }
+.pt-patch {
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font: 400 12px/1.5 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink-2);
+  background: var(--rk-module-2);
+  border-radius: var(--rk-r-1);
+  white-space: pre;
+}
+.pt-patch [data-line="add"] { color: var(--rk-pass); }
+.pt-patch [data-line="del"] { color: var(--rk-fail); }
+.pt-patch [data-line="hunk"], .pt-patch [data-line="meta"] { color: var(--rk-ink-3); }
+
+/* ---- writing and fixing a plan (gap-6c4d24) ---------------------------------------------------------- */
+
+.pt-writing-glass { max-width: 440px; }
+.pt-writing-glass[data-cells="1"] { max-width: 220px; }
+.pt-request { margin: 0; padding: 12px 16px; font-size: 15px; color: var(--rk-ink-2); background: var(--rk-module-2); border-radius: var(--rk-r-1); }
+.pt-raw {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font: 400 12px/1.5 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink-2);
+  background: var(--rk-body);
+  border-radius: var(--rk-r-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pt-cant-run { display: grid; gap: 14px; }
+.pt-problems > ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.pt-problems > ul > li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rk-line);
+  font-size: 15px;
+  color: var(--rk-ink-2);
+}
+.pt-problems > ul > li:first-child { border-top: 1px solid var(--rk-line); }
+.pt-problems > ul > li b { color: var(--rk-ink); font-weight: 650; }
+.pt-problems .rk-fold { margin-top: 8px; }
+.pt-raw-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pt-raw-list li { font-size: 12px; }
+.rk-pad[data-problem] { border-color: var(--rk-fail); }
+.rk-pad[data-problem] .rk-pad-foot { color: var(--rk-fail); }
+
+/* ---- signing in --------------------------------------------------------------------------------------- */
+
+.pt-center { display: grid; place-items: center; min-height: 0; overflow: auto; padding: 32px 16px; }
+.pt-sign { display: grid; gap: 16px; max-width: 540px; padding: 28px 28px 24px; }
+.pt-sign p { margin: 0; font-size: 14.5px; color: var(--rk-ink-2); }
+
+.pt-code {
+  font: 400 0.82em var(--rk-mono);
+  font-stretch: 87.5%;
+  padding: 0.1em 0.4em;
+  background: var(--rk-module-2);
+  border: 1px solid var(--rk-line);
+  border-radius: var(--rk-r-1);
+}
+
+.pt-command { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.pt-command code {
+  padding: 7px 10px;
+  font: 400 12px/1 var(--rk-mono);
+  font-stretch: 87.5%;
+  color: var(--rk-ink);
+  background: var(--rk-module-2);
+  border: 1px solid var(--rk-line);
+  border-radius: var(--rk-r-1);
+}
+
+/* ---- the dot-matrix wrapper ------------------------------------------------------------------------- */
+
+.pt-dots { display: inline-block; line-height: 0; vertical-align: middle; }
+
+/* ---- small screens ----------------------------------------------------------------------------------- */
+
+.pt-picker { display: none; }
+
+@media (max-width: 820px) {
+  .pt-top { gap: 10px; padding: 0 16px; }
+  .pt-hide-narrow { display: none !important; }
+  .pt-body { grid-template-columns: minmax(0, 1fr); }
+  .pt-body > .pt-plans { display: none; }
+  .pt-body[data-plans-open] > .pt-plans { display: flex; position: fixed; inset: 56px 0 0; z-index: 30; background: var(--rk-body); border-right: 0; }
+
+  .pt-picker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--rk-module);
+    border-bottom: 1px solid var(--rk-line);
+    font: 600 14px/1.2 var(--rk-sans);
+  }
+
+  .pt-picker > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pt-stage { padding: 18px 16px 40px; }
+  .pt-head { flex-wrap: wrap; gap: 10px; }
+  .pt-head h1 { font-size: 21px; white-space: normal; }
+  .pt-how { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pt-seq .rk-seq-grid { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); justify-content: stretch; row-gap: 18px; }
+  .pt-seq .rk-seq-edges { display: none; }
+  .pt-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .pt-now li { grid-template-columns: 10px minmax(0, 1fr) auto; }
+  .pt-now li > span:nth-child(2) { grid-column: 2 / -1; white-space: normal; }
+  /* Two readings to a row leave a note too little room for one line: let it wrap. */
+  .pt-readout .rk-cell-note { white-space: normal; }
+}

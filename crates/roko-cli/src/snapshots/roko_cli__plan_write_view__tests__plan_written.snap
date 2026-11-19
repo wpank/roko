@@ -1,0 +1,10 @@
+---
+source: crates/roko-cli/src/plan_write_view.rs
+expression: text
+---
+  ✓ Plan written  plans/add-a-farewell-command · 2 tasks · 2 checks · a plan check · 3.1s · $0.01
+
+  ○ task 1  Add farewell to the greeting module
+  ○ task 2  Say goodbye from the command line    after task 1
+
+  Task 1 and task 2 name no files to read first, so their agents start without that context.

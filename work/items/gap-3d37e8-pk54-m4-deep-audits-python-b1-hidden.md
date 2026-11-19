@@ -10,8 +10,9 @@ rank = 54
 size = "M"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK54"
 anchors = ["benchmarks/viabilitybench"]
 lane = "bench"
@@ -60,3 +61,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Suggested model: opus.
 
 2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 5: 7101 approved: a BL12 line with a $10 cap for S05's first audit slice. Hold lifted.
+
+Checked 2026-10-27: 2026-10-26: the item's own Notes record the spend hold (7101) as approved 2026-10-15, but task 7109 itself has not been started; the long touched list is unrelated bulk benchmarks/viabilitybench activity, not this task.

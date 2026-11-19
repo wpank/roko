@@ -8,11 +8,11 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["workspace/types"]
 created = 2026-09-28
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gaps-md#cross-crate-duplicate-type-families----partial"
-anchors = ["crates/roko-core/src/task.rs:22", "crates/roko-gate/src/feedback.rs:53", "crates/roko-compose/src/gate_feedback.rs:9", "crates/roko-learn/src/events.rs:24", "crates/roko-cli/src/inline/agent_events.rs:16", "crates/roko-agent/src/task_runner.rs:75"]
+anchors = ["crates/roko-core/src/task.rs:22", "crates/roko-gate/src/feedback.rs:53", "crates/roko-compose/src/gate_feedback.rs:9", "crates/roko-learn/src/events.rs:24", "crates/roko-cli/src/inline/agent_events.rs:16", "crates/roko-agent/src/task_runner.rs:79"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -39,3 +39,5 @@ Re-checked 2026-09-29: unchanged. The parked, unverified gap-c2a751 (created 202
 ## Notes
 
 - 2026-10-01 (wk-filer4): partial, implemented on work/gap-2bc1b9; cargo verification deferred to the batch check. First step, PlanStatus: roko-acp's `PlanStatus` was the Agent Client Protocol's plan-entry state (pending, in_progress, completed), not a copy of roko-core's plan lifecycle. It is renamed to `PlanEntryStatus`, the protocol's own name, in types.rs, event_forward.rs and runner.rs (21 references, all inside roko-acp; no other crate used it), and its doc says why it differs. The serialized form is unchanged: serde names the variants, not the type. PlanStatus now has one definition, roko-core's. Left (the verify still counts them): TaskStatus (roko-core and roko-cli tui/state, 132 tui references), GateFeedback (roko-gate, roko-compose and roko-cli prompt_builder) and AgentEvent (roko-agent task_runner, roko-cli inline and roko-learn events), plus the other families in the description. Each needs a per-family call, consolidate or rename, best done with a compiler at hand.
+
+Checked 2026-10-27: 2026-10-26 sweep: no change in substance since 2026-10-01 (only line-number drift: tui TaskStatus moved 224->252, task_runner.rs AgentEvent moved 75->79). PlanStatus remains the only family fixed; TaskStatus, GateFeedback and AgentEvent (and the ~10 other families the description mentions) are untouched.

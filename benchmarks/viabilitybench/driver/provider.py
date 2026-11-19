@@ -9,13 +9,17 @@ Usage comes back as the provider reports it (`Usage`), or None when the response
 cost unknown. The client sends no API key: it reaches a network provider only through the metering proxy, which holds
 the key from the driver-only key file (`vb.py`, `faultproxy`), and never reads one from an environment variable, since
 every agent under the driver's user can read the driver's environment (bug-979a06). A network endpoint is refused
-before any request. Proxies from the environment are ignored for loopback URLs.
+before any request. Proxies from the environment are ignored for loopback URLs. Every request names the driver as its
+User-Agent (`USER_AGENT`), which the metering proxy forwards: api.cerebras.ai's Cloudflare refuses urllib's default
+`Python-urllib/<version>` with a 403 (error 1010, `browser_signature_banned`) before the API sees the call
+(bug-7b1b7f). No agent sees the driver's requests, so the name reaches only the provider.
 
 A failed call raises `ProviderError`. `retryable` says whether trying again may help (429, 5xx, a dropped
 connection); `billed_unknown` says whether the provider may have billed it (the request may have reached the model
 and no usage came back), in which case its cost is unknown rather than $0.
 
 API:
+    USER_AGENT
     Endpoint(provider, base_url, api_key_env=None, max_tokens_param="max_completion_tokens", timeout_s=180.0)
     Endpoint.offline -> bool
     Usage(prompt_tokens, completion_tokens, cached_tokens=0, reasoning_tokens=0)
@@ -38,6 +42,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 MAX_RETRY_AFTER_S = 30.0
+USER_AGENT = "vb-driver/1.0"  # not urllib's default, which Cerebras's edge bans (module docstring, bug-7b1b7f)
 
 
 class ProviderError(RuntimeError):
@@ -94,7 +99,7 @@ class OpenAICompatible:
 
     def complete(self, messages: Sequence[dict], *, model: str, max_tokens: int, timeout_s: float) -> Completion:
         endpoint = self.endpoint
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": USER_AGENT}
         if not endpoint.offline:
             raise ProviderError(f"{endpoint.provider} is a network provider: the client reaches one only through the "
                                 "metering proxy, which holds its key", retryable=False, billed_unknown=False)

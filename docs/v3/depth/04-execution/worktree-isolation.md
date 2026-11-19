@@ -239,6 +239,34 @@ to prevent exhausting available space.
 
 ---
 
+## Warm Build Trees
+
+A fresh checkout would build its C++ project from nothing, so roko gives each checkout a copy-on-write clone of a
+build tree that is already built, relocated to the new checkout's path (`orchestrator::worktree::give_build_trees`).
+`[gates] warm_build_dirs` names the trees: unset, every git-ignored directory holding a CMake build tree; `[]`, none.
+
+| Checkout | Where its build trees come from |
+|---|---|
+| An attempt's worktree | The person's checkout (gap-6754ab) |
+| An attempt of a task that depends on others | The accepted checkout of the dependency accepted last, which already built that work (gap-b6b7a1); the person's checkout when none is left |
+| The regression checkout (`.roko/state/regression-checkout`, a delivery's post-merge check) | Its own, from earlier deliveries; a tree it lacks is copied from the person's checkout (gap-dc24dd) |
+
+**A cold delivery check.** Warm trees save minutes, but a check that only ever runs on warm trees can pass on build state
+a clean checkout never has: a step that uses what a later step builds passes on a warm tree and fails on a cold one. A
+plan whose `tasks.toml` sets `[meta] cold_verify = true` runs its whole-plan check, the delivery's regression, cold:
+the regression checkout's untracked and git-ignored files are removed, its build trees with them, the regression's
+cargo target dir (`.roko/state/regression-target`) is emptied, and nothing is copied in. Every delivery records which
+it was, whether its check passed or failed: the receipt in the plan's checkpoint holds `roko.delivery.build_trees@1`,
+with `cold` and `started_from` (the line the check's log opens with), and `roko plan status` shows it as
+`plan check from:`. A cold check's summary says "from no build trees (a cold check)", in the run log when the check
+passes and in the receipt's error when it fails (bug-2f70cd). What a cold check builds warms the next delivery.
+
+**Which a plan's final delivery uses.** Warm, like every delivery, unless the plan sets `cold_verify`. A plan that ships,
+such as a project's last phase, should set it. A delivery happens under `--worktree-per-task`; without it the
+whole-plan check runs in your own checkout, which roko never clears, so there `cold_verify` only logs a warning.
+
+---
+
 ## Error Types
 
 ```rust

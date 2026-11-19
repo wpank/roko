@@ -11,9 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import type { WireDashboardEvent, WirePlanTask, WirePlanTasks } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
-import { TaskList } from '@/components/stage/TaskList';
+import { PlanPage } from '@/components/plan/PlanPage';
 import { Checks } from '@/components/stream/Checks';
-import { StreamPane } from '@/components/stream/StreamPane';
 import { Transcript } from '@/components/stream/Transcript';
 import { initialRunState, taskKey } from '@/lib/runState';
 import { STREAM_RECORD_PREFIX, TRUNCATED_PREFIX } from '@/lib/streamRecord';
@@ -62,18 +61,27 @@ const T01_FAILS: WireDashboardEvent[] = [
 ];
 const T01_FAILED = [...BOTH_RUNNING, ...T01_FAILS];
 
+/** The plan's page with `selected` open; its transcript and checks sit in the task's detail. */
 function pane(selected: string | null) {
-  return renderWithClient(<StreamPane planId="hello" selectedTaskId={selected} open onToggle={() => {}} />, {
-    seed: [
-      [queryKeys.planTasks('hello'), PLAN_TASKS],
-      [queryKeys.workspace, { name: 'hello', path: '/tmp/hello', branch: null }],
-    ],
-  });
+  return renderWithClient(
+    <PlanPage
+      plan={{ id: 'hello', title: 'Hello', task_count: 2, tasks_done: 0, tasks_failed: 0, completed: false, status: 'pending', old_format: false }}
+      selectedTaskId={selected}
+      onSelectTask={() => {}}
+      onRequestError={() => {}}
+    />,
+    {
+      seed: [
+        [queryKeys.planTasks('hello'), PLAN_TASKS],
+        [queryKeys.validation('hello'), { valid: true, errors: [], warnings: [], diagnostics: [] }],
+        [queryKeys.gateRungs, []],
+        [queryKeys.planCosts('hello'), 3],
+      ],
+    },
+  );
 }
 
 const checkRows = () => [...document.querySelectorAll('[data-region="checks"] .check-row')];
-const streamTask = () => textOf(document.querySelector('.stream-bar-task'));
-const tab = (name: string) => [...document.querySelectorAll('.stream-tab')].find((b) => textOf(b).startsWith(name))!;
 
 describe('the checks view (§5)', () => {
   const checks = () => foldEvents(T01_FAILED).tasks[taskKey('hello', 'T01')]!.checks;
@@ -102,65 +110,6 @@ describe('the checks view (§5)', () => {
     render(<Checks checks={[{ name: 'verify[0:compile]', index: 0, phase: 'compile', status: 'passed', output: '$ true' }]} declared={VERIFY} />);
     expect(checkRows()[0]!.querySelector('.check-raw-toggle')).toBeNull();
     expect(textOf(checkRows()[0]!.querySelector('.check-row-command'))).toBe('$ true');
-  });
-});
-
-describe('a failed task row (§11)', () => {
-  function renderRows(selected: string | null) {
-    const { rows } = buildTaskRows(TASKS, foldEvents(T01_FAILED), 'hello', 60_000);
-    render(<TaskList rows={rows} selectedTaskId={selected} onSelectTask={() => {}} />);
-  }
-  const digest = (id: string) => document.querySelectorAll(`[data-task-row="${id}"] [data-digest]`);
-
-  it('shows the digest’s first line on the row, not only when expanded', () => {
-    renderRows(null);
-    expect(digest('T01')).toHaveLength(1);
-    expect(textOf(digest('T01')[0]!)).toBe('src/lib.rs:5:9 assertion failed: greeting.is_empty()');
-    expect(textOf(document.querySelector('[data-task-row="T01"] [data-cell="checks"]'))).toContain('✗ test');
-    expect(digest('T02')).toHaveLength(0);
-  });
-
-  it('keeps one digest line when the row is expanded', () => {
-    renderRows('T01');
-    expect(digest('T01')).toHaveLength(1);
-  });
-});
-
-describe('the stream on a failure (§11)', () => {
-  it('points at a failed task while another runs, on its checks', () => {
-    setStore(foldEvents(T01_FAILED));
-    pane(null);
-    expect(streamTask()).toBe('T01');
-    expect(checkRows().map((r) => r.getAttribute('data-status'))).toEqual(['passed', 'failed', 'pending']);
-  });
-
-  it('stays on the task the operator selected', () => {
-    setStore(foldEvents(T01_FAILED));
-    pane('T02');
-    expect(streamTask()).toBe('T02');
-    expect(document.querySelector('[data-region="transcript"]')).not.toBeNull();
-  });
-
-  it('shows the failure’s checks although the operator picked a view on the task it left', () => {
-    setStore(foldEvents(BOTH_RUNNING));
-    pane(null);
-    expect(streamTask()).toBe('T01');
-    fireEvent.click(tab('transcript'));
-    act(() => setStore(foldEvents([
-      ...BOTH_RUNNING,
-      gate('T02', 'verify[0:compile]', false, '$ cargo build\n✗ exit status 101'),
-      { type: 'task_completed', plan_id: 'hello', task_id: 'T02', outcome: 'failed' },
-    ])));
-    expect(streamTask()).toBe('T02');
-    expect(textOf(document.querySelector('[data-region="checks"] [data-exit]'))).toBe('exit status 101 · no output');
-  });
-
-  it('returns to the transcript when the failed task is retried', () => {
-    setStore(foldEvents(T01_FAILED));
-    pane('T01');
-    expect(document.querySelector('[data-region="checks"]')).not.toBeNull();
-    act(() => setStore(foldEvents([...T01_FAILED, { type: 'task_started', plan_id: 'hello', task_id: 'T01', phase: 'implement' }])));
-    expect(textOf(document.querySelector('[data-region="transcript"] .transcript-divider'))).toContain('attempt 2');
   });
 });
 

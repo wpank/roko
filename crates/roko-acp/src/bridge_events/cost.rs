@@ -743,7 +743,15 @@ mod distillation_tests {
     #[tokio::test]
     async fn acp_distillation_records_spend() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let episode = Episode::new("acp", "acp-session-1");
+        // An ACP turn runs no gate, so only `distill_ungated` distils it
+        // (bug-f8655e).
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            "[learning]\ndistill_ungated = true\n",
+        )
+        .expect("write roko.toml");
+        let mut episode = Episode::new("acp", "acp-session-1");
+        episode.success = true;
 
         spawn_acp_distillation(tmp.path(), episode, Arc::new(FakeDistiller));
 

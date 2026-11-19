@@ -118,6 +118,7 @@ pub mod hotelling;
 pub mod integration_gate;
 pub mod judge_calibration;
 pub mod llm_judge_gate;
+pub mod output_text;
 pub mod payload;
 /// PELT (Pruned Exact Linear Time) offline change point detection (P1-13).
 #[cfg(feature = "spc")]

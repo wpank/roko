@@ -78,7 +78,8 @@ impl GraphTaskDispatcher {
 /// Mapping:
 /// - `ToolStep` → `TuiBridge::tool_step` (always; safe, scrubbed target)
 /// - `Unscreened(TextDelta)` → unscreened `text` record
-/// - `Unscreened(ReasoningDelta)` → unscreened `reasoning` record
+/// - `Unscreened(ReasoningDelta)` → unscreened `reasoning` record, unless
+///   empty
 /// - `Unscreened(ToolCallEnd)` → unscreened `tool_start` record with args
 ///   truncated to 2 048 bytes on a char boundary
 /// - `Unscreened(ToolResult)` → unscreened `tool_result` record with output
@@ -114,7 +115,9 @@ pub(super) fn forward_live_event_to_tui(
                     serde_json::json!({"text": text}),
                 );
             }
-            StreamEventKind::ReasoningDelta(text) => {
+            // An empty one only says a reasoning model's call is alive
+            // (gap-1ba0ac).
+            StreamEventKind::ReasoningDelta(text) if !text.is_empty() => {
                 tui.publish_unscreened_stream_record(
                     agent_id,
                     plan_id,

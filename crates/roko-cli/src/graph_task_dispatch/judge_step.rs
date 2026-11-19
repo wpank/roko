@@ -36,6 +36,9 @@ impl GraphTaskDispatcher {
             return None;
         }
         let Some(agent) = self.cheap_agent() else {
+            // A try the plan's budget stopped is not judged, and its verdict
+            // says so (bug-b364d9).
+            HelperCalls::skip_model_check(JUDGE_GATE);
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,

@@ -83,6 +83,7 @@ fn roko(workspace: &ScriptedPlanWorkspace) -> Command {
     for name in ["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"] {
         command.env_remove(name);
     }
+    command.env(common::AUDITS_OFF.0, common::AUDITS_OFF.1);
     command
 }
 

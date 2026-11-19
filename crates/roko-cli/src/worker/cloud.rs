@@ -685,6 +685,7 @@ pub async fn run_code_implementer_cloud(
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         };
@@ -694,7 +695,10 @@ pub async fn run_code_implementer_cloud(
 
         if success {
             if isolated {
-                let batch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
+                // The run's batch is named from its plans (gap-b67fdd): its
+                // checkpoints say which branch it is.
+                let batch = crate::graph_checkpoint::recorded_run_batch_branch(&workspace, &run_id)
+                    .unwrap_or_else(|| format!("{BATCH_BRANCH_PREFIX}{run_id}"));
                 git_take_batch(&workspace, &batch).await?;
             } else {
                 let commit_message = format!("plan: {}", execution.plan_slug);

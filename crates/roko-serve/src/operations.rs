@@ -70,6 +70,7 @@ pub(crate) async fn spawn_operation<F>(
             handle,
             started: std::time::Instant::now(),
             progress: None,
+            write: None,
         },
     );
 }
@@ -167,7 +168,8 @@ pub(crate) fn latest_progress(operation: &OperationHandle) -> Option<Value> {
 
 /// An operation's status as `GET /api/operations/{id}` reports it:
 /// `{id, kind, status, result?, error?, elapsed_secs?, progress?}`, with the
-/// stored result parsed back into JSON.
+/// stored result parsed back into JSON. `status` is `running`, `completed`,
+/// `failed` or `cancelled` (a stopped plan write, bug-36ce72).
 pub(crate) fn status_json(
     id: &str,
     kind: &str,
@@ -191,6 +193,7 @@ pub(crate) fn status_json(
             response["status"] = json!("failed");
             response["error"] = json!(error);
         }
+        OperationStatus::Cancelled => response["status"] = json!("cancelled"),
     }
     if let Some(elapsed_secs) = elapsed_secs {
         response["elapsed_secs"] = json!(elapsed_secs);
@@ -266,6 +269,7 @@ mod tests {
                 artifacts: Vec::new(),
                 cost_usd: 0.0,
                 source_checks: None,
+                repairs: Vec::new(),
             })
         }
 

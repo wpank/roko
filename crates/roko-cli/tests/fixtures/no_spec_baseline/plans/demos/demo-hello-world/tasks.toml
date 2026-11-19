@@ -1,0 +1,35 @@
+[meta]
+plan = "demo-hello-world"
+total = 1
+done = 0
+status = "fixture"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+# The whole-plan check: the same run of the script, on the merged result.
+[[meta.verify]]
+phase = "runs"
+command = '''test "$(sh demo/hello-world/hello.sh)" = "hello world"'''
+fail_msg = "demo/hello-world/hello.sh must print exactly `hello world` when run with sh."
+
+[[task]]
+id = "HELLO-1"
+title = "Write a shell script that prints hello world"
+description = """Create `demo/hello-world/hello.sh`: a POSIX shell script that prints exactly
+`hello world` followed by a newline when run as `sh demo/hello-world/hello.sh`. Start the file with
+the comment line `# roko demo output (plan demo-hello-world): safe to delete.` Do not modify or
+create any other file. If the file already does this, leave it unchanged.
+
+Output file: ARTIFACT demo/hello-world/hello.sh"""
+status = "ready"
+tier = "mechanical"
+max_loc = 4
+files = ["demo/hello-world/hello.sh"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "runs"
+command = '''test "$(sh demo/hello-world/hello.sh)" = "hello world"'''
+fail_msg = "demo/hello-world/hello.sh must print exactly `hello world` when run with sh."

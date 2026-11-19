@@ -82,6 +82,9 @@ pub mod error_pattern_store;
 pub mod events;
 /// Crash-durable prompt-experiment receipt shared across all dispatch surfaces.
 pub mod experiment_receipt;
+/// What a failed check printed: its failure lines, its failing test cases
+/// and a failure-first excerpt for the retry (bug-3e3d08).
+pub mod failure_text;
 /// Concrete feedback sink for workflow learning telemetry.
 pub mod feedback_service;
 /// Guarded commit (P21): last-known-good snapshots of learned stores,

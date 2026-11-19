@@ -1,0 +1,60 @@
+[ 15%] Built target undertow_core
+[ 16%] Built target Undertow_vst3_helper
+[ 20%] Built target undertow_spec_support
+[ 22%] Building CXX object plugin/CMakeFiles/Undertow.dir/PluginEditor.cpp.o
+[ 22%] Building CXX object plugin/CMakeFiles/Undertow.dir/PluginProcessor.cpp.o
+[ 22%] Building CXX object plugin/CMakeFiles/Undertow.dir/ui/Displays.cpp.o
+[ 24%] Building CXX object plugin/CMakeFiles/Undertow.dir/ui/Look.cpp.o
+[ 26%] Building CXX object plugin/CMakeFiles/Undertow.dir/ui/Status.cpp.o
+[ 26%] Building CXX object plugin/CMakeFiles/Undertow.dir/ui/UnitArray.cpp.o
+[ 26%] Linking CXX static library "Undertow_artefacts/RelWithDebInfo/libMetakosmia Undertow_SharedCode.a"
+[ 49%] Built target Undertow
+[ 49%] Linking CXX executable "Undertow_artefacts/RelWithDebInfo/Standalone/Metakosmia Undertow.app/Contents/MacOS/Metakosmia Undertow"
+[ 50%] Linking CXX CFBundle shared module "Undertow_artefacts/RelWithDebInfo/VST3/Metakosmia Undertow.vst3/Contents/MacOS/Metakosmia Undertow"
+[ 52%] Linking CXX CFBundle shared module "Undertow_artefacts/RelWithDebInfo/AU/Metakosmia Undertow.component/Contents/MacOS/Metakosmia Undertow"
+[ 67%] Built target Undertow_AU
+[ 83%] Built target Undertow_Standalone
+[ 98%] Built target Undertow_VST3
+[100%] Building CXX object tests/spec/CMakeFiles/spec_p4_2_layout.dir/p4_2/layout_test.cpp.o
+[100%] Linking CXX executable spec_p4_2_layout
+ld: warning: ignoring duplicate libraries: '../../core/libundertow_core.a'
+[100%] Built target spec_p4_2_layout
+[doctest] run with "--help" for options
+===============================================================================
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:91:
+TEST CASE:  P4.2.01 every control sits in its own panel, clear of the CHEST, the pump field, the GUT and each other
+
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:109: ERROR: CHECK( !b.intersects(otherBounds) ) is NOT correct!
+  values: CHECK( false )
+  logged: `lfo2_phase` (MOD/05)
+          its bounds 992 468 32 32 overlap `lfo2_shape`'s 988 444 40 40
+
+===============================================================================
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:202:
+TEST CASE:  P4.2.04 every control has the design's short label, drawn under it
+
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:219: ERROR: CHECK( found != nullptr ) is NOT correct!
+  values: CHECK( nullptr != nullptr )
+  logged: `osc_fine`, label "FINE"
+          the editor must draw "FINE" under the control (32 176 40 40): centred on it within 10 px, starting at most 24 px below it, inside OSC/01 16 56 280 160
+
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:219: ERROR: CHECK( found != nullptr ) is NOT correct!
+  values: CHECK( nullptr != nullptr )
+  logged: `sub_level`, label "SUB"
+          the editor must draw "SUB" under the control (100 176 40 40): centred on it within 10 px, starting at most 24 px below it, inside OSC/01 16 56 280 160
+
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:219: ERROR: CHECK( found != nullptr ) is NOT correct!
+  values: CHECK( nullptr != nullptr )
+  logged: `sub_octave`, label "SUB OCT"
+          the editor must draw "SUB OCT" under the control (168 176 40 40): centred on it within 10 px, starting at most 24 px below it, inside OSC/01 16 56 280 160
+
+/Users/will/dev/undertow/.roko/worktrees/attempt-a1702a28bd4235a6e674/tests/spec/p4_2/layout_test.cpp:219: ERROR: CHECK( found != nullptr ) is NOT correct!
+  values: CHECK( nullptr != nullptr )
+  logged: `filter_track`, label "TRACK"
+          the editor must draw "TRACK" under the control (32 316 40 40): centred on it within 10 px, starting at most 24 px below it, inside FILTER/02 16 216 280 144
+
+===============================================================================
+[doctest] test cases:    5 |    3 passed | 2 failed | 0 skipped
+[doctest] assertions: 2777 | 2772 passed | 5 failed |
+[doctest] Status: FAILURE!
+✗ exit status 1

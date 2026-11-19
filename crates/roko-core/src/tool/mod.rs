@@ -84,8 +84,8 @@ pub use def::{
 pub use execution_record::{ToolExecutionEnvelope, ToolExecutionRecord};
 pub use format::{ToolFormat, ToolFormatProfile, profile_for_model};
 pub use handler::{
-    AtomicCancel, AuditSink, CancelToken, CorrelationEnvelope, ExternalAction, NeverCancel,
-    NoopAuditSink, ToolContext, ToolHandler,
+    AtomicCancel, AuditSink, CallTimeout, CancelToken, CorrelationEnvelope, ExternalAction,
+    NeverCancel, NoopAuditSink, ToolContext, ToolHandler,
 };
 pub use metrics::{
     MetricsKey, MetricsSink, NoopMetricsSink, RewardConfig, ToolMetrics, compute_reward,

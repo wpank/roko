@@ -343,6 +343,12 @@ impl Verify for ShellGate {
                     .with_duration(elapsed)
             }
             Ok((stdout, stderr, Ok(status))) => {
+                // The live lines went out as they came; the verdict reads them
+                // plain (bug-4debc8).
+                let (stdout, stderr) = (
+                    crate::verify_chain_gate::strip_ansi(&stdout),
+                    crate::verify_chain_gate::strip_ansi(&stderr),
+                );
                 let combined = if stderr.is_empty() {
                     stdout
                 } else {

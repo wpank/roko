@@ -135,7 +135,64 @@ export type WireDashboardEvent =
       output_text?: string | null;
     }
   | { type: 'efficiency_event'; plan_id: string; task_id: string; metric: string; value: number }
+  | {
+      /** One try of a Graph task, settled: how it ended and what it used (AttemptSettled in roko-core). */
+      type: 'attempt_settled';
+      plan_id: string;
+      task_id: string;
+      attempt?: number;
+      /** `passed`, `gate_failed`, `turn_cap`, `timeout`, `provider_error`, `budget_exhausted`, `cancelled`, … */
+      verdict?: string;
+      /** The check that failed it (`verify:0/test`), when one did. */
+      failed_check?: string | null;
+      /** The first line of why it failed, when it did. */
+      detail?: string | null;
+      model?: string;
+      cost_usd?: number | null;
+      duration_ms?: number | null;
+      /** Whether this try moved the task up to a stronger model. */
+      climbed?: boolean;
+    }
+  | {
+      /** A plan's own check, run on its delivered work (PlanCheckFinished in roko-core). */
+      type: 'plan_check_finished';
+      plan_id: string;
+      passed: boolean;
+      name?: string;
+      step?: number;
+      steps?: number;
+      elapsed_ms?: number;
+    }
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
+  | {
+      /** A model call of a try returned (CallCost in roko-core, gap-5c3347): the try's priced calls so far. */
+      type: 'call_cost';
+      plan_id: string;
+      task_id: string;
+      attempt?: number;
+      call?: number;
+      model?: string;
+      cost_usd?: number | null;
+      attempt_cost_usd?: number;
+    }
+  | {
+      /** A resumed plan's run carried what its earlier processes spent (BudgetCarried in roko-core, bug-b7f6a8). */
+      type: 'budget_carried';
+      plan_id: string;
+      carried_usd: number;
+      settled_usd?: number;
+      ceiling_usd?: number | null;
+      detail?: string;
+    }
+  | {
+      /** A line of roko serve's event log: `plan_generate.started`, `.completed`, `.failed`, `.cancelled`, … */
+      type: 'event_log_entry';
+      event_type: string;
+      plan_id: string;
+      task_id?: string;
+      message?: string;
+      timestamp_ms?: number;
+    }
   | { type: 'snapshot_rebased'; revision: number; source?: string }
   | { type: 'error'; message: string };
 
@@ -354,6 +411,120 @@ export interface WirePlanSummary {
   group?: string;
   /** Estimated duration in minutes (engine work in progress). */
   estimated_minutes?: number;
+  /**
+   * A plan being written, which `GET /api/plans?writing=true` lists until its plan is on disk (gap-6774b5): its
+   * row has `status: 'writing'` and no tasks.
+   */
+  writing?: WirePlanWriting;
+}
+
+/** What a plan being written is doing, in its plan list row (gap-6774b5). */
+export interface WirePlanWriting {
+  /** The write's operation id: `GET /api/operations/{id}` follows it, `POST /api/plans/{id}/cancel` stops it. */
+  run_id: string;
+  /** `planning`, `retrying`, `fixing`, `regenerating`, `writing` or `recording`, once the write reports one. */
+  stage?: string | null;
+  elapsed_secs?: number;
+  /** The planner calls that have settled. */
+  calls?: number | null;
+  /** What those calls cost, in USD. */
+  cost_usd?: number | null;
+  /** The most the write may spend, in USD; null when nothing caps it. */
+  max_usd?: number | null;
+}
+
+/**
+ * The run a plan's Graph checkpoint records (CheckpointRun in roko-serve's runtime.rs, bug-cbdb6b): what a
+ * resume continues, or what a run that starts the plan over sets aside.
+ */
+export interface WireCheckpointRun {
+  run_id: string;
+  /** `failed`, `interrupted`, `cancelled`, `running`, `succeeded` or `unverified`. */
+  status: string;
+  /** Tasks the checkpoint recorded as passed. */
+  passed_tasks: string[];
+  /** Tasks a resume runs. */
+  tasks_left: string[];
+  /** Whether a resume would continue the run: it stopped part way with tasks passed. */
+  resumable: boolean;
+  /** Every task passed, but the run stopped before it delivered them (bug-4fadf8). Absent when false. */
+  delivery_pending?: boolean;
+  /** Whether a resume continues the checkpoint at all (bug-b7f6a8). */
+  continues?: boolean;
+  /** Why a resume cannot continue it, when it cannot. */
+  reason?: string;
+  /** What the run spent before it stopped, in USD, when its cost ledger can be read. */
+  spent_usd?: number;
+  /**
+   * What the run may spend, in USD: the cap its request set (a chat host's `max_usd`), while serve holds the run
+   * (gap-acfe4b); absent when it set none, and on older servers.
+   */
+  max_usd?: number;
+  /**
+   * When roko accepted the run, RFC 3339, while serve holds it (gap-c1726f): TIME counts from it, as roko's own
+   * `run_completed.duration_ms` does.
+   */
+  started_at?: string;
+}
+
+/** Response body from GET /api/plans/{id}: the plan's summary, with its last run and the run a resume would continue. */
+export interface WirePlanDetail extends WirePlanSummary {
+  /** The plan's last run when a resume would continue it, else null (gap-b78706); absent on older servers. */
+  resumable_run?: WireCheckpointRun | null;
+  /** The plan's last run, whatever became of it, else null (gap-6d2dd2); absent on older servers. */
+  last_run?: WireCheckpointRun | null;
+}
+
+// ---------------------------------------------------------------------------
+// Runs — GET /api/runs/{run_id}/summary and /diff (crates/roko-serve/src/routes/run_result.rs)
+// ---------------------------------------------------------------------------
+
+/** Where a finished run's verified work is: its batch branch, what it changes, and how to take it (gap-8409d0). */
+export interface WireRunResult {
+  /**
+   * The run's batch branch as roko recorded it, e.g. `roko/work/greeting` (gap-b67fdd); older runs keep
+   * `roko/batch/<run-id>`. Read it from here, never build it from a run id.
+   */
+  branch: string;
+  commit: string;
+  base?: string;
+  diffstat?: { files: number; insertions: number; deletions: number };
+  files_changed?: string[];
+  /** Whether the checkout's HEAD already has the work. */
+  merged: boolean;
+  /** The command that takes the work, while the checkout lacks it. */
+  merge_command?: string;
+  /** A promoted run's tag, and the branch it was promoted into. */
+  tag?: string;
+  promoted_into?: string;
+  /** The branch holds part of the run's work: a plan that did not pass delivered only its verified tasks. */
+  partial?: boolean;
+}
+
+/** Response body from GET /api/runs/{run_id}/summary: only what the portal reads. */
+export interface WireRunSummary {
+  result?: WireRunResult | null;
+}
+
+/** One changed file of a run's diff. */
+export interface WireRunDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  /** The unified patch; null for a binary file. */
+  patch: string | null;
+  truncated?: boolean;
+}
+
+/** Response body from GET /api/runs/{run_id}/diff: each file the run's batch changes from its base. */
+export interface WireRunDiff {
+  run_id: string;
+  branch: string;
+  files: WireRunDiffFile[];
+  totals: { files: number; additions: number; deletions: number };
+  truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +569,10 @@ export interface WirePlanTasks {
   tasks: WirePlanTask[];
   title?: string;
   max_parallel?: number;
+  /** The plan's own checks (`[meta] verify`), run once every task has passed (gap-c1726f); absent on older servers. */
+  plan_checks?: WireVerifyStep[];
+  /** Whether the plan's tasks run the workspace's rungs after their own steps; absent on older servers. */
+  workspace_rungs?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,10 +653,38 @@ export interface WirePlanDiff {
 export interface WireOperation {
   id: string;
   kind?: string;
+  /** `running`, `completed`, `failed`, or `cancelled` for a plan write that was stopped (bug-36ce72). */
   status: string;
   /** A revision's result also carries its plan diff (3229). */
-  result?: { slug?: string; task_count?: number; diff?: WirePlanDiff | null } | null;
+  result?: { slug?: string; task_count?: number; diff?: WirePlanDiff | null; cost_usd?: number } | null;
   error?: string | null;
+  elapsed_secs?: number;
+  /** What a plan write is doing, as it last said (gap-11d870); it stays once the write ends. */
+  progress?: WireWriteProgress | null;
+}
+
+/** A plan write's progress (PlanProgress in roko-cli's plan_generate): its stage, and what its settled calls cost. */
+export interface WireWriteProgress {
+  stage?: string;
+  attempt?: number;
+  attempts?: number;
+  model?: string;
+  calls?: number;
+  cost_usd?: number;
+  max_usd?: number | null;
+  elapsed_ms?: number;
+}
+
+/** The answer to `POST /api/plans/{id}/cancel` for a plan write (bug-36ce72). */
+export interface WireWriteCancelled {
+  cancelled: true;
+  run_id: string;
+  plan_id: string;
+  state: 'cancelled';
+  /** What the write's settled calls cost, in USD; a call the cancel stopped returned no usage. */
+  cost_usd: number | null;
+  /** The write had been cancelled before this cancel came. */
+  already_ended?: boolean;
 }
 
 /**
@@ -490,6 +693,7 @@ export interface WireOperation {
  * - order:             plan execution order for a multi-plan run
  * - resume:            whether this resumes a prior run
  * - max_parallel_plans: effective concurrency limit for the run
+ * - set_aside:         the run a plan run that started over set aside (bug-cbdb6b)
  */
 export interface WireAccepted {
   id: string;
@@ -497,6 +701,9 @@ export interface WireAccepted {
   order?: string[];
   resume?: boolean;
   max_parallel_plans?: number;
+  set_aside?: WireCheckpointRun | null;
+  /** A plan write's cap, in USD (gap-33d458); null when nothing caps it. */
+  max_usd?: number | null;
 }
 
 /** Response body from GET /api/status. */

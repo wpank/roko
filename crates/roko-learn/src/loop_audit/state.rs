@@ -489,10 +489,13 @@ impl Auditor {
         }
         // The placebo's arms are identical, so its ι is 0 by design (S03
         // §4.2): that is no move. The placebo signal reads its intervals.
+        // N_ι counts ι's own opportunities: L-sec's sections rows from before
+        // they logged the bandit's exclusion odds count for ε alone
+        // (q-beea61).
         if audited
             && !status.placebo
             && let Some(influence) = &evidence.influence
-            && n >= p.n_iota
+            && influence.opportunities >= p.n_iota
             && influence
                 .interval
                 .is_some_and(|(_, high)| high < p.iota_min)

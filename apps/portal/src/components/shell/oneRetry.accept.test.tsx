@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * Acceptance: a failed run says, in the plan's words, what failed —
- * "Broken on purpose: T02 failed (structural check)" — instead of the server's
+ * "Broken on purpose: a task failed its structural check." (no task id: gap-60f6b6) — instead of the server's
  * "plan broken completed with task-level failures", and the screen offers one
  * Retry: the plan header's. The alert offers Show; the task row none.
  * Copied verbatim from plans/portal-programme/08f-final-polish/accept/.
@@ -55,7 +55,6 @@ const input = (over: Partial<AlertInput> = {}): AlertInput => ({
   run: foldEvents(FAILED_RUN),
   connection: 'connected',
   selectedPlanId: 'broken',
-  validationErrors: 0,
   requestError: null,
   planTitles: { broken: 'Broken on purpose' },
   dismissedKey: null,
@@ -76,7 +75,7 @@ afterEach(() => {
 describe('the failure alert', () => {
   it('names the plan, the task and the check that failed', () => {
     const alert = pickAlert(input())!;
-    expect(alert.text).toBe('Broken on purpose: T02 failed (structural check)');
+    expect(alert.text).toBe('Broken on purpose: a task failed its structural check.');
     expect(alert.severity).toBe('error');
   });
 
@@ -85,11 +84,11 @@ describe('the failure alert', () => {
   });
 
   it('takes the title from the plan list, else the run, else the id; no check, no brackets', () => {
-    expect(pickAlert(input({ planTitles: {} }))!.text).toBe('Broken on purpose: T02 failed (structural check)');
+    expect(pickAlert(input({ planTitles: {} }))!.text).toBe('Broken on purpose: a task failed its structural check.');
     const untitled = foldEvents(FAILED_RUN.slice(1));
-    expect(pickAlert(input({ run: untitled, planTitles: {} }))!.text).toBe('broken: T02 failed (structural check)');
+    expect(pickAlert(input({ run: untitled, planTitles: {} }))!.text).toBe('broken: a task failed its structural check.');
     const run = foldEvents(FAILED_RUN.filter((e) => e.type !== 'gate_result'));
-    expect(pickAlert(input({ run }))!.text).toBe('Broken on purpose: T02 failed');
+    expect(pickAlert(input({ run }))!.text).toBe('Broken on purpose: a task failed.');
   });
 
   it('never shows the server’s generic line: without a known task it reads “<title> failed”', () => {
@@ -119,14 +118,15 @@ describe('the screen after a failed run', () => {
 
   it('shows the plan title and the failed check in the alert', () => {
     renderFailed();
-    expect(textOf(document.querySelector('[data-region="alert"]'))).toContain('Broken on purpose: T02 failed (structural check)');
+    expect(textOf(document.querySelector('[data-region="alert"]'))).toContain('Broken on purpose: a task failed its structural check.');
   });
 
-  it('offers exactly one Retry, in the plan header', () => {
+  it('offers exactly one resume, on the plan’s page', () => {
     renderFailed();
-    const retries = [...document.querySelectorAll('button')].filter((b) => /\bRetry\b/.test(textOf(b)));
+    const retries = [...document.querySelectorAll('[data-action="retry"], [data-alert-action="retry"]')];
     expect(retries).toHaveLength(1);
     expect(retries[0]!.getAttribute('data-action')).toBe('retry');
+    expect(textOf(retries[0]!)).toContain('resume');
     expect(retries[0]!.closest('[data-task-row], [data-region="alert"]')).toBeNull();
   });
 });

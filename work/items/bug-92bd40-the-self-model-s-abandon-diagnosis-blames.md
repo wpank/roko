@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-learn/self_model"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-20
 last_verified = 2026-10-17
 source = "round-v6-dogfood-will#R3-4"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
@@ -89,3 +89,11 @@ Shadow mode reports the forecast's action as a diagnosis on every attempt it wou
 - Do not change what the policies decide; change only what they say and record.
 - `roko learn self-model fit` and `replay` read the prediction rows, so a new `decision.reason` must be optional for
   old rows.
+- 2026-10-20 (round v7, roko-ladder): Undertow phase 2, run `82b7e069`, shows the forecast-driven case as well.
+  - From the second try on, T2 and T3 log "best P(VS) 0.76 below p_abandon 0.15: the task is flagged"
+    (`self_model.abandon_flagged`) while tries remain.
+  - The policy weighed only a retry on strong, the task's rung, at P(VS) 0.13, 0.08 and 0.04 for T3's tries 2-4,
+    below p_abandon. The message's `best` is glm-4.7 at about 0.76, a rung below the task's that the ladder can't
+    move down to.
+  - Plan step 2 ("`best` taken over the options the policy weighed") covers it. The run's `predictions.jsonl` has the
+    rows.

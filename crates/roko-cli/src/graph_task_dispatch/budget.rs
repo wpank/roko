@@ -8,8 +8,12 @@
 //! attempt's calls spent plus one more call like its last, growing into the
 //! plan's unreserved budget as far as that reaches, and a call it cannot cover
 //! is not made. After each call the hold gives back what it no longer needs,
-//! so the plan's other attempts can grow into it. An attempt starts only with
-//! room for a few calls left; below that the plan stops as budget-exhausted.
+//! so the plan's other attempts can grow into it and attempts waiting to start
+//! can take it. An attempt in flight still comes first (bug-2110e8): when the
+//! unreserved budget cannot cover its next call, it takes back what it needs
+//! from the attempts that started after it and have made no call yet, down to
+//! what an attempt starts with. An attempt starts only with room for a few
+//! calls left; below that the plan stops as budget-exhausted.
 //! An agent that runs its own loop (a CLI agent) cannot be asked before a
 //! call: what its call streams is told to the hold as it streams instead, and
 //! the attempt is stopped once the hold cannot cover one more message like
@@ -22,6 +26,7 @@ use roko_core::disturbance::{
 
 use super::*;
 use crate::dispatch_v2::CallAllowance;
+use crate::graph_checkpoint::CommittedHold;
 
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 
@@ -141,6 +146,9 @@ impl Default for GraphPlanBudgetPolicy {
 pub struct GraphPlanBudgetSnapshot {
     /// Provider-reported or locally priced spend recorded for the plan.
     pub spent_usd: f64,
+    /// Of it, what earlier processes of a resumed run spent, which the plan
+    /// took over from its checkpoint (bug-b7f6a8).
+    pub carried_usd: f64,
     /// Capacity currently reserved by admitted provider calls.
     pub reserved_usd: f64,
     /// Configured ceiling, or `None` when plan cost is unlimited.
@@ -169,16 +177,21 @@ struct PlanBudgetState {
     /// The spend a resumed run restored from the plan's `costs.json`: an
     /// earlier process of the run announced the alerts it passed.
     restored_micro_usd: u64,
+    /// The same spend, which a raised ceiling keeps: what earlier processes
+    /// of the run spent, as the run's report says it (bug-b7f6a8).
+    carried_micro_usd: u64,
     /// The `budget.alert_at_percent` thresholds announced so far (backlog
     /// 2116).
     alerted_percent: Vec<u8>,
     /// The ceiling the operator raised the plan's to during its run (`roko
     /// plan budget raise`, backlog 2118), kept in its `costs.json`.
     raised_ceiling_micro_usd: Option<u64>,
-    /// The attempts in flight under a ceiling, by hold id: what each holds of
-    /// `reserved_micro_usd`, and what its model calls cost so far
-    /// (bug-4fabd0).
+    /// The attempts in flight, by hold id: what each holds of
+    /// `reserved_micro_usd` under a ceiling (bug-4fabd0), nothing without
+    /// one, and what its model calls cost so far (bug-80c642).
     holds: HashMap<u64, AttemptHold>,
+    /// The attempt key of each hold whose attempt has opened (bug-b7f6a8).
+    hold_attempts: HashMap<u64, String>,
     /// The most one priced model call of the plan has cost so far.
     costliest_call_micro_usd: u64,
     checkpoint: Option<GraphCostLedgerCheckpoint>,
@@ -244,13 +257,162 @@ impl PlanBudgetState {
         ))
     }
 
+    /// What the attempts that started after hold `hold` can give back to it
+    /// (bug-2110e8): what each holds beyond `floor`, the least an attempt
+    /// starts with, while it has made no call. Their reservations may hold
+    /// what `hold`'s calls gave back. An attempt that has made a call keeps
+    /// only its spend and room for its next call, and gave the rest back.
+    fn reclaimable_after(&self, hold: u64, floor: u64) -> u64 {
+        self.holds
+            .iter()
+            .filter(|(id, held)| **id > hold && !held.called)
+            .fold(0, |total, (_, held)| {
+                total.saturating_add(held.reserved_micro_usd.saturating_sub(floor))
+            })
+    }
+
+    /// Take `amount` back for hold `hold` from the attempts that started
+    /// after it, newest first, as far as [`Self::reclaimable_after`] allows.
+    /// The plan's reservations shrink by what is taken.
+    fn reclaim_after(&mut self, hold: u64, mut amount: u64, floor: u64) {
+        let mut later = self
+            .holds
+            .iter()
+            .filter(|(id, held)| **id > hold && !held.called && held.reserved_micro_usd > floor)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        later.sort_unstable_by(|left, right| right.cmp(left));
+        for id in later {
+            if amount == 0 {
+                break;
+            }
+            if let Some(held) = self.holds.get_mut(&id) {
+                let taken = held.reserved_micro_usd.saturating_sub(floor).min(amount);
+                held.reserved_micro_usd -= taken;
+                self.reserved_micro_usd = self.reserved_micro_usd.saturating_sub(taken);
+                amount -= taken;
+            }
+        }
+    }
+
+    /// Whether hold `hold` may make its next model call, which is expected
+    /// to cost as much as its last (bug-4fabd0); see
+    /// [`GraphPlanBudgetLedger::admit_call`]. Grows the hold when it may.
+    fn admit_call(
+        &mut self,
+        hold: u64,
+        policy: GraphPlanBudgetPolicy,
+    ) -> std::result::Result<(), String> {
+        let policy = self.policy(policy);
+        let Some(ceiling) = policy
+            .ceiling_micro_usd
+            .filter(|_| !policy.continue_on_exhaustion)
+        else {
+            return Ok(());
+        };
+        let Some(held) = self.holds.get(&hold).copied() else {
+            return Ok(());
+        };
+        if held.unpriced {
+            return Err(format!(
+                "plan budget cannot be enforced: a model call of this attempt has no price \
+                 against max_plan_usd = ${:.4}; give its model a price in [models], or run with \
+                 --no-budget",
+                micro_usd_to_usd(ceiling)
+            ));
+        }
+        let expected = held.last_call_micro_usd;
+        let grow = held
+            .spent_micro_usd
+            .saturating_add(expected)
+            .saturating_sub(held.reserved_micro_usd);
+        if grow == 0 {
+            return Ok(());
+        }
+        let committed = self.spent_micro_usd.saturating_add(self.reserved_micro_usd);
+        let available = ceiling.saturating_sub(committed);
+        if grow > available {
+            // The attempts that started after this one may hold what its
+            // calls gave back: its call comes first, and takes back what it
+            // needs while they have made no call (bug-2110e8).
+            let floor = self.attempt_floor(ceiling);
+            let reclaimable = self.reclaimable_after(hold, floor);
+            let shortfall = grow - available;
+            if shortfall > reclaimable {
+                let left = held
+                    .reserved_micro_usd
+                    .saturating_add(available)
+                    .saturating_add(reclaimable)
+                    .saturating_sub(held.spent_micro_usd);
+                return Err(format!(
+                    "plan budget exhausted: the attempt's next model call would cost about \
+                     ${:.4}, as much as its last, and only ${:.4} of the plan's ${:.4} cap is left",
+                    micro_usd_to_usd(expected),
+                    micro_usd_to_usd(left),
+                    micro_usd_to_usd(ceiling)
+                ));
+            }
+            self.reclaim_after(hold, shortfall, floor);
+        }
+        if let Some(held) = self.holds.get_mut(&hold) {
+            held.reserved_micro_usd = held.reserved_micro_usd.saturating_add(grow);
+        }
+        self.reserved_micro_usd = self.reserved_micro_usd.saturating_add(grow);
+        Ok(())
+    }
+
     /// Give back what hold `hold` holds of the plan's reservations.
     fn release_hold(&mut self, hold: Option<u64>) {
+        if let Some(hold) = hold {
+            self.hold_attempts.remove(&hold);
+        }
         if let Some(held) = hold.and_then(|hold| self.holds.remove(&hold)) {
             self.reserved_micro_usd = self
                 .reserved_micro_usd
                 .saturating_sub(held.reserved_micro_usd);
         }
+    }
+
+    /// The holds of the attempts in flight as the checkpoint commits them,
+    /// oldest first (bug-b7f6a8): what each spent, and the call it has in
+    /// flight, so a resume after a crash can settle them.
+    fn committed_holds(&self) -> Vec<CommittedHold> {
+        let mut ids: Vec<u64> = self.holds.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| {
+                let held = self.holds.get(&id)?;
+                Some(CommittedHold {
+                    attempt_key: self.hold_attempts.get(&id).cloned(),
+                    spent_micro_usd: held.spent_micro_usd,
+                    booked_micro_usd: held.booked_micro_usd,
+                    in_flight: held.in_flight,
+                    in_flight_micro_usd: if held.in_flight {
+                        held.in_flight_micro_usd
+                    } else {
+                        0
+                    },
+                    unpriced: held.unpriced,
+                })
+            })
+            .collect()
+    }
+
+    /// Commit the plan's spend, reservations and holds to its checkpoint,
+    /// when it has one. A failure leaves the ledger unavailable, as every
+    /// other write it cannot persist does; `what` says which write it was.
+    fn persist(&mut self, what: &str) -> Result<()> {
+        let holds = self.committed_holds();
+        let Some(checkpoint) = &self.checkpoint else {
+            return Ok(());
+        };
+        if let Err(error) = checkpoint.persist(self.spent_micro_usd, self.reserved_micro_usd, holds)
+        {
+            let message = format!("persist {what}: {error:#}");
+            self.persistence_error = Some(message.clone());
+            return Err(RokoError::Store(message));
+        }
+        Ok(())
     }
 }
 
@@ -265,6 +427,23 @@ struct AttemptHold {
     last_call_micro_usd: u64,
     /// One of its calls had no price, so what it spent is unknown.
     unpriced: bool,
+    /// It has made a model call. Until it does, it holds what it started
+    /// with for a first call whose cost nobody knows yet (bug-2110e8).
+    called: bool,
+    /// It admitted a model call and has not recorded it yet: the call is in
+    /// flight, expected to cost `in_flight_micro_usd` (bug-b7f6a8).
+    in_flight: bool,
+    /// What the call in flight is expected to cost: the hold's last call,
+    /// else the plan's costliest so far.
+    in_flight_micro_usd: u64,
+    /// Of `spent_micro_usd`, what the plan's books hold already: the calls of
+    /// the dispatches failover settled as refused (bug-8bcd98). A resume after
+    /// a crash charges the attempt only for the rest (bug-b7f6a8).
+    booked_micro_usd: u64,
+    /// Its plan has no ceiling to enforce: it holds nothing back and only
+    /// keeps what its calls cost, which the checkpoint commits with each
+    /// call (bug-80c642).
+    tracks_only: bool,
 }
 
 /// A raise of a plan's budget ceiling that the plan ledger applied (backlog
@@ -400,6 +579,7 @@ impl GraphPlanBudgetLedger {
                 entry.insert(PlanBudgetState {
                     spent_micro_usd: checkpoint.spent_micro_usd(),
                     restored_micro_usd: checkpoint.spent_micro_usd(),
+                    carried_micro_usd: checkpoint.spent_micro_usd(),
                     raised_ceiling_micro_usd: checkpoint.raised_ceiling_micro_usd(),
                     checkpoint: Some(checkpoint),
                     ..PlanBudgetState::default()
@@ -430,6 +610,7 @@ impl GraphPlanBudgetLedger {
 
         GraphPlanBudgetSnapshot {
             spent_usd: micro_usd_to_usd(spent_micro_usd),
+            carried_usd: micro_usd_to_usd(state.map_or(0, |state| state.carried_micro_usd)),
             reserved_usd: micro_usd_to_usd(reserved_micro_usd),
             ceiling_usd: policy.ceiling_micro_usd.map(micro_usd_to_usd),
             exhausted,
@@ -591,8 +772,11 @@ impl GraphPlanBudgetLedger {
                 state.reserved_micro_usd =
                     state.reserved_micro_usd.saturating_add(reserved_micro_usd);
                 if let Some(checkpoint) = &state.checkpoint
-                    && let Err(error) =
-                        checkpoint.persist(state.spent_micro_usd, state.reserved_micro_usd)
+                    && let Err(error) = checkpoint.persist(
+                        state.spent_micro_usd,
+                        state.reserved_micro_usd,
+                        state.committed_holds(),
+                    )
                 {
                     state.release_hold(Some(id));
                     let message = format!("persist provider-cost reservation: {error:#}");
@@ -603,6 +787,25 @@ impl GraphPlanBudgetLedger {
                 Some(reserved_micro_usd)
             }
         };
+        // Without a ceiling to enforce, the attempt's hold reserves nothing:
+        // it keeps what its calls cost, so the checkpoint commits that with
+        // each call and then the settled spend in its place, in one commit.
+        // A reader of the checkpoint then counts each call once, whether or
+        // not the attempt has settled (bug-80c642), and a resume after a
+        // crash settles what the attempt spent (bug-b7f6a8).
+        if hold.is_none() {
+            let id = self
+                .next_hold
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            state.holds.insert(
+                id,
+                AttemptHold {
+                    tracks_only: true,
+                    ..AttemptHold::default()
+                },
+            );
+            hold = Some(id);
+        }
         drop(plans);
 
         Ok(GraphPlanBudgetReservation {
@@ -633,18 +836,10 @@ impl GraphPlanBudgetLedger {
         let state = plans.entry(plan_id.to_string()).or_default();
         state.release_hold(hold);
         state.spent_micro_usd = state.spent_micro_usd.saturating_add(cost_micro_usd);
-        if let Some(checkpoint) = &state.checkpoint
-            && let Err(error) = checkpoint.persist(state.spent_micro_usd, state.reserved_micro_usd)
-        {
-            let message = format!("persist actual provider cost: {error:#}");
-            state.persistence_error = Some(message.clone());
-            drop(plans);
-            self.capacity.notify_waiters();
-            return Err(RokoError::Store(message));
-        }
+        let persisted = state.persist("actual provider cost");
         drop(plans);
         self.capacity.notify_waiters();
-        Ok(())
+        persisted
     }
 
     /// The thresholds of `alert_at_percent` that `plan_id`'s settled spend
@@ -725,11 +920,13 @@ impl GraphPlanBudgetLedger {
                 micro_usd_to_usd(state.spent_micro_usd)
             ));
         }
+        let holds = state.committed_holds();
         if let Some(checkpoint) = &mut state.checkpoint
             && let Err(error) = checkpoint.persist_raised_ceiling(
                 ceiling_micro_usd,
                 state.spent_micro_usd,
                 state.reserved_micro_usd,
+                holds,
             )
         {
             let message = format!("persist the raised plan ceiling: {error:#}");
@@ -762,7 +959,9 @@ impl GraphPlanBudgetLedger {
     /// Whether hold `hold` of `plan_id` may make its next model call, which
     /// is expected to cost as much as its last (bug-4fabd0). The hold must
     /// cover what its calls spent plus that call; it grows into the plan's
-    /// unreserved budget as far as that reaches. `Err` says why not: the
+    /// unreserved budget as far as that reaches, then takes back what the
+    /// attempts that started after it hold before their first call, beyond
+    /// what an attempt starts with (bug-2110e8). `Err` says why not: the
     /// plan cannot pay for the call, or a call of the hold had no price.
     fn admit_call(
         &self,
@@ -774,54 +973,24 @@ impl GraphPlanBudgetLedger {
         let Some(state) = plans.get_mut(plan_id) else {
             return Ok(());
         };
-        let policy = state.policy(policy);
-        let Some(ceiling) = policy
-            .ceiling_micro_usd
-            .filter(|_| !policy.continue_on_exhaustion)
-        else {
+        state.admit_call(hold, policy)?;
+        // The call goes ahead: the checkpoint records it in flight, at what
+        // it is expected to cost, so that a crash during it is charged
+        // (bug-b7f6a8). Without a ceiling to enforce, a crash is charged for
+        // the calls that finished alone (bug-80c642).
+        let costliest = state.costliest_call_micro_usd;
+        let Some(held) = state.holds.get_mut(&hold).filter(|held| !held.tracks_only) else {
             return Ok(());
         };
-        let Some(held) = state.holds.get(&hold).copied() else {
-            return Ok(());
+        held.in_flight = true;
+        held.in_flight_micro_usd = if held.last_call_micro_usd > 0 {
+            held.last_call_micro_usd
+        } else {
+            costliest
         };
-        if held.unpriced {
-            return Err(format!(
-                "plan budget cannot be enforced: a model call of this attempt has no price \
-                 against max_plan_usd = ${:.4}; give its model a price in [models], or run with \
-                 --no-budget",
-                micro_usd_to_usd(ceiling)
-            ));
-        }
-        let expected = held.last_call_micro_usd;
-        let grow = held
-            .spent_micro_usd
-            .saturating_add(expected)
-            .saturating_sub(held.reserved_micro_usd);
-        if grow == 0 {
-            return Ok(());
-        }
-        let committed = state
-            .spent_micro_usd
-            .saturating_add(state.reserved_micro_usd);
-        let available = ceiling.saturating_sub(committed);
-        if grow > available {
-            let left = held
-                .reserved_micro_usd
-                .saturating_add(available)
-                .saturating_sub(held.spent_micro_usd);
-            return Err(format!(
-                "plan budget exhausted: the attempt's next model call would cost about ${:.4}, \
-                 as much as its last, and only ${:.4} of the plan's ${:.4} cap is left",
-                micro_usd_to_usd(expected),
-                micro_usd_to_usd(left),
-                micro_usd_to_usd(ceiling)
-            ));
-        }
-        if let Some(held) = state.holds.get_mut(&hold) {
-            held.reserved_micro_usd = held.reserved_micro_usd.saturating_add(grow);
-        }
-        state.reserved_micro_usd = state.reserved_micro_usd.saturating_add(grow);
-        Ok(())
+        state
+            .persist("a model call in flight")
+            .map_err(|error| error.to_string())
     }
 
     /// Record a model call of hold `hold` of `plan_id` that cost `cost_usd`,
@@ -841,25 +1010,71 @@ impl GraphPlanBudgetLedger {
         held.spent_micro_usd = held.spent_micro_usd.saturating_add(cost_micro_usd);
         held.last_call_micro_usd = cost_micro_usd;
         held.unpriced |= !priced;
-        let kept = held.reserved_micro_usd.clamp(
-            held.spent_micro_usd,
-            held.spent_micro_usd.saturating_add(cost_micro_usd),
-        );
+        held.called = true;
+        held.in_flight = false;
+        held.in_flight_micro_usd = 0;
+        // A hold without a ceiling to enforce holds nothing back (bug-80c642).
+        let kept = if held.tracks_only {
+            0
+        } else {
+            held.reserved_micro_usd.clamp(
+                held.spent_micro_usd,
+                held.spent_micro_usd.saturating_add(cost_micro_usd),
+            )
+        };
         let before = std::mem::replace(&mut held.reserved_micro_usd, kept);
         state.reserved_micro_usd = state
             .reserved_micro_usd
             .saturating_sub(before)
             .saturating_add(kept);
         state.costliest_call_micro_usd = state.costliest_call_micro_usd.max(cost_micro_usd);
+        // The checkpoint keeps what the attempt spent (bug-b7f6a8); a failure
+        // is kept as the ledger's persistence error.
+        let _ = state.persist("a model call's cost");
         drop(plans);
         if kept < before {
             self.capacity.notify_waiters();
         }
     }
 
+    /// Mark the calls hold `hold` of `plan_id` recorded so far as on the
+    /// plan's books: failover settled their dispatch as refused (bug-8bcd98).
+    /// The checkpoint keeps the mark, so a resume after a crash charges the
+    /// attempt only for its calls since, and never one of them twice
+    /// (bug-b7f6a8). A failure is kept as the ledger's persistence error.
+    fn book_recorded_calls(&self, plan_id: &str, hold: u64) {
+        let mut plans = self.plans.lock();
+        let Some(state) = plans.get_mut(plan_id) else {
+            return;
+        };
+        let Some(held) = state.holds.get_mut(&hold) else {
+            return;
+        };
+        held.booked_micro_usd = held.spent_micro_usd;
+        let _ = state.persist("a refused dispatch's calls");
+    }
+
+    /// Name the attempt hold `hold` of `plan_id` belongs to, once it opens,
+    /// and commit it, so a resume after a crash settles that attempt
+    /// (bug-b7f6a8). A failure is kept as the ledger's persistence error.
+    fn bind_attempt(&self, plan_id: &str, hold: u64, attempt_key: &str) {
+        let mut plans = self.plans.lock();
+        let Some(state) = plans.get_mut(plan_id) else {
+            return;
+        };
+        if !state.holds.contains_key(&hold) {
+            return;
+        }
+        state.hold_attempts.insert(hold, attempt_key.to_string());
+        let _ = state.persist("the attempt of a budget hold");
+    }
+
     /// The most hold `hold` of `plan_id` can still spend under `policy`: what
     /// it holds beyond its spend, and the plan's unreserved budget it could
-    /// grow into (gap-e14344). `None` without a ceiling to hold against.
+    /// grow into (gap-e14344). `None` without a ceiling to hold against. It
+    /// leaves out what the hold could take back from attempts that start
+    /// after it (bug-2110e8): read as its agent starts, the hold is nearly
+    /// always the newest.
     fn headroom(&self, plan_id: &str, hold: u64, policy: GraphPlanBudgetPolicy) -> Option<u64> {
         let plans = self.plans.lock();
         let state = plans.get(plan_id)?;
@@ -887,14 +1102,8 @@ impl GraphPlanBudgetLedger {
         let mut plans = self.plans.lock();
         if let Some(state) = plans.get_mut(plan_id) {
             state.release_hold(hold);
-            if let Some(checkpoint) = &state.checkpoint
-                && let Err(error) =
-                    checkpoint.persist(state.spent_micro_usd, state.reserved_micro_usd)
-            {
-                state.persistence_error = Some(format!(
-                    "persist released provider-cost reservation: {error:#}"
-                ));
-            }
+            // A failure is kept as the ledger's persistence error.
+            let _ = state.persist("released provider-cost reservation");
         }
         drop(plans);
         self.capacity.notify_waiters();
@@ -910,8 +1119,8 @@ impl GraphPlanBudgetLedger {
 pub(super) struct GraphPlanBudgetReservation<'a> {
     ledger: &'a GraphPlanBudgetLedger,
     plan_id: String,
-    /// The attempt's hold on the plan budget; `None` without a ceiling to
-    /// hold against.
+    /// The attempt's hold on the plan budget, which holds nothing back
+    /// without a ceiling to enforce (bug-80c642).
     hold: Option<u64>,
     policy: GraphPlanBudgetPolicy,
     routing_budget_micro_usd: Option<u64>,
@@ -925,8 +1134,9 @@ impl GraphPlanBudgetReservation<'_> {
     }
 
     /// What the attempt may spend on its model calls, which its agent's tool
-    /// loop asks before each one (bug-4fabd0); `None` without a ceiling.
-    /// `ledger` is the ledger this reservation was made in.
+    /// loop asks before each one (bug-4fabd0). Without a ceiling it refuses
+    /// no call and sets no limit, and keeps what the calls cost
+    /// (bug-80c642). `ledger` is the ledger this reservation was made in.
     pub(super) fn allowance(
         &self,
         ledger: &Arc<GraphPlanBudgetLedger>,
@@ -946,6 +1156,15 @@ impl GraphPlanBudgetReservation<'_> {
         let result = self.ledger.settle(&self.plan_id, self.hold, cost_usd);
         self.settled = true;
         result
+    }
+
+    /// Name the attempt this reservation holds the budget for, once it
+    /// opens (bug-b7f6a8): a resume after a crash then settles that attempt
+    /// with what its calls spent.
+    pub(super) fn bind_attempt(&self, attempt_key: &str) {
+        if let Some(hold) = self.hold {
+            self.ledger.bind_attempt(&self.plan_id, hold, attempt_key);
+        }
     }
 }
 
@@ -977,6 +1196,13 @@ impl AttemptAllowance {
     /// the attempt then stopped for its plan's budget.
     pub(super) fn refusal(&self) -> Option<String> {
         self.refusal.lock().clone()
+    }
+
+    /// The calls the attempt recorded so far are on the plan's books:
+    /// failover settled their dispatch as refused (bug-8bcd98), so a resume
+    /// after a crash does not charge them again (bug-b7f6a8).
+    pub(super) fn book_recorded_calls(&self) {
+        self.ledger.book_recorded_calls(&self.plan_id, self.hold);
     }
 }
 
@@ -1614,7 +1840,8 @@ fn usd_to_micro_usd(value: f64) -> u64 {
     (value * MICRO_USD_PER_USD).round() as u64
 }
 
-fn micro_usd_to_usd(value: u64) -> f64 {
+/// `value` millionths of one USD, in USD.
+pub(crate) fn micro_usd_to_usd(value: u64) -> f64 {
     value as f64 / MICRO_USD_PER_USD
 }
 
@@ -1641,9 +1868,322 @@ mod tests {
         FIXTURE_HANG_GUARD_SECS, STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD,
         VERIFY_PROVIDER, batch_ctx, cli_provider, final_turn, jsonl_rows_where,
         make_bare_dispatcher, make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec,
-        make_task_def, model, recording_feedback, spawn_openai_mock, tool_call_turn,
+        make_task_def, model, recording_feedback, spawn_openai_mock, tool_call_turn, verify_step,
     };
     use crate::state_hub::StateHub;
+
+    /// bug-b7f6a8: an attempt's hold reaches its plan's checkpoint with each
+    /// call it admits and records: what its calls spent, and the call it has
+    /// in flight, at what that call is expected to cost. A process that
+    /// stops mid-attempt leaves both for a resume to settle.
+    #[test]
+    fn an_attempts_calls_reach_the_checkpoint_as_they_happen() {
+        let dir = tempdir().expect("tempdir");
+        let mut graph = roko_graph::Graph::new(roko_graph::GraphMetadata {
+            name: "plan-a".to_string(),
+            ..roko_graph::GraphMetadata::default()
+        });
+        graph
+            .add_node(roko_graph::Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
+            })
+            .expect("node");
+        let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "plan-a",
+            1,
+            &graph,
+            false,
+            false,
+        )
+        .expect("checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        let committed = || -> serde_json::Value {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
+                    .expect("parse manifest");
+            manifest["committed"].clone()
+        };
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        ledger
+            .attach_checkpoint("plan-a", checkpoint.take_cost_ledger())
+            .expect("attach the ledger");
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false);
+        let reservation = ledger.reserve("plan-a", policy).expect("reserve");
+        let key = "run-1:plan-a:task-1:1";
+        reservation.bind_attempt(key);
+        let allowance = reservation
+            .allowance(&ledger)
+            .expect("a ceiling gives the attempt an allowance");
+        // The hold is committed with its attempt.
+        assert_eq!(committed()["holds"][0]["attempt_key"], key);
+        assert!(committed()["holds"][0]["in_flight"].is_null());
+
+        // A call it admits is committed in flight: the first at no known
+        // cost, since nothing has a price yet.
+        assert_eq!(allowance.refuse_call(), None);
+        assert_eq!(committed()["holds"][0]["in_flight"], true);
+        assert!(committed()["holds"][0]["in_flight_micro_usd"].is_null());
+        // Its cost, once recorded, is committed as the hold's spend.
+        allowance.record_call(0.041, true);
+        assert!(committed()["holds"][0]["in_flight"].is_null());
+        assert_eq!(committed()["holds"][0]["spent_micro_usd"], 41_000);
+        // The next call is expected to cost as much as the last.
+        assert_eq!(allowance.refuse_call(), None);
+        assert_eq!(committed()["holds"][0]["in_flight_micro_usd"], 41_000);
+        allowance.record_call(0.041, true);
+
+        // Settling the attempt drops its hold: its spend is the plan's.
+        drop(allowance);
+        reservation.settle(0.082).expect("settle");
+        let settled = committed();
+        assert!(settled["holds"].is_null());
+        assert_eq!(settled["spent_micro_usd"], 82_000);
+        assert_eq!(settled["reserved_micro_usd"], 0);
+    }
+
+    /// bug-80c642: a plan without a ceiling holds nothing back, but its
+    /// checkpoint still commits what each attempt in flight has spent, with
+    /// each call, and then the settled spend in its place, in one commit. A
+    /// reader of the checkpoint alone, the plan's settled spend and each
+    /// hold's, counts every call once, and the figure never falls.
+    #[test]
+    fn a_plan_without_a_ceiling_commits_its_attempts_spend_too() {
+        let dir = tempdir().expect("tempdir");
+        let mut graph = roko_graph::Graph::new(roko_graph::GraphMetadata {
+            name: "plan-a".to_string(),
+            ..roko_graph::GraphMetadata::default()
+        });
+        graph
+            .add_node(roko_graph::Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
+            })
+            .expect("node");
+        let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "plan-a",
+            1,
+            &graph,
+            false,
+            false,
+        )
+        .expect("checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        let committed = || -> serde_json::Value {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
+                    .expect("parse manifest");
+            manifest["committed"].clone()
+        };
+        // What the checkpoint says the plan spent: its settled spend and what
+        // its holds' calls cost.
+        let spent = || {
+            let committed = committed();
+            let held: u64 = committed["holds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|hold| {
+                    let micro = |field: &str| hold[field].as_u64().unwrap_or(0);
+                    micro("spent_micro_usd").saturating_sub(micro("booked_micro_usd"))
+                })
+                .sum();
+            committed["spent_micro_usd"].as_u64().expect("spent") + held
+        };
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        ledger
+            .attach_checkpoint("plan-a", checkpoint.take_cost_ledger())
+            .expect("attach the ledger");
+        let policy = GraphPlanBudgetPolicy::unlimited();
+        let reservation = ledger.reserve("plan-a", policy).expect("reserve");
+        let key = "run-1:plan-a:task-1:1";
+        reservation.bind_attempt(key);
+        let allowance = reservation
+            .allowance(&ledger)
+            .expect("the attempt's calls reach its hold");
+        let mut seen = vec![spent()];
+        for _ in 0..2 {
+            assert_eq!(allowance.refuse_call(), None, "nothing is held back");
+            allowance.record_call(0.041, true);
+            seen.push(spent());
+        }
+        assert_eq!(committed()["holds"][0]["attempt_key"], key);
+        assert_eq!(committed()["reserved_micro_usd"], 0, "nothing is reserved");
+        assert_eq!(allowance.spend_limit_usd(), None, "nothing limits it");
+        drop(allowance);
+        reservation.settle(0.082).expect("settle");
+        seen.push(spent());
+        assert!(committed()["holds"].is_null(), "{}", committed());
+        assert_eq!(seen, [0, 41_000, 82_000, 82_000]);
+    }
+
+    /// bug-b7f6a8 with bug-8bcd98: a crash books each call of a try once, at
+    /// what is known of it. The try's first dispatch made a call, then failed
+    /// on a rate limit, which its tool loop records at a known $0, and
+    /// failover settled that dispatch as refused, on the plan's books. The
+    /// next dispatch's call was in flight when the process stopped. The
+    /// resume charges the try for that call alone, at its estimate: neither
+    /// the refused dispatch's calls again, nor an estimate for the call that
+    /// failed.
+    #[test]
+    fn a_crash_after_a_refused_dispatch_charges_each_call_once() {
+        let dir = tempdir().expect("tempdir");
+        let mut graph = roko_graph::Graph::new(roko_graph::GraphMetadata {
+            name: "plan-a".to_string(),
+            ..roko_graph::GraphMetadata::default()
+        });
+        graph
+            .add_node(roko_graph::Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
+            })
+            .expect("node");
+        let prepare = || {
+            crate::graph_checkpoint::prepare_graph_checkpoint(
+                dir.path(),
+                None,
+                "plan-a",
+                1,
+                &graph,
+                false,
+                false,
+            )
+        };
+        let mut checkpoint = prepare().expect("checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        let committed = || -> serde_json::Value {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
+                    .expect("parse manifest");
+            manifest["committed"].clone()
+        };
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        ledger
+            .attach_checkpoint("plan-a", checkpoint.take_cost_ledger())
+            .expect("attach the ledger");
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false);
+        let reservation = ledger.reserve("plan-a", policy).expect("reserve");
+        reservation.bind_attempt("run-1:plan-a:task-1:1");
+        let allowance = reservation
+            .allowance(&ledger)
+            .expect("a ceiling gives the attempt an allowance");
+
+        // The first dispatch: a call that answered, then one a rate limit
+        // failed, which is in flight no longer.
+        assert_eq!(allowance.refuse_call(), None);
+        allowance.record_call(0.1, true);
+        assert_eq!(allowance.refuse_call(), None);
+        allowance.record_call(0.0, true);
+        assert!(committed()["holds"][0]["in_flight"].is_null());
+        // Failover settles it as refused, on the plan's books.
+        ledger
+            .settle("plan-a", None, 0.1)
+            .expect("settle the refused dispatch");
+        allowance.book_recorded_calls();
+        // The next dispatch's call is in flight, at the plan's costliest call,
+        // when the process stops.
+        assert_eq!(allowance.refuse_call(), None);
+        let stopped = committed();
+        assert_eq!(stopped["spent_micro_usd"], 100_000);
+        assert_eq!(stopped["holds"][0]["booked_micro_usd"], 100_000);
+        assert_eq!(stopped["holds"][0]["in_flight_micro_usd"], 100_000);
+        // The process stops: nothing settles or releases the hold.
+        std::mem::forget(reservation);
+        drop(allowance);
+        drop(ledger);
+        drop(checkpoint);
+
+        let resumed = prepare().expect("an attempt left in flight resumes");
+        let settled = resumed.settled_holds().expect("the hold is settled");
+        assert_eq!(
+            settled.charged_micro_usd, 100_000,
+            "the call in flight alone"
+        );
+        assert_eq!(resumed.restored_spend_micro_usd(), 200_000);
+    }
+
+    /// What committing a hold costs, per call (bug-b7f6a8): each admitted and
+    /// each recorded call commits the ledger and the manifest. Prints the
+    /// mean; run it with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn measure_a_hold_commit() {
+        let dir = tempdir().expect("tempdir");
+        let mut graph = roko_graph::Graph::new(roko_graph::GraphMetadata {
+            name: "plan-a".to_string(),
+            ..roko_graph::GraphMetadata::default()
+        });
+        graph
+            .add_node(roko_graph::Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::new()),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
+            })
+            .expect("node");
+        let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "plan-a",
+            1,
+            &graph,
+            false,
+            false,
+        )
+        .expect("checkpoint");
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        ledger
+            .attach_checkpoint("plan-a", checkpoint.take_cost_ledger())
+            .expect("attach the ledger");
+        // Three attempts in flight, as a 3-wide run has, each holding its
+        // share of the ceiling.
+        let policy = GraphPlanBudgetPolicy::from_ceiling(100.0, false).with_concurrent_calls(3);
+        let reservations: Vec<_> = (1..=3)
+            .map(|task| {
+                let reservation = ledger.reserve("plan-a", policy).expect("reserve");
+                reservation.bind_attempt(&format!("run-1:plan-a:task-{task}:1"));
+                reservation
+            })
+            .collect();
+        let allowances: Vec<_> = reservations
+            .iter()
+            .map(|reservation| reservation.allowance(&ledger).expect("allowance"))
+            .collect();
+        let calls = 200_u32;
+        let started = std::time::Instant::now();
+        for call in 0..calls {
+            let allowance = &allowances[call as usize % allowances.len()];
+            assert_eq!(allowance.refuse_call(), None);
+            allowance.record_call(0.001, true);
+        }
+        let per_commit = started.elapsed() / (2 * calls);
+        eprintln!(
+            "hold commit: {per_commit:?} each, over {} commits",
+            2 * calls
+        );
+    }
 
     #[test]
     fn plan_budget_blocks_at_ceiling_and_is_isolated_by_plan() {
@@ -3027,6 +3567,148 @@ exit 1
         assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
     }
 
+    /// bug-2110e8, with rehearsal 2's settings: a $1.00 plan budget, the
+    /// workspace's $0.50 `max_turn_usd`, eight agents, and calls of
+    /// $0.00004. T2 and T4 start first, and their turn caps fill the
+    /// ceiling, so T1 and T3 wait. T2's and T4's first calls settle, each
+    /// hold keeps room for one more call like its last, and the waiters
+    /// take the rest. T2 and T4 go on calling while T1's and T3's first
+    /// calls are in flight, and every call is admitted: each takes back
+    /// what it needs from the attempts that started after it. The plan is
+    /// never committed past its ceiling, and T1 and T3 then make their
+    /// calls too.
+    #[test]
+    fn an_attempt_in_flight_can_grow_after_waiters_take_the_freed_budget() {
+        const CALL_USD: f64 = 0.000_04;
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_limits(1.0, 0.5, false).with_concurrent_calls(8);
+        let committed = |ledger: &GraphPlanBudgetLedger| {
+            let snapshot = ledger.snapshot("plan-a", policy);
+            snapshot.spent_usd + snapshot.reserved_usd
+        };
+
+        let t2 = ledger.reserve("plan-a", policy).expect("T2 starts");
+        let t4 = ledger.reserve("plan-a", policy).expect("T4 starts");
+        assert!(
+            (committed(&ledger) - 1.0).abs() < 1e-9,
+            "two turn caps fill $1"
+        );
+        let Err(waiting) = ledger.reserve("plan-a", policy) else {
+            panic!("T1 waits for the calls in flight");
+        };
+        assert!(
+            matches!(waiting, RokoError::BudgetExceeded { .. }),
+            "{waiting:?}"
+        );
+        let t2_calls = t2.allowance(&ledger).expect("a capped plan holds");
+        let t4_calls = t4.allowance(&ledger).expect("a capped plan holds");
+        for calls in [&t2_calls, &t4_calls] {
+            assert_eq!(calls.refuse_call(), None);
+            calls.record_call(CALL_USD, true);
+        }
+        let t1 = ledger
+            .reserve("plan-a", policy)
+            .expect("T1 takes what they gave back");
+        let t3 = ledger.reserve("plan-a", policy).expect("T3 takes the rest");
+        assert!(
+            (committed(&ledger) - 1.0).abs() < 1e-9,
+            "the ceiling is full again"
+        );
+        let t1_calls = t1.allowance(&ledger).expect("a capped plan holds");
+        let t3_calls = t3.allowance(&ledger).expect("a capped plan holds");
+
+        for call in 2..=10 {
+            for (task, calls) in [("T2", &t2_calls), ("T4", &t4_calls)] {
+                assert_eq!(calls.refuse_call(), None, "{task}'s call {call}");
+                calls.record_call(CALL_USD, true);
+                assert!(committed(&ledger) <= 1.0 + 1e-9, "{task}'s call {call}");
+            }
+        }
+        for call in 1..=10 {
+            for (task, calls) in [("T1", &t1_calls), ("T3", &t3_calls)] {
+                assert_eq!(calls.refuse_call(), None, "{task}'s call {call}");
+                calls.record_call(CALL_USD, true);
+                assert!(committed(&ledger) <= 1.0 + 1e-9, "{task}'s call {call}");
+            }
+        }
+
+        for reservation in [t2, t4, t1, t3] {
+            reservation.settle(10.0 * CALL_USD).expect("settle");
+        }
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!(
+            (snapshot.spent_usd - 40.0 * CALL_USD).abs() < 1e-9,
+            "{snapshot:?}"
+        );
+        assert_eq!(snapshot.reserved_usd, 0.0, "{snapshot:?}");
+        assert_eq!(ledger.dispatch_stop("plan-a", policy), None);
+    }
+
+    /// bug-2110e8: what a call takes back is bounded. It comes from the
+    /// attempts that started after the caller and have made no call, and
+    /// each keeps what an attempt starts with: room for three calls like the
+    /// costliest so far. An attempt that started before the caller keeps all
+    /// it holds. Past that the call is refused, and once a later attempt's
+    /// first call gives back what it does not need, the caller may go on.
+    #[test]
+    fn a_call_takes_back_only_what_later_attempts_hold_beyond_their_floor() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_limits(1.0, 0.5, false);
+        let held = |reservation: &GraphPlanBudgetReservation<'_>| {
+            let hold = reservation.hold.expect("a capped plan holds");
+            ledger.plans.lock()["plan-a"].holds[&hold].reserved_micro_usd
+        };
+
+        let older = ledger
+            .reserve("plan-a", policy)
+            .expect("an attempt that starts first");
+        let caller = ledger.reserve("plan-a", policy).expect("the caller");
+        let calls = caller.allowance(&ledger).expect("a capped plan holds");
+        // Its first call costs $0.05, and it gives back $0.40 of its $0.50,
+        // which a later attempt takes.
+        assert_eq!(calls.refuse_call(), None);
+        calls.record_call(0.05, true);
+        let later = ledger.reserve("plan-a", policy).expect("a later attempt");
+        assert_eq!(held(&later), 400_000);
+        // Calls 3 to 7 each take $0.05 back, down to $0.15.
+        for call in 2..=7 {
+            assert_eq!(calls.refuse_call(), None, "call {call}");
+            calls.record_call(0.05, true);
+        }
+        assert_eq!(
+            held(&later),
+            150_000,
+            "3 x $0.05 is what an attempt starts with"
+        );
+        assert_eq!(
+            held(&older),
+            500_000,
+            "an attempt that started first gives nothing"
+        );
+        assert_eq!(
+            calls.refuse_call().expect("nothing is left to take back"),
+            "plan budget exhausted: the attempt's next model call would cost about $0.0500, as \
+             much as its last, and only $0.0000 of the plan's $1.0000 cap is left"
+        );
+
+        let later_calls = later.allowance(&ledger).expect("a capped plan holds");
+        later_calls.record_call(0.05, true);
+        let hold = caller.hold.expect("a capped plan holds");
+        assert_eq!(ledger.admit_call("plan-a", hold, policy), Ok(()));
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!(
+            (snapshot.spent_usd + snapshot.reserved_usd - 1.0).abs() < 1e-9,
+            "{snapshot:?}"
+        );
+
+        caller.settle(0.35).expect("settle");
+        later.settle(0.05).expect("settle");
+        older.settle(0.0).expect("settle");
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!((snapshot.spent_usd - 0.40).abs() < 1e-9, "{snapshot:?}");
+        assert_eq!(snapshot.reserved_usd, 0.0, "{snapshot:?}");
+    }
+
     /// gap-e14344: what an attempt's own spend limit can be is what its hold
     /// keeps beyond its spend plus the plan's unreserved budget, which it
     /// could grow into; what other attempts hold is not its to spend.
@@ -3044,16 +3726,19 @@ exit 1
         assert!((limit(&first_allowance) - 0.70).abs() < 1e-9);
         assert!((limit(&second_allowance) - 0.90).abs() < 1e-9);
 
+        // A plan without a ceiling sets its attempts no limit (bug-80c642).
         let unlimited = ledger
             .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
             .expect("reservation");
-        assert!(unlimited.allowance(&ledger).is_none(), "nothing to limit");
+        let unlimited_calls = unlimited.allowance(&ledger).expect("its calls are kept");
+        assert_eq!(unlimited_calls.spend_limit_usd(), None, "nothing to limit");
         drop((first, second));
     }
 
     /// bug-4fabd0: a call with no price leaves the attempt's spend unknown,
     /// so its next call is refused, as a plan's is (decision 2110); a plan
-    /// without a ceiling holds nothing to ask.
+    /// without a ceiling has nothing to enforce, and refuses no call
+    /// (bug-80c642).
     #[test]
     fn an_unpriced_call_stops_its_attempt() {
         let ledger = Arc::new(GraphPlanBudgetLedger::default());
@@ -3070,7 +3755,9 @@ exit 1
         let unlimited = ledger
             .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
             .expect("reservation");
-        assert!(unlimited.allowance(&ledger).is_none());
+        let unlimited_calls = unlimited.allowance(&ledger).expect("its calls are kept");
+        unlimited_calls.record_call(0.0, false);
+        assert_eq!(unlimited_calls.refuse_call(), None);
     }
 
     /// A config whose one model, `api-model`, the OpenAI-compatible mock at
@@ -3216,6 +3903,225 @@ exit 1
             "{again:?}"
         );
         assert_eq!(requests.lock().len(), 2, "and no model call is made");
+    }
+
+    /// A try under a $0.05 cap whose scripted calls cost $0.011 and $0.021
+    /// (`turns`, in order): the plan's budget refuses a third call like the
+    /// second. `check.sh` passes once `src/voice.cpp` returns 1. With `judge`,
+    /// `[gates] llm_judge` is on, a check that calls a model.
+    async fn budget_stopped_try(
+        temp: &Path,
+        turns: Vec<serde_json::Value>,
+        judge: bool,
+    ) -> (
+        GraphTaskDispatcher,
+        TaskExecutionSpec,
+        Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        std::fs::write(temp.join("check.sh"), "grep -q 'return 1' src/voice.cpp\n")
+            .expect("check.sh");
+        let turns = turns
+            .into_iter()
+            .zip(1_u32..)
+            .map(|(mut turn, call)| {
+                turn["usage"] = serde_json::json!({
+                    "prompt_tokens": 10_000 * call,
+                    "completion_tokens": 500
+                });
+                turn
+            })
+            .chain(std::iter::once(final_turn("done")))
+            .collect();
+        let (base_url, requests) = spawn_openai_mock(turns);
+        let mut config = priced_api_config(base_url);
+        config.gates.llm_judge = judge;
+        let dispatcher = make_bare_dispatcher(config, temp)
+            .await
+            .with_plan_budget(0.05, 0.0, false)
+            .with_feedback(recording_feedback(temp));
+        let task = TaskDef {
+            id: "T05".to_string(),
+            title: "The console".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("test", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        (dispatcher, make_spec(&task), requests)
+    }
+
+    /// bug-3e04a6: phase 6's T5 try 2 ran its task's check green three
+    /// seconds before the plan's budget stopped it, at the call that would
+    /// have handed it back, and was thrown away. The task's checks now judge
+    /// the work a try the budget stopped left, with no model call: they pass,
+    /// so the try passes and its verdict names the bound, and the plan still
+    /// starts no further task.
+    #[tokio::test]
+    async fn a_try_the_budget_stopped_passes_when_its_checks_pass() {
+        let temp = tempdir().expect("tempdir");
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let checks = serde_json::json!({ "build": "checks" });
+        let (dispatcher, spec, requests) = budget_stopped_try(
+            temp.path(),
+            vec![
+                tool_call_turn("c1", "write_file", fix),
+                tool_call_turn("c2", "run_tests", checks),
+            ],
+            false,
+        )
+        .await;
+        let ctx = CellContext::new()
+            .with_cell_id("T05".to_string())
+            .with_run_id("capped".to_string());
+
+        let outputs = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("its checks pass on the work it left");
+
+        assert_eq!(
+            requests.lock().len(),
+            2,
+            "the hand-off is never made, and no check calls a model"
+        );
+        let said = outputs[0].body.as_text().unwrap_or_default().to_string();
+        assert!(
+            said.contains("the task's checks passed on the work it left"),
+            "{said}"
+        );
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(verdicts[0]["outcome"], "passed", "{}", verdicts[0]);
+        assert_eq!(verdicts[0]["bound"], "budget", "{}", verdicts[0]);
+        let stop = dispatcher
+            .plan_dispatch_stop(&spec.plan_id)
+            .expect("the plan starts no further task");
+        assert!(stop.starts_with("plan budget exhausted"), "{stop}");
+    }
+
+    /// bug-3e04a6: a try the budget stopped whose checks fail on the work it
+    /// left stays budget_exhausted, the harness's stop and never the agent's
+    /// failure, with the steps its checks ran; and no model call diagnoses
+    /// them.
+    #[tokio::test]
+    async fn a_try_the_budget_stopped_whose_checks_fail_stays_budget_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("src")).expect("src");
+        std::fs::write(temp.path().join("src/voice.cpp"), "int voice();\n").expect("voice.cpp");
+        let half = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 0; }\n"
+        });
+        let read = serde_json::json!({ "path": "src/voice.cpp" });
+        let (dispatcher, spec, requests) = budget_stopped_try(
+            temp.path(),
+            vec![
+                tool_call_turn("c1", "write_file", half),
+                tool_call_turn("c2", "read_file", read),
+            ],
+            false,
+        )
+        .await;
+        let ctx = CellContext::new()
+            .with_cell_id("T05".to_string())
+            .with_run_id("capped".to_string());
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("its checks fail");
+
+        assert!(
+            matches!(
+                error,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    ..
+                }
+            ),
+            "a budget stop the task executor does not retry: {error:?}"
+        );
+        assert_eq!(
+            requests.lock().len(),
+            2,
+            "no model call diagnoses the failed check"
+        );
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(
+            verdicts[0]["outcome"], "budget_exhausted",
+            "{}",
+            verdicts[0]
+        );
+        assert_eq!(verdicts[0]["steps"][0]["passed"], false, "{}", verdicts[0]);
+        assert!(dispatcher.plan_dispatch_stop(&spec.plan_id).is_some());
+    }
+
+    /// bug-b364d9, the lead's condition on bug-3e04a6: a try the plan's
+    /// budget stopped whose task has a check that calls a model, here
+    /// `[gates] llm_judge`, which its local-only checks skip, is not fully
+    /// checked. It settles unverified, its record naming the reason and the
+    /// check, and no model call judges it. A try whose checks are all local
+    /// passes ([`a_try_the_budget_stopped_passes_when_its_checks_pass`]).
+    #[tokio::test]
+    async fn a_try_the_budget_stopped_with_model_checks_skipped_is_not_fully_checked() {
+        let temp = tempdir().expect("tempdir");
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let checks = serde_json::json!({ "build": "checks" });
+        let (dispatcher, spec, requests) = budget_stopped_try(
+            temp.path(),
+            vec![
+                tool_call_turn("c1", "write_file", fix),
+                tool_call_turn("c2", "run_tests", checks),
+            ],
+            true,
+        )
+        .await;
+        let ctx = CellContext::new()
+            .with_cell_id("T05".to_string())
+            .with_run_id("capped".to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("its local checks pass on the work it left");
+
+        assert_eq!(requests.lock().len(), 2, "no model call judges it");
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(verdicts[0]["gate_verdict"], "unverified", "{}", verdicts[0]);
+        let skipped = verdicts[0]["steps"]
+            .as_array()
+            .and_then(|steps| {
+                steps
+                    .iter()
+                    .find(|step| step["rung"] == "budget:model_checks")
+            })
+            .unwrap_or_else(|| panic!("a step names the skipped checks: {}", verdicts[0]));
+        assert_eq!(
+            skipped["skip_reason"], "model checks skipped: the plan's budget was spent (llm-judge)",
+            "{skipped}"
+        );
     }
 
     /// gap-8548e3: a run held to a budget cap never calls a model roko has no

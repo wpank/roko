@@ -46,11 +46,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.clippy_enabled != default_gates.clippy_enabled,
-            "gates.clippy_enabled",
-            LEGACY_GATES,
-        ),
-        (
             gates.skip_tests != default_gates.skip_tests,
             "gates.skip_tests",
             LEGACY_GATES,

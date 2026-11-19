@@ -8,11 +8,15 @@ severity = "p2"
 goal = "golden-path"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "python3 tools/work.py show spec-fef7c5 | grep -qE '^  [a-z]+-[0-9a-f]{6}  open ' && exit 1 || exit 0"
 +++
 
 ## Problem
@@ -59,3 +63,5 @@ Every package of this phase is done.
 ## Notes
 
 - Held tasks and deferred decisions are not filed; see the backlog folder.
+
+Checked 2026-10-27: Only PK26 (gap-057cc7) and PK31 (gap-7c9a9c) remain open; both are ViabilityBench live-run packages.

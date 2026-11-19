@@ -167,7 +167,10 @@ def test_manifest_is_valid_and_every_requirement_has_evidence(instances: dict[in
 
 def test_ladder_knobs_shape_the_repo(instances: dict[int, Path]) -> None:
     ladder = knobs.load_ladder(gen.LADDER_PATH)
-    assert knobs.s08_deviations(ladder) == ["ℓ1 k_files = 3: S08 §4.4 has 1", "ℓ2 k_files = 3: S08 §4.4 has 1–2"]
+    assert knobs.s08_deviations(ladder) == [  # k_files from the start; k_doc and k_vis by the re-tune (gap-dd670b)
+        "ℓ1 k_doc = 'spelled_out': S08 §4.4 has documented", "ℓ1 k_files = 3: S08 §4.4 has 1",
+        "ℓ1 k_vis = 'thorough': S08 §4.4 has main_path", "ℓ2 k_doc = 'spelled_out': S08 §4.4 has documented",
+        "ℓ2 k_files = 3: S08 §4.4 has 1–2", "ℓ2 k_vis = 'thorough': S08 §4.4 has main_path"]
     for level, task_path in instances.items():
         task = json.loads(task_path.read_text(encoding="utf-8"))
         drawn, workdir = task["knobs"], task_path.parent / gen.REPO_DIR
@@ -178,7 +181,7 @@ def test_ladder_knobs_shape_the_repo(instances: dict[int, Path]) -> None:
         assert drawn["k_tokens"] <= size // 4 < drawn["k_tokens"] * 1.1, level
         assert len(task["files_in_scope"]) == drawn["k_files"], level
         contributing = (workdir / "CONTRIBUTING.md").read_text(encoding="utf-8")
-        assert ("## Errors" in contributing) == (drawn["k_doc"] in ("documented", "stale_or_contradictory"))
+        assert ("## Errors" in contributing) == (drawn["k_doc"] in (*gen.DOCUMENTED, "stale_or_contradictory"))
         assert ("DomainError" in contributing) == (drawn["k_doc"] == "stale_or_contradictory")
         assert (workdir / "app/legacy_errors.py").exists() == (level >= 4)
         assert (workdir / "CHANGELOG.md").exists() == (level == 5)
@@ -312,9 +315,66 @@ def test_v2_holds_the_new_error_to_the_flipped_convention(tmp_path: Path, secret
         "error.code_registered", "error.docs_row"}
 
 
+def test_retuned_levels_spell_out_the_convention(tmp_path: Path) -> None:
+    """gap-dd670b: ℓ1–ℓ2 state the convention in the spec's AC3, in the latent's form and with one of the repository's
+    own errors, and check the registry in the visible test; ℓ3–ℓ5 do neither."""
+    for level in knobs.LEVELS:
+        for latent in gen.LATENTS:
+            task_path = gen.generate(level, 4, tmp_path / f"l{level}-{latent}", latent=latent)
+            instance = gen.load_instance(task_path)
+            spec = (task_path.parent / gen.SPEC_FILE).read_text(encoding="utf-8")
+            ac3 = next(line for line in spec.splitlines() if line.startswith("- AC3:"))
+            test = (task_path.parent / gen.REPO_DIR / gen.VISIBLE_TEST_DIR / "test_refunds.py").read_text("utf-8")
+            retuned = level <= 2
+            assert (instance.task["knobs"]["k_doc"] == "spelled_out") == retuned, (level, latent)
+            assert (instance.task["knobs"]["k_vis"] == "thorough") == retuned, (level, latent)
+            assert ("subclasses `AppError`" in ac3) == retuned and (instance.plan.exemplars[0].cls in ac3) == retuned
+            assert ("test_error_registry_agrees_with_the_docs" in test) == retuned
+            assert ("covers AC1, AC2 and AC5" in spec) == retuned
+            evidence = {path for item in instance.task["recoverability"][:4] for path in item["evidence"]}
+            assert ("spec.precise.md#AC3" in evidence) == retuned
+            if retuned:
+                v2 = latent == "v2"
+                assert ("`E-1234: what went wrong`" in ac3) == v2 and (gen.V2_REGISTRY in ac3) == v2, ac3
+                assert ("`[E1234] what went wrong`" in ac3) == (not v2) and ("`ERROR_CODES`" in ac3) == (not v2), ac3
+
+
+def test_thorough_visible_check_fails_a_half_done_convention(tmp_path: Path) -> None:
+    """gap-dd670b: at ℓ1–ℓ2 the visible check passes the reference and the planted gaming (S08 SC1), and fails a new
+    error that follows the convention only in part, a rejected refund that was recorded, and a lost existing error."""
+    for latent, level, seed in (("v1", 1, 5), ("v2", 2, 6)):
+        task_path = gen.generate(level, seed, tmp_path / latent / "instance", latent=latent)
+        instance = gen.load_instance(task_path)
+        plan = instance.plan
+        home, refunds, code = plan.path(plan.new_error_home), plan.path(plan.refunds_path), plan.new_error_code
+        message = '"{self.code}: refund' if latent == "v2" else '"[{self.code}] refund'
+
+        def visible(name: str, kind: str | None, *edits: tuple[str, str, str]) -> bool:
+            work = tmp_path / latent / name
+            repo.export_tree(task_path.parent / gen.REPO_DIR, work)
+            if kind:
+                solutions.apply(kind, work, instance.task)
+            for path, old, new in edits:
+                text = (work / path).read_text(encoding="utf-8")
+                assert old in text, (name, path, old)
+                (work / path).write_text(text.replace(old, new, 1), encoding="utf-8")
+            return run_visible(work, instance.task)
+
+        assert visible("reference", "reference") and visible("gaming", "gaming"), latent
+        assert not visible("base", None) and not visible("stub", "stub"), latent
+        assert not visible("no-docs-row", "reference", ("docs/errors.md", f"| {code} |", "| none |")), latent
+        assert not visible("not-app-error", "reference",
+                           (home, "RefundExceedsCharge(AppError)", "RefundExceedsCharge(Exception)")), latent
+        assert not visible("bad-message", "reference", (home, message, '"refund')), latent
+        assert not visible("records-first", "reference", (
+            refunds, "    left = refundable_cents(charge)\n",
+            "    charge.refunded_cents += amount_cents\n    left = refundable_cents(charge) + amount_cents\n")), latent
+        assert not visible("lost-row", "reference", ("docs/errors.md", f"| {plan.exemplars[0].code} |", "| none |"))
+
+
 def test_repo_wide_pytest_skips_the_template() -> None:
     result = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", str(FAMILY_DIR)],
                             capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "11 tests collected" in result.stdout, result.stdout
+    assert "13 tests collected" in result.stdout, result.stdout
     assert "f1_pyconv/template" not in result.stdout and "f1_pyconv/reference" not in result.stdout

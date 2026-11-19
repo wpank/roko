@@ -9,13 +9,17 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/homeostasis"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-16 follow-up reports 2026-10-04 (gap-86286e, gate 16b)"
 discovered_from = "gap-86286e (closed; own closing evidence names this as a queued spec fix)"
 anchors = ["tmp/cybernetic-harness/specs/S06-ultrastable-controller.md"]
 lane = "paper"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q 'ceiling .verify.max_floor' tmp/cybernetic-harness/specs/S06-ultrastable-controller.md && ! grep -q 'gates.max_rung. (B3 ceiling)' tmp/cybernetic-harness/specs/S06-ultrastable-controller.md"
 +++
 
 ## Problem

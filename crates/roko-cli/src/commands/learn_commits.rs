@@ -21,7 +21,7 @@ use roko_learn::homeostasis::lkg;
 use roko_learn::model_call_feedback::discard_unsaved_router_observations;
 use roko_learn::router_commit::ROUTER_STORE;
 use roko_neuro::KnowledgeStore;
-use roko_neuro::knowledge_store::commit::KNOWLEDGE_STORE;
+use roko_neuro::knowledge_store::commit::{KNOWLEDGE_STORE, LaterBatches, lock_knowledge_guard};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -170,6 +170,14 @@ pub(crate) fn rollback(workdir: &Path, store: StoreName, to: u64) -> Result<Opti
         (StoreName::Harness, _) | (_, GuardedCommitMode::Enforce) => GuardMode::Enforce,
         _ => GuardMode::Observe,
     };
+    // A distillation proposes to the knowledge store's guard outside any run
+    // (bug-f8655e), so the runner lock alone doesn't hold it still.
+    let _knowledge_guard = match store {
+        StoreName::Knowledge => {
+            Some(lock_knowledge_guard(&learn_dir).context("lock the knowledge store's guard")?)
+        }
+        StoreName::Router | StoreName::Harness => None,
+    };
     let mut guarded = GuardedStore::open(&learn_dir, store.dir(), mode)?;
     let previous = guarded.current();
     let reason = format!("roko learn rollback {} --to {to}", store.dir());
@@ -223,52 +231,6 @@ impl GuardedState for RouterFile {
             path: self.path.display().to_string(),
             source,
         })
-    }
-}
-
-/// The knowledge store as of a version: a rollback deletes the entries of
-/// every batch committed after it, which the store's later versions hold.
-struct LaterBatches {
-    store: KnowledgeStore,
-    ids: Vec<String>,
-}
-
-impl LaterBatches {
-    /// The entries of the batches `guarded` keeps after version `to`, in
-    /// `store`.
-    fn after(guarded: &GuardedStore, to: u64, store: KnowledgeStore) -> Result<Self, GuardError> {
-        let mut ids = Vec::new();
-        let versions = guarded.versions()?;
-        for version in versions.into_iter().filter(|&version| version > to) {
-            let snapshot = guarded.snapshot(version)?;
-            for line in String::from_utf8_lossy(&snapshot).lines() {
-                if let Ok(entry) = serde_json::from_str::<Value>(line)
-                    && let Some(id) = entry["id"].as_str()
-                {
-                    ids.push(id.to_string());
-                }
-            }
-        }
-        Ok(Self { store, ids })
-    }
-}
-
-impl GuardedState for LaterBatches {
-    /// The ids of the entries a rollback deletes, one per line.
-    fn snapshot(&self) -> Vec<u8> {
-        self.ids.join("\n").into_bytes()
-    }
-
-    /// Delete the later batches' entries; the version's own batch stays.
-    fn restore(&mut self, _snapshot: &[u8]) -> Result<(), GuardError> {
-        let ids: Vec<&str> = self.ids.iter().map(String::as_str).collect();
-        self.store
-            .remove_entries(&ids)
-            .map(|_| ())
-            .map_err(|error| GuardError::Io {
-                path: self.store.path().display().to_string(),
-                source: std::io::Error::other(format!("{error:#}")),
-            })
     }
 }
 

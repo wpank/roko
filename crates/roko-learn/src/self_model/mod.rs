@@ -6,13 +6,14 @@
 //!
 //! This module holds the types every part shares. Each part has its own file, which the backlog
 //! task named in its module comment fills: [`ingest`] and [`legacy`] read the data, [`metrics`]
-//! scores forecasts, [`prior`], [`features`], [`logit`], [`cost`] and [`recal`] forecast, and
-//! [`model`] combines them. The policies, replay, off-policy evaluation and the promotion gate
+//! scores forecasts, [`prior`], [`features`], [`logit`], [`false_green`], [`cost`] and [`recal`]
+//! forecast, and [`model`] combines them. The policies, replay, off-policy evaluation and the promotion gate
 //! follow.
 
 pub mod baselines;
 pub mod cascade;
 pub mod cost;
+pub mod false_green;
 pub mod features;
 pub mod gate;
 pub mod ingest;
@@ -290,7 +291,9 @@ pub struct Unit {
     pub cost_source: CostSource,
     /// Its wall time in seconds, when known.
     pub latency_s: Option<f64>,
-    /// A provider failover substituted the model, so the unit is kept out of training.
+    /// A provider failover substituted the model. The model learns what it did, and the
+    /// routing statistics (the calibration window, policy (a)'s margin) leave it out, since
+    /// nobody chose it (bug-a35286).
     pub failover: bool,
 }
 
@@ -318,9 +321,14 @@ pub struct CandidateForecast {
     /// The forecast comes from L0 alone: the model has fewer outcomes than it needs (6116).
     pub cold_start: bool,
     /// The layer that forecast `p_gate`: L0 while the model is cold and for every first try,
-    /// L1 for a retry or a climb (gap-3f36a6).
+    /// L1 for a retry or a climb (gap-3f36a6), L0 again for a retry whose L1 forecast ran away
+    /// (bug-bce0ed).
     #[serde(default)]
     pub basis: ForecastBasis,
+    /// L0's P(VS) for the arm, whatever layer forecast `p_vs`: an abandon needs it below
+    /// p_abandon too, so L1 alone never gives up a task the prior still rates (gap-d91691).
+    #[serde(default)]
+    pub prior_p_vs: f64,
     /// The cost quantiles are a bounded prior: the cost model's rows do not support the
     /// attempt. It sits at the arm's observed costs, as for an arm on a family it has not run
     /// (bug-f6682e), or at the price snapshot's price for an arm with none (bug-09173e).

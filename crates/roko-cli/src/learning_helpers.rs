@@ -84,6 +84,12 @@ pub(crate) fn record_persisted_provider_outcome(
 
 // ─── Distillation ────────────────────────────────────────────────────────
 
+/// The reasoning effort of roko's one-shot helper calls: an episode's
+/// distillation, a failed check's diagnosis, a gate reflection and the
+/// judge (gap-1ba0ac). A reasoning model needs little of it for a short
+/// answer, and a retry waits on some of them.
+pub const HELPER_EFFORT: &str = "low";
+
 /// Build a [`ModelCaller`] configured for episode distillation.
 ///
 /// Uses the workspace's configured default model so distillation works in
@@ -99,8 +105,11 @@ pub fn distillation_model_caller(workdir: &Path) -> Arc<dyn ModelCaller> {
 /// [`distillation_model_caller`] on `model` when given, else on the
 /// workspace's default model (bug-a0432b).
 pub fn distillation_model_caller_on(workdir: &Path, model: Option<&str>) -> Arc<dyn ModelCaller> {
-    let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
+    let mut config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
     let model = model.map_or_else(|| config.agent.default_model.clone(), str::to_string);
+    // A distillation summarises one episode: it reasons at the helpers'
+    // effort, unless its model names its own (gap-1ba0ac).
+    config.agent.default_effort = HELPER_EFFORT.to_string();
     Arc::new(
         ModelCallService::new(model)
             .with_config(config)
@@ -182,6 +191,13 @@ mod tests {
     #[tokio::test]
     async fn distillation_spend_is_recorded() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        // A plan write runs no gate, so only `distill_ungated` distils it
+        // (bug-f8655e).
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            "[learning]\ndistill_ungated = true\n",
+        )
+        .expect("write roko.toml");
         let mut runtime = LearningRuntime::open_for_project(tmp.path())
             .await
             .expect("open learning runtime");
@@ -194,6 +210,7 @@ mod tests {
             "prompt body",
             "output body",
             true,
+            chrono::Utc::now(),
             42,
             None,
         );

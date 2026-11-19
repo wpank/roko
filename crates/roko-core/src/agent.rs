@@ -314,6 +314,22 @@ pub enum ReasoningEffort {
     Max,
 }
 
+impl ReasoningEffort {
+    /// The effort `label` names, as `[agent] default_effort` and a request's
+    /// effort spell it: `low`, `medium`, `high` or `max`, in any case and
+    /// with surrounding space. `None` for any other label.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+
 /// A fully-resolved model specification: slug + inferred backend + effort.
 ///
 /// Mirrors Mori's `ModelSpec` in `apps/mori/src/agent/roles.rs`. Create

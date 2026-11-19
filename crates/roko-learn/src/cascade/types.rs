@@ -410,7 +410,7 @@ pub(crate) const CATEGORY_CONFIDENCE_WEIGHT: f64 = 0.15;
 pub(crate) const CATEGORY_MIN_TRIALS: u64 = 5;
 
 /// Per-model-per-category observation record for category-aware routing (#84).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CategoryModelStats {
     /// Number of trials for this (model, category) pair.
     pub(crate) trials: u64,

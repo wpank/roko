@@ -44,6 +44,11 @@ const MAX_TIMEOUT_SECS: u64 = 3600;
 /// The most of stdout and of stderr an output keeps, in bytes, from the end.
 const TAIL_BYTES: usize = 4 * 1024;
 
+/// The variable naming the JSON file of a node's input signals for its
+/// command. It also marks the command as one roko started, and
+/// `roko safety release` refuses to run under it (find-d05b5e).
+pub const CELL_INPUT_ENV: &str = "ROKO_CELL_INPUT";
+
 /// Which of the two cells a [`ShellExecCell`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellExecMode {
@@ -312,7 +317,7 @@ async fn run(
         .arg("-c")
         .arg(&config.command)
         .current_dir(dir)
-        .env("ROKO_CELL_INPUT", input);
+        .env(CELL_INPUT_ENV, input);
     roko_core::child_env::apply_gate_env(
         &mut command,
         roko_core::child_env::process_env(),

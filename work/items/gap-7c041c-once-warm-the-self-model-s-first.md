@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/self_model"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-learning-research#5.2"
 discovered_from = "agent:learning-research (round v6, 2026-10-17, lessons-on start-rung demo on roko-92cc56-3f36a6-merged at 5ca1cb3ac)"
 anchors = ["crates/roko-learn/src/self_model/logit.rs::OnlineLogit", "crates/roko-learn/src/self_model/model.rs::N_MIN", "crates/roko-learn/src/self_model/features.rs::feature_vector", "crates/roko-learn/src/self_model/recal.rs::Recalibrator"]
@@ -146,3 +147,5 @@ Goal: cybernetic (S04, M3).
   - gap-3f36a6: the attempt-order confound of the first-try forecast;
   - bug-92cc56: the gate's routed-pass-rate bound;
   - gap-dd89ff: the content features.
+
+Checked 2026-10-27: 2026-10-26: unchanged since 2026-10-17; still blocked on gap-e464e6 landing first.

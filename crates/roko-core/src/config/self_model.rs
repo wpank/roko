@@ -39,6 +39,26 @@ pub enum SelfModelPolicy {
     Static,
 }
 
+/// The rule that picks a task's start rung under policy (b) (S04 §4.4, decision 6101;
+/// gap-74893d).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfModelStartRule {
+    /// The rung with the lowest expected total, cost plus `time_value_usd_per_hour` for each
+    /// hour of wall time, to a verified pass, counting the climb each failure starts. The
+    /// default.
+    #[default]
+    ExpectedTotal,
+    /// S04 §4.4 as decision 6101 adopted it: the first rung whose lower bound on P(VS) beats
+    /// the break-even c_j/c_{j+1} + m_b, else the last rung. It weighs cost alone.
+    BreakEven,
+}
+
+/// What an hour of a try's wall time is worth to the start rule by default, in USD (λ): about
+/// what the strong rung's tokens cost for an hour of its work in round v7, so a slower rung
+/// has to save more than its extra minutes would cost there (gap-74893d).
+pub const DEFAULT_TIME_VALUE_USD_PER_HOUR: f64 = 3.0;
+
 /// `[self_model]` in `roko.toml` (S04 §5). Every key is optional.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -63,6 +83,12 @@ pub struct SelfModelConfig {
     pub allow_downward_start: bool,
     /// Decision 6101 B2: a climb may skip a rung. No by default: one rung per climb.
     pub allow_rung_skip: bool,
+    /// The start rule under policy (b): `expected_total` (the default) or `break_even`, which
+    /// restores S04 §4.4's rule exactly (gap-74893d).
+    pub start_rule: SelfModelStartRule,
+    /// λ, what an hour of a try's wall time is worth to `expected_total`, in USD, at least 0.
+    /// `0` weighs cost alone.
+    pub time_value_usd_per_hour: f64,
 }
 
 impl Default for SelfModelConfig {
@@ -76,6 +102,8 @@ impl Default for SelfModelConfig {
             state_path: DEFAULT_STATE_PATH.to_string(),
             allow_downward_start: true,
             allow_rung_skip: false,
+            start_rule: SelfModelStartRule::ExpectedTotal,
+            time_value_usd_per_hour: DEFAULT_TIME_VALUE_USD_PER_HOUR,
         }
     }
 }
@@ -85,6 +113,12 @@ impl SelfModelConfig {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.mode != SelfModelMode::Off
+    }
+
+    /// λ in USD per second, the unit the start rule prices a try's time in.
+    #[must_use]
+    pub fn time_value_usd_per_s(&self) -> f64 {
+        self.time_value_usd_per_hour / 3_600.0
     }
 
     /// Every problem with the section, as (key, problem). Whether active mode may act is not
@@ -104,6 +138,13 @@ impl SelfModelConfig {
         if self.n_min == 0 {
             problems.push(("n_min", "n_min must be at least 1".to_string()));
         }
+        let per_hour = self.time_value_usd_per_hour;
+        if !per_hour.is_finite() || per_hour < 0.0 {
+            problems.push((
+                "time_value_usd_per_hour",
+                format!("time_value_usd_per_hour ({per_hour}) must be finite and at least 0"),
+            ));
+        }
         if self.state_path.trim().is_empty() {
             problems.push(("state_path", "state_path must name a file".to_string()));
         }
@@ -117,8 +158,9 @@ mod tests {
     use crate::config::schema::RokoConfig;
 
     /// 6127, decision 2 of 2026-10-15: the section defaults to shadow (superseding decision
-    /// 6102 question 5's "off"), round-trips through TOML, rejects unknown keys, and its checks
-    /// reject out-of-range values, through `validate_invariants` too.
+    /// 6102 question 5's "off") and to the expected-total start rule at $3 an hour
+    /// (gap-74893d), round-trips through TOML, rejects unknown keys, and its checks reject
+    /// out-of-range values, through `validate_invariants` too.
     #[test]
     fn self_model_config_defaults_shadow() {
         let expected = SelfModelConfig {
@@ -130,6 +172,8 @@ mod tests {
             state_path: ".roko/learn/self-model/state-v1.json".to_string(),
             allow_downward_start: true,
             allow_rung_skip: false,
+            start_rule: SelfModelStartRule::ExpectedTotal,
+            time_value_usd_per_hour: 3.0,
         };
         let config = SelfModelConfig::default();
         assert_eq!(config, expected);
@@ -145,6 +189,13 @@ mod tests {
         assert_eq!(shadow.mode, SelfModelMode::Shadow);
         assert_eq!(shadow.policy, SelfModelPolicy::LcbAci);
         assert!(shadow.enabled());
+        let rule: SelfModelConfig =
+            toml::from_str("start_rule = \"break_even\"\ntime_value_usd_per_hour = 0.0")
+                .expect("parse the start rule");
+        assert_eq!(rule.start_rule, SelfModelStartRule::BreakEven);
+        assert!(rule.time_value_usd_per_s().abs() < f64::EPSILON);
+        assert!(rule.problems().is_empty());
+        assert!(toml::from_str::<SelfModelConfig>("start_rule = \"cheapest\"").is_err());
         assert!(toml::from_str::<SelfModelConfig>("mood = \"shadow\"").is_err());
         assert!(toml::from_str::<SelfModelConfig>("mode = \"on\"").is_err());
         let roko =
@@ -155,10 +206,14 @@ mod tests {
             target: 1.0,
             delta: 0.0,
             n_min: 0,
+            time_value_usd_per_hour: -1.0,
             ..SelfModelConfig::default()
         };
         let keys: Vec<&str> = bad.problems().into_iter().map(|(key, _)| key).collect();
-        assert_eq!(keys, ["target", "delta", "n_min"]);
+        assert_eq!(
+            keys,
+            ["target", "delta", "n_min", "time_value_usd_per_hour"]
+        );
         let mut roko = RokoConfig::default();
         roko.self_model.delta = 1.5;
         let results = crate::config::validate_invariants(&roko);

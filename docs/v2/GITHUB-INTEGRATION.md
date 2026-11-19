@@ -97,11 +97,12 @@ Runner-managed plan branches use:
 roko/plan/<plan-id>
 ```
 
-These branches are local: plan runs integrate plans on a local `roko/batch/<run-id>` branch
-and push nothing. Task-attempt worktrees use a more specific internal branch convention.
-Operators who open plan pull requests themselves should name the head branch with the
-`roko/plan/` prefix, which `roko github status` filters on, and must not treat task-attempt
-branches as merge targets.
+These branches are local: plan runs integrate plans on a local batch branch, `roko/work/<slug>`
+(`roko/batch/<run-id>` for runs before gap-b67fdd), and push nothing. Task-attempt worktrees use a
+more specific internal branch convention. `roko github status` lists the pull requests whose head
+is a plan branch (`roko/plan/`) or a run's batch branch (`roko/work/`, or the older `roko/batch/`),
+so an operator who opens one from either finds it there. Task-attempt branches are never merge
+targets.
 
 ## Runner workflow
 

@@ -9,8 +9,9 @@ goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/budget"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16, at the lead's request)"
 discovered_from = "gap-ca1c92 and gap-e14344 cover the Claude CLI only"
 anchors = ["crates/roko-agent/src/provider/codex_cli/stream.rs", "crates/roko-agent/src/provider/gemini_cli.rs", "crates/roko-agent/src/provider/cursor_cli.rs", "crates/roko-agent/src/provider/mod.rs::TurnCapEnforcement", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::run_watched"]
@@ -83,3 +84,5 @@ Codex or Gemini CLI that never reports usage is stopped by a budget-derived cap,
 
 Filed by roko-caps at the lead's request, after gap-ca1c92 and gap-e14344 covered the Claude CLI. Step 2 (Gemini's `model.maxSessionTurns`) is done as gap-130413. CLI versions and
 options were checked on this machine on 2026-10-16 (`--help`; Gemini's settings schema in its bundle).
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: unchanged from the item's own last note; only the already-credited Gemini turn-cap step (gap-130413) is done. Codex and Cursor attempts still have no spend bound besides the attempt timeout.

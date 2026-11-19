@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * Acceptance: on the whole screen, a Run all this server cannot do is an info
- * alert with the notice glyph, and a real failure is still an error.
+ * alert with a plain grey light, and a real failure is still an error.
  * Copied verbatim from plans/portal-programme/08d-portal-legibility/accept/.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,7 +16,10 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
-const PLANS = [{ id: 'hello', title: 'Hello world', task_count: 1, tasks_done: 0, tasks_failed: 0, completed: false, status: 'pending', old_format: false }] as WirePlanSummary[];
+const PLANS = [
+  { id: 'hello', title: 'Hello world', task_count: 1, tasks_done: 0, tasks_failed: 0, completed: false, status: 'pending', old_format: false },
+  { id: 'bye', title: 'Goodbye', task_count: 1, tasks_done: 0, tasks_failed: 0, completed: false, status: 'pending', old_format: false },
+] as WirePlanSummary[];
 const TASKS: WirePlanTasks = {
   plan_id: 'hello',
   task_count: 1,
@@ -45,13 +48,13 @@ afterEach(() => {
 const band = () => document.querySelector('[data-region="alert"]');
 
 describe('request alerts on the screen', () => {
-  it('shows a Run all this server lacks as information, with the notice glyph', async () => {
+  it('shows a run all this server lacks as information, with a plain grey light', async () => {
     stubFetch([{ method: 'POST', path: '/api/plans/execute', status: 405, statusText: 'Method Not Allowed' }]);
     renderWithClient(<Workspace />, { seed: SEED });
     fireEvent.click(document.querySelector('[data-action="run-all"]')!);
     await waitFor(() => expect(band()).not.toBeNull());
     expect(band()?.getAttribute('data-severity')).toBe('info');
-    expect(textOf(band()?.querySelector('.rd-alert__glyph') ?? null)).toBe('ⓘ');
+    expect(band()?.querySelector('.rk-led')?.getAttribute('data-state')).toBe('still');
     expect(textOf(band())).toContain('This roko serve does not support running all plans yet.');
   });
 

@@ -1205,7 +1205,8 @@ they provide the algebraic structure for compositional knowledge representation
 Signals are fully serializable via serde. The default persistence format is JSONL
 (JSON Lines) in the `FileSubstrate` (`roko-fs`), where each line is one Signal:
 
-**Storage path:** `.roko/engrams.jsonl`
+**Storage path:** `.roko/signals.jsonl`. A workspace an older roko made may keep the log as `.roko/engrams.jsonl`,
+which `FileSubstrate` reads only while `signals.jsonl` is absent; `roko init` moves it into `signals.jsonl`.
 
 ```json
 {"id":"a1b2c3d4...","kind":"task","body":{"format":"text","data":"implement login"},"created_at_ms":1712345678000,"decay":{"kind":"none"},"provenance":{"author":"roko","trust":1.0,"taint":{"kind":"clean"},"session":null,"taint_level":"public","trust_origin":"trusted"},"score":{"confidence":0.5,"novelty":0.0,"utility":0.0,"reputation":1.0,"precision":0.0,"salience":0.0,"coherence":0.0},"lineage":[],"tags":{"priority":"high"},"balance":1.0,"status":"transient","access_count":0,"demurrage_paid":0.0}
@@ -1286,16 +1287,16 @@ To inspect the raw JSONL store:
 
 ```bash
 # Count Signals
-wc -l .roko/engrams.jsonl
+wc -l .roko/signals.jsonl
 
 # View the most recent Signal
-tail -1 .roko/engrams.jsonl | python3 -m json.tool
+tail -1 .roko/signals.jsonl | python3 -m json.tool
 
 # Find Signals by kind
-grep '"kind":"gate_verdict"' .roko/engrams.jsonl | wc -l
+grep '"kind":"gate_verdict"' .roko/signals.jsonl | wc -l
 
 # Find Signals by author
-grep '"author":"gate:compile"' .roko/engrams.jsonl | head -5
+grep '"author":"gate:compile"' .roko/signals.jsonl | head -5
 ```
 
 ---

@@ -9,8 +9,9 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "wave-15 follow-up reports 2026-10-04 (gap-1a8ee7, gate 16a)"
 discovered_from = "gap-1a8ee7 (open, work/gap-1a8ee7; X4's own more vaguely stated data gap traced precisely)"
 anchors = ["benchmarks/viabilitybench/experiments/log1.toml", "benchmarks/viabilitybench/analysis/replay_closure.py"]
@@ -82,3 +83,5 @@ the new blocks and the plan's billed totals are re-verified against BL1's cap be
   `7d82b944a`. Filed as `kind = "question"` per the instruction, since adding LOG1 blocks
   changes billed spend and needs Will's sign-off, not just a code change. A matching note has
   been added to `gap-394f28` flagging this as a pre-lock dependency.
+
+Checked 2026-10-27: 2026-10-26 sweep: still waiting on Will per the 2026-10-15 deferral ('after the pilots'). Pilot A and B have reported; Pilot C has not yet (no benchmarks/viabilitybench/reports/pilot_c/), so the question's own precondition for being asked again is not yet fully met.

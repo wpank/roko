@@ -62,6 +62,7 @@ back. Line counts are in `benchmarks/park/`.
 | `cross-cut-functors` | roko-compose | The cross-cut functors and `CrossCutArbitrator` |
 | `spc` | roko-gate | CUSUM, EWMA and BOCPD detectors, PELT, Hotelling's T-squared |
 | `active-inference` | roko-learn | The expected-free-energy tier selector |
+| `knowledge-decay` | roko-cli, roko-serve | `roko serve`'s knowledge-demurrage timer, which every ~2.8 h lowered every knowledge entry's confidence and balance whatever its use (bug-dd5dca, bug-429315; backlog 9231, Will's decision 12) |
 | `channels` | roko-core, roko-runtime | The `ChatBridge` contract and `PlatformRegistry`, the six stub platform adapters (Discord, Slack, Matrix, Mattermost, Telegram, WhatsApp), `ChannelBindingRouter`, and the `[[platforms]]` and `[[channels]]` config types (decision 12) |
 
 ## Critical rules
@@ -164,15 +165,15 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko init` | Create `.roko/` directory and `roko.toml` |
 | `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
 | `roko run "<prompt>"` | Size the prompt: one checked task, or a plan written first and then run (`commands/run_cmd.rs`) |
-| `roko run --plan "<prompt>"` | Always write a plan first (`--dry-run`: write it and stop; on a terminal it asks before running) |
-| `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`) |
+| `roko run --plan "<prompt>"` | Always write a plan first, shown like a run: a live line while it writes, then the plan's tasks (`--dry-run`: write it and stop; on a terminal it asks before running) |
+| `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`, `--tui`) |
 | `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
-| `roko status` | Query signals, report counts and episodes |
+| `roko status` | What is running, how the last runs ended, what they spent, and one Next command; `--details` adds signal counts, efficiency and thresholds |
 | `roko doctor` | Diagnose workspace bootstrap state |
 | `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
-| `roko diagnose <plan-id>` | Diagnose why a plan failed: a readable report (`--json` for JSON, `--verbose` adds the tasks that completed) |
+| `roko diagnose <plan-id>` | Diagnose why a plan failed, in the run view's style: each task as the run left it; for one that failed, its check, a line per try and what the check printed, once; then Next, the command that runs it again (`--json` for JSON, `--verbose` adds the tries of the tasks that passed) |
 | `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
-| `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
+| `roko github status` | Inspect GitHub config, authentication, the PR/CI state of plan and run branches, and failure issues |
 | `roko think "<question>"` | Research a question without executing agents or changing files |
 | `roko note "<text>"` | Capture a quick note (no LLM, instant, with optional tags) |
 | `roko login [url]` | Authenticate with a roko-serve instance (browser or API key) |
@@ -186,15 +187,15 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | Command | What it does |
 |---|---|
 | `roko plan list/show/create` | Manage plans |
-| `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error); `--no-holdout` runs it in maximize mode (decision 4115) |
+| `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error). On a terminal it shows the live view: a line per task and a footer of tasks, time and spend, then a summary ending in one Next command; `--tui` opens the dashboard instead. `--no-holdout` runs it in maximize mode (decision 4115) |
 | `roko plan generate/regenerate` | Generate a plan from a prompt, file, notes or backlog spec (runs nothing), or regenerate one in place |
 | `roko plan import --mori <dir>` | Import mori plan directories (`.mori/plans/<plan>/`) as roko plans, their checks included; no model runs |
 | `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |
-| `roko plan status <dir>` | Show execution status for a plan |
+| `roko plan status <dir>` | Show a plan's last run in the run view's style: each task as the run left it, the plan check, where the work went, and Next |
 | `roko plan queue show/validate/init` | Queue manifest operations |
-| `roko plan validate <dir>` | Lint tasks.toml without executing |
+| `roko plan validate <dir>` | Lint tasks.toml without executing: each problem once under its task, then `Ready to run` or what stops it, and Next |
 | `roko backlog list/audit/mark-done` | List `tmp/backlog` items, reconcile plan status against Graph runs, record closure evidence (`roko plan generate --from-backlog <ids>` turns specs into plans) |
 
 ### Agents
@@ -222,7 +223,8 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | Command | What it does |
 |---|---|
 | `roko knowledge query "<topic>"` | Search durable knowledge store |
-| `roko knowledge stats/gc` | Store statistics, garbage collection |
+| `roko knowledge stats/gc` | Store statistics (retired entries and how often their lessons were learned again), garbage collection |
+| `roko knowledge retire <id> --reason "…"` | Retire one entry: retrieval skips it, and `.roko/neuro/knowledge-retired.jsonl` keeps it retired through restores, imports and rollbacks |
 | `roko knowledge backup/restore` | Backup with genomic bottleneck, restore with decay |
 | `roko knowledge sync <peer>` | Mesh knowledge sync |
 | `roko knowledge dream run/report/schedule` | Dream consolidation cycle |
@@ -238,12 +240,14 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
 | `roko learn reflexes` | Show T0 reflex rules (count, top five by hits, recent demotions) |
 | `roko learn patterns` | Show failure patterns, most frequent first (`--graduate`: the ones ready to become a lint or verify step) |
+| `roko learn probes` | List the ladder's rung probe verdicts; `clear <model>` (or `--all`) has the next run probe those rungs again |
 | `roko learn self-model fit/replay` | Fit the M3 self-model over the run logs, or replay routing policies over a run-record matrix |
 | `roko learn econ prices` | Show the price snapshot's rows with their source URLs |
 | `roko learn gates` | Show adaptive gate threshold state |
 | `roko learn knowledge-stats` | Show durable knowledge entry counts |
 | `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
 | `roko learn tune gates/routing/budget` | (deprecated) Alias for `learn inspect` |
+| `roko audit status/replay/reveal/incidents` | What the random deep audits of green attempts found, read-only: window estimates, the strictness ladder, routing trust, a lottery replay, a run's draws recomputed from its revealed key, incidents |
 
 ### Jobs
 | Command | What it does |
@@ -274,10 +278,11 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 ### Server & deployment
 | Command | What it does |
 |---|---|
-| `roko serve` | Start HTTP control plane on :6677 (count routes with `python3 tools/http_route_inventory.py`) |
+| `roko serve` | Start HTTP control plane on :6677 (count routes with `python3 tools/http_route_inventory.py`); `--detach [--json] [--idle-exit SECS] [--wait SECS]` starts it in the background and returns once it answers (idempotent; configured port if free, else one the OS picks); `roko serve status\|stop\|restart [--workdir W \| --all] [--json] [--force]` report, stop or restart project serves (`~/.roko/runtime/serves` registry; busy ones need `--force`); `roko serve link [--workdir W] [--open]` prints the portal's sign-in link of a project's running serve |
 | `roko acp` | Start ACP (Agent Client Protocol) server for editor integration |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |
+| `roko showcase passphrase new/hash` | Make the public showcase's login passphrase, or hash one read from stdin, and print its Argon2id PHC string (the `ROKO_SHOWCASE_PASSPHRASE_HASH` deploy secret) |
 | `roko worker` | Run as deployed worker |
 
 ### Graph, feeds, recipes, and triggers
@@ -297,8 +302,10 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko index build/rebuild/search/stats` | Code intelligence index |
 | `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
 | `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
+| `roko demo setup/warm` | `setup` builds the release binary, runs `roko init` where `.roko/` is missing and prints how to run the demo; `warm` sends five fixed demo prompts, one live model call each, then counts the files in `.roko/demo-cache/` |
 | `roko new <type> <name>` | Scaffold boilerplate |
-| `roko safety controls/release` | List immune isolation controls that deny agents before dispatch, and release one with an audit record |
+| `roko safety controls` | List the immune controls in force: agents denied before dispatch, tools refused in the workspace |
+| `roko safety release <agent> --reason <why>` | Release an agent's control, or a tool's (`--tool`, `--scope`), with an audit line (`by`, `reason`, `via`). Only a person releases one: the default bash policy refuses the command, and it exits 1 under the variables roko sets on its agents and checks |
 | `roko effects list/show/approve/reject` | List, inspect and approve or reject a staged (held) tool call |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |

@@ -11,7 +11,9 @@ pub mod commit;
 mod crud;
 mod gc;
 pub mod memory_index;
+pub mod pending;
 mod query;
+pub mod retire;
 pub(crate) mod scoring;
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -372,6 +374,14 @@ impl KnowledgeStore {
                     });
                 }
                 Err(_) => {}
+            }
+        }
+        // An entry a person retired stays retired, whatever wrote it back:
+        // a restore, an import, a sync or a rollback (bug-2ad4fa).
+        let retired = self.retired_ids();
+        for entry in &mut entries {
+            if retired.contains(&entry.id) {
+                entry.deprecated = true;
             }
         }
         Ok(entries)

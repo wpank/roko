@@ -73,7 +73,9 @@ async fn rpc_ws_upgrade(
         .replace("http://", "ws://")
         .replace("https://", "wss://");
 
-    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| bridge_ws(socket, upstream)))
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
+    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| open.hold(bridge_ws(socket, upstream))))
 }
 
 /// `GET /api/rpc/events` (WS upgrade) — mirage live events.
@@ -93,7 +95,9 @@ async fn rpc_events_ws_upgrade(
         format!("{}/api/ws?{query}", ws_base.trim_end_matches('/'))
     };
 
-    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| bridge_ws(socket, upstream)))
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
+    Ok(apply_ws_size_limits(ws).on_upgrade(move |socket| open.hold(bridge_ws(socket, upstream))))
 }
 
 /// `GET /api/rpc/health` — proxy mirage health check.

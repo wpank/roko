@@ -1,0 +1,375 @@
+[meta]
+plan = "set-the-plan-title-field-to-exactly-p0-undertow"
+title = "Set the plan title field to exactly: P0 · Undertow…"
+iteration = 0
+total = 4
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[task]]
+id = "T1"
+title = "Build system and core target"
+description = "Set up the top-level CMake files, JUCE discovery helper, core library CMake, and the check script scaffolding so the core preset configures and builds without pulling in JUCE. Assumption: the Unix Makefiles generator and RelWithDebInfo are the only supported preset choices for phase 0."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "CMakeLists.txt",
+    "CMakePresets.json",
+    "cmake/Juce.cmake",
+    "core/CMakeLists.txt",
+    "tools/check.sh",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `cmake --preset core` configures successfully with `UNDERTOW_BUILD_PLUGIN=OFF` and `BUILD_TESTING=ON`.",
+    "AC2: `cmake --build --preset core` builds the core library target without configuring JUCE.",
+    "AC3: `ctest --preset core` runs the phase-0 core spec tests through the core preset.",
+    "AC4: `tools/check.sh` prints `check: OK` after running the core preset commands.",
+]
+sequence = 0
+goal = "The repository configures a core-only build with the required presets and a plain C++ core library target."
+non_goals = [
+    "Do not implement the parameter table, engine skeleton, or plugin target bodies here.",
+    "Do not change any spec test file under tests/spec/.",
+]
+
+[task.context]
+symbols = ["Undertow — plugin target name used by the spec harness"]
+anti_patterns = [
+    "Do NOT create new files outside the listed build-system and script paths.",
+    "Do NOT introduce JUCE includes into core targets.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "120-260"
+why = "Capture the exact build-system requirements, preset names, plugin target metadata, and check-script behavior for phase 0."
+
+[[task.context.read_files]]
+path = "tests/spec/CMakeLists.txt"
+lines = "1-91"
+why = "See how the spec harness discovers core and plugin targets and when it adds tests."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/plugin_test.cpp"
+lines = "1-120"
+why = "Confirm the plugin preset expectations that depend on the build system wiring."
+
+[[task.verify]]
+phase = "compile"
+command = """grep -q 'option(UNDERTOW_BUILD_PLUGIN "Build the JUCE plugin" OFF)' CMakeLists.txt && cmake --preset core"""
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "compile"
+command = "grep -q 'add_library(undertow_core' core/CMakeLists.txt && cmake --build --preset core"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'ctest --preset core' tools/check.sh && ctest --preset core"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'check: OK' tools/check.sh && tools/check.sh"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Implement the parameter table"
+description = "Transcribe the PRD section 4 parameter table into core headers and source, including choice labels, enumerators, and exact string lookup. Assumption: the table order and labels in docs/PRD.md are authoritative and never abbreviated."
+role = "implementer"
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = [
+    "core/include/undertow/params.h",
+    "core/src/params.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `undertow::kNumParams` is 57 and `paramSpec(i)` returns the PRD row data for every index in order.",
+    "AC2: `findParam` returns the matching index for every known id and `-1` for unknown ids.",
+    "AC3: `undertow::param` enumerators match the table indices used by the spec tests.",
+]
+sequence = 1
+goal = "The core library exports the full 57-row parameter table and exact id lookup."
+non_goals = [
+    "Do not add engine behavior or plugin parameters in this task.",
+    "Do not edit tests/spec/p0/params_test.cpp.",
+]
+
+[task.context]
+symbols = [
+    "paramSpec",
+    "findParam",
+]
+anti_patterns = [
+    "Do NOT rename any parameter id or reorder the table.",
+    "Do NOT invent choice labels or units not present in docs/PRD.md.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "260-264"
+why = "Read the exact 57-row parameter table and choice lists to transcribe into code."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/params_test.cpp"
+lines = "1-164"
+why = "Match the spec test's expected table shape, ids, and choice labels exactly."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'constexpr int kNumParams = 57' core/include/undertow/params.h && tools/spec.sh 0 params 'P0.01*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'findParam(std::string_view id)' core/include/undertow/params.h && tools/spec.sh 0 params 'P0.02*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Implement the engine skeleton"
+description = "Add the pimpl-backed engine implementation, fixed-size processing, transport-driven beat clock, and atomic meters with no allocations in the realtime API. Assumption: silence is the correct output for this phase, and the engine may chunk blocks larger than the prepared max block size."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/engine.h",
+    "core/src/engine.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: A new `undertow::Engine` reports every parameter at its default, and `setParam` clamps, rounds Int/Choice values, maps Bool to 0/1, and ignores out-of-range indices.",
+    "AC2: `process` writes finite samples for every requested frame of both channels, writes nothing past `numSamples`, and accepts blocks from 0 to 1536 samples with MIDI input.",
+    "AC3: `process`, `setParam`, `getParam`, `meters`, and `reset` do not allocate heap memory across 1000 blocks.",
+    "AC4: The beat clock follows host transport when valid, stays at host ppq when stopped, and advances from zero at `seq_bpm` without a host transport.",
+]
+sequence = 2
+goal = "The core engine stores defaults, clamps and rounds parameters, processes silent blocks in chunks, and maintains the beat clock and meters."
+non_goals = [
+    "Do not add voice, rumble, sequencer, or plugin code here.",
+    "Do not change the parameter table.",
+]
+
+[task.context]
+symbols = [
+    "Engine",
+    "Meters",
+    "Transport",
+]
+anti_patterns = [
+    "Do NOT allocate in process, setParam, getParam, meters, or reset.",
+    "Do NOT include JUCE in any core header.",
+    "Do NOT expose the implementation details outside the pimpl.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "180-260"
+why = "Capture the required engine API, beat-clock rules, and realtime constraints."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/engine_test.cpp"
+lines = "1-186"
+why = "Match the engine behavior, allocation, and beat-clock expectations exactly."
+
+[[task.context.read_files]]
+path = "core/include/undertow/params.h"
+lines = "1-120"
+why = "Use the finalized parameter metadata and indices when implementing setParam and the clock."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'class Engine' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.03*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = '''grep -q 'process(float\* left, float\* right, int numSamples' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.04*''''
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'meters() const' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.05*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'Transport' core/include/undertow/engine.h && tools/spec.sh 0 engine 'P0.06*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Implement the plugin skeleton"
+description = "Add the plugin target, processor, and editor skeleton so the plugin preset builds VST3, AU, and Standalone bundles with the required metadata, parameters, state save/restore, and placeholder UI. Assumption: the processor stays a thin wrapper around `undertow::Engine`, and the editor is only the phase-0 placeholder."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/CMakeLists.txt",
+    "plugin/PluginProcessor.h",
+    "plugin/PluginProcessor.cpp",
+    "plugin/PluginEditor.h",
+    "plugin/PluginEditor.cpp",
+]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `createPluginFilter` returns an `UndertowProcessor` named `Metakosmia Undertow` with MIDI input, no MIDI output, no input bus, and one stereo output bus.",
+    "AC2: The plugin exposes all 57 parameters in the same order and with the same ids, names, ranges, defaults, skew centres, and choice labels as the core table.",
+    "AC3: `getStateInformation` followed by `setStateInformation` restores every parameter value on a new processor instance.",
+    "AC4: `processBlock` is finite, never allocates, copies host parameter values into the engine, and produces silent output in this phase.",
+    "AC5: The editor is an `UndertowEditor`, fixed at 1200 x 760, not resizable, with a dark void background and no pure white.",
+    "AC6: The plugin builds VST3, AU, and Standalone bundles with bundle id `audio.metakosmia.undertow`, AU type `aumu`, subtype `MkUt`, and manufacturer `Mtks`.",
+]
+sequence = 3
+goal = "The JUCE plugin exposes the core parameters, routes audio and MIDI through the engine, and presents the placeholder editor."
+non_goals = [
+    "Do not add real DSP, sequencer logic, or the final editor UI here.",
+    "Do not modify tests/spec/ or the pluginval script.",
+]
+
+[task.context]
+symbols = [
+    "UndertowProcessor",
+    "UndertowEditor",
+    "createPluginFilter",
+]
+anti_patterns = [
+    "Do NOT create input buses or MIDI output.",
+    "Do NOT grow the MIDI event buffer in processBlock.",
+    "Do NOT change the core library to depend on JUCE.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/PRD.md"
+lines = "140-260"
+why = "Capture the exact JUCE plugin target, parameter wiring, state, and editor requirements."
+
+[[task.context.read_files]]
+path = "tests/spec/p0/plugin_test.cpp"
+lines = "1-253"
+why = "Match the plugin metadata, APVTS setup, state restore, processing, editor, and bundle checks."
+
+[[task.context.read_files]]
+path = "tests/spec/CMakeLists.txt"
+lines = "1-91"
+why = "Ensure the plugin target is visible to the harness and that the bundle paths are defined as expected."
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'juce_add_plugin(Undertow' plugin/CMakeLists.txt && tools/spec.sh 0 plugin 'P0.08*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'AudioProcessorValueTreeState' plugin/PluginProcessor.h && tools/spec.sh 0 plugin 'P0.09*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'copyXmlToBinary' plugin/PluginProcessor.cpp && tools/spec.sh 0 plugin 'P0.10*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'ScopedNoDenormals' plugin/PluginProcessor.cpp && tools/spec.sh 0 plugin 'P0.11*'"
+timeout_ms = 900000
+covers = ["AC4"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'setResizable(false, false)' plugin/PluginEditor.cpp && tools/spec.sh 0 plugin 'P0.12*'"
+timeout_ms = 900000
+covers = ["AC5"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'audio.metakosmia.undertow' plugin/CMakeLists.txt && tools/spec.sh 0 plugin 'P0.13*'"
+timeout_ms = 900000
+covers = ["AC6"]
+expect = "fail_on_base"

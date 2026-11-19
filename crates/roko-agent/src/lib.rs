@@ -95,6 +95,7 @@ pub mod observer;
 pub mod ollama;
 pub mod openai_agent;
 pub mod openai_compat_backend;
+mod openai_responses;
 pub mod openclaw;
 pub mod parity_matrix;
 pub mod perplexity;
@@ -148,8 +149,8 @@ pub use immune_boundary::{
     detect_provider_output_anomaly, quarantine_store_path,
 };
 pub use immune_evidence::{
-    AgentControlEntry, ReleasedControl, agent_control_releases_path, isolate_agent,
-    list_agent_controls, release_agent_control,
+    AgentControlEntry, PrincipalSource, ReleaseChannel, ReleaseOrigin, ReleasedControl,
+    agent_control_releases_path, isolate_agent, list_agent_controls, release_agent_control,
 };
 pub use introspection::{AgentIdentity, Intervention, MetacognitiveMonitor, Turn};
 pub use lifecycle::*;
@@ -205,8 +206,9 @@ pub use token_estimator::{
     estimate_tokens,
 };
 pub use tool_immune::{
-    ToolBoundaryEffect, ToolBoundaryRecord, ToolControl, ToolControlState,
-    detect_tool_result_anomaly, quarantine_vault_path, tool_controls_path,
+    ReleasedToolControl, ToolBoundaryEffect, ToolBoundaryRecord, ToolControl, ToolControlState,
+    detect_tool_result_anomaly, list_tool_controls, quarantine_vault_path, release_tool_control,
+    tool_control_releases_path, tool_controls_path,
 };
 pub use tool_loop::{
     OnTurnCallback, StreamEvent, StreamEventKind, ToolLoopAgent, TurnConfig, TurnProgress,

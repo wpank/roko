@@ -353,8 +353,11 @@ impl GraphTaskDispatcher {
         if criteria.is_empty() {
             return Verdict::skip(&label, "no rubric or acceptance criteria to judge against");
         }
-        let chosen = super::routing_context::select_judge_model_key(&self.config, judged.executor);
+        let chosen = self.judge_model_key(judged.executor);
         let Some((model_key, cross_family)) = chosen else {
+            // A try the plan's budget stopped is not judged, and its verdict
+            // says so (bug-b364d9).
+            HelperCalls::skip_model_check(&label);
             return Verdict::skip(&label, "no helper model can judge");
         };
         let diff = match self

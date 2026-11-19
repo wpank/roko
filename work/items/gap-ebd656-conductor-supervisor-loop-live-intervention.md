@@ -10,12 +10,12 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
-updated = 2026-10-15
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/archive/178-conductor-supervisor-loop.md#178 — Conductor Supervisor Loop (Live Intervention)"
 discovered_from = "audit:tmp/backlog/archive/178-conductor-supervisor-loop.md#178 — Conductor Supervisor Loop (Live Intervention)"
-anchors = ["crates/roko-core/src/conductor.rs::ConductorDecision", "crates/roko-conductor/src/interventions.rs::WorstSeverityPolicy", "crates/roko-conductor/src/conductor.rs::Conductor::record_intervention_outcome", "crates/roko-cli/src/graph_execution/feedback.rs::ConductorSink", "crates/roko-cli/src/graph_execution/control_adapter.rs", "crates/roko-cli/src/tui/widgets/conductor_panel.rs::build_conductor_snapshot", "crates/roko-core/src/config/schema.rs::ConductorConfig"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/supervision.rs::publish_advice", "crates/roko-cli/src/graph_task_dispatch/supervision.rs::GraphConductor::tick", "crates/roko-core/src/conductor.rs::ConductorDecision", "crates/roko-conductor/src/interventions.rs::WorstSeverityPolicy", "crates/roko-conductor/src/conductor.rs::Conductor::record_intervention_outcome", "crates/roko-cli/src/graph_execution/control_adapter.rs", "crates/roko-cli/src/tui/widgets/conductor_panel.rs::build_conductor_snapshot", "crates/roko-core/src/config/schema.rs::ConductorConfig"]
 links = { depends_on = ["spec-a0403b"], blocks = [], related = ["gap-fab31c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -201,3 +201,5 @@ Verified 2026-09-28: still true, worse than recorded - the Runner-v2 supervision
 - 2026-10-01 (coordinator): assigned by mistake while this item was on hold (dec-e70592). wk-scheduler built step 1 (the Nudge, Restart, ForceAdvance ladder in roko-conductor, `escalation.rs`, 12 tests; `[conductor] compile_fail_threshold` now read) on `work/gap-ebd656` at 5d2c600d2 (code a12c004a3), not merged. The hold stays; revive from that branch if Will lifts it.
 
 2026-10-15 (status-quo finding 21, tmp/status-quo/2026-10-15/NEW-FINDINGS.md): re-checked at b42578bab — the supervisor's Nudge and ForceAdvance are still not carried out (crates/roko-cli/src/graph_task_dispatch/supervision.rs:21, :553), and the 'two plan failures call a person' breaker is unfed (crates/roko-conductor/src/circuit_breaker.rs:214, test callers only). Split/replan (ReplanController has no caller) is filed separately as gap-de1e18, p3; the breaker is in gap-de1e18's plan. This item stays held (decision 12 keeps the conductor tick held).
+
+Checked 2026-10-27: 2026-10-26 sweep: anchor crates/roko-cli/src/graph_execution/feedback.rs::ConductorSink is gone (file moved/removed under spec-a0403b); the equivalent live code is crates/roko-cli/src/graph_task_dispatch/supervision.rs (GraphConductor::tick, publish_advice). Problem unchanged: Nudge/ForceAdvance remain advisory-only. Item stays on hold per decision 12.

@@ -1,0 +1,508 @@
+[meta]
+plan = "p4-undertow-phosphor-editor"
+title = "P4 · Undertow phosphor editor"
+iteration = 0
+total = 7
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Add scope, clock, and pattern-state plumbing"
+description = "Implement the phase 4 plumbing in the engine and processor. Add `kScopeSamples`, `Meters::hostClock`, `Meters::bpm`, and `Engine::copyScope(float*, int) const` backed by a lock-free mono scope ring that stores the latest output samples oldest-first with no allocation on the audio thread. Update the processor to expose `setPattern` and `pattern`, save and restore all 16 pattern steps in plugin state alongside parameters, keep old states without pattern data on the default pattern, preserve edited or restored patterns through `prepare` and `reset`, and add `plugin/ui/*.cpp` to the plugin target with the requested CMake glob. Assumption: the state format extends the existing XML state tree with a child or properties for the 16-step pattern while remaining backward-compatible with states that omit it."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "core/include/undertow/engine.h",
+    "core/src/engine.cpp",
+    "plugin/PluginProcessor.h",
+    "plugin/PluginProcessor.cpp",
+    "plugin/CMakeLists.txt",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 scope` passes, proving `copyScope` returns the latest mono output samples in order, clamps to `kScopeSamples`, allocates nowhere on the audio path, and `meters()` reports the clock source and tempo in use.",
+    "AC2: `tools/spec.sh 4 state` passes, proving processor pattern handoff, pattern save and restore, and pattern persistence through engine `prepare` and `reset`.",
+    "AC3: SC1: P4.01 | `tools/spec.sh 4 scope` | copyScope returns the latest mono output samples in order across odd blocks, clamps to kScopeSamples, never allocates; meters() names the clock in use and its tempo",
+    "AC4: SC2: P4.02 | `tools/spec.sh 4 state` | The processor passes patterns to the engine, the 16 steps are saved with the plugin's state and restored, and the engine keeps its pattern through prepare and reset (a host restores the state before prepareToPlay)",
+]
+sequence = 0
+goal = "The engine exposes lock-free scope samples and clock fields, and the processor persists patterns without losing them across prepare or reset."
+non_goals = [
+    "Do not edit tests, docs, third_party, or tools.",
+    "Do not change parameter definitions beyond what state save and restore needs.",
+]
+
+[task.context]
+symbols = [
+    "Engine::copyScope — new lock-free scope reader",
+    "Meters — add hostClock and bpm",
+    "UndertowProcessor::getStateInformation — extend saved state with pattern data",
+]
+anti_patterns = [
+    "Do NOT reset the sequencer pattern to default inside prepare or reset after a host has restored or edited it.",
+    "Do NOT add locks, allocations, I/O, or logging to code the audio thread calls.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "1-223"
+why = "Owns the phase 4 plumbing rules, API additions, and exact ownership for this task."
+
+[[task.context.read_files]]
+path = "core/include/undertow/engine.h"
+lines = "1-56"
+why = "Shows current engine and meters declarations to extend with scope and clock fields."
+
+[[task.context.read_files]]
+path = "plugin/PluginProcessor.cpp"
+lines = "1-117"
+why = "Shows current transport handling, state save and restore, and where processor pattern APIs belong."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 scope"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC3",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 state"
+timeout_ms = 900000
+covers = [
+    "AC2",
+    "AC4",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T2"
+title = "Build the editor frame, capture pipeline, and widget stubs"
+description = "Create the editor frame foundation from the phase 4 API. Add `plugin/ui/UiFrame.h` with `UiFrame` and `StepEdit`, add `plugin/ui/Theme.h` with the ROSEDUST colour tokens, fonts, and fixed layout rectangles, and expand `plugin/PluginEditor.h` and `.cpp` to a fixed-size non-resizable editor that owns `Look`, `Displays`, `Status`, and `UnitArray`, captures processor state, freezes and advances deterministically, and delegates step bounds, hit-testing, and pattern edits through the unit array. Write the four widget headers as the exact public stubs the spec gives so all phase 4 test files compile after this task. Assumption: `energy` uses the requested RMS-to-dB mapping with clamping to 0..1 and treats silence or non-positive RMS as 0."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "plugin/ui/UiFrame.h",
+    "plugin/ui/Theme.h",
+    "plugin/PluginEditor.h",
+    "plugin/PluginEditor.cpp",
+    "plugin/ui/Look.h",
+    "plugin/ui/UnitArray.h",
+    "plugin/ui/Displays.h",
+    "plugin/ui/Status.h",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 editor 'P4.03*'` passes, proving `captureFrame`, freeze-and-advance behavior, and editor hooks read meters, pitch, RMS, energy, step, clock, length, and scope as specified.",
+    "AC2: SC3: P4.03 | `tools/spec.sh 4 editor 'P4.03*'` | captureFrame reads the processor: meters, pitch, RMS, energy, step, clock, length and scope",
+]
+sequence = 1
+goal = "The plugin editor exposes the full phase 4 API, captures frames from the processor, and compiles with stub widget headers that later tasks replace."
+non_goals = [
+    "Do not create parameter controls yet.",
+    "Do not implement final Look, Displays, Status, or UnitArray rendering logic beyond the required stubs and wiring.",
+]
+
+[task.context]
+symbols = [
+    "UndertowEditor::captureFrame — processor snapshot hook",
+    "UiFrame — time-varying editor state",
+    "freeze — stop timer so only advance changes the picture",
+]
+anti_patterns = [
+    "Do NOT make any drawing depend on wall time once the editor is frozen; only advanced frames and the current pattern may affect output.",
+    "Do NOT omit the stub widget headers: phase 4 tests must compile from this task onward.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "1-223"
+why = "Defines the editor frame API, widget stubs, capture contract, and task ownership."
+
+[[task.context.read_files]]
+path = "plugin/PluginEditor.h"
+lines = "1-12"
+why = "Shows the current minimal editor class that this task expands to the full API."
+
+[[task.context.read_files]]
+path = "tests/spec/support/spec_ui.h"
+lines = "1-119"
+why = "Shows how tests construct `UiFrame`, freeze the editor, call `advance`, and snapshot the component."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 editor 'P4.03*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T3"
+title = "Add and attach all parameter controls"
+description = "Extend the theme and editor to add the control panel table and instantiate every parameter control. Add the panel metadata and control cell layout to `Theme.h`, create one rotary `juce::Slider` per parameter except `seq_on`, create `seq_on` as a `juce::ToggleButton`, attach them with APVTS slider or button attachments, lay them out in the fixed panel rectangles, and make `controlFor(id)` return the matching component after construction. Assumption: control ownership lives in the editor via stable containers whose lifetime matches the attachments and editor lifetime."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/ui/Theme.h",
+    "plugin/PluginEditor.h",
+    "plugin/PluginEditor.cpp",
+]
+depends_on = ["T2"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 editor 'P4.04*'` passes, proving every parameter has a control on the editor and each control is attached to the parameter it represents.",
+    "AC2: SC4: P4.04 | `tools/spec.sh 4 editor 'P4.04*'` | Every parameter has its control on the editor, attached to it",
+]
+sequence = 2
+goal = "The editor owns one attached control per parameter and `controlFor` returns each control by parameter id."
+non_goals = [
+    "Do not implement the custom LookAndFeel rendering in this task.",
+    "Do not change phase 4 capture logic except what is needed to host controls.",
+]
+
+[task.context]
+symbols = [
+    "UndertowEditor::controlFor — lookup by parameter id",
+    "Theme — add panel table and control grid",
+    "AudioProcessorValueTreeState::SliderAttachment — attach sliders",
+]
+anti_patterns = [
+    "Do NOT hardcode a partial control list; every parameter in the processor must have exactly one editor control.",
+    "Do NOT return placeholder components from controlFor once controls exist.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "63-179"
+why = "Defines control ownership, fixed layout zones, and the requirement for one attached control per parameter."
+
+[[task.context.read_files]]
+path = "plugin/PluginEditor.cpp"
+lines = "1-260"
+why = "Shows the editor frame implementation this task extends with real controls and attachments."
+
+[[task.context.read_files]]
+path = "plugin/PluginProcessor.cpp"
+lines = "1-117"
+why = "Shows APVTS parameter creation and ids that controls must attach to."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 editor 'P4.04*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T4"
+title = "Implement the editable unit array"
+description = "Replace the `UnitArray` stub header with the real class and add `plugin/ui/UnitArray.cpp`. Implement 16 fixed cells across the GUT, editor-coordinate `stepBounds` and `stepAt`, phosphor-like current-step highlighting with a 250 ms fade, dimming past `seq_length`, dashed rests, accent, slide, and probability indicators, and interactive editing. Mouse click toggles gate, shift-click toggles accent, alt-click toggles slide, and vertical drag changes semitones at one semitone per 8 px, forwarding edits through `onEdit`. Implement `edited(pattern, index, edit)` as the pure pattern transformer the editor uses. Assumption: note edits clamp to the pattern step semitone range already used by the sequencer model instead of wrapping."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/ui/UnitArray.h",
+    "plugin/ui/UnitArray.cpp",
+]
+depends_on = ["T2"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 steps` passes, proving 16 left-to-right cells, hit-testing, playing-step brightness, and gate, accent, slide, and note edits reaching the processor pattern.",
+    "AC2: SC10: P4.10 | `tools/spec.sh 4 steps` | 16 cells left to right in the GUT, hit-testing, the playing step the brightest cell, and gate, accent, slide and note edits reaching the pattern",
+]
+sequence = 3
+goal = "The GUT unit array draws and edits all 16 sequencer steps with correct bounds, hit-testing, highlight, and pattern mutation."
+non_goals = [
+    "Do not modify processor state APIs beyond calling the pattern hooks created earlier.",
+    "Do not implement CHEST or status displays here.",
+]
+
+[task.context]
+symbols = [
+    "UnitArray::edited — pure pattern edit helper",
+    "UnitArray::stepAt — hit-testing contract",
+    "StepEdit — click and drag edit modes",
+]
+anti_patterns = [
+    "Do NOT move step ownership or hit-testing into PluginEditor; UnitArray must own its cell geometry and interaction.",
+    "Do NOT make edits depend on wall time or asynchronous callbacks; onEdit should fire immediately.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "86-179"
+why = "Defines unit array geometry, marks, animation, and editing semantics."
+
+[[task.context.read_files]]
+path = "plugin/ui/UnitArray.h"
+lines = "1-240"
+why = "Contains the stub API that this task must preserve while replacing with the real class."
+
+[[task.context.read_files]]
+path = "plugin/ui/Theme.h"
+lines = "1-240"
+why = "Provides the GUT bounds and tokens the unit array must use."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 steps"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T5"
+title = "Implement the ROSEDUST look and cached static layer"
+description = "Replace the `Look` stub with a real implementation in `plugin/ui/Look.h` and `.cpp`. Implement a ROSEDUST `LookAndFeel_V4` for rotary knobs and the sequencer toggle, set the JUCE colours for toggle text, ticks, and tooltips to non-white spec tokens, and install or uninstall the look on the editor and its controls. Paint the static layer once per physical display scale into a cached image, including void background, panel interiors, hairlines, stamps, labels, crosshair grid, scanlines, seeded noise floor, and knob track backgrounds, then blit it 1:1 during editor paint. Assumption: the cached static layer is invalidated when the physical pixel scale changes or editor bounds are recreated."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/ui/Look.h",
+    "plugin/ui/Look.cpp",
+]
+depends_on = ["T3"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 display 'P4.05*'` passes, proving the panel stays mostly void, contains no white, is rose-dominant, keeps bone rare, and leaves the CHEST calm at rest.",
+    "AC2: SC5: P4.05 | `tools/spec.sh 4 display 'P4.05*'` | The panel is at least half void, without white, rose dominant (its knob panels too), bone rare, and its CHEST calm at rest",
+]
+sequence = 4
+goal = "The editor installs a custom ROSEDUST LookAndFeel and paints the static layer so the panel has the required palette, void ratio, and calm idle CHEST."
+non_goals = [
+    "Do not implement dynamic CHEST animation here.",
+    "Do not add per-frame full-resolution effects to the static layer.",
+]
+
+[task.context]
+symbols = [
+    "Look::paint — static layer entry point",
+    "Look::install — editor and controls take the ROSEDUST look",
+    "g.getInternalContext().getPhysicalPixelScaleFactor — cache per display scale",
+]
+anti_patterns = [
+    "Do NOT draw white or near-white pixels for text, ticks, or tooltips; map them to spec tokens.",
+    "Do NOT redraw the static full-resolution layer from scratch on every frame.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "97-179"
+why = "Defines the LookAndFeel behavior, static layer contents, and colour restrictions checked by the display test."
+
+[[task.context.read_files]]
+path = "plugin/ui/Look.h"
+lines = "1-240"
+why = "Contains the stub public API this task must preserve when replacing with the real class."
+
+[[task.context.read_files]]
+path = "plugin/ui/Theme.h"
+lines = "1-240"
+why = "Provides colour tokens, fonts, and panel rectangles that the look must render."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.05*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T6"
+title = "Render the CHEST tunnel, scope, AT field, and bone number"
+description = "Replace the `Displays` stub header with the real class and add `plugin/ui/Displays.cpp`. Implement time-stepped CHEST animation state driven only by `advance(frame, seconds)`, including quarter-resolution tunnel rendering from precomputed tables, scope triggering and phosphor history, resonance-sensitive AT field lines, and the bone pitch readout with play and idle fades. Paint only the CHEST content in the correct bounds and colours from the theme. Assumption: the tunnel's lookup tables are built once during display construction or first use and then reused so per-frame work stays within the budget."
+role = "implementer"
+status = "ready"
+tier = "architectural"
+max_loc = 300
+files = [
+    "plugin/ui/Displays.h",
+    "plugin/ui/Displays.cpp",
+]
+depends_on = ["T2"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'` passes, proving the pitch appears in bone only while a note plays, the tunnel brightens and moves with energy, and the scope trace spans the waveform across its width.",
+    "AC2: SC6: P4.06 | `tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'` | The pitch in bone while a note plays, in one place in the CHEST, and no bone when idle",
+    "AC3: SC8: P4.08 | `tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'` | The tunnel is brighter with energy, and moving",
+    "AC4: SC9: P4.09 | `tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'` | The scope draws the waveform across its width",
+]
+sequence = 5
+goal = "The CHEST display animates the tunnel, scope, AT field, and pitch readout so note, energy, and waveform appear in the required place and style."
+non_goals = [
+    "Do not implement HEAD clock, meter, pump field, or hazard stripes here.",
+    "Do not add full-resolution per-pixel trigonometry each frame.",
+]
+
+[task.context]
+symbols = [
+    "Displays::advance — deterministic animation state update",
+    "Displays::paint — CHEST content renderer",
+    "UiFrame::scope — latest mono output samples to plot",
+]
+anti_patterns = [
+    "Do NOT read wall time or processor state directly in Displays; only the frames advanced into it may drive motion.",
+    "Do NOT render the tunnel at full CHEST resolution every frame; keep it at quarter resolution from precomputed tables.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "105-179"
+why = "Defines the tunnel, scope, AT field, bone number, and their motion rules and budget constraints."
+
+[[task.context.read_files]]
+path = "plugin/ui/Displays.h"
+lines = "1-240"
+why = "Contains the stub API that this task replaces while keeping the public methods."
+
+[[task.context.read_files]]
+path = "tests/spec/support/spec_ui.h"
+lines = "1-119"
+why = "Shows the fixed playing, idle, and clipping frames and the colour statistics the display tests measure."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+    "AC4",
+]
+expect = "fail_on_base"
+
+[[task]]
+id = "T7"
+title = "Implement status displays, clipping hazards, and commit review images"
+description = "Replace the `Status` stub header with the real class and add `plugin/ui/Status.cpp`. Implement the HEAD clock and output meter, the rumble pump field driven by rumble level and PPQ, and hazard stripes that appear only while clipping, including the clip plate and border flash timing. Ensure the editor repaints only dynamic regions on ticks, and finish the phase by committing the three 1x review images under `artifacts/ui/` that `tools/spec.sh 4 budget` writes. Assumption: the budget command is run after these status and repaint optimizations land, and the committed PNGs are the exact 1x artifacts the command emits while leaving 2x previews uncommitted in `build/previews/`."
+role = "implementer"
+status = "ready"
+tier = "integrative"
+max_loc = 150
+files = [
+    "plugin/ui/Status.h",
+    "plugin/ui/Status.cpp",
+    "artifacts/ui/editor-idle.png",
+    "artifacts/ui/editor-playing.png",
+    "artifacts/ui/editor-clipping.png",
+]
+depends_on = [
+    "T3",
+    "T4",
+    "T5",
+    "T6",
+]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: `tools/spec.sh 4 display 'P4.07*'` passes, proving hazard stripes render while clipping and disappear when clipping clears.",
+    "AC2: `tools/spec.sh 4 budget` passes, proving the repaint budget stays within limits and the required 1x and 2x preview images are written to the expected paths.",
+    "AC3: SC7: P4.07 | `tools/spec.sh 4 display 'P4.07*'` | The hazard stripes show while the output clips, and only then",
+    "AC4: SC11: P4.11-P4.12 | `tools/spec.sh 4 budget` | A full repaint keeps 60 Hz with headroom (CPU time: median 11 ms, 95th percentile 16 ms at 1x; median 27 ms at 2x), and the three review images written: artifacts/ui at 1x under 2 MB, build/previews at 2x",
+]
+sequence = 6
+goal = "The editor renders the HEAD and rumble status displays, shows hazard stripes only while clipping, and produces the committed review images within the frame budget."
+non_goals = [
+    "Do not alter earlier CHEST or control semantics except where region-limited repainting needs editor integration.",
+    "Do not commit the 2x preview files under build/previews.",
+]
+
+[task.context]
+symbols = [
+    "Status::paint — HEAD clock, meter, and pump field",
+    "Status::paintOver — hazard bands over controls",
+    "tools/spec.sh 4 budget — writes the review images and checks frame cost",
+]
+anti_patterns = [
+    "Do NOT repaint the whole editor on every timer tick when only dynamic regions changed.",
+    "Do NOT leave the review PNGs untracked or generate different filenames than the spec requires.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4-ui.md"
+lines = "129-223"
+why = "Defines the status widgets, hazard stripes, repaint budget, and review image requirements."
+
+[[task.context.read_files]]
+path = "plugin/ui/Status.h"
+lines = "1-240"
+why = "Contains the stub public API that this task must preserve while replacing with the real implementation."
+
+[[task.context.read_files]]
+path = "tests/spec/support/spec_ui.h"
+lines = "1-119"
+why = "Shows the clipping and playing frames and the image statistics used by budget and clipping checks."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.07*'"
+timeout_ms = 900000
+covers = [
+    "AC1",
+    "AC3",
+]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 budget"
+timeout_ms = 900000
+covers = [
+    "AC2",
+    "AC4",
+]
+expect = "fail_on_base"

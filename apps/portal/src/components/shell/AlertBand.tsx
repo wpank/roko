@@ -1,20 +1,23 @@
 import type { Alert, AlertAction } from '@/lib/alerts';
+import { Key } from '@/components/kit/Key';
+import { Led } from '@/components/kit/Led';
+import type { Signal } from '@/components/kit/Led';
 
-// Label map for each action kind.
+/** The words on each action's key. `retry` resumes the run: only what is left runs. */
 const ACTION_LABELS: Record<AlertAction['kind'], string> = {
-  'select-task': 'Show',
-  retry: 'Retry',
-  reconnect: 'Reconnect',
+  'select-task': 'show',
+  retry: 'resume',
+  reconnect: 'reconnect',
 };
 
-// Glyph for each severity level.
-// ✗ and × are intentionally absent — they look like the dismiss button.
-const SEVERITY_GLYPHS: Record<Alert['severity'], string> = {
-  error: '!',
-  warning: '⚠',
-  info: 'ⓘ',
+/** A failure is red, a warning orange (it is yours to act on), a notice a plain grey light. */
+const SIGNALS: Record<Alert['severity'], Signal> = {
+  error: 'fail',
+  warning: 'you',
+  info: 'still',
 };
 
+/** One sentence under the top bar, at most one at a time, with its keys. Nothing when there is no alert. */
 export function AlertBand({
   alert,
   onAction,
@@ -24,43 +27,22 @@ export function AlertBand({
   onAction(action: AlertAction): void;
   onDismiss(key: string): void;
 }) {
-  // Render nothing when there is no active alert — keeps the row height at zero.
   if (alert === null) return null;
 
   return (
-    <div
-      data-region="alert"
-      data-severity={alert.severity}
-      role="status"
-      className="rd-alert"
-    >
-      <span className="rd-alert__glyph" aria-hidden="true">
-        {SEVERITY_GLYPHS[alert.severity]}
-      </span>
-
-      <span className="rd-alert__text" title={alert.text}>
+    <div data-region="alert" data-severity={alert.severity} role="status" className="pt-notice">
+      <Led signal={SIGNALS[alert.severity]} label={alert.severity} />
+      <span className="pt-notice-text" title={alert.text}>
         {alert.text}
       </span>
-
       {alert.actions.map((action, i) => (
-        <button
-          key={i}
-          type="button"
-          className="rd-alert__action"
-          onClick={() => onAction(action)}
-        >
+        <Key key={i} size="s" data-alert-action={action.kind} onClick={() => onAction(action)}>
           {ACTION_LABELS[action.kind]}
-        </button>
+        </Key>
       ))}
-
-      <button
-        type="button"
-        className="rd-alert__dismiss"
-        aria-label="Dismiss alert"
-        onClick={() => onDismiss(alert.key)}
-      >
-        ×
-      </button>
+      <Key size="s" aria-label="Dismiss this notice" onClick={() => onDismiss(alert.key)}>
+        close
+      </Key>
     </div>
   );
 }

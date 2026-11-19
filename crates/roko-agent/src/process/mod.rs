@@ -17,6 +17,8 @@
 //!   child processes, and the provider-credential scrub for provider CLIs.
 //! - **Stderr suppression** ([`stderr`]): classify and deduplicate benign
 //!   agent stderr noise.
+//! - **Prompt delivery** ([`stdin`]): write a prompt to an agent's stdin, where
+//!   an agent that stopped reading it is no failure in itself.
 //!
 //! # Platform support
 //!
@@ -32,14 +34,15 @@ pub mod limits;
 pub mod mcp;
 pub mod registry;
 pub mod stderr;
+pub mod stdin;
 
 // Re-export the primary public API surface for convenience.
 pub use env::{
     AgentEnv, apply_agent_env, apply_credential_scrub, config_file_env_names, referenced_env_names,
 };
 pub use group::{
-    collect_descendants, configure_no_descendant_process, kill_process_group, set_process_group,
-    validate_no_descendant_context,
+    collect_descendants, configure_no_descendant_process, detach_into_new_session,
+    kill_process_group, set_process_group, validate_no_descendant_context,
 };
 pub use identity::{ProcessIdentity, process_identity};
 pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, kill_tree};
@@ -51,3 +54,4 @@ pub use registry::{
     registered_pids_in_scope, set_registry_root, unregister_pid,
 };
 pub use stderr::{BenignStderr, benign_stderr_warn_once, classify_benign_stderr};
+pub use stdin::write_prompt;

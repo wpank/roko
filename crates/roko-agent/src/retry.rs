@@ -28,6 +28,9 @@ pub enum ErrorClass {
     ContextOverflow,
     /// Model or deployment slug does not exist.
     ModelNotFound,
+    /// The provider refused the request as it stands, with an HTTP 4xx that
+    /// names no bad key and no unknown model (bug-35b190).
+    RequestRefused,
     /// Fallback when the exact failure type is not otherwise classified.
     Unknown,
 }
@@ -44,6 +47,16 @@ impl From<&ProviderError> for ErrorClass {
             ProviderError::ContentPolicy => Self::ContentPolicy,
             ProviderError::ContextOverflow => Self::ContextOverflow,
             ProviderError::ModelNotFound => Self::ModelNotFound,
+            ProviderError::RequestRefused {
+                status, message, ..
+            } => {
+                let lower = message.to_ascii_lowercase();
+                match crate::provider::error_classify::refusal_class(*status, &lower) {
+                    "auth_failure" => Self::AuthFailure,
+                    "model_not_found" => Self::ModelNotFound,
+                    _ => Self::RequestRefused,
+                }
+            }
             ProviderError::Other(_) => Self::Unknown,
         }
     }
@@ -61,6 +74,7 @@ impl std::fmt::Display for ErrorClass {
             Self::ContentPolicy => f.write_str("content_policy"),
             Self::ContextOverflow => f.write_str("context_overflow"),
             Self::ModelNotFound => f.write_str("model_not_found"),
+            Self::RequestRefused => f.write_str("request_refused"),
             Self::Unknown => f.write_str("unknown"),
         }
     }
@@ -167,6 +181,8 @@ impl RetryPolicy {
             ProviderError::Timeout => true,
             ProviderError::ServerError(_) => true,
             ProviderError::ContextOverflow => false,
+            // The same request gets the same answer (bug-35b190).
+            ProviderError::RequestRefused { .. } => false,
             _ => attempt < 2,
         }
     }

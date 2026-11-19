@@ -703,6 +703,7 @@ mod tests {
             would_choose: Some(candidate.arm.clone()),
             default: Some("roko/zai/glm-4.7/default/V0".to_string()),
             action: "dispatch".to_string(),
+            start_rules: None,
         };
         let identity = AttemptIdentity::new(&key("T2", 1));
         let record = AttemptPredictionRecord::new(identity, predictor, vec![candidate], decision)

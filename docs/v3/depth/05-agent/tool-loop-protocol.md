@@ -205,6 +205,23 @@ The strategy is conservative: the model always has its original instructions
 and the most recent context. Aggressive pruning does not lose data permanently
 because checkpoints save full state.
 
+### Tool-result compaction
+
+With a model profile, the loop compacts before it drops anything. Once the
+estimated prompt passes the model's trigger, each tool result outside the
+newest two groups that is over 500 characters becomes a 200-character preview
+with its total length, and keeps its `tool_call_id`
+(`tool_loop/compaction.rs`). Whole messages are dropped only past 80% of
+`context_window`.
+
+The trigger is the model's `[models.<key>] compact_at_tokens`, else 80% of its
+`context_window`, and never later than that. A try re-sends its whole history
+every turn, and a provider bills the re-sent part as cached input, so on a long
+try with an expensive model a lower trigger saves more than it costs: one
+prompt-cache break per compaction, and a file the agent may read again
+(gap-b46c16). Set it well above the task's first prompt, or every turn
+compacts.
+
 ---
 
 ## 9. The 7-Step ToolDispatcher Pipeline

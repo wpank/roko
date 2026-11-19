@@ -33,6 +33,12 @@ const FAST_MAX_DECLARED_CONTEXT_BYTES: usize = 24 * 1024;
 const FAST_MAX_SERIAL_OWNERS_PER_FILE: usize = 2;
 const ANCHOR_CONTEXT_RADIUS: usize = 8;
 
+/// Extensions of the source files a CMake target lists (bug-daa54e).
+pub(crate) const CMAKE_SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "m", "mm"];
+
+/// File extensions of C and C++ headers.
+pub(crate) const C_HEADERS: &[&str] = &["h", "hh", "hpp", "hxx"];
+
 /// Binding default-template task ceiling for plan generation and regeneration
 /// (the `default` plan template).
 pub const DEFAULT_GENERATED_TASK_LIMIT: usize = 8;
@@ -57,6 +63,12 @@ pub struct PlanExecutionPolicy {
     pub require_one_verify: bool,
     pub reject_duplicate_verify: bool,
     pub bounded_context_only: bool,
+    /// Whether a task may read as many files as it owns when it owns more
+    /// than `max_read_files_per_task`: a generated plan outside the FAST lane
+    /// (bug-417c4a). Round v7's phase-4.2 T1 owned 6 files and could read 3,
+    /// its spec among them, so each draft anchored a symbol in a file it did
+    /// not read.
+    pub reads_cover_owned_files: bool,
 }
 
 impl PlanExecutionPolicy {
@@ -78,6 +90,7 @@ impl PlanExecutionPolicy {
             require_one_verify: false,
             reject_duplicate_verify: false,
             bounded_context_only: false,
+            reads_cover_owned_files: false,
         }
     }
 
@@ -100,6 +113,7 @@ impl PlanExecutionPolicy {
             require_one_verify: true,
             reject_duplicate_verify: true,
             bounded_context_only: true,
+            reads_cover_owned_files: false,
         }
     }
 
@@ -125,6 +139,7 @@ impl PlanExecutionPolicy {
             require_one_verify: false,
             reject_duplicate_verify: true,
             bounded_context_only: true,
+            reads_cover_owned_files: true,
         }
     }
 
@@ -139,10 +154,23 @@ impl PlanExecutionPolicy {
             Self {
                 max_verify_steps_per_task: FAST_MAX_VERIFY_STEPS,
                 require_one_verify: true,
+                reads_cover_owned_files: false,
                 ..policy
             }
         } else {
             policy
+        }
+    }
+
+    /// The files `task` may read besides the plan's sources: the policy's
+    /// limit, or as many as it owns when it owns more and
+    /// [`Self::reads_cover_owned_files`] (bug-417c4a).
+    #[must_use]
+    pub fn max_read_files_for(&self, task: &TaskDef) -> usize {
+        if self.reads_cover_owned_files {
+            self.max_read_files_per_task.max(task.files.len())
+        } else {
+            self.max_read_files_per_task
         }
     }
 
@@ -208,7 +236,14 @@ impl TierSizeLimits {
     }
 
     /// Each limit `task` exceeds, as `"6 files (limit 3)"`.
-    fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
+    pub(crate) fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
+        self.exceeded_with(task, task.verify.len())
+    }
+
+    /// [`Self::exceeded_by`] with `task` counted at `steps` verify steps: the
+    /// steps it will have once each check of its source has one of its own
+    /// (gap-4cca5f).
+    pub(crate) fn exceeded_with(self, task: &TaskDef, steps: usize) -> Vec<String> {
         let mut over = Vec::new();
         if task.files.len() > self.max_files {
             over.push(format!(
@@ -230,10 +265,9 @@ impl TierSizeLimits {
                 self.max_description_words
             ));
         }
-        if task.verify.len() > self.max_verify_steps {
+        if steps > self.max_verify_steps {
             over.push(format!(
-                "{} verify steps (limit {})",
-                task.verify.len(),
+                "{steps} verify steps (limit {})",
                 self.max_verify_steps
             ));
         }
@@ -408,15 +442,22 @@ pub fn validate_plan_budgets(
             task.files.len(),
             policy.max_files_per_task,
         );
+        // bug-60ad88: the documents the plan is written from, which every
+        // task reads, are no part of a task's own budget; gap-5db3d9: nor
+        // are its checks' tests and its sources' headers.
         check_count(
             &mut issues,
             task,
             "PLAN_BUDGET_READ_FILES",
             "context.read_files",
-            task.context
-                .as_ref()
-                .map_or(0, |context| context.read_files.len()),
-            policy.max_read_files_per_task,
+            task.context.as_ref().map_or(0, |context| {
+                context
+                    .read_files
+                    .iter()
+                    .filter(|read| counts_toward_read_budget(&tasks.meta.sources, task, &read.path))
+                    .count()
+            }),
+            policy.max_read_files_for(task),
         );
         check_count(
             &mut issues,
@@ -534,6 +575,11 @@ pub fn validate_plan_budgets(
             .map(|task| (task.id.as_str(), task.depends_on.as_slice()))
             .collect::<HashMap<_, _>>();
         for (file, owners) in file_owners {
+            // bug-daa54e: a build-registration file is a list that several
+            // tasks each add an entry to, not work to merge into one owner.
+            if roko_graph::exclusion::is_registration_file(&file) {
+                continue;
+            }
             let serial_owners = owners
                 .iter()
                 .filter(|owner| {
@@ -577,9 +623,12 @@ pub fn validate_plan_budgets(
 /// neither depends on the other, declare overlapping `files`.
 ///
 /// Overlap is the Graph engine's own rule (`roko_graph::exclusion`): the same
-/// path, or a directory and a path inside it. The engine runs such tasks one
-/// after the other, so the plan gives up parallelism its author meant to have.
-/// A task without `files` declares nothing and is never flagged.
+/// path, or a directory and a path inside it. In a shared working tree the
+/// engine runs such tasks one after the other, so the plan gives up
+/// parallelism its author meant to have. Two tasks that name the same
+/// build-registration file, each adding its entry, are not flagged
+/// (bug-daa54e). A task without `files` declares nothing and is never
+/// flagged.
 fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
     let dependency_map = tasks
         .tasks
@@ -589,7 +638,10 @@ fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
     let mut issues = Vec::new();
     for (index, first) in tasks.tasks.iter().enumerate() {
         for second in &tasks.tasks[index + 1..] {
-            let overlap = roko_graph::exclusion::first_overlap(&first.files, &second.files);
+            let overlap = roko_graph::exclusion::first_overlap_except_registration(
+                &first.files,
+                &second.files,
+            );
             let Some((first_path, second_path)) = overlap else {
                 continue;
             };
@@ -657,6 +709,115 @@ fn check_count(
             format!("{label} has {count} entries; limit is {limit}"),
         ));
     }
+}
+
+/// Whether `task`'s read of `path` counts toward its read budget
+/// (`PLAN_BUDGET_READ_FILES`). The documents the plan is written from,
+/// `sources`, do not: every task reads them (bug-60ad88). Nor do a test one of
+/// the task's checks runs ([`test_run_by`]) and the header of a source it
+/// changes ([`header_beside`]), which generation declares for it
+/// (gap-5db3d9).
+#[must_use]
+pub(crate) fn counts_toward_read_budget(sources: &[String], task: &TaskDef, path: &str) -> bool {
+    !sources.iter().any(|source| source == path)
+        && !task
+            .verify
+            .iter()
+            .any(|step| test_run_by(&step.command, path))
+        && !header_beside(path, &task.files)
+}
+
+/// The name a test file goes by: its file name up to the first `.`, without
+/// its test affix, as `presets` of `presets_test.cpp`, `lowpass` of
+/// `test_lowpass.py` and `cart` of `cart.test.ts`. `None` for a file not
+/// named as a test.
+#[must_use]
+pub(crate) fn test_affix_stem(path: &str) -> Option<&str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let (stem, extensions) = name.split_once('.')?;
+    let stem = if extensions.starts_with("test.") || extensions.starts_with("spec.") {
+        stem
+    } else {
+        ["_tests", "_test", "_spec"]
+            .iter()
+            .find_map(|affix| stem.strip_suffix(affix))
+            .or_else(|| stem.strip_prefix("test_"))?
+    };
+    (!stem.is_empty()).then_some(stem)
+}
+
+/// Whether the check `command` runs the test file `path` (gap-5db3d9): one
+/// of its commands has for a word the file's path; or, for a file named as a
+/// test, its name without the extension, as a program or a target names it
+/// (`ctest -R presets_test`, `cargo test --test widget_tests`); or its name
+/// without the test affix ([`test_affix_stem`]) and, for another word, one of
+/// the file's directories, or that directory after a prefix of letters. So
+/// `tools/spec.sh 5_2 presets` runs `tests/spec/p5_2/presets_test.cpp`, and
+/// not `tests/spec/p5/presets_test.cpp`, which `tools/spec.sh 5 presets` runs.
+#[must_use]
+pub(crate) fn test_run_by(command: &str, path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let target = name.split('.').next().unwrap_or(name);
+    let stem = test_affix_stem(path);
+    let directories: Vec<&str> = path.split('/').rev().skip(1).collect();
+    let names_directory = |word: &str| {
+        !word.is_empty()
+            && directories.iter().any(|directory| {
+                directory
+                    .strip_suffix(word)
+                    .is_some_and(|prefix| prefix.chars().all(|c| c.is_ascii_alphabetic()))
+            })
+    };
+    command.split(['&', '|', ';', '\n']).any(|part| {
+        let words: Vec<&str> = part
+            .split_whitespace()
+            .map(|word| word.trim_matches(['\'', '"']).trim_start_matches("./"))
+            .collect();
+        words.iter().any(|word| {
+            *word == path || (stem.is_some() && word.rsplit('/').next() == Some(target))
+        }) || stem.is_some_and(|stem| {
+            words.contains(&stem) && words.iter().any(|word| names_directory(word))
+        })
+    })
+}
+
+/// Whether `header` is the header of one of the C or C++ sources `files`
+/// (gap-5db3d9): the source's name with a header's extension, in the source's
+/// directory or under the `include` directory beside the `src` directory the
+/// source is in, as `core/include/undertow/presets.h` is of
+/// `core/src/presets.cpp`.
+#[must_use]
+pub(crate) fn header_beside(header: &str, files: &[String]) -> bool {
+    let extension_in = |path: &Path, extensions: &[&str]| {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extensions.contains(&extension))
+    };
+    let header = Path::new(header);
+    if !extension_in(header, C_HEADERS) {
+        return false;
+    }
+    let header_dir = header.parent().unwrap_or(Path::new(""));
+    files.iter().map(Path::new).any(|source| {
+        let source_dir = source.parent().unwrap_or(Path::new(""));
+        extension_in(source, CMAKE_SOURCES)
+            && source.file_stem() == header.file_stem()
+            && (source_dir == header_dir || include_beside_src(source_dir, header_dir))
+    })
+}
+
+/// Whether `header_dir` is under the `include` directory beside the `src`
+/// directory `source_dir` is in or under (`core/include/undertow` for
+/// `core/src`).
+fn include_beside_src(source_dir: &Path, header_dir: &Path) -> bool {
+    let mut root = PathBuf::new();
+    for part in source_dir.components() {
+        if part.as_os_str() == "src" {
+            return header_dir.starts_with(root.join("include"));
+        }
+        root.push(part);
+    }
+    false
 }
 
 /// Validate paths, regular-file identity, and explicit symbol anchors before
@@ -813,41 +974,95 @@ pub fn validate_plan_context(
     issues
 }
 
-/// Fit `task`'s declared line ranges in files an earlier task of `plan`
-/// changes to those files as `workspace_root` holds them, once that task has
-/// run (bug-7ff055). The planner wrote the ranges before the files changed: a
-/// range that runs past the end of its file is cut at the file's last line,
-/// and one that starts past it becomes an unranged entry, which shows the file
-/// within the context budget. A range in a file no earlier task changes, or a
-/// malformed one, is left for [`render_declared_context`] to refuse. Returns
-/// one line per range it changed, for the log.
-pub(crate) fn fit_ranges_to_earlier_changes(
-    task: &mut TaskDef,
-    plan: &TasksFile,
-    workspace_root: &Path,
-) -> Vec<String> {
-    let task_by_id = plan
-        .tasks
-        .iter()
-        .map(|task| (task.id.as_str(), task))
-        .collect::<HashMap<_, _>>();
-    let changed_earlier = transitive_dependency_outputs(task, &task_by_id);
+/// Fit `task`'s declared line ranges to its files as `workspace_root`, a
+/// try's checkout, holds them ([`fit_range`]), whichever task changed them
+/// (bug-fa22cc). The planner wrote the ranges before the plan's work: an
+/// earlier task may have changed a file since (bug-7ff055), and so may the
+/// task's own last try, whose checkout a retry reuses, as phase 5.1's T2#1
+/// rewrote `tools/render-demos.sh` from 121 lines to 43 and T2#2 to #4 died
+/// on `1-121`. A malformed range is left for [`render_declared_context`] to
+/// refuse. Returns one line per range it changed, for the log.
+pub(crate) fn fit_ranges_to_checkout(task: &mut TaskDef, workspace_root: &Path) -> Vec<String> {
     let Some(context) = task.context.as_mut() else {
         return Vec::new();
     };
     context
         .read_files
         .iter_mut()
-        .filter(|read_file| changed_earlier.contains(&read_file.path))
         .filter_map(|read_file| fit_range(read_file, workspace_root))
         .collect()
 }
 
+/// Make each explicit symbol anchor of `task` that none of its declared
+/// files holds, as `workspace_root`, a try's checkout, has them, a note
+/// rather than an anchor ([`symbol_note`], bug-41791b). The planner wrote the
+/// anchors before the plan's work, and an earlier task, or the task's own last
+/// try, may have renamed or removed the symbol since: the entry keeps its
+/// text, and the try's prompt shows the files as they are. A task that
+/// declares no file reads none to anchor in, and is left alone. Returns one
+/// line per anchor it dropped, for the log.
+pub(crate) fn drop_missing_anchors(task: &mut TaskDef, workspace_root: &Path) -> Vec<String> {
+    let Some(context) = task.context.as_mut() else {
+        return Vec::new();
+    };
+    if context.read_files.is_empty() {
+        return Vec::new();
+    }
+    let texts: Vec<String> = context
+        .read_files
+        .iter()
+        .filter_map(|read_file| validate_repo_relative_path(&read_file.path).ok())
+        .filter_map(|relative| std::fs::read_to_string(workspace_root.join(relative)).ok())
+        .collect();
+    let mut dropped = Vec::new();
+    for symbol in &mut context.symbols {
+        let Some(anchor) = explicit_symbol_anchor(symbol) else {
+            continue;
+        };
+        if texts
+            .iter()
+            .any(|text| find_anchor_line(text, &anchor).is_some())
+        {
+            continue;
+        }
+        dropped.push(format!(
+            "`{anchor}` is in no file the try reads, so its symbol entry is a note, not an anchor"
+        ));
+        *symbol = symbol_note(symbol, &anchor);
+    }
+    dropped
+}
+
+/// Leave out of `task`'s declared reads each file that `workspace_root`, a
+/// try's checkout, no longer holds (bug-41791b): the task's own last try, or
+/// an earlier task, may have removed or renamed it since the plan was
+/// written, and a read of a missing file would fail the try's prompt. A path
+/// that is not a safe relative path stays, for [`render_declared_context`] to
+/// refuse. Returns one line per read it left out, for the log.
+pub(crate) fn drop_missing_reads(task: &mut TaskDef, workspace_root: &Path) -> Vec<String> {
+    let Some(context) = task.context.as_mut() else {
+        return Vec::new();
+    };
+    let mut dropped = Vec::new();
+    context.read_files.retain(|read_file| {
+        let missing = validate_repo_relative_path(&read_file.path)
+            .is_ok_and(|relative| !workspace_root.join(relative).exists());
+        if missing {
+            dropped.push(format!(
+                "`{}` is not in the try's checkout, so the try does not read it",
+                read_file.path
+            ));
+        }
+        !missing
+    });
+    dropped
+}
+
 /// Fit `plan`'s declared line ranges in files no earlier task of the plan
 /// changes to those files as `workspace_root` holds them (gap-b95913), the
-/// way [`fit_ranges_to_earlier_changes`] fits the others once their task has
-/// run: the planner guessed how long the file is. Returns one line per range
-/// it changed, naming its task.
+/// way [`fit_ranges_to_checkout`] fits every range of a try: the planner
+/// guessed how long the file is. Returns one line per range it changed,
+/// naming its task.
 pub(crate) fn fit_ranges_to_files(plan: &mut TasksFile, workspace_root: &Path) -> Vec<String> {
     let changed_earlier: Vec<HashSet<String>> = {
         let task_by_id = plan
@@ -876,26 +1091,21 @@ pub(crate) fn fit_ranges_to_files(plan: &mut TasksFile, workspace_root: &Path) -
     fitted
 }
 
-/// Fit `read_file`'s line range to its file as `workspace_root` holds it: a
-/// range that runs past the end of the file is cut at its last line, and one
-/// that starts past it becomes an unranged entry, which shows the file within
-/// the context budget. A range inside the file, or a malformed one, is left
-/// alone. Returns what changed, for the log.
+/// Fit `read_file`'s line range to its file as `workspace_root` holds it
+/// ([`fit_line_range`]): a range that runs past the end of the file is cut at
+/// its last line, and one that starts past it, or runs from line 1 past it,
+/// becomes an unranged entry, which shows the file within the context budget.
+/// A range inside the file, or a malformed one, is left alone. Returns what
+/// changed, for the log.
 fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> {
     let range = read_file.lines.clone()?;
     let relative = validate_repo_relative_path(&read_file.path).ok()?;
-    let (start, end) = parse_line_range(&range, usize::MAX).ok()?;
-    if start == 0 || end.is_some_and(|end| start > end) {
-        return None;
-    }
     let content = std::fs::read_to_string(workspace_root.join(relative)).ok()?;
     let line_count = content.lines().count();
-    let lines = if start > line_count {
-        None
-    } else if end.is_some_and(|end| end > line_count) {
-        Some(format!("{start}-{line_count}"))
-    } else {
-        return None;
+    let lines = match fit_line_range(&range, line_count).ok()? {
+        FittedRange::Within(..) => return None,
+        FittedRange::Cut(start, end) => Some(format!("{start}-{end}")),
+        FittedRange::Whole => None,
     };
     let change = format!(
         "`{range}` of `{}` ({line_count} lines) became {}",
@@ -911,8 +1121,10 @@ fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> 
 
 /// Render exact, line-numbered context for prompt assembly. Unlike preflight,
 /// dispatch has no future-output exception: every dependency should already be
-/// materialized in the attempt worktree, and the dispatcher has fitted ranges
-/// in files an earlier task changed ([`fit_ranges_to_earlier_changes`]).
+/// materialized in the attempt worktree. The dispatcher has fitted the ranges
+/// to the files there ([`fit_ranges_to_checkout`]), and a range past the end
+/// of its file is fitted here too, never refused ([`fit_line_range`],
+/// bug-fa22cc).
 pub fn render_declared_context(
     task: &TaskDef,
     workspace_root: &Path,
@@ -936,12 +1148,14 @@ pub fn render_declared_context(
     let canonical_root = workspace_root
         .canonicalize()
         .map_err(|error| format!("resolve workspace root: {error}"))?;
+    // An anchor no declared file holds shows nothing, and never fails the
+    // try: the plan's work may have renamed it (bug-41791b), and the
+    // dispatcher makes such an entry a note ([`drop_missing_anchors`]).
     let anchors = context
         .symbols
         .iter()
-        .filter_map(|symbol| explicit_symbol_anchor(symbol).map(|anchor| (symbol, anchor)))
+        .filter_map(|symbol| explicit_symbol_anchor(symbol))
         .collect::<Vec<_>>();
-    let mut anchor_found = vec![false; anchors.len()];
     let mut output = String::from(
         "# Declared source context (authoritative and bounded)\n\
          Use these supplied snippets directly. Do not search home directories, session history, \
@@ -965,17 +1179,11 @@ pub fn render_declared_context(
             .map_err(|error| format!("read context file `{}`: {error}", read_file.path))?;
         let lines = content.lines().collect::<Vec<_>>();
         let mut ranges = Vec::<(usize, usize)>::new();
-        if let Some(range) = read_file.lines.as_deref() {
-            let (start, end) = parse_line_range(range, lines.len())?;
-            let end = end.unwrap_or(lines.len());
-            if start == 0 || start > end || end > lines.len() {
-                return Err(format!(
-                    "line range `{range}` is outside `{}` ({} lines)",
-                    read_file.path,
-                    lines.len()
-                ));
-            }
+        // A range past the end of the file is fitted to it, never refused
+        // (bug-fa22cc): the file changed since the plan was written.
+        if let Some((start, end)) = fitted_lines(read_file, lines.len())? {
             if end.saturating_sub(start).saturating_add(1) > policy.max_range_lines {
+                let range = read_file.lines.as_deref().unwrap_or_default();
                 return Err(format!(
                     "line range `{range}` exceeds the {} line context limit",
                     policy.max_range_lines
@@ -983,9 +1191,8 @@ pub fn render_declared_context(
             }
             ranges.push((start, end));
         }
-        for (index, (_, anchor)) in anchors.iter().enumerate() {
+        for anchor in &anchors {
             if let Some(line) = find_anchor_line(&content, anchor) {
-                anchor_found[index] = true;
                 let start = line.saturating_sub(ANCHOR_CONTEXT_RADIUS).max(1);
                 let end = line.saturating_add(ANCHOR_CONTEXT_RADIUS).min(lines.len());
                 ranges.push((start, end));
@@ -1010,18 +1217,6 @@ pub fn render_declared_context(
         ));
     }
 
-    let missing = anchors
-        .iter()
-        .zip(anchor_found)
-        .filter_map(|((_, anchor), found)| (!found).then_some(anchor.as_str()))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(format!(
-            "explicit symbol anchors were not found in declared context: {}",
-            missing.join(", ")
-        ));
-    }
-
     let mut remaining = policy.max_declared_context_bytes - fixed;
     let mut left = unranged.len();
     for (index, read_file, content) in unranged {
@@ -1037,6 +1232,197 @@ pub fn render_declared_context(
     }
     output.extend(blocks);
     Ok(output)
+}
+
+/// [`render_declared_context`] for the prompt's own section of declared
+/// files (bug-a8a787): the same files, checked the same way, fitted into
+/// `budget` bytes rather than cut by the prompt's cap. The plan's `sources`
+/// (its `[meta] sources`, the documents it is written from) come first and
+/// are cut last; the other reads keep their order. A read cut short, or left
+/// out, is followed by a line naming the lines not shown, for the agent to
+/// read itself: `[docs/specs/phase-4-ui.md lines 212-264 not shown: read_file
+/// them]`. A file declared without a range shows up to the policy's line
+/// limit, and one whose range starts at its first line names the lines it has
+/// past that range (bug-c5f406).
+pub fn render_declared_files(
+    task: &TaskDef,
+    workspace_root: &Path,
+    policy: PlanExecutionPolicy,
+    budget: usize,
+    sources: &[String],
+) -> Result<String, String> {
+    // The checks, and the errors that fail the task, stay the plan policy's.
+    let checked = render_declared_context(task, workspace_root, policy)?;
+    let Some(context) = task.context.as_ref().filter(|_| !checked.is_empty()) else {
+        return Ok(String::new());
+    };
+    let anchors: Vec<String> = context
+        .symbols
+        .iter()
+        .filter_map(|symbol| explicit_symbol_anchor(symbol))
+        .collect();
+    let mut reads = Vec::with_capacity(context.read_files.len());
+    for (order, read_file) in context.read_files.iter().enumerate() {
+        let content = std::fs::read_to_string(workspace_root.join(&read_file.path))
+            .map_err(|error| format!("read context file `{}`: {error}", read_file.path))?;
+        let lines: Vec<&str> = content.lines().collect();
+        let total = lines.len();
+        let mut ranges = Vec::new();
+        // A range from the first line reads the file from its top, and the
+        // lines a file has grown past it, on a try's kept tree or by an
+        // earlier task, are named rather than left out without a word
+        // (bug-c5f406). A range that starts further in is a part the planner
+        // chose.
+        let mut past_range = None;
+        if let Some((start, end)) = fitted_lines(read_file, total)? {
+            ranges.push((start, end));
+            if start == 1 && end < total {
+                past_range = Some((end + 1, total));
+            }
+        }
+        for anchor in &anchors {
+            if let Some(line) = find_anchor_line(&content, anchor) {
+                let start = line.saturating_sub(ANCHOR_CONTEXT_RADIUS).max(1);
+                ranges.push((start, line.saturating_add(ANCHOR_CONTEXT_RADIUS).min(total)));
+            }
+        }
+        // A file without a range shows whole, to the policy's line limit.
+        let mut hidden = Vec::new();
+        if ranges.is_empty() && total > 0 {
+            ranges.push((1, total.min(policy.max_range_lines)));
+            if total > policy.max_range_lines {
+                hidden.push((policy.max_range_lines + 1, total));
+            }
+        }
+        let ranges = merge_ranges(ranges);
+        if let Some((from, to)) = past_range {
+            hidden.extend(lines_not_in(from, to, &ranges));
+        }
+        let blocks = ranges
+            .into_iter()
+            .filter(|(start, end)| start <= end)
+            .map(|(start, end)| {
+                let shown = (start..=end)
+                    .filter_map(|number| {
+                        lines.get(number - 1).map(|line| {
+                            // The prompt shows a tab as four spaces; measure it so.
+                            numbered_line(number, &line.replace('\t', "    "))
+                        })
+                    })
+                    .collect();
+                (start, end, shown)
+            })
+            .collect();
+        reads.push(DeclaredRead {
+            read_file,
+            total,
+            blocks,
+            hidden,
+            source: sources.iter().any(|source| *source == read_file.path),
+            order,
+        });
+    }
+    Ok(fit_declared_reads(reads, budget))
+}
+
+/// A declared file as the prompt shows it: its blocks, each `(start, end,
+/// numbered lines)`, and the ranges it leaves out.
+struct DeclaredRead<'a> {
+    read_file: &'a ReadFile,
+    total: usize,
+    blocks: Vec<(usize, usize, Vec<String>)>,
+    hidden: Vec<(usize, usize)>,
+    source: bool,
+    order: usize,
+}
+
+/// The heading of the declared files the prompt shows (bug-a8a787).
+const DECLARED_FILES_INTRO: &str = "# Declared source context (authoritative and bounded)\n\
+     Use these supplied snippets directly. Do not search home directories, session history, \
+     other worktrees, Git unreachable objects, or the web. A file cut short names the lines \
+     not shown: read those with read_file.\n";
+
+/// The line that names what of `read` is not shown: `ranges`, each `(start,
+/// end)`.
+fn not_shown_line(read: &DeclaredRead<'_>, ranges: &[(usize, usize)]) -> String {
+    let ranges = ranges
+        .iter()
+        .map(|(start, end)| {
+            if start == end {
+                start.to_string()
+            } else {
+                format!("{start}-{end}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let lines = if ranges.contains(['-', ',']) {
+        "lines"
+    } else {
+        "line"
+    };
+    format!(
+        "[{} {lines} {ranges} not shown: read_file them]\n",
+        read.read_file.path
+    )
+}
+
+/// `reads` fitted into `budget` bytes, sources first: each block whole while
+/// it fits, else as many of its lines as do, and a line naming what is not
+/// shown. Room for every such line is kept back first, so a cut can always
+/// say what it left out.
+fn fit_declared_reads(mut reads: Vec<DeclaredRead<'_>>, budget: usize) -> String {
+    reads.sort_by_key(|read| (!read.source, read.order));
+    let reserve: usize = reads
+        .iter()
+        .map(|read| {
+            // The longest line it can need: every range at the file's end.
+            let worst = vec![(read.total, read.total); read.blocks.len() + read.hidden.len()];
+            not_shown_line(read, &worst).len()
+        })
+        .sum();
+    let mut room = budget.saturating_sub(DECLARED_FILES_INTRO.len() + reserve);
+    let mut output = String::from(DECLARED_FILES_INTRO);
+    for read in &reads {
+        let mut hidden = read.hidden.clone();
+        for (start, end, lines) in &read.blocks {
+            let frame = declared_file_tag(read.read_file, *start, *end, read.total).len()
+                + DECLARED_FILE_END.len();
+            let body: usize = lines.iter().map(String::len).sum();
+            if frame + body <= room {
+                output.push_str(&declared_file_tag(read.read_file, *start, *end, read.total));
+                output.extend(lines.iter().map(String::as_str));
+                output.push_str(DECLARED_FILE_END);
+                room -= frame + body;
+                continue;
+            }
+            let mut used = frame;
+            let shown = lines
+                .iter()
+                .take_while(|line| {
+                    let fits = used + line.len() <= room;
+                    if fits {
+                        used += line.len();
+                    }
+                    fits
+                })
+                .count();
+            if shown > 0 {
+                let last = start + shown - 1;
+                output.push_str(&declared_file_tag(read.read_file, *start, last, read.total));
+                output.extend(lines[..shown].iter().map(String::as_str));
+                output.push_str(DECLARED_FILE_END);
+                room = room.saturating_sub(used);
+            }
+            if start + shown <= *end {
+                hidden.push((start + shown, *end));
+            }
+        }
+        if !hidden.is_empty() {
+            output.push_str(&not_shown_line(read, &merge_ranges(hidden)));
+        }
+    }
+    output
 }
 
 /// The closing tag of a declared file block.
@@ -1176,7 +1562,7 @@ fn validate_regular_file(path: &Path, canonical_root: &Path) -> Result<(), Strin
     Ok(())
 }
 
-fn transitive_dependency_outputs(
+pub(crate) fn transitive_dependency_outputs(
     task: &TaskDef,
     task_by_id: &HashMap<&str, &TaskDef>,
 ) -> HashSet<String> {
@@ -1230,6 +1616,59 @@ fn normalize_verify_command(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A declared read's line range fitted to its file (bug-fa22cc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FittedRange {
+    /// Lines `start..=end`, inside the file as declared.
+    Within(usize, usize),
+    /// Lines `start..=end`: the declared range ran past the file's end and
+    /// is cut at its last line.
+    Cut(usize, usize),
+    /// The whole file: the declared range started past its end, or ran from
+    /// line 1 past it.
+    Whole,
+}
+
+/// `range`, a declared read's line range, fitted to a file of `line_count`
+/// lines (bug-fa22cc). A range past the end was written for the file as it
+/// was before a task, or the task's own last try, changed it: one that starts
+/// past the end, or runs from line 1 past it, reads the whole file, and
+/// another one that runs past the end is cut at the last line. `Err` for a
+/// malformed range: no numbers, line 0, or an end before its start.
+fn fit_line_range(range: &str, line_count: usize) -> Result<FittedRange, String> {
+    let (start, end) = parse_line_range(range, usize::MAX)?;
+    if end.is_some_and(|end| start > end) {
+        return Err("the range ends before it starts".to_string());
+    }
+    let end = end.unwrap_or(line_count);
+    Ok(if start > line_count || (start == 1 && end > line_count) {
+        FittedRange::Whole
+    } else if end > line_count {
+        FittedRange::Cut(start, line_count)
+    } else {
+        FittedRange::Within(start, end)
+    })
+}
+
+/// The lines `read_file`'s declared range shows of its file of `line_count`
+/// lines, fitted to it ([`fit_line_range`]): `None` without a range, or for
+/// one that shows the whole file. `Err` names a malformed range.
+fn fitted_lines(read_file: &ReadFile, line_count: usize) -> Result<Option<(usize, usize)>, String> {
+    let Some(range) = read_file.lines.as_deref() else {
+        return Ok(None);
+    };
+    match fit_line_range(range, line_count) {
+        Ok(FittedRange::Within(start, end) | FittedRange::Cut(start, end)) => {
+            Ok(Some((start, end)))
+        }
+        Ok(FittedRange::Whole) => Ok(None),
+        Err(reason) => Err(format!(
+            "invalid line range `{range}` of `{}`: {reason}",
+            read_file.path
+        )),
+    }
+}
+
 pub(crate) fn parse_line_range(
     range: &str,
     line_count: usize,
@@ -1263,7 +1702,30 @@ pub(crate) fn parse_line_range(
     Ok((start, end))
 }
 
-fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
+/// `symbol`, an anchor no file the task reads holds, written as a note that
+/// is no anchor: `Look::drawStaticLayer (in no file the task reads): <what
+/// the planner said of it>`. Plan generation writes it for a symbol no file
+/// holds yet (bug-417c4a), and a try for one its files no longer hold
+/// (bug-41791b).
+pub(crate) fn symbol_note(symbol: &str, anchor: &str) -> String {
+    let trimmed = symbol.trim();
+    let said = trimmed
+        .split_once('—')
+        .map(|(_, said)| said.trim())
+        .or_else(|| {
+            trimmed
+                .strip_prefix('`')
+                .and_then(|rest| rest.split_once('`'))
+                .map(|(_, said)| said.trim_start_matches([' ', ':', '-']).trim())
+        })
+        .filter(|said| !said.is_empty());
+    match said {
+        Some(said) => format!("{anchor} (in no file the task reads): {said}"),
+        None => format!("{anchor} (in no file the task reads)"),
+    }
+}
+
+pub(crate) fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
     let trimmed = symbol.trim();
     let candidate = if let Some(exact) = trimmed.strip_prefix("exact:") {
         exact.trim()
@@ -1295,7 +1757,7 @@ fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
     }
 }
 
-fn find_anchor_line(content: &str, anchor: &str) -> Option<usize> {
+pub(crate) fn find_anchor_line(content: &str, anchor: &str) -> Option<usize> {
     let final_segment = anchor.rsplit("::").next().unwrap_or(anchor);
     content.lines().enumerate().find_map(|(index, line)| {
         (contains_identifier(line, anchor) || contains_identifier(line, final_segment))
@@ -1303,7 +1765,7 @@ fn find_anchor_line(content: &str, anchor: &str) -> Option<usize> {
     })
 }
 
-fn contains_identifier(line: &str, identifier: &str) -> bool {
+pub(crate) fn contains_identifier(line: &str, identifier: &str) -> bool {
     line.match_indices(identifier).any(|(start, _)| {
         let before = line[..start].chars().next_back();
         let end = start + identifier.len();
@@ -1330,6 +1792,26 @@ fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
         }
     }
     merged
+}
+
+/// The parts of lines `from..=to` that none of `ranges`, sorted and merged,
+/// covers.
+fn lines_not_in(from: usize, to: usize, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut parts = Vec::new();
+    let mut next = from;
+    for &(start, end) in ranges {
+        if start > to {
+            break;
+        }
+        if start > next {
+            parts.push((next, start - 1));
+        }
+        next = next.max(end.saturating_add(1));
+    }
+    if next <= to {
+        parts.push((next, to));
+    }
+    parts
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -1414,10 +1896,12 @@ mod tests {
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
+                cold_verify: false,
                 approval: None,
                 allow_unverified: false,
                 outbound: None,
                 dropped_checks: Vec::new(),
+                sources: Vec::new(),
             },
             tasks: vec![task],
         }
@@ -1616,8 +2100,9 @@ mod tests {
     /// bug-7ff055: a range the planner guessed in a file an earlier task
     /// changes passes the plan check, and at dispatch fits the file as that
     /// task left it: cut at its last line, or the whole file when it starts
-    /// past the end. The same range in a file no earlier task changes is
-    /// still refused, by both.
+    /// past the end. The plan check still refuses the same range in a file
+    /// no earlier task changes, but since bug-fa22cc a try fits it to its
+    /// checkout too, and prompt assembly never refuses a range past the end.
     #[test]
     fn ranges_in_files_an_earlier_task_changes_fit_the_file() {
         let root = tempdir().expect("root");
@@ -1658,7 +2143,7 @@ mod tests {
         // T1 ran and left the file 17 lines long.
         write_lines(root.path(), "src/out.py", 17, 12);
         let mut dispatched = plan.tasks[1].clone();
-        let fitted = fit_ranges_to_earlier_changes(&mut dispatched, &plan, root.path());
+        let fitted = fit_ranges_to_checkout(&mut dispatched, root.path());
         assert_eq!(fitted.len(), 2, "{fitted:?}");
         let ranges = dispatched
             .context
@@ -1681,7 +2166,9 @@ mod tests {
             "{rendered}"
         );
 
-        // The same range in a file no earlier task changes is refused.
+        // The plan check refuses the same range in a file no earlier task
+        // changes; a try fits it, and so does prompt assembly when no try
+        // did.
         let mut strict = plan.clone();
         strict.tasks[1]
             .context
@@ -1689,13 +2176,244 @@ mod tests {
             .expect("context")
             .read_files = vec![guessed("src/other.py", "5-25")];
         assert_eq!(range_issues(&strict).len(), 1);
-        let mut unchanged = strict.tasks[1].clone();
-        assert!(fit_ranges_to_earlier_changes(&mut unchanged, &strict, root.path()).is_empty());
-        let error = render_declared_context(&unchanged, root.path(), PlanExecutionPolicy::normal())
-            .expect_err("a range past a file no earlier task changes");
+        let unchanged = strict.tasks[1].clone();
+        let rendered =
+            render_declared_context(&unchanged, root.path(), PlanExecutionPolicy::normal())
+                .expect("a range past the end renders fitted");
         assert!(
-            error.contains("is outside `src/other.py` (17 lines)"),
-            "{error}"
+            rendered.contains("lines=\"5-17\" total=\"17\""),
+            "{rendered}"
+        );
+        let mut fitted_task = unchanged.clone();
+        assert_eq!(
+            fit_ranges_to_checkout(&mut fitted_task, root.path()),
+            ["`5-25` of `src/other.py` (17 lines) became `5-17`"]
+        );
+    }
+
+    /// bug-41791b: at dispatch, an anchor none of the task's declared files
+    /// holds becomes a note that keeps its text, a declared file the try's
+    /// checkout no longer holds drops out of its reads, and prompt assembly
+    /// never fails on either; an anchor a file holds, and an unsafe path,
+    /// stay as they were.
+    #[test]
+    fn a_missing_anchor_or_file_is_left_out_of_a_try() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        std::fs::write(root.path().join("src/lib.rs"), "pub struct Widget;\n").expect("source");
+        let mut plan_task = unranged_task(&["src/lib.rs", "src/gone.rs"]);
+        let context = plan_task.context.as_mut().expect("context");
+        context.symbols = vec![
+            "Widget — the widget".to_string(),
+            "`Gadget`: renamed by the last try".to_string(),
+            "a plain note".to_string(),
+        ];
+        let unrepaired = plan_task.clone();
+
+        assert_eq!(
+            drop_missing_reads(&mut plan_task, root.path()),
+            ["`src/gone.rs` is not in the try's checkout, so the try does not read it"]
+        );
+        assert_eq!(
+            drop_missing_anchors(&mut plan_task, root.path()),
+            ["`Gadget` is in no file the try reads, so its symbol entry is a note, not an anchor"]
+        );
+        let context = plan_task.context.as_ref().expect("context");
+        assert_eq!(
+            context.symbols,
+            [
+                "Widget — the widget",
+                "Gadget (in no file the task reads): renamed by the last try",
+                "a plain note"
+            ]
+        );
+        let reads: Vec<&str> = context
+            .read_files
+            .iter()
+            .map(|read_file| read_file.path.as_str())
+            .collect();
+        assert_eq!(reads, ["src/lib.rs"]);
+        let rendered =
+            render_declared_context(&plan_task, root.path(), PlanExecutionPolicy::normal())
+                .expect("the repaired context renders");
+        assert!(rendered.contains("1 | pub struct Widget;"), "{rendered}");
+        // Unrepaired, a missing anchor no longer fails the render either.
+        let mut anchored = unrepaired;
+        anchored.context.as_mut().expect("context").read_files.pop();
+        render_declared_context(&anchored, root.path(), PlanExecutionPolicy::normal())
+            .expect("a missing anchor renders nothing");
+        // An unsafe path stays, for the render to refuse.
+        let mut unsafe_read = unranged_task(&["../secret"]);
+        assert!(drop_missing_reads(&mut unsafe_read, root.path()).is_empty());
+        assert!(
+            render_declared_context(&unsafe_read, root.path(), PlanExecutionPolicy::normal())
+                .is_err()
+        );
+    }
+
+    /// bug-fa22cc: a declared range is fitted to its file as it is now. One
+    /// inside the file stays; one that runs past the end is cut at the last
+    /// line; one that starts past the end, or runs from line 1 past it, as
+    /// phase 5.1's `1-121` of a script T2#1 had cut to 43 lines did, reads the
+    /// whole file. Only a malformed range is refused.
+    #[test]
+    fn a_range_past_the_end_fits_the_file() {
+        for (range, fitted) in [
+            ("1-43", Ok(FittedRange::Within(1, 43))),
+            ("5-20", Ok(FittedRange::Within(5, 20))),
+            ("5-", Ok(FittedRange::Within(5, 43))),
+            ("1-121", Ok(FittedRange::Whole)),
+            ("44-60", Ok(FittedRange::Whole)),
+            ("50-", Ok(FittedRange::Whole)),
+            ("5-121", Ok(FittedRange::Cut(5, 43))),
+            ("9-3", Err("the range ends before it starts".to_string())),
+            ("0-3", Err("line numbers are one-based".to_string())),
+            ("lines", Err("expected START-END or START-".to_string())),
+        ] {
+            assert_eq!(fit_line_range(range, 43), fitted, "{range}");
+        }
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("tools")).expect("tools");
+        write_lines(root.path(), "tools/render-demos.sh", 43, 12);
+        let mut task = unranged_task(&[]);
+        task.context.as_mut().expect("context").read_files = vec![ReadFile {
+            path: "tools/render-demos.sh".into(),
+            lines: Some("1-121".into()),
+            why: "the script the task rewrites".into(),
+        }];
+        let rendered = render_declared_context(&task, root.path(), PlanExecutionPolicy::normal())
+            .expect("the whole file renders");
+        assert!(
+            rendered.contains("lines=\"1-43\" total=\"43\""),
+            "{rendered}"
+        );
+        let files = render_declared_files(
+            &task,
+            root.path(),
+            PlanExecutionPolicy::normal(),
+            100_000,
+            &[],
+        )
+        .expect("the prompt's declared files");
+        assert!(files.contains("    43 | // line 43"), "{files}");
+        assert!(!files.contains("not shown: read_file them"), "{files}");
+        assert_eq!(
+            fit_ranges_to_checkout(&mut task, root.path()),
+            ["`1-121` of `tools/render-demos.sh` (43 lines) became the whole file"]
+        );
+        // A malformed range still fails the try, naming the file.
+        task.context.as_mut().expect("context").read_files[0].lines = Some("9-3".into());
+        let error = render_declared_context(&task, root.path(), PlanExecutionPolicy::normal())
+            .expect_err("a reversed range");
+        assert_eq!(
+            error,
+            "invalid line range `9-3` of `tools/render-demos.sh`: the range ends before it starts"
+        );
+    }
+
+    /// bug-c5f406: phase 4.3's T2 declared `plugin/ui/Displays.cpp` as
+    /// `1-254`, the planner's `1-260` cut to the file's length when the plan
+    /// was written. Its third try ran on a kept tree where the file had 290
+    /// lines, and its prompt showed lines 1-247 and named 248-254 only. A
+    /// range from line 1 past the file's end when the plan is written now
+    /// becomes the whole file (bug-fa22cc's fit), shown as it is when the
+    /// prompt is built; a range from line 1 that the file has grown past
+    /// names the lines past it, with any cut's; a part the planner chose
+    /// stays as it is.
+    #[test]
+    fn a_grown_file_shows_or_names_the_lines_past_its_planned_range() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+            write_lines(root.path(), path, 10, 12);
+        }
+        let planned = |path: &str, lines: &str| ReadFile {
+            path: path.into(),
+            lines: Some(lines.into()),
+            why: "planned".into(),
+        };
+        let mut reader = unranged_task(&[]);
+        reader.context.as_mut().expect("context").read_files = vec![
+            planned("src/a.rs", "1-10"),
+            planned("src/b.rs", "1-12"),
+            planned("src/c.rs", "3-6"),
+        ];
+        let mut plan = tasks(reader);
+        assert_eq!(
+            fit_ranges_to_files(&mut plan, root.path()),
+            ["T1: `1-12` of `src/b.rs` (10 lines) became the whole file"]
+        );
+
+        // A try's tree, where each file has grown to 15 lines: the range the
+        // plan kept names the lines past it, and the whole file shows them.
+        for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+            write_lines(root.path(), path, 15, 12);
+        }
+        let policy = PlanExecutionPolicy::normal();
+        let room = policy.max_declared_context_bytes;
+        let shown = render_declared_files(&plan.tasks[0], root.path(), policy, room, &[])
+            .expect("the fitted plan renders");
+        assert!(
+            shown.contains("path=\"src/a.rs\" lines=\"1-10\" total=\"15\""),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("[src/a.rs lines 11-15 not shown: read_file them]\n"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("path=\"src/b.rs\" lines=\"1-15\" total=\"15\""),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("path=\"src/c.rs\" lines=\"3-6\" total=\"15\""),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("[src/b.rs") && !shown.contains("[src/c.rs"),
+            "{shown}"
+        );
+
+        // Lines an anchor shows past the range are not named.
+        let text = (1..=30)
+            .map(|n| match n {
+                25 => "struct Grown;\n".to_string(),
+                _ => format!("// line {n}\n"),
+            })
+            .collect::<String>();
+        std::fs::write(root.path().join("src/a.rs"), text).expect("write source");
+        let mut anchored = plan.tasks[0].clone();
+        let context = anchored.context.as_mut().expect("context");
+        context.read_files = vec![planned("src/a.rs", "1-10")];
+        context.symbols = vec!["exact:Grown".into()];
+        let shown = render_declared_files(&anchored, root.path(), policy, room, &[])
+            .expect("the anchored plan renders");
+        assert!(shown.contains("lines=\"17-30\" total=\"30\""), "{shown}");
+        assert!(
+            shown.contains("[src/a.rs lines 11-16 not shown: read_file them]\n"),
+            "{shown}"
+        );
+
+        // T2#3's cut: the note names the lines past the range with its own.
+        write_lines(root.path(), "src/a.rs", 290, 12);
+        let mut written = plan.tasks[0].clone();
+        written.context.as_mut().expect("context").read_files = vec![planned("src/a.rs", "1-254")];
+        let short = render_declared_files(&written, root.path(), policy, 4_000, &[])
+            .expect("the cut renders");
+        let tag = "path=\"src/a.rs\" lines=\"1-";
+        let at = short.find(tag).expect("the cut block") + tag.len();
+        let last: usize = short[at..]
+            .split('"')
+            .next()
+            .and_then(|end| end.parse().ok())
+            .expect("its last line");
+        assert!(last < 254, "{short}");
+        assert!(
+            short.contains(&format!(
+                "[src/a.rs lines {}-290 not shown: read_file them]\n",
+                last + 1
+            )),
+            "{short}"
         );
     }
 
@@ -1849,6 +2567,121 @@ mod tests {
             fast.iter().any(|issue| issue.code == "PLAN_VERIFY_OWNER"),
             "{fast:?}"
         );
+    }
+
+    /// gap-5db3d9: the test a check runs is the one its words name, and
+    /// neither that test nor the header of a source the task changes counts
+    /// toward the task's read budget.
+    #[test]
+    fn a_checks_test_and_a_sources_header_count_toward_no_read_budget() {
+        for (path, stem) in [
+            ("tests/spec/p5_2/presets_test.cpp", Some("presets")),
+            ("tests/test_lowpass.py", Some("lowpass")),
+            ("web/cart.test.ts", Some("cart")),
+            ("spec/models/user_spec.rb", Some("user")),
+            ("crates/seq/tests/sequencer_tests.rs", Some("sequencer")),
+            ("core/src/presets.cpp", None),
+            ("tests/_test.cpp", None),
+        ] {
+            assert_eq!(test_affix_stem(path), stem, "{path}");
+        }
+        for (command, path, runs) in [
+            (
+                "tools/spec.sh 5_2 presets",
+                "tests/spec/p5_2/presets_test.cpp",
+                true,
+            ),
+            (
+                "tools/spec.sh 5 presets",
+                "tests/spec/p5_2/presets_test.cpp",
+                false,
+            ),
+            (
+                "tools/spec.sh 5 presets",
+                "tests/spec/p5/presets_test.cpp",
+                true,
+            ),
+            (
+                "tools/spec.sh 5_1 render",
+                "tests/spec/p5/render_test.cpp",
+                false,
+            ),
+            (
+                "tools/spec.sh 4 display 'P4.06*'",
+                "tests/spec/p4/display_test.cpp",
+                true,
+            ),
+            (
+                "tools/render-demos.sh && tools/spec.sh 5_1 demos",
+                "tests/spec/p5_1/demos_test.cpp",
+                true,
+            ),
+            // Each command of a step runs its own tests.
+            (
+                "tools/spec.sh 5_2 presets && tools/spec.sh 5 demos",
+                "tests/spec/p5/presets_test.cpp",
+                false,
+            ),
+            (
+                "ctest --test-dir build -R presets_test",
+                "tests/spec/p5/presets_test.cpp",
+                true,
+            ),
+            (
+                "cargo test --test sequencer_tests",
+                "crates/seq/tests/sequencer_tests.rs",
+                true,
+            ),
+            (
+                "python3 -m pytest tests/test_lowpass.py",
+                "tests/test_lowpass.py",
+                true,
+            ),
+            ("tools/spec.sh 5_2 presets", "core/src/presets.cpp", false),
+        ] {
+            assert_eq!(test_run_by(command, path), runs, "{command} / {path}");
+        }
+        let source = ["core/src/presets.cpp".to_string()];
+        for (header, beside) in [
+            ("core/include/undertow/presets.h", true),
+            ("core/src/presets.h", true),
+            ("include/presets.h", false),
+            ("core/include/undertow/params.h", false),
+            ("core/src/presets.cpp", false),
+        ] {
+            assert_eq!(header_beside(header, &source), beside, "{header}");
+        }
+        assert!(header_beside(
+            "include/widget.hpp",
+            &["src/widget.cc".to_string()]
+        ));
+
+        let mut plan_task = task();
+        plan_task.files = source.to_vec();
+        plan_task.verify = vec![VerifyStep {
+            phase: "test".into(),
+            command: "tools/spec.sh 5_2 presets".into(),
+            fail_msg: None,
+            timeout_ms: 1_000,
+            scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
+        }];
+        let sources = ["docs/specs/phase-5.2-presets.md".to_string()];
+        for (path, counts) in [
+            ("docs/specs/phase-5.2-presets.md", false),
+            ("tests/spec/p5_2/presets_test.cpp", false),
+            ("core/include/undertow/presets.h", false),
+            ("tests/spec/p5/presets_test.cpp", true),
+            ("core/include/undertow/params.h", true),
+            ("core/src/presets.cpp", true),
+        ] {
+            assert_eq!(
+                counts_toward_read_budget(&sources, &plan_task, path),
+                counts,
+                "{path}"
+            );
+        }
     }
 
     /// Two tasks, T1 and T2, that both write `src/lib.rs`, in a plan that

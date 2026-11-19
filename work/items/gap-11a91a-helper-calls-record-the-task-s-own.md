@@ -9,11 +9,12 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "backlog wave reports 2026-10-02 (PK01 gap-625195, PK07 gap-f548c1)"
 discovered_from = "gap-f548c1, gap-625195 (found during their work, not a listed backlog task)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::write_side_call_rows"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::SideCallRows::write"]
 lane = "rust-hot"
 parent = "spec-99d417"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -75,3 +76,5 @@ Don't change `role = "helper"` or the cost/efficiency row schema — only the `a
 `crates/roko-cli/src/graph_task_dispatch/helper_calls.rs` is in the `rust-hot` lane; the hot dispatch files it
 depends on (`graph_task_dispatch.rs`) are excluded from some packages' anchors so two hot packages can run at once —
 check for a live claim before working this if it's picked up later.
+
+Checked 2026-10-27: 2026-10-26 sweep: write_side_call_rows was refactored into a SideCallRows struct with a write() method (helper_calls.rs:472-524); the agent_id bug moved with it but was not fixed.

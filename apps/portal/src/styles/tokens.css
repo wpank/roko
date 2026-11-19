@@ -1,180 +1,161 @@
 /**
- * Portal design tokens — semantic aliases over ROSEDUST primitives.
+ * The portal's names for roko's design tokens (roko-tokens.css).
  *
- * All values here reference ROSEDUST variables declared in rosedust.css.
- * No new colour values are introduced in this file.
- *
- * Categories:
- *   1. State colours   — task/run lifecycle states
- *   2. Focus/blur      — card focus ring and title colours
- *   3. Progress bands  — <30%, 30-70%, >70%
- *   4. Role accents    — one accent colour per agent role
- *   5. Layout          — fixed-dimension tokens
- *   6. Utility classes — .tabular
+ * The plan view, run band and stream pane were drawn with these names. Each one now resolves to a roko token, so
+ * they follow day and night with everything else; no colour is defined here. gap-60f6b6 replaces those views and
+ * most of these names with them.
  */
 
 :root {
-  /* ------------------------------------------------------------------ */
-  /* 1. State colours                                                     */
-  /*                                                                      */
-  /* Browser-safe hues: rose and red are indistinguishable as errors, so */
-  /* each state uses a dedicated, perceptually-distinct primitive.        */
-  /* ------------------------------------------------------------------ */
+  /* ---- Colours, by role ------------------------------------------------------------------------------ */
 
-  /** Completed and verified — leaf green. */
-  --state-done:     var(--leaf);
+  /* Surfaces */
+  --void: var(--rk-body);
+  --bg-raised: var(--rk-module);
+  --bg-secondary: var(--rk-module-2);
+  --bg-highlight: var(--rk-module-2);
+  --bg-glass: var(--rk-module);
+  --bg-glass-active: var(--rk-module-2);
 
-  /** Currently running / in-flight — indigo (calm, not rose/red). */
-  --state-active:   var(--indigo);
+  /* Words */
+  --text-strong: var(--rk-ink);
+  --text-muted: var(--rk-ink-2);
+  --text-faint: var(--rk-ink-3);
+  --text-ghost: var(--rk-ink-3);
 
-  /** Accepted but with failures — amber, NOT green. */
-  --state-accepted: var(--amber);
+  /* Lines */
+  --line: var(--rk-line);
+  --border-default: var(--rk-line);
+  --border-hover: var(--rk-line-2);
+  --border-active: var(--rk-you);
+  --focus-border: var(--rk-you);
+  --focus-title: var(--rk-ink);
+  --blur-border: var(--rk-line);
+  --blur-title: var(--rk-ink-3);
 
-  /**
-   * Already satisfied — info cyan. The task's work was already there: its
-   * verify steps passed on a tree its attempt left unchanged. Verified, but
-   * not a pass of this attempt, so not done green.
-   */
-  --state-satisfied: var(--accent-cyan);
+  /* Signals: blue is roko working, green passed, orange your turn, red failed. Nothing else gets colour. */
+  --state-done: var(--rk-pass);
+  --state-satisfied: var(--rk-pass);
+  --state-active: var(--rk-live);
+  --state-accepted: var(--rk-you-text);
+  --state-failed: var(--rk-fail);
+  --state-queued: var(--rk-ink-3);
+  --state-pending: var(--rk-ink-3);
+  --state-skipped: var(--rk-ink-3);
+  --progress-low: var(--rk-live);
+  --progress-mid: var(--rk-live);
+  --progress-high: var(--rk-live);
 
-  /** Hard failure — signal red (clear red, not rose). */
-  --state-failed:   var(--signal-red);
+  --accent-rose: var(--rk-you);
+  --accent-cyan: var(--rk-ink-2);
+  --accent-amber: var(--rk-you-text);
+  --accent-error: var(--rk-fail);
+  --accent-success: var(--rk-pass);
+  --warning: var(--rk-you-text);
+  --sage: var(--rk-pass);
+  --ember: var(--rk-you-text);
+  --signal-red: var(--rk-fail);
+  --amber: var(--rk-you-text);
+  --leaf: var(--rk-pass);
+  --indigo: var(--rk-live);
+  --rose: var(--rk-you);
+  --rose-bright: var(--rk-you);
+  --rose-dim: var(--rk-line-2);
+  --rose-glow: var(--rk-you);
+  --bone: var(--rk-ink-2);
+  --bone-bright: var(--rk-ink);
+  --dream: var(--rk-ink-2);
+  --dream-bright: var(--rk-ink);
+  --mint: var(--rk-ink-2);
+  --lime: var(--rk-ink-2);
+  --blush: var(--rk-ink-2);
 
-  /** Waiting in queue — de-emphasised faint. */
-  --state-queued:   var(--text-faint);
+  /* Agent roles read in ink: a role is not a signal. */
+  --role-implementer: var(--rk-ink-2);
+  --role-strategist: var(--rk-ink-2);
+  --role-architect: var(--rk-ink-2);
+  --role-scribe: var(--rk-ink-2);
+  --role-quick-reviewer: var(--rk-ink-2);
+  --role-other: var(--rk-ink-2);
+  --role-impl: var(--rk-ink-2);
+  --role-reviewer: var(--rk-ink-2);
 
-  /** Not yet dispatched — de-emphasised faint. */
-  --state-pending:  var(--text-faint);
+  /* Keys: the one primary key is orange, words on it near-black. */
+  --button-primary-bg: var(--rk-you);
+  --button-primary-hover: var(--rk-you);
+  --button-primary-fg: var(--rk-you-ink);
+  /* Stop and cancel are plain keys with red words (the design system's §4.3), never a red fill. */
+  --danger-fill: var(--rk-key);
+  --danger-fill-fg: var(--rk-fail);
 
-  /** Deliberately skipped — de-emphasised faint (same as queued). */
-  --state-skipped:  var(--text-faint);
+  /* ---- Type ----------------------------------------------------------------------------------------- */
 
-  /* ------------------------------------------------------------------ */
-  /* 2. Focus / blur — card focus ring and title colours                 */
-  /* ------------------------------------------------------------------ */
-
-  /** Border colour when a card/panel is focused — neutral bone, not a brand hue. */
-  --focus-border: var(--bone);
-
-  /** Title colour when a card/panel is focused. */
-  --focus-title:  var(--bone);
-
-  /** Border colour when a card/panel is blurred — hairline. */
-  --blur-border:  var(--line);
-
-  /** Title colour when a card/panel is blurred. */
-  --blur-title:   var(--text-ghost);
-
-  /* ------------------------------------------------------------------ */
-  /* 3. Progress bands                                                    */
-  /*                                                                      */
-  /* All three bands use the running colour — a bar's hue signals state  */
-  /* (running/done/failed), not fraction. Finished bars use state tokens. */
-  /* ------------------------------------------------------------------ */
-
-  /** Progress < 30% — running colour (indigo). */
-  --progress-low:  var(--state-active);
-
-  /** Progress 30–70% — running colour (indigo). */
-  --progress-mid:  var(--state-active);
-
-  /** Progress > 70% — running colour (indigo). */
-  --progress-high: var(--state-active);
-
-  /* ------------------------------------------------------------------ */
-  /* 4. Role accents — one accent per agent role                         */
-  /*                                                                      */
-  /* A coloured role sits ≥ 60° and ΔE ≥ 35 from running (--state-active*/
-  /* / indigo) and ≥ 30° from every other state hue and from            */
-  /* --accent-cyan. The colour wheel has no room left for a fifth hue,   */
-  /* so rare roles read in bone.                                          */
-  /* ------------------------------------------------------------------ */
-
-  /** Implementer — blush (action, execution; pink, ≥ 60° and ΔE ≥ 35 from indigo). */
-  --role-implementer:    var(--blush);
-
-  /** Strategist — mint (planning; cool green, not leaf-green done). */
-  --role-strategist:     var(--mint);
-
-  /** Architect — bone-bright (structure; neutral, rare role). */
-  --role-architect:      var(--bone-bright);
-
-  /** Scribe — bone cream (documentation, neutral). */
-  --role-scribe:         var(--bone);
-
-  /** Quick-reviewer — lime (review; yellow-green, not leaf-green done). */
-  --role-quick-reviewer: var(--lime);
-
-  /** Other / uncategorised — muted text. */
-  --role-other:          var(--text-muted);
-
-  /* ------------------------------------------------------------------ */
-  /* 5. Layout — fixed-dimension tokens                                  */
-  /* ------------------------------------------------------------------ */
-
-  /** Left navigation rail width — 336px aligns the first band divider to the rail edge. */
-  --rail-width:     336px;
-
-  /** Run band fixed height — compact: one head line + two content lines at 60px. */
-  --band-height:    60px;
-
-  /** Standard data row height in the task grid. */
-  --row-height:     24px;
-
-  /** Portal header bar height. */
-  --header-height:  32px;
-
-  /* ------------------------------------------------------------------ */
-  /* 6. Type scale — semantic sizes for plan shell components            */
-  /* ------------------------------------------------------------------ */
-
-  /** Plan title — largest shell text. */
-  --type-title:   var(--text-lg);
-
-  /** Section label — uppercase category headers. */
+  --font-mono: var(--rk-mono);
+  --font-sans: var(--rk-sans);
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-wider: 0.08em;
+  --tracking-widest: 0.16em;
+  --type-title: var(--text-lg);
   --type-section: var(--text-sm);
+  --type-row: var(--text-sm);
+  --type-meta: var(--text-xs);
 
-  /** Data row — primary row text. */
-  --type-row:     var(--text-sm);
+  /* ---- Space, depth, motion, layers --------------------------------------------------------------------- */
 
-  /** Metadata — smallest annotated values. */
-  --type-meta:    var(--text-xs);
+  --space-1: var(--rk-1);
+  --space-2: var(--rk-2);
+  --space-3: var(--rk-3);
+  --space-4: var(--rk-4);
+  --space-5: 20px;
+  --space-6: var(--rk-5);
+  --space-8: var(--rk-6);
+  --space-10: 40px;
+  --space-12: var(--rk-7);
+  --space-16: var(--rk-8);
+  --shadow-sm: 0 1px 0 var(--rk-line);
+  --shadow-md: 0 1px 0 var(--rk-line);
+  --shadow-lg: 0 34px 70px -40px var(--rk-shadow);
+  --shadow-rose: none;
+  --shadow-dream: none;
+  --duration-fast: var(--rk-t-blip);
+  --duration-normal: var(--rk-t-quick);
+  --duration-slow: var(--rk-t-gesture);
+  --ease-out: var(--rk-ease-out);
+  --ease-in: var(--rk-ease);
+  --ease-inout: var(--rk-ease);
+  --z-base: 0;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
 
-  /* ------------------------------------------------------------------ */
-  /* 7. Button tokens                                                    */
-  /* ------------------------------------------------------------------ */
+  /* ---- Layout --------------------------------------------------------------------------------------- */
 
-  /** Primary button background — brand rose. */
-  --button-primary-bg:    var(--rose);
-
-  /** Primary button hover background — bright rose. */
-  --button-primary-hover: var(--rose-bright);
-
-  /** Primary button foreground — void black for contrast. */
-  --button-primary-fg:    var(--void);
-
-  /** Danger fill foreground — bright bone for contrast on deep red. */
-  --danger-fill-fg:       var(--bone-bright);
-
-  /* ------------------------------------------------------------------ */
-  /* 8. Role aliases — short names the engine reports                    */
-  /* ------------------------------------------------------------------ */
-
-  /** Short alias for the implementer role. */
-  --role-impl:     var(--role-implementer);
-
-  /** Short alias for the quick-reviewer role. */
-  --role-reviewer: var(--role-quick-reviewer);
+  /** The plan list's width; the run band's first cell lines up with it. */
+  --rail-width: 300px;
+  --band-height: 60px;
+  --row-height: 24px;
+  --header-height: 56px;
 }
 
-/* -------------------------------------------------------------------- */
-/* 6. Utility classes                                                     */
-/* -------------------------------------------------------------------- */
-
-/**
- * Tabular number rendering — prevents layout shift in live counters
- * and aligned numeric columns.
- */
+/** Tabular figures, so live counters do not shift. */
 .tabular {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;

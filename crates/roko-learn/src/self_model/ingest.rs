@@ -3,15 +3,18 @@
 //!
 //! Every Graph attempt writes a `roko.attempt_open/1` line before its prompt is assembled and a
 //! `roko.verdict/1` line when it settles. [`read_runs`] joins the two by attempt key. An open
-//! line with no verdict is an abandoned attempt: it is counted and skipped. The label is the
-//! verdict's `learning_label` (S01 §4.1), through [`Label::of_verdict`] as in the live outcome
+//! line with no verdict is an abandoned attempt: it is counted and skipped, as is one whose
+//! verdict a resume wrote as `abandoned` (bug-b7f6a8). The label is the verdict's
+//! `learning_label` (S01 §4.1), through [`Label::of_verdict`] as in the live outcome
 //! sink: `1` a pass, `0` an agent failure, and none for an unverified attempt, a forced accept
-//! or a provider or harness outcome. An attempt a provider failover substituted is marked and
-//! kept out of training, as `RoutingObservationSink` does.
+//! or a provider or harness outcome. An attempt a provider failover substituted is marked: the
+//! model learns what the model that ran did, while the fit neither scores it nor counts it in the
+//! calibration window, since nobody chose it (bug-a35286).
 //!
 //! [`read_forecast_join`] joins each run's shadow forecasts (`predictions.jsonl`, 6126) to its
 //! routed attempts and their verdicts by attempt key: the measure of S04 §7.4's shadow
-//! acceptance (gap-96547f).
+//! acceptance (gap-96547f). [`score_live_forecasts`] scores those forecasts against what
+//! happened, as the runs made them (gap-45f6bb).
 //!
 //! Read-only: nothing here writes under `.roko/`.
 
@@ -36,11 +39,11 @@ pub struct IngestReport {
 }
 
 impl IngestReport {
-    /// The units the self-model may train on: labelled, and run on the arm that was asked for.
+    /// The units the self-model learns from: the labelled ones, a failover substitute's
+    /// included (bug-a35286). A substitute is marked, and the fit neither scores it nor counts
+    /// it in the calibration window, since nobody chose it.
     pub fn training_units(&self) -> impl Iterator<Item = &Unit> {
-        self.units
-            .iter()
-            .filter(|unit| !unit.failover && unit.label.y_gate.is_some())
+        self.units.iter().filter(|unit| unit.label.y_gate.is_some())
     }
 }
 
@@ -61,7 +64,8 @@ pub struct DataAudit {
     pub labelled: usize,
     /// Settled attempts with no label: unverified, provider or harness outcomes.
     pub unlabelled: usize,
-    /// Labelled units a provider failover substituted, kept out of training.
+    /// Labelled units a provider failover substituted: the model learns them, and the
+    /// calibration window and the scores leave them out (bug-a35286).
     pub failover: usize,
     /// Labelled units per label source (`pre_gate_success`, `gate_passed`, `vs`).
     pub label_sources: BTreeMap<String, usize>,
@@ -200,8 +204,12 @@ impl RunLines {
                 let Ok(verdict) = serde_json::from_value::<AttemptVerdictRecord>(value) else {
                     return false;
                 };
-                self.verdicts
-                    .insert(verdict.identity.attempt_key.clone(), verdict);
+                // A resume's `abandoned` verdict leaves its attempt abandoned, as an open
+                // line with no verdict is (bug-b7f6a8).
+                if verdict.outcome != AttemptOutcome::Abandoned {
+                    self.verdicts
+                        .insert(verdict.identity.attempt_key.clone(), verdict);
+                }
                 true
             }
             // Decisions and other records share no line with attempts; skip them.
@@ -350,6 +358,7 @@ impl ForecastJoin {
         let verdicts: HashMap<&str, &AttemptVerdictRecord> = run
             .verdicts
             .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
             .map(|line| (line.record.identity.attempt_key.as_str(), &line.record))
             .collect();
         self.forecasts += forecast.len();
@@ -361,6 +370,85 @@ impl ForecastJoin {
             }
         }
     }
+}
+
+/// The runs' shadow forecasts scored against what happened (gap-45f6bb): each forecast whose
+/// attempt settled with a learning label, on the pass probability it gave the arm that ran. A fit
+/// scores today's predictor over the logs; this scores what the self-model said at the time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct LiveForecasts {
+    /// Forecasts scored.
+    pub n: usize,
+    /// Of those, the attempts that passed.
+    pub passes: usize,
+    /// Their Brier score.
+    pub brier: Option<f64>,
+    /// The Brier score of always forecasting their pass rate.
+    pub base_rate_brier: Option<f64>,
+    /// Brier skill against it: below 0, worse than the base rate.
+    pub brier_skill: Option<f64>,
+}
+
+/// Score every run's shadow forecasts under `runs_dir` ([`LiveForecasts`]). A forecast counts
+/// when its attempt settled with a label and it gave the arm that ran a pass probability.
+///
+/// # Errors
+///
+/// Returns an error when the directory or a run's files exist but cannot be read.
+pub fn score_live_forecasts(runs_dir: &Path) -> std::io::Result<LiveForecasts> {
+    let (mut n, mut passes, mut squared) = (0_usize, 0_usize, 0.0_f64);
+    for run_dir in run_dirs(runs_dir)? {
+        let run = RunRecords::load(&run_dir).map_err(std::io::Error::other)?;
+        let verdicts: HashMap<&str, &AttemptVerdictRecord> = run
+            .verdicts
+            .iter()
+            .filter(|line| line.record.outcome != AttemptOutcome::Abandoned)
+            .map(|line| (line.record.identity.attempt_key.as_str(), &line.record))
+            .collect();
+        for line in &run.predictions {
+            let forecast = &line.record;
+            let Some(verdict) = verdicts.get(forecast.identity.attempt_key.as_str()) else {
+                continue;
+            };
+            let Some(passed) = verdict.learning_success() else {
+                continue;
+            };
+            let executed = &verdict.executed;
+            let model = executed
+                .model_dispatched
+                .as_deref()
+                .or(executed.model_requested.as_deref());
+            let ran = |arm: &ArmKey| {
+                Some(arm.provider.as_str()) == executed.provider.as_deref()
+                    && Some(arm.model.as_str()) == model
+            };
+            let Some(p) = forecast
+                .candidates
+                .iter()
+                .find(|candidate| candidate.arm.parse::<ArmKey>().is_ok_and(|arm| ran(&arm)))
+                .map(|candidate| candidate.p_gate)
+            else {
+                continue;
+            };
+            let outcome = if passed { 1.0 } else { 0.0 };
+            squared += (p - outcome) * (p - outcome);
+            n += 1;
+            passes += usize::from(passed);
+        }
+    }
+    let rate = share(passes, n);
+    let brier = (n > 0).then(|| squared / n as f64);
+    let base_rate_brier = rate.map(|rate| rate * (1.0 - rate));
+    let brier_skill = brier
+        .zip(base_rate_brier)
+        .and_then(|(brier, base)| (base > 0.0).then(|| 1.0 - brier / base));
+    Ok(LiveForecasts {
+        n,
+        passes,
+        brier,
+        base_rate_brier,
+        brier_skill,
+    })
 }
 
 /// `part` of `whole`; `None` when `whole` is 0.
@@ -452,8 +540,8 @@ mod tests {
 
         assert_eq!(
             report.training_units().count(),
-            4,
-            "the failover unit is left out"
+            5,
+            "the failover unit teaches its model too (bug-a35286)"
         );
     }
 
@@ -505,6 +593,57 @@ mod tests {
         );
         assert_eq!(report.audit.labelled, 2);
         assert_eq!(report.audit.unlabelled, 2);
+    }
+
+    /// bug-b7f6a8: the `abandoned` verdict a resume writes for an attempt a stopped process
+    /// left is skipped like a missing one: the attempt counts as abandoned, makes no unit, and
+    /// is no prior failure of the chain's next attempt.
+    #[test]
+    fn a_resumes_abandoned_verdict_counts_as_no_verdict() {
+        let identity =
+            |attempt| AttemptIdentity::new(&AttemptKey::new("run-r", "plan-r", "T1", attempt));
+        let stamped = |mut line: serde_json::Value, schema: &str| {
+            line["schema_version"] = schema.into();
+            format!("{line}\n")
+        };
+        let mut passed = AttemptVerdictRecord::settle(identity(2), AttemptOutcome::Passed, true);
+        passed.executed.provider = Some("cerebras".to_string());
+        passed.executed.model_dispatched = Some("gpt-oss-120b".to_string());
+        let text = [
+            stamped(
+                serde_json::to_value(AttemptOpenRecord::new(identity(1), 1_000)).expect("open"),
+                ATTEMPT_OPEN_SCHEMA,
+            ),
+            stamped(
+                serde_json::to_value(AttemptVerdictRecord::settle(
+                    identity(1),
+                    AttemptOutcome::Abandoned,
+                    true,
+                ))
+                .expect("abandoned"),
+                VERDICT_SCHEMA,
+            ),
+            stamped(
+                serde_json::to_value(AttemptOpenRecord::new(identity(2), 2_000)).expect("open"),
+                ATTEMPT_OPEN_SCHEMA,
+            ),
+            stamped(
+                serde_json::to_value(&passed).expect("passed"),
+                VERDICT_SCHEMA,
+            ),
+        ]
+        .concat();
+        let mut report = IngestReport::default();
+        read_run(&text, &mut report);
+
+        assert_eq!(report.audit.attempts, 2);
+        assert_eq!(report.audit.abandoned, 1);
+        assert_eq!((report.audit.labelled, report.audit.unlabelled), (1, 0));
+        let [unit] = report.units.as_slice() else {
+            panic!("one unit: {:?}", report.units);
+        };
+        assert_eq!(unit.attempt, 2);
+        assert!(!unit.prior_failure);
     }
 
     #[test]

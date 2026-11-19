@@ -106,6 +106,12 @@ impl GeminiNativeBackend {
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
             LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
             LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::RequestRefused {
+                status, message, ..
+            }) => crate::provider::error_classify::refusal_class(
+                *status,
+                &message.to_ascii_lowercase(),
+            ),
             LlmError::Provider(ProviderError::Other(message))
             | LlmError::Backend(message)
             | LlmError::Network(message) => provider_error_kind(message),
@@ -558,9 +564,13 @@ impl LlmBackend for GeminiNativeBackend {
         });
 
         // Convert tokio mpsc::Receiver into a futures::Stream without
-        // requiring the tokio-stream crate.
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // requiring the tokio-stream crate. Each event says when the request
+        // went, so the loop can time the call's first token (gap-0eb14e).
+        let sent_at = Some(request_start);
+        let stream = futures::stream::unfold(rx, move |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|item| (item.map(|event| event.with_sent_at(sent_at)), rx))
         });
         Ok(Box::pin(stream))
     }
@@ -750,6 +760,7 @@ mod tests {
             provider: "gemini".to_string(),
             slug: "gemini-3.1-pro-preview".to_string(),
             context_window: 1_048_576,
+            compact_at_tokens: None,
             max_output: Some(8_192),
             supports_tools: true,
             supports_thinking: true,
@@ -782,6 +793,8 @@ mod tests {
             tier: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
+            api: None,
         }
     }
 

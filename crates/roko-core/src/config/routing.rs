@@ -144,6 +144,34 @@ pub struct LadderRung {
     pub name: String,
     /// `[models.*]` key or model slug the rung runs.
     pub model: String,
+    /// More `[models.*]` keys or slugs the rung may run in place of `model`
+    /// (gap-51d2ca, decision 4111 option B1). With `[routing]
+    /// explore_epsilon` ε above 0, a try the ladder routes to the rung draws
+    /// among the k of the rung's models that can run here: `model` with
+    /// probability 1 − ε + ε/k, each other one with ε/k. The route row logs
+    /// that propensity, and the cascade router learns from the outcome at
+    /// its inverse-propensity weight. A rung whose `model` cannot run is
+    /// skipped whatever its alternates, a rung with one model that can run
+    /// never draws, and climbs and failover go by rung as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternates: Vec<String>,
+}
+
+impl LadderRung {
+    /// A rung named `name` that runs `model` alone.
+    #[must_use]
+    pub fn new(name: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            model: model.into(),
+            alternates: Vec::new(),
+        }
+    }
+
+    /// The rung's models: `model`, then its alternates.
+    pub fn models(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.model.as_str()).chain(self.alternates.iter().map(String::as_str))
+    }
 }
 
 /// Start rung, by name, for each task tier.
@@ -238,15 +266,31 @@ pub struct LadderRoleConfig {
 /// start = { mechanical = "top", focused = "top" }
 /// ```
 ///
+/// A rung may name `alternates`, models it draws among at `[routing]
+/// explore_epsilon` so that the cascade router learns from plan runs
+/// ([`LadderRung::alternates`], gap-51d2ca):
+///
+/// ```toml
+/// [routing.ladder]
+/// rungs = [
+///   { name = "cheap", model = "cerebras-gptoss" },
+///   { name = "mid", model = "glm-4-7", alternates = ["kimi-k2-5"] },
+///   { name = "top", model = "claude-sonnet" },
+/// ]
+/// ```
+///
 /// Each try on a rung is bounded (gap-3e770b): a try that uses up its rung's
-/// turns or spend fails on that rung, as a failed check does, so two such
-/// tries climb. `max_turns` and `max_usd` set a rung's allowance by name;
-/// a rung `max_turns` leaves out gets [`LadderConfig::try_turns`]'s default.
+/// turns, spend or time is judged by the task's checks on the work it left,
+/// and fails on that rung when they fail, so two such tries climb.
+/// `max_turns`, `max_usd` and `max_secs` set a rung's allowance by name; a
+/// rung `max_turns` leaves out gets [`LadderConfig::try_turns`]'s default,
+/// and one `max_secs` leaves out [`LadderConfig::try_secs`]'s (bug-f0007b).
 ///
 /// ```toml
 /// [routing.ladder]
 /// max_turns = { cheap = 12, mid = 30 }
 /// max_usd = { cheap = 0.06 }
+/// max_secs = { cheap = 300, mid = 900 }
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -280,11 +324,43 @@ pub struct LadderConfig {
     /// first.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub max_usd: BTreeMap<String, f64>,
+    /// How long one try of a task may run on a rung, in seconds, by rung
+    /// name ([`Self::try_secs`], bug-f0007b). `0` leaves the rung's tries
+    /// without a time bound.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub max_secs: BTreeMap<String, u64>,
+    /// Seconds per model call above which a rung's tries are slow, which a
+    /// run says once with a `rung_slow` event ([`Self::slow_call_secs`],
+    /// gap-3217a0); unset is [`SLOW_CALL_SECS`], `0` turns it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_call_secs: Option<u64>,
+    /// Seconds one try waits in all for a slot at a provider the run's own
+    /// calls fill, before failover may hand the try to a substitute
+    /// ([`Self::rate_limit_wait_secs`], bug-62ae1e); unset is
+    /// [`RATE_LIMIT_WAIT_SECS`], `0` never waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_wait_secs: Option<u64>,
 }
 
 /// Fewest turns a try gets by default on a rung it can still climb from
 /// ([`LadderConfig::try_turns`]).
 pub const MIN_TRY_TURNS: u32 = 12;
+
+/// Fewest seconds a try gets by default on a rung it can still climb from
+/// ([`LadderConfig::try_secs`]).
+pub const MIN_TRY_SECS: u64 = 300;
+
+/// Seconds per model call above which a rung's tries are slow by default
+/// ([`LadderConfig::slow_call_secs`]): a minute, well above the 1 to 10 s a
+/// call takes on the API rungs of round v6 and v7, and below the two minutes
+/// glm-4.7's reasoning took per call on Undertow's phase 1.
+pub const SLOW_CALL_SECS: u64 = 60;
+
+/// Seconds one try waits in all by default for a slot at a provider the
+/// run's own calls fill ([`LadderConfig::rate_limit_wait_secs`]): ten
+/// minutes, several of the calls of up to two minutes glm-4.7 made on
+/// Undertow's phase 1.
+pub const RATE_LIMIT_WAIT_SECS: u64 = 600;
 
 /// D11's cascade plus Sonnet, cheapest first.
 fn default_ladder_rungs() -> Vec<LadderRung> {
@@ -295,10 +371,7 @@ fn default_ladder_rungs() -> Vec<LadderRung> {
         ("top", crate::defaults::MODEL_FOCUSED),
     ]
     .into_iter()
-    .map(|(name, model)| LadderRung {
-        name: name.to_string(),
-        model: model.to_string(),
-    })
+    .map(|(name, model)| LadderRung::new(name, model))
     .collect()
 }
 
@@ -312,6 +385,9 @@ impl Default for LadderConfig {
             probe: true,
             max_turns: BTreeMap::new(),
             max_usd: BTreeMap::new(),
+            max_secs: BTreeMap::new(),
+            slow_call_secs: None,
+            rate_limit_wait_secs: None,
         }
     }
 }
@@ -325,6 +401,9 @@ pub struct ResolvedLadder<'a> {
     pub usable: Vec<usize>,
     /// Index into `rungs` of the start rung, always one of `usable`.
     pub start: usize,
+    /// Index into `rungs` of the start rung the task's hint or tier names,
+    /// which may not run.
+    pub requested: usize,
 }
 
 impl<'a> ResolvedLadder<'a> {
@@ -332,6 +411,15 @@ impl<'a> ResolvedLadder<'a> {
     #[must_use]
     pub fn start_rung(&self) -> &'a LadderRung {
         &self.rungs[self.start]
+    }
+
+    /// Whether no rung at or above the requested start can run, so the task
+    /// starts below it (gap-ff2c38).
+    #[must_use]
+    pub fn start_unreachable(&self) -> bool {
+        self.usable
+            .last()
+            .is_some_and(|&highest| highest < self.requested)
     }
 }
 
@@ -344,7 +432,10 @@ impl LadderConfig {
     /// rungs, else the one named by the role's `start`, else the ladder's
     /// `start`, else D11; a start name that matches no rung means the first
     /// rung. When that rung cannot run, the task starts on the next runnable
-    /// rung above it, else the nearest one below.
+    /// rung above it. When no rung above it can run either, as in a chat run
+    /// that drops a CLI rung at the top, it starts on the runnable rung below
+    /// the highest one, so it can still climb once (gap-ff2c38), or on the
+    /// only one that runs.
     #[must_use]
     pub fn resolve(
         &self,
@@ -364,21 +455,24 @@ impl LadderConfig {
             .filter(|(_, rung)| runnable(&rung.model))
             .map(|(index, _)| index)
             .collect();
-        let named = rung_hint
+        let requested = rung_hint
             .and_then(|hint| rungs.iter().position(|rung| rung.name == hint))
             .unwrap_or_else(|| {
                 let name = self.start_name(entry, tier);
                 rungs.iter().position(|rung| rung.name == name).unwrap_or(0)
             });
-        let start = usable
-            .iter()
-            .copied()
-            .find(|&index| index >= named)
-            .or_else(|| usable.last().copied())?;
+        let start = match usable.iter().copied().find(|&index| index >= requested) {
+            Some(index) => index,
+            None => {
+                let highest = usable.len().checked_sub(1)?;
+                usable[highest.saturating_sub(1)]
+            }
+        };
         Some(ResolvedLadder {
             rungs,
             usable,
             start,
+            requested,
         })
     }
 
@@ -429,6 +523,20 @@ impl LadderConfig {
                     } else if !names.insert(rung.name.as_str()) {
                         issues.push(format!("{scope}: rung `{}` is defined twice", rung.name));
                     }
+                    let mut models = std::collections::HashSet::from([rung.model.trim()]);
+                    for alternate in rung.alternates.iter().map(|model| model.trim()) {
+                        if alternate.is_empty() {
+                            issues.push(format!(
+                                "{scope}: rung `{}` has an alternate that names no model",
+                                rung.name
+                            ));
+                        } else if !models.insert(alternate) {
+                            issues.push(format!(
+                                "{scope}: rung `{}` names `{alternate}` twice",
+                                rung.name
+                            ));
+                        }
+                    }
                 }
             }
             if rungs.is_empty() {
@@ -463,6 +571,13 @@ impl LadderConfig {
                 issues.push(format!(
                     "routing.ladder.max_usd: `{name}` = {usd} is not a positive amount, so its \
                      tries have no spend allowance of their own"
+                ));
+            }
+        }
+        for name in self.max_secs.keys() {
+            if !named(name) {
+                issues.push(format!(
+                    "routing.ladder.max_secs: no rung is named `{name}`"
                 ));
             }
         }
@@ -517,6 +632,52 @@ impl LadderConfig {
                 .max(MIN_TRY_TURNS)
                 .min(tier_turns)
         })
+    }
+
+    /// How long, in seconds, one try may run on rung `rung`, from which the
+    /// task can still climb `climbs_left` rungs, when its attempt may run
+    /// `tier_secs` (its `timeout_secs`, else `[timeouts] agent_dispatch_secs`;
+    /// bug-f0007b). The rung's `max_secs`, when set, `0` for no bound.
+    /// Otherwise as [`Self::try_turns`] shares out turns: each rung below the
+    /// highest one the task can reach gets half the time of the rung above
+    /// it, from `tier_secs` on that highest rung, and never less than
+    /// [`MIN_TRY_SECS`] or more than `tier_secs`: with the default 1800 s, a
+    /// task that can climb two rungs gets 450 s on its start rung, then 900 s.
+    /// `None` on the highest rung, where the attempt's timeout stands.
+    #[must_use]
+    pub fn try_secs(&self, rung: &str, climbs_left: u32, tier_secs: u64) -> Option<u64> {
+        if let Some(&secs) = self.max_secs.get(rung) {
+            return (secs > 0).then_some(secs);
+        }
+        (climbs_left > 0).then(|| {
+            tier_secs
+                .checked_shr(climbs_left)
+                .unwrap_or(0)
+                .max(MIN_TRY_SECS)
+                .min(tier_secs)
+        })
+    }
+
+    /// Seconds per model call above which a rung's tries are slow
+    /// (gap-3217a0): `slow_call_secs`, else [`SLOW_CALL_SECS`]; `None` when
+    /// it is `0`.
+    #[must_use]
+    pub fn slow_call_secs(&self) -> Option<u64> {
+        match self.slow_call_secs {
+            Some(0) => None,
+            Some(secs) => Some(secs),
+            None => Some(SLOW_CALL_SECS),
+        }
+    }
+
+    /// How long, in seconds, one try waits in all for a slot at a provider
+    /// the run's own calls fill, at the calls at once its rate limits showed
+    /// it takes, before failover may hand the try to a substitute on another
+    /// rung (bug-62ae1e): `rate_limit_wait_secs`, else
+    /// [`RATE_LIMIT_WAIT_SECS`].
+    #[must_use]
+    pub fn rate_limit_wait_secs(&self) -> u64 {
+        self.rate_limit_wait_secs.unwrap_or(RATE_LIMIT_WAIT_SECS)
     }
 
     /// What one try may spend on rung `rung`, in USD: its `max_usd`, when
@@ -620,10 +781,11 @@ pub struct RoutingConfig {
     /// ε of the exploration draw (S02.P1-3, decision 2203): with probability
     /// ε a route the cascade router decides runs an eligible model drawn
     /// uniformly instead of its argmax, so every eligible model's logged
-    /// propensity is at least ε/k. A pin (`--model`, a model hint) or a
-    /// ladder rung is never explored. Read through
-    /// [`Self::effective_explore_epsilon`], which caps it at
-    /// [`MAX_EXPLORE_EPSILON`]; 0 turns exploration off.
+    /// propensity is at least ε/k. A pin (`--model`, a model hint) is never
+    /// explored, and a ladder rung only among its own models, when it names
+    /// [`LadderRung::alternates`] (gap-51d2ca); a run with learning frozen
+    /// draws on no rung. Read through [`Self::effective_explore_epsilon`],
+    /// which caps it at [`MAX_EXPLORE_EPSILON`]; 0 turns exploration off.
     #[serde(default = "default_explore_epsilon")]
     pub explore_epsilon: f64,
 }
@@ -816,6 +978,61 @@ mod tests {
         );
     }
 
+    /// gap-ff2c38: when no rung at or above a task's start rung can run, as
+    /// in a chat run that drops the CLI rung at the top, the task starts one
+    /// runnable rung below the highest, so it can still climb once. A start
+    /// that can run is unchanged.
+    #[test]
+    fn an_unreachable_start_keeps_one_climb() {
+        let ladder = LadderConfig::default();
+        let name = |resolved: &ResolvedLadder<'_>| resolved.start_rung().name.clone();
+        let highest = |resolved: &ResolvedLadder<'_>| {
+            let index = *resolved.usable.last().expect("a runnable rung");
+            resolved.rungs[index].name.clone()
+        };
+        let no_top = |model: &str| model != "claude-sonnet-4-6";
+        let architectural = ladder
+            .resolve("implementer", TaskTier::Architectural, None, no_top)
+            .expect("ladder");
+        assert_eq!(name(&architectural), "mid");
+        assert_eq!(highest(&architectural), "strong");
+        assert!(architectural.start_unreachable());
+        // A hint that names a rung that cannot run falls back the same way.
+        let hinted = ladder
+            .resolve("implementer", TaskTier::Focused, Some("top"), no_top)
+            .expect("ladder");
+        assert_eq!(name(&hinted), "mid");
+        assert!(hinted.start_unreachable());
+        // With one runnable rung, the task starts there.
+        let only_cheap = |model: &str| model == "gpt-oss-120b";
+        let alone = ladder
+            .resolve("implementer", TaskTier::Architectural, None, only_cheap)
+            .expect("ladder");
+        assert_eq!(name(&alone), "cheap");
+        assert!(alone.start_unreachable());
+
+        // A start that runs, or a rung above it, changes nothing.
+        for tier in TaskTier::ALL {
+            let every = ladder
+                .resolve("implementer", tier, None, |_| true)
+                .expect("ladder");
+            assert!(!every.start_unreachable(), "{tier}");
+            if tier != TaskTier::Architectural {
+                let without_top = ladder
+                    .resolve("implementer", tier, None, no_top)
+                    .expect("ladder");
+                assert_eq!(without_top.start, every.start, "{tier}");
+                assert!(!without_top.start_unreachable(), "{tier}");
+            }
+        }
+        let no_cheap = |model: &str| model != "gpt-oss-120b";
+        let moved_up = ladder
+            .resolve("implementer", TaskTier::Mechanical, None, no_cheap)
+            .expect("ladder");
+        assert_eq!(name(&moved_up), "mid");
+        assert!(!moved_up.start_unreachable());
+    }
+
     /// gap-dbf2a6: a task's `rung` hint replaces its tier's start rung, and a
     /// hinted rung that cannot run moves up like any start rung. A name that
     /// matches none of the task's rungs is ignored; plan validate rejects it.
@@ -869,14 +1086,8 @@ mod tests {
         with_scribe.roles.push(LadderRoleConfig {
             role: "scribe".to_string(),
             rungs: Some(vec![
-                LadderRung {
-                    name: "docs".to_string(),
-                    model: "gpt-4o-mini".to_string(),
-                },
-                LadderRung {
-                    name: "careful".to_string(),
-                    model: "claude-sonnet-4-6".to_string(),
-                },
+                LadderRung::new("docs", "gpt-4o-mini"),
+                LadderRung::new("careful", "claude-sonnet-4-6"),
             ]),
             ..LadderRoleConfig::default()
         });
@@ -984,17 +1195,13 @@ mod tests {
 
     #[test]
     fn ladder_issues_name_duplicate_rungs_and_roleless_entries() {
-        let rung = |name: &str, model: &str| LadderRung {
-            name: name.to_string(),
-            model: model.to_string(),
-        };
+        let rung = |name: &str, model: &str| LadderRung::new(name, model);
+        // gap-51d2ca: an alternate that names no model, or a model the rung
+        // names already, is an issue too.
+        let mut top = rung("top", "c");
+        top.alternates = ["d", " ", "c", "d"].map(String::from).to_vec();
         let ladder = LadderConfig {
-            rungs: vec![
-                rung("cheap", "a"),
-                rung("cheap", "b"),
-                rung("mid", ""),
-                rung("top", "c"),
-            ],
+            rungs: vec![rung("cheap", "a"), rung("cheap", "b"), rung("mid", ""), top],
             roles: vec![LadderRoleConfig::default()],
             ..LadderConfig::default()
         };
@@ -1003,36 +1210,41 @@ mod tests {
             [
                 "routing.ladder: rung `cheap` is defined twice",
                 "routing.ladder: every rung needs a name and a model",
+                "routing.ladder: rung `top` has an alternate that names no model",
+                "routing.ladder: rung `top` names `c` twice",
+                "routing.ladder: rung `top` names `d` twice",
                 "routing.ladder.roles ``: the entry names no role",
             ]
         );
     }
 
     /// The config loader drops every key its schema tree lacks, so the
-    /// ladder, role entries included, must survive a real load.
+    /// ladder, role entries included, must survive a real load. Validation
+    /// knows a rung's `alternates` (gap-51d2ca).
     #[test]
     fn ladder_survives_a_config_load() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("roko.toml");
-        std::fs::write(
-            &path,
-            r#"
+        let text = r#"
 schema_version = 2
 config_version = 2
 
 [routing.ladder]
 enabled = false
-rungs = [{ name = "only", model = "claude-sonnet" }]
+rungs = [{ name = "only", model = "claude-sonnet", alternates = ["kimi-k2-5"] }]
 start = { architectural = "only" }
 max_turns = { only = 9 }
 max_usd = { only = 0.25 }
+max_secs = { only = 600 }
 
 [[routing.ladder.roles]]
 role = "reviewer"
 start = { mechanical = "only" }
-"#,
-        )
-        .expect("write roko.toml");
+"#;
+        std::fs::write(&path, text).expect("write roko.toml");
+        let value: toml::Value = toml::from_str(text).expect("parse roko.toml");
+        let unknown = crate::config::loader::validate_known_config_paths(&value);
+        assert!(unknown.is_empty(), "{unknown:?}");
 
         let config = crate::config::loader::load_config_file(
             &path,
@@ -1048,6 +1260,9 @@ start = { mechanical = "only" }
         let ladder = &config.routing.ladder;
         assert!(!ladder.enabled);
         assert_eq!(ladder.rungs.len(), 1);
+        assert_eq!(ladder.rungs[0].alternates, ["kimi-k2-5"]);
+        let models: Vec<&str> = ladder.rungs[0].models().collect();
+        assert_eq!(models, ["claude-sonnet", "kimi-k2-5"]);
         assert_eq!(ladder.start.get(TaskTier::Architectural), Some("only"));
         assert_eq!(ladder.start.get(TaskTier::Mechanical), None);
         assert_eq!(ladder.roles.len(), 1);
@@ -1058,6 +1273,7 @@ start = { mechanical = "only" }
         );
         assert_eq!(ladder.try_turns("only", 0, 60), Some(9));
         assert_eq!(ladder.try_usd("only"), Some(0.25));
+        assert_eq!(ladder.try_secs("only", 0, 1800), Some(600));
     }
 
     /// gap-3e770b: a try on a rung the task can still climb from gets half
@@ -1082,6 +1298,7 @@ start = { mechanical = "only" }
             r#"
             max_turns = { cheap = 6, top = 40, gone = 3 }
             max_usd = { cheap = 0.05, mid = 0.0, nowhere = 1.0 }
+            max_secs = { nowhere = 60 }
             "#,
         )
         .expect("ladder");
@@ -1097,7 +1314,37 @@ start = { mechanical = "only" }
                 "routing.ladder.max_usd: `mid` = 0 is not a positive amount, so its tries have \
                  no spend allowance of their own",
                 "routing.ladder.max_usd: no rung is named `nowhere`",
+                "routing.ladder.max_secs: no rung is named `nowhere`",
             ]
         );
+    }
+
+    /// bug-f0007b: a try on a rung the task can still climb from gets half
+    /// the time of the rung above it, from the attempt's time on the highest
+    /// rung it can reach, at least [`MIN_TRY_SECS`] and at most the
+    /// attempt's time; the highest rung keeps the attempt's timeout.
+    /// `max_secs` sets a rung's time outright, and `0` takes its bound away.
+    #[test]
+    fn a_try_s_time_halves_below_the_highest_rung_it_can_reach() {
+        let ladder = LadderConfig::default();
+        assert_eq!(ladder.try_secs("mid", 2, 1800), Some(450));
+        assert_eq!(ladder.try_secs("strong", 1, 1800), Some(900));
+        assert_eq!(ladder.try_secs("top", 0, 1800), None);
+        // Never below the floor, never above the attempt's time.
+        assert_eq!(ladder.try_secs("cheap", 2, 600), Some(MIN_TRY_SECS));
+        assert_eq!(ladder.try_secs("cheap", 1, 120), Some(120));
+        assert_eq!(ladder.try_secs("cheap", 70, 1800), Some(MIN_TRY_SECS));
+
+        let bounded: LadderConfig = toml::from_str(
+            r#"
+            max_secs = { cheap = 60, mid = 0, top = 2400 }
+            "#,
+        )
+        .expect("ladder");
+        assert_eq!(bounded.try_secs("cheap", 2, 1800), Some(60));
+        assert_eq!(bounded.try_secs("mid", 1, 1800), None);
+        assert_eq!(bounded.try_secs("top", 0, 1800), Some(2400));
+        assert_eq!(bounded.try_secs("strong", 1, 1800), Some(900));
+        assert!(bounded.issues().is_empty(), "{:?}", bounded.issues());
     }
 }

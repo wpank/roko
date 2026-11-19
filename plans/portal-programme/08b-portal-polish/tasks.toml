@@ -1049,7 +1049,7 @@ files = [
 [task.context]
 read_files = [
     { path = "plans/portal-programme/08b-portal-polish/accept/stream.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
-    { path = "apps/portal/src/lib/emptyState.ts", why = "the sentences by phase", lines = "1-134" },
+    { path = "apps/portal/src/lib/emptyState.ts", why = "the sentences by phase; a plan's own sentence moved to components/plan/PlanPage.tsx with gap-60f6b6" },
     { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the empty-state inputs", lines = "136-180" },
     { path = "apps/portal/src/lib/planSet.ts", why = "queuePosition and waitReason (T03)" },
 ]

@@ -87,6 +87,21 @@ pub struct PlanGenerationResult {
     /// states none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_checks: Option<serde_json::Value>,
+    /// What roko changed in its planner's draft before it validated it, one
+    /// line each (gap-0fb7d9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repairs: Vec<String>,
+}
+
+/// What a plan generation runs under, beyond its request's text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlanGenerationOptions {
+    /// What its planner calls may cost together, in USD (gap-33d458); 0 sets
+    /// no cap. `None` leaves the cap to `[authoring] max_generation_usd`.
+    pub max_usd: Option<f64>,
+    /// The workspace file the request's text is, when a host named it with
+    /// `spec_path` (bug-60ad88): every task of the plan reads it.
+    pub spec_path: Option<std::path::PathBuf>,
 }
 
 /// Where a long operation reports what it is doing, as a JSON object, each
@@ -307,6 +322,83 @@ pub struct PromptPlanResult {
     /// What the run cost, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+}
+
+/// The run a plan's Graph checkpoint records (bug-cbdb6b): what a run that
+/// starts the plan over sets aside, and what a resume continues.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointRun {
+    /// The run's id.
+    pub run_id: String,
+    /// How the run stands: `failed`, `interrupted`, `cancelled`, `running`
+    /// (it stopped without saying), `succeeded` or `unverified`.
+    pub status: String,
+    /// Tasks the checkpoint recorded as passed: the ones a resume replays,
+    /// or, when a resume cannot continue it, the ones a run that starts over
+    /// runs again (bug-b7f6a8).
+    pub passed_tasks: Vec<String>,
+    /// Tasks a resume runs.
+    pub tasks_left: Vec<String>,
+    /// Whether a resume would continue the run: it stopped part way with
+    /// tasks passed, and tasks left or its delivery unfinished, and its
+    /// checkpoint still fits the plan.
+    pub resumable: bool,
+    /// Every task passed, but the run stopped before it delivered them
+    /// (bug-4fadf8): a resume replays the tasks and runs only the delivery,
+    /// its merge, plan check and batch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delivery_pending: bool,
+    /// Whether a resume continues the checkpoint at all, however far its run
+    /// got (bug-b7f6a8). When it does not, because the checkpoint no longer
+    /// fits the plan or cannot be read, a resume is refused with `reason`,
+    /// and only a run that starts over runs the plan.
+    pub continues: bool,
+    /// Why a resume cannot continue it, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What the run spent before it stopped, in USD, which a resume carries
+    /// into the plan's budget: its finished model calls, and the attempts a
+    /// stopped process left at what a resume settles them at (bug-b7f6a8).
+    /// `None` when its cost ledger cannot be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_usd: Option<f64>,
+}
+
+/// Run `run_id` as people see it (bug-cbdb6b).
+///
+/// That is the first 8 characters of the UUID the id ends with, as a serve
+/// run's id (a bare UUID) and a command-line run's (`graph-<plan>-<uuid>`)
+/// do, or of the id itself otherwise.
+#[must_use]
+pub fn short_run_id(run_id: &str) -> &str {
+    let id = trailing_uuid(run_id).unwrap_or(run_id);
+    id.get(..8).unwrap_or(id)
+}
+
+/// Whether `wanted` names run `run_id` (bug-cbdb6b).
+///
+/// It does when it has 8 characters or more and starts the id, or the UUID
+/// the id ends with, so the short form [`short_run_id`] shows names its run.
+#[must_use]
+pub fn names_run(run_id: &str, wanted: &str) -> bool {
+    wanted.len() >= 8
+        && (run_id.starts_with(wanted)
+            || trailing_uuid(run_id).is_some_and(|uuid| uuid.starts_with(wanted)))
+}
+
+/// The hyphenated UUID `run_id` ends with, if any.
+fn trailing_uuid(run_id: &str) -> Option<&str> {
+    let tail = run_id.get(run_id.len().checked_sub(36)?..)?;
+    uuid::Uuid::try_parse(tail).is_ok().then_some(tail)
+}
+
+/// What [`CliRuntime::restore_checkpoint_run`] did (bug-cbdb6b).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestoredCheckpoint {
+    /// The run whose checkpoint is the plan's current one again.
+    pub restored: CheckpointRun,
+    /// The run whose checkpoint was set aside in its place, if any.
+    pub set_aside: Option<CheckpointRun>,
 }
 
 /// Summary info for a configured repository, used to give agents
@@ -607,16 +699,19 @@ pub trait CliRuntime: Send + Sync + 'static {
     /// [`Self::generate_plan_from_prompt`], reporting what the generation is
     /// doing to `progress` each time it moves on (gap-11d870): a JSON object
     /// with its `stage`, `attempt` of `attempts`, `reason`, `model`, `calls`
-    /// and `cost_usd` so far. The default reports nothing.
+    /// and `cost_usd` so far, under `options`: its cap and the file its
+    /// request's text is. The default reports nothing and leaves `options` to
+    /// the method it calls.
     async fn generate_plan_reporting(
         &self,
         workdir: &std::path::Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        options: PlanGenerationOptions,
         progress: ProgressReporter,
     ) -> anyhow::Result<PlanGenerationResult> {
-        let _ = progress;
+        let _ = (options, progress);
         if for_chat_host {
             self.generate_plan_for_chat_host(workdir, slug, prompt)
                 .await
@@ -679,6 +774,41 @@ pub trait CliRuntime: Send + Sync + 'static {
         _plan_dir: &std::path::Path,
     ) -> anyhow::Result<Option<Vec<String>>> {
         Ok(None)
+    }
+
+    /// The run the checkpoint of the plan at `plan_dir` records, read
+    /// without changing it: what a run that starts the plan over sets aside,
+    /// and whether a resume would continue it instead (bug-cbdb6b). A chat
+    /// host's `plan_run` that says neither `resume` nor `fresh` is refused
+    /// while it is resumable.
+    ///
+    /// The default returns `Ok(None)`: the runtime cannot tell.
+    async fn checkpoint_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+    ) -> anyhow::Result<Option<CheckpointRun>> {
+        Ok(None)
+    }
+
+    /// Put back the checkpoint of run `run_id` (its id, or the id's first 8
+    /// or more characters) that a run starting the plan at `plan_dir` over
+    /// set aside, so that a resume continues it (bug-cbdb6b). The plan's
+    /// current checkpoint, another run's, is set aside in its place. Returns
+    /// the run put back and the run set aside, if any.
+    ///
+    /// # Errors
+    ///
+    /// When no set-aside checkpoint of the plan records the run, when a run
+    /// holds the workspace, or when a resume could not build on the run's
+    /// work. The default cannot put a checkpoint back.
+    async fn restore_checkpoint_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+        run_id: &str,
+    ) -> anyhow::Result<RestoredCheckpoint> {
+        anyhow::bail!("this runtime cannot put back the checkpoint of run {run_id}")
     }
 
     /// Return the ordered list of plan ids that would be executed for
@@ -948,5 +1078,31 @@ pub trait CliRuntime: Send + Sync + 'static {
     ) -> Result<serde_json::Value, EffectDecisionError> {
         let _ = (workdir, effect_id, decision);
         Err(EffectDecisionError::Unsupported)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// bug-cbdb6b: a run's short id is the start of the UUID its id ends
+    /// with, a command-line run's `graph-<plan>-<uuid>` included, and that
+    /// short id, or any 8 or more characters starting the id, names it.
+    #[test]
+    fn a_runs_short_id_is_the_start_of_its_uuid_and_names_it() {
+        let serve = "6988f0b8-4199-4abf-9cfc-67713bc60e34";
+        let cli = "graph-two-step-aa2b4b54-f97b-427a-9824-8663613ad759";
+        assert_eq!(short_run_id(serve), "6988f0b8");
+        assert_eq!(short_run_id(cli), "aa2b4b54");
+        assert_eq!(short_run_id("run_4823_and_more"), "run_4823");
+        assert_eq!(short_run_id("run"), "run");
+
+        assert!(names_run(serve, "6988f0b8"));
+        assert!(names_run(serve, serve));
+        assert!(names_run(cli, "aa2b4b54"));
+        assert!(names_run(cli, "graph-two-step"));
+        assert!(!names_run(cli, "aa2b"), "too short to name a run");
+        assert!(!names_run(cli, "f97b427a"));
+        assert!(!names_run(serve, "6988f0b9"));
     }
 }

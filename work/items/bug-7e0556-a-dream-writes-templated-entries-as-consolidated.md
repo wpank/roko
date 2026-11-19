@@ -9,8 +9,9 @@ goal = "learning"
 size = "M"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round-v6-learning-research#3.6"
 discovered_from = "agent:learning-research (round v6, 2026-10-16)"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::scored_knowledge", "crates/roko-dreams/src/imagination.rs::synthesize_hypotheses", "crates/roko-dreams/src/hypnagogia.rs::dali_insight", "crates/roko-dreams/src/runner.rs::consolidate_now", "crates/roko-learn/src/loop_audit/loops.toml"]
@@ -95,3 +96,5 @@ Both `[[verify]]` commands pass, and the round-v6 repro above leaves the real le
 The dream items are held under dec-e70592 (Will chose hold over park on 2026-09-29). This item is filed open because
 round v6 asks for dreams to be shown; if dreams stay held, put the same hold on this item. Step 1 alone, prompt-side,
 already makes dreams safe to run.
+
+Checked 2026-10-27: 2026-10-26 sweep: partial. Since filing, dream-written entries' hard-coded confidence dropped from 1.0 to 0.78 (imagination.rs hypothetical_entry) and 0.70 (hypnagogia.rs dali_insight) -- the one touching commit (b2496bc06) only changed loops.toml's L-sec floor policy and is unrelated to this change, so its source commit is unidentified in this sweep. The two root causes remain open: prompt_builder::scored_knowledge still does not withhold source=dream knowledge, and both dream writers still emit template-only text with no model content, now promoted at a lower but still-arbitrary fixed confidence rather than a working tier with discounted confidence.

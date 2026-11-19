@@ -9,12 +9,12 @@ goal = "learning"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-dreams/consolidation"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-dreams/src/runner.rs::shared_tag_count", "crates/roko-dreams/src/runner.rs:991", "crates/roko-dreams/src/runner.rs::merge_knowledge_group"]
+anchors = ["crates/roko-dreams/src/runner.rs::shared_tag_count", "crates/roko-dreams/src/runner.rs:1010", "crates/roko-dreams/src/runner.rs::merge_knowledge_group"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

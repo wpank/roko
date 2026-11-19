@@ -11,7 +11,7 @@ use crate::claude_cli_agent::{EXITED_OUTPUT_DRAIN_MS, drain_killed_output};
 use crate::process::{
     GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
     benign_stderr_warn_once, classify_benign_stderr, confined_command, kill_tree,
-    register_spawned_pid, set_process_group, unregister_pid,
+    register_spawned_pid, set_process_group, unregister_pid, write_prompt,
 };
 use crate::provider::codex_cli::stream::parse_stream_line as parse_codex_line;
 use crate::provider::error_classify::{ProviderExhaustion, detect_provider_exhaustion};
@@ -30,7 +30,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_util::task::AbortOnDropHandle;
@@ -804,6 +804,10 @@ impl Agent for ExecAgent {
         };
         cmd.args(&self.args);
         apply_credential_scrub(&mut cmd, &self.credential_scrub);
+        // Marked as the agent's (gap-31e8a7), before the caller's variables
+        // so an explicit id wins. The name is the id a dispatch gives the
+        // agent, else the adapter's (`codex-cli:<model>`, `exec:<program>`).
+        roko_core::child_env::mark_agent_process(cmd.as_std_mut(), &self.name);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -840,17 +844,17 @@ impl Agent for ExecAgent {
             }
             _ => prompt_text.clone(),
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(full_stdin.as_bytes()).await {
-                let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
-                if track_pids()
-                    && let Some(pid) = pid
-                {
-                    unregister_pid(pid);
-                }
-                return self.failure_signal(input, &format!("stdin write failed: {e}"), started);
+        // An agent that stopped reading it is judged by its exit (bug-7d13f0).
+        if let Some(stdin) = child.stdin.take()
+            && let Err(e) = write_prompt(stdin, full_stdin.as_bytes()).await
+        {
+            let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+            if track_pids()
+                && let Some(pid) = pid
+            {
+                unregister_pid(pid);
             }
-            drop(stdin);
+            return self.failure_signal(input, &format!("stdin write failed: {e}"), started);
         }
 
         tracing::info!(
@@ -1439,6 +1443,27 @@ mod tests {
         );
     }
 
+    /// bug-7d13f0: an agent that exits before it reads its prompt is judged
+    /// by its exit status and stderr, not failed on the prompt write's broken
+    /// pipe. A prompt bigger than any pipe's buffer always breaks it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn an_agent_that_exits_before_reading_its_prompt_is_judged_by_its_exit() {
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".into(),
+                "echo 'unknown flag: --frobnicate' >&2; exit 3".into(),
+            ],
+        );
+        let result = agent
+            .run(&prompt(&"x".repeat(4 << 20)), &Context::now())
+            .await;
+        assert!(!result.success);
+        let text = result.output.body.as_text().unwrap();
+        assert_eq!(text, "exit 3: unknown flag: --frobnicate");
+    }
+
     #[tokio::test]
     async fn env_vars_reach_subprocess() {
         let agent = exec_agent("sh", vec!["-c".into(), "echo $ROKO_TEST_VAR".into()])
@@ -1447,6 +1472,21 @@ mod tests {
         assert!(result.success);
         let out = result.output.body.as_text().unwrap();
         assert_eq!(out.trim(), "hello_from_env");
+    }
+
+    /// gap-31e8a7: the subprocess is marked as the agent's: `ROKO_AGENT_ID`
+    /// is the agent's name, the id a dispatch gives it.
+    #[tokio::test]
+    async fn the_subprocess_is_marked_as_the_agents() {
+        let echo = || exec_agent("sh", vec!["-c".into(), "echo $ROKO_AGENT_ID".into()]);
+        for (agent, id) in [
+            (echo().with_name("live-a/codex"), "live-a/codex"),
+            (echo(), "exec:sh"),
+        ] {
+            let result = agent.run(&prompt(""), &Context::now()).await;
+            assert!(result.success);
+            assert_eq!(result.output.body.as_text().unwrap().trim(), id);
+        }
     }
 
     #[tokio::test]

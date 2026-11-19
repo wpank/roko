@@ -2,14 +2,18 @@
 //!
 //! Under `--worktree-per-task` each passed attempt is accepted onto its plan's
 //! branch `roko/plan/<plan>` (gap-3b5361). A run also gets one batch branch,
-//! `roko/batch/<run-id>`, started at the operator's `HEAD`. Every plan's
+//! started at the operator's `HEAD` and named from its plans: `roko/work/<slug>`
+//! (gap-b67fdd), so the merge command a run ends with reads like a person wrote
+//! it. Runs before that named it `roko/batch/<run-id>`. Every plan's
 //! attempts start from the batch, and each plan whose tasks all passed is
 //! delivered into it: [`CliCompletionDeliveryService`] merges the plan
 //! branch's verified tip by plumbing and runs the regression check on the
 //! merge in the repository's regression checkout, never the operator's.
 //! The batch moves to the merge only once that check passed (bug-700d7c), so
 //! an attempt that starts while another plan's check runs starts from checked
-//! work, and a plan whose check failed never reaches the batch.
+//! work, and a plan whose check failed never reaches the batch. A failed check
+//! handed back to the plan's tasks (find-5bcba7) is followed by a delivery of
+//! its own, of the plan branch's new tip, which supersedes the failed one.
 //! Deliveries run one at a time, since the
 //! batch has one tip, so a plan sees every plan delivered before it started.
 //!
@@ -27,8 +31,22 @@ use super::delivery::{CliCompletionDeliveryService, GitDeliveryBackend, is_ances
 use crate::orchestrator::worktree::format_branch_name;
 use crate::runner::merge::git_output;
 
-/// Namespace of the batch branches: `roko/batch/<run-id>`.
+/// Namespace of a run's batch branch, named from its plans (gap-b67fdd):
+/// `roko/work/<slug>`, or `roko/work/<slug>-2` and on while the name is
+/// taken. See [`batch_slug`].
+pub const WORK_BRANCH_PREFIX: &str = "roko/work/";
+
+/// Namespace of the batch branches named by run, before gap-b67fdd:
+/// `roko/batch/<run-id>`. A batch recorded under it still resumes, and a run
+/// that can't make its `roko/work/` name falls back to it.
 pub const BATCH_BRANCH_PREFIX: &str = "roko/batch/";
+
+/// The most characters of a batch branch's slug.
+const SLUG_MAX: usize = 40;
+
+/// The most `roko/work/<slug>-<n>` names a run tries before it falls back to
+/// `roko/batch/<run-id>`.
+const MAX_NAME_SUFFIX: usize = 99;
 
 /// Namespace of the tags on promoted runs: `roko/run/<run-id>`.
 pub const RUN_TAG_PREFIX: &str = "roko/run/";
@@ -58,6 +76,32 @@ pub struct Promotion {
     pub summary: String,
 }
 
+/// What a batch changed since the run began: files, lines added, lines
+/// removed (gap-2c87f0).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchChanges {
+    /// Files changed.
+    pub files: usize,
+    /// Lines added.
+    pub added: usize,
+    /// Lines removed.
+    pub removed: usize,
+}
+
+impl std::fmt::Display for BatchChanges {
+    /// `+120 −14 in 5 files`, as roko's design system writes changes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "+{} \u{2212}{} in {} {}",
+            self.added,
+            self.removed,
+            self.files,
+            if self.files == 1 { "file" } else { "files" }
+        )
+    }
+}
+
 /// The batch branch of one plan run, and the deliveries into it.
 #[derive(Debug)]
 pub struct BatchIntegration {
@@ -70,55 +114,78 @@ pub struct BatchIntegration {
     /// Whether this run created the branch, rather than continuing it.
     created: bool,
     store: DeliveryReceiptStore,
+    /// Deliveries whose failed check was handed back to the plan's tasks
+    /// (find-5bcba7): the plan's later delivery stands in for each, so
+    /// [`Self::receipts`] leaves them out.
+    superseded: parking_lot::Mutex<std::collections::BTreeSet<String>>,
     /// Deliveries take turns: each merges into the tip the last one left.
     queue: tokio::sync::Mutex<()>,
 }
 
 impl BatchIntegration {
-    /// Open run `run_id`'s batch branch in `repo`: continue it when it exists
-    /// (a resumed run), else create it at `HEAD`, which must not move it if
-    /// someone else created it in the meantime.
+    /// Open run `run_id`'s batch branch `branch` in `repo`: continue it when
+    /// it exists (a resumed run), else create it at `HEAD`, which must not
+    /// move it if someone else created it in the meantime.
     ///
     /// # Errors
     ///
     /// `repo` has no `HEAD` commit, or the branch could not be created.
-    pub async fn open(repo: &Path, run_id: &str) -> Result<Self, String> {
-        let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
+    pub async fn open(repo: &Path, run_id: &str, branch: &str) -> Result<Self, String> {
         let branch_ref = format!("refs/heads/{branch}");
-        let mut created = false;
-        let base_oid = match commit_of(repo, &branch_ref).await {
-            Some(tip) => tip,
-            None => {
-                let head = commit_of(repo, "HEAD")
-                    .await
-                    .ok_or_else(|| format!("{} has no HEAD commit", repo.display()))?;
-                let absent = "0".repeat(head.len());
-                git_output(
-                    repo,
-                    &[
-                        "update-ref",
-                        "-m",
-                        "roko: start the run's batch",
-                        &branch_ref,
-                        &head,
-                        &absent,
-                    ],
-                )
-                .await
-                .map_err(|e| format!("could not create {branch}: {e}"))?;
-                created = true;
-                head
+        if let Some(tip) = commit_of(repo, &branch_ref).await {
+            return Ok(Self::at(repo, run_id, branch, tip, false));
+        }
+        let head = head_commit(repo).await?;
+        create_branch(repo, branch, &head)
+            .await
+            .map_err(|e| format!("could not create {branch}: {e}"))?;
+        Ok(Self::at(repo, run_id, branch, head, true))
+    }
+
+    /// Start a new run's batch branch at `HEAD`, named from `slug`
+    /// (gap-b67fdd; see [`batch_slug`]): `roko/work/<slug>`, else
+    /// `roko/work/<slug>-2` and on, the first name nothing holds. Making a
+    /// branch fails when the name is taken, so two runs starting at once get
+    /// two names. When no such name can be made (a ref in the way), the
+    /// branch is `roko/batch/<run-id>`, as before.
+    ///
+    /// # Errors
+    ///
+    /// `repo` has no `HEAD` commit, or no branch could be created.
+    pub async fn create(repo: &Path, run_id: &str, slug: &str) -> Result<Self, String> {
+        let head = head_commit(repo).await?;
+        let names = (1..=MAX_NAME_SUFFIX)
+            .map(|n| {
+                if n == 1 {
+                    format!("{WORK_BRANCH_PREFIX}{slug}")
+                } else {
+                    format!("{WORK_BRANCH_PREFIX}{slug}-{n}")
+                }
+            })
+            .chain(std::iter::once(format!("{BATCH_BRANCH_PREFIX}{run_id}")));
+        let mut last_error = String::new();
+        for branch in names {
+            match create_branch(repo, &branch, &head).await {
+                Ok(()) => return Ok(Self::at(repo, run_id, &branch, head, true)),
+                Err(error) => last_error = error,
             }
-        };
-        Ok(Self {
+        }
+        Err(format!(
+            "could not create a batch branch for {slug}: {last_error}"
+        ))
+    }
+
+    fn at(repo: &Path, run_id: &str, branch: &str, base_oid: String, created: bool) -> Self {
+        Self {
             repo: repo.to_path_buf(),
             run_id: run_id.to_string(),
-            branch,
+            branch: branch.to_string(),
             base_oid,
             created,
             store: DeliveryReceiptStore::new(),
+            superseded: parking_lot::Mutex::default(),
             queue: tokio::sync::Mutex::new(()),
-        })
+        }
     }
 
     /// The repository the batch lives in.
@@ -127,7 +194,8 @@ impl BatchIntegration {
         &self.repo
     }
 
-    /// The batch branch, `roko/batch/<run-id>`.
+    /// The batch branch: `roko/work/<slug>`, or `roko/batch/<run-id>` for a
+    /// run that continues a batch named before gap-b67fdd.
     #[must_use]
     pub fn branch(&self) -> &str {
         &self.branch
@@ -188,6 +256,31 @@ impl BatchIntegration {
         merge_command(&self.repo, &self.branch).await
     }
 
+    /// What the batch changed since the run began, as `git diff --numstat`
+    /// counts it: files, lines added and lines removed, for the run's summary
+    /// (gap-2c87f0). `None` when git cannot say.
+    pub async fn changes(&self) -> Option<BatchChanges> {
+        let tip = format!("refs/heads/{}", self.branch);
+        let numstat = git_output(&self.repo, &["diff", "--numstat", &self.base_oid, &tip])
+            .await
+            .ok()?;
+        let mut changes = BatchChanges::default();
+        for line in numstat.lines().filter(|line| !line.trim().is_empty()) {
+            let mut fields = line.split('\t');
+            changes.files += 1;
+            // A binary file counts "-" lines.
+            changes.added += fields
+                .next()
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(0);
+            changes.removed += fields
+                .next()
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(0);
+        }
+        Some(changes)
+    }
+
     /// The deliveries' receipts, shared by every service that delivers into
     /// this batch.
     #[must_use]
@@ -207,13 +300,17 @@ impl BatchIntegration {
     }
 
     /// The receipt of each delivery into the batch in this process, by plan
-    /// id, for the run summary (gap-415c54).
+    /// id, for the run summary (gap-415c54). A delivery whose failed check
+    /// was handed back is left out: the plan's next delivery stands in for it
+    /// (find-5bcba7).
     #[must_use]
     pub fn receipts(&self) -> Vec<CompletionDeliveryReceiptV1> {
+        let superseded = self.superseded.lock().clone();
         let mut receipts: Vec<_> = self
             .store
             .delivery_ids()
             .iter()
+            .filter(|id| !superseded.contains(*id))
             .filter_map(|id| self.store.get(id))
             .collect();
         receipts.sort_by(|left, right| left.request.plan_id.cmp(&right.request.plan_id));
@@ -235,6 +332,40 @@ impl BatchIntegration {
             changed_files: Vec::new(),
             publish: false,
         }
+    }
+
+    /// The request that delivers plan `plan_id` at `verified` after its
+    /// whole-plan check failed and was handed back to its tasks `handbacks`
+    /// times (find-5bcba7): [`Self::request`] at first, and then a delivery
+    /// of its own each time, since a failed delivery is terminal. Delivering
+    /// it supersedes the one before ([`Self::supersede_handed_back`]).
+    #[must_use]
+    pub fn recheck_request(
+        &self,
+        plan_id: &str,
+        verified: String,
+        handbacks: usize,
+    ) -> CompletionDeliveryRequest {
+        let mut request = self.request(plan_id, verified);
+        if handbacks > 0 {
+            request
+                .delivery_id
+                .push_str(&format!(":recheck-{handbacks}"));
+        }
+        request
+    }
+
+    /// Leave plan `plan_id`'s delivery before hand-back `handbacks` out of
+    /// [`Self::receipts`], now that its failed check was handed back and the
+    /// plan is delivered again (find-5bcba7).
+    pub fn supersede_handed_back(&self, plan_id: &str, handbacks: usize) {
+        if handbacks == 0 {
+            return;
+        }
+        let earlier = self
+            .recheck_request(plan_id, String::new(), handbacks - 1)
+            .delivery_id;
+        self.superseded.lock().insert(earlier);
     }
 
     /// The request that delivers `verified`, the tip of the verified part of
@@ -398,7 +529,7 @@ impl BatchIntegration {
     /// under `roko.batch@1`.
     #[must_use]
     pub fn record(&self, receipt: &CompletionDeliveryReceiptV1) -> serde_json::Value {
-        serde_json::json!({
+        let mut record = serde_json::json!({
             "run_id": self.run_id,
             "branch": self.branch,
             "base_oid": self.base_oid,
@@ -409,7 +540,16 @@ impl BatchIntegration {
             "merge_commit": receipt.merge_commit,
             "error": receipt.error,
             "partial": receipt.extensions.contains_key(PARTIAL_EXTENSION),
-        })
+        });
+        // The hand-backs of a failed check before this delivery
+        // (find-5bcba7).
+        if let Some(handbacks) = receipt
+            .extensions
+            .get(super::plan_handback::HANDBACKS_EXTENSION)
+        {
+            record["handbacks"] = handbacks.clone();
+        }
+        record
     }
 }
 
@@ -573,25 +713,79 @@ fn trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-/// The run whose batch a resumed run continues: the batch an earlier process
-/// recorded in the checkpoint of one of `plan_ids`, when its branch still
-/// exists in `repo`.
-pub async fn resumed_batch_run(repo: &Path, plan_ids: &[&str]) -> Option<String> {
+/// The batch a resumed run continues: its run and its branch, as an earlier
+/// process recorded them in the checkpoint of one of `plan_ids`, while that
+/// branch still exists in `repo`. A record without its run, written before
+/// gap-b67fdd, names the run in its `roko/batch/<run-id>` branch.
+pub async fn resumed_batch(repo: &Path, plan_ids: &[&str]) -> Option<(String, String)> {
     for plan_id in plan_ids {
-        let Some(branch) = crate::graph_checkpoint::recorded_batch_branch(repo, plan_id) else {
+        let Some((run_id, branch)) = crate::graph_checkpoint::recorded_batch_run(repo, plan_id)
+        else {
             continue;
         };
-        let Some(run_id) = branch.strip_prefix(BATCH_BRANCH_PREFIX) else {
+        let Some(run_id) =
+            run_id.or_else(|| Some(branch.strip_prefix(BATCH_BRANCH_PREFIX)?.to_string()))
+        else {
             continue;
         };
         if commit_of(repo, &format!("refs/heads/{branch}"))
             .await
             .is_some()
         {
-            return Some(run_id.to_string());
+            return Some((run_id, branch));
         }
     }
     None
+}
+
+/// The slug a run's batch branch is named from (gap-b67fdd): a one-task
+/// run's request, one plan's id, or the directory of several plans, as the
+/// plan generator slugs a request, cut at a `-` to at most [`SLUG_MAX`]
+/// characters; `run` when nothing is left. `plans_dir` is
+/// the directory the run was given, under `workdir`.
+#[must_use]
+pub fn batch_slug(
+    plans: &[crate::runner::plan_loader::Plan],
+    plans_dir: &Path,
+    workdir: &Path,
+) -> String {
+    let one_task_run = plans_dir.starts_with(roko_fs::RokoLayout::for_project(workdir).runs_dir());
+    let named = match plans {
+        [plan] if one_task_run => plan
+            .tasks
+            .meta
+            .title
+            .clone()
+            .unwrap_or_else(|| plan.id.clone()),
+        [plan] => plan.id.clone(),
+        _ => plans_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    };
+    slug(&named)
+}
+
+/// `text` as the last part of a branch name: see [`batch_slug`]. The plan
+/// generator's [`slugify`](crate::plan_generate::slugify), cut at a `-` to at
+/// most [`SLUG_MAX`] characters.
+fn slug(text: &str) -> String {
+    let slug = crate::plan_generate::slugify(text);
+    let slug = if slug.chars().count() > SLUG_MAX {
+        let head: String = slug.chars().take(SLUG_MAX).collect();
+        match head.rfind('-') {
+            Some(at) if at >= head.len() / 2 => head[..at].to_string(),
+            _ => head,
+        }
+    } else {
+        slug
+    };
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "run".to_string()
+    } else {
+        slug.to_string()
+    }
 }
 
 /// The command that takes batch branch `branch` into the checkout at `repo`
@@ -685,6 +879,32 @@ fn git_probe(repo: &Path, args: &[&str]) -> Option<std::process::Output> {
 }
 
 /// The commit `rev` names in `repo`, if it names one.
+/// The commit at `HEAD` in `repo`.
+async fn head_commit(repo: &Path) -> Result<String, String> {
+    commit_of(repo, "HEAD")
+        .await
+        .ok_or_else(|| format!("{} has no HEAD commit", repo.display()))
+}
+
+/// Create branch `branch` at `commit` in `repo`, only if nothing holds the
+/// name: `update-ref` with an old value of zero fails when the branch exists.
+async fn create_branch(repo: &Path, branch: &str, commit: &str) -> Result<(), String> {
+    let absent = "0".repeat(commit.len());
+    git_output(
+        repo,
+        &[
+            "update-ref",
+            "-m",
+            "roko: start the run's batch",
+            &format!("refs/heads/{branch}"),
+            commit,
+            &absent,
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
 async fn commit_of(repo: &Path, rev: &str) -> Option<String> {
     let spec = format!("{rev}^{{commit}}");
     git_output(repo, &["rev-parse", "--verify", "--quiet", &spec])
@@ -849,7 +1069,9 @@ mod tests {
         );
         let record = tempfile::tempdir().expect("record");
         let ran_in = record.path().join("ran-in");
-        let batch = BatchIntegration::open(path, "run-1").await.expect("batch");
+        let batch = BatchIntegration::open(path, "run-1", "roko/batch/run-1")
+            .await
+            .expect("batch");
         assert_eq!(batch.branch(), "roko/batch/run-1");
         assert_eq!(git(path, &["rev-parse", "roko/batch/run-1"]), head);
 
@@ -917,7 +1139,9 @@ mod tests {
         let repo = repo_with_plan_branches();
         let path = repo.path();
         let head = git(path, &["rev-parse", "HEAD"]);
-        let batch = BatchIntegration::open(path, "run-2").await.expect("batch");
+        let batch = BatchIntegration::open(path, "run-2", "roko/batch/run-2")
+            .await
+            .expect("batch");
         let tip = plan_branch_tip(path, "plan-a").await.expect("plan branch");
         let backend = GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(Vec::new());
         let receipt = batch
@@ -933,7 +1157,9 @@ mod tests {
         assert_ne!(tip, head);
 
         // Opening the run's batch again continues it where it is.
-        let resumed = BatchIntegration::open(path, "run-2").await.expect("batch");
+        let resumed = BatchIntegration::open(path, "run-2", "roko/batch/run-2")
+            .await
+            .expect("batch");
         assert_eq!(git(path, &["rev-parse", "roko/batch/run-2"]), tip);
         assert_eq!(resumed.record(&receipt)["base_oid"], tip.as_str());
 
@@ -950,12 +1176,118 @@ mod tests {
             std::fs::write(dir.join("checkpoint.json"), manifest.to_string()).expect("checkpoint");
         }
         assert_eq!(
-            resumed_batch_run(path, &["plan-b", "plan-a"])
-                .await
-                .as_deref(),
-            Some("run-2")
+            resumed_batch(path, &["plan-b", "plan-a"]).await,
+            Some(("run-2".to_string(), "roko/batch/run-2".to_string()))
         );
-        assert_eq!(resumed_batch_run(path, &["plan-b"]).await, None);
+        assert_eq!(resumed_batch(path, &["plan-b"]).await, None);
+    }
+
+    /// gap-b67fdd: a new run's batch branch is named from its plans,
+    /// `roko/work/<slug>`, so the merge command it ends with reads like a
+    /// person wrote it. A run that starts while that branch exists gets
+    /// `roko/work/<slug>-2`; a resumed run continues the branch its batch
+    /// record names, with the record's run, though the name doesn't say it;
+    /// and a run that can't make the name keeps `roko/batch/<run-id>`.
+    #[tokio::test]
+    async fn a_batch_branch_is_named_from_its_plans() {
+        use crate::runner::plan_loader::Plan;
+        use crate::task_parser::TasksFile;
+
+        let repo = repo_with_plan_branches();
+        let path = repo.path();
+        let plan = |id: &str, title: Option<&str>| Plan {
+            id: id.to_string(),
+            dir: path.join("plans").join(id),
+            tasks: TasksFile::parse_str(&format!(
+                "[meta]\nplan = \"{id}\"\n{}\n[[task]]\nid = \"T1\"\ntitle = \"One task\"\n",
+                title
+                    .map(|title| format!("title = \"{title}\""))
+                    .unwrap_or_default()
+            ))
+            .expect("tasks.toml"),
+        };
+        assert_eq!(
+            batch_slug(
+                &[plan("greeting", None)],
+                &path.join("plans/greeting"),
+                path
+            ),
+            "greeting"
+        );
+        assert_eq!(
+            batch_slug(
+                &[plan("01-alpha", None), plan("02-beta", None)],
+                &path.join("plans/Portal Programme"),
+                path
+            ),
+            "portal-programme"
+        );
+        // A one-task run is named by its request.
+        let request = "Give greeting.py a farewell(name) function that returns 'goodbye, <name>'";
+        assert_eq!(
+            batch_slug(
+                &[plan("run-20261112-093324-232", Some(request))],
+                &path.join(".roko/runs/run-20261112-093324-232"),
+                path
+            ),
+            "give-greeting-py-a-farewell-name"
+        );
+        assert_eq!(slug("…"), "run");
+
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let first = BatchIntegration::create(path, "graph-dd2189fe", "greeting")
+            .await
+            .expect("batch");
+        assert_eq!(first.branch(), "roko/work/greeting");
+        assert_eq!(first.run_id(), "graph-dd2189fe");
+        assert_eq!(git(path, &["rev-parse", "roko/work/greeting"]), head);
+        let second = BatchIntegration::create(path, "graph-0b7c2f9e", "greeting")
+            .await
+            .expect("batch");
+        assert_eq!(second.branch(), "roko/work/greeting-2");
+
+        let tip = plan_branch_tip(path, "plan-a").await.expect("plan branch");
+        let backend = GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(Vec::new());
+        let receipt = first
+            .deliver(
+                &service(&first, backend),
+                first.request("plan-a", tip),
+                None,
+            )
+            .await
+            .expect("delivery runs");
+        assert_eq!(receipt.state, CompletionDeliveryState::Delivered);
+        assert_eq!(
+            merge_command(path, first.branch()).await.as_deref(),
+            Some("git merge --ff-only roko/work/greeting")
+        );
+
+        let dir = path.join(".roko/state/graph/greeting");
+        std::fs::create_dir_all(&dir).expect("checkpoint dir");
+        let manifest = serde_json::json!({
+            "extensions": {"roko.batch@1": {"value": first.record(&receipt)}}
+        });
+        std::fs::write(dir.join("checkpoint.json"), manifest.to_string()).expect("checkpoint");
+        let (run_id, branch) = resumed_batch(path, &["greeting"])
+            .await
+            .expect("resumed batch");
+        assert_eq!(
+            (run_id.as_str(), branch.as_str()),
+            ("graph-dd2189fe", "roko/work/greeting")
+        );
+        let resumed = BatchIntegration::open(path, &run_id, &branch)
+            .await
+            .expect("batch");
+        assert!(!resumed.created);
+        assert_eq!(resumed.branch(), "roko/work/greeting");
+
+        // A branch named `roko/work` leaves no room under it.
+        let other = repo_with_plan_branches();
+        git(other.path(), &["branch", "roko/work"]);
+        let fallback = BatchIntegration::create(other.path(), "run-x", "greeting")
+            .await
+            .expect("batch");
+        assert_eq!(fallback.branch(), "roko/batch/run-x");
     }
 
     /// spec-f830c4: promoting a delivered batch moves a target that is not
@@ -969,7 +1301,10 @@ mod tests {
         let main = git(path, &["rev-parse", "main"]);
         git(path, &["branch", "release", "main"]);
         for (run, target) in [("run-p1", "release"), ("run-p2", "main")] {
-            let batch = BatchIntegration::open(path, run).await.expect("batch");
+            let branch = format!("{BATCH_BRANCH_PREFIX}{run}");
+            let batch = BatchIntegration::open(path, run, &branch)
+                .await
+                .expect("batch");
             let tip = plan_branch_tip(path, "plan-a").await.expect("plan branch");
             let backend =
                 GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(Vec::new());
@@ -1016,7 +1351,9 @@ mod tests {
     async fn merge_command_fast_forwards_until_the_checkout_moves() {
         let repo = repo_with_plan_branches();
         let path = repo.path();
-        let batch = BatchIntegration::open(path, "run-m").await.expect("batch");
+        let batch = BatchIntegration::open(path, "run-m", "roko/batch/run-m")
+            .await
+            .expect("batch");
         assert_eq!(batch.merge_command().await, None, "nothing delivered yet");
 
         let tip = plan_branch_tip(path, "plan-a").await.expect("plan branch");
@@ -1095,6 +1432,7 @@ mod tests {
                 evidence_ref: None,
                 checks: Vec::new(),
                 stopped_by: None,
+                build_trees: None,
             }
         }
 
@@ -1119,7 +1457,7 @@ mod tests {
     #[tokio::test]
     async fn a_resumed_delivery_continues_after_its_merge() {
         let repo = repo_with_plan_branches();
-        let batch = BatchIntegration::open(repo.path(), "run-3")
+        let batch = BatchIntegration::open(repo.path(), "run-3", "roko/batch/run-3")
             .await
             .expect("batch");
         let request = batch.request("plan-a", "a".repeat(40));
@@ -1138,7 +1476,7 @@ mod tests {
             (vec![Queued, Merged, RegressionPassed, Delivered], 0, 0, 0),
             (vec![Queued, Conflict], 1, 1, 1),
         ] {
-            let batch = BatchIntegration::open(repo.path(), "run-3")
+            let batch = BatchIntegration::open(repo.path(), "run-3", "roko/batch/run-3")
                 .await
                 .expect("batch");
             let backend = Arc::new(CountingBackend::default());
@@ -1186,7 +1524,7 @@ mod tests {
         let repo = repo_with_plan_branches();
         let path = repo.path();
         let scratch = tempfile::tempdir().expect("scratch");
-        let batch = BatchIntegration::open(path, "run-order")
+        let batch = BatchIntegration::open(path, "run-order", "roko/batch/run-order")
             .await
             .expect("batch");
         let branch_ref = "refs/heads/roko/batch/run-order";

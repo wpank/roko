@@ -23,6 +23,8 @@ import type { RunState, PlanRun } from '@/lib/runState';
 import type { GlyphState } from '@/lib/glyphs';
 import { GLYPHS } from '@/lib/glyphs';
 import { queuePosition as getPlanQueuePosition, waitReason as getPlanWaitReason } from '@/lib/planSet';
+import { runClock } from '@/lib/runReadings';
+import type { RunStarts } from '@/lib/runReadings';
 
 // ── Public interfaces ──────────────────────────────────────────────────────────
 
@@ -147,12 +149,13 @@ export function runningState(run: RunState, plan: PlanRun): 'active' | 'unverifi
  *
  * @param plans  - Plans loaded from disk (GET /api/plans).
  * @param run    - Live RunState assembled from SSE events.
- * @param opts   - `filter`: case-insensitive substring filter; `nowMs`: wall clock.
+ * @param opts   - `filter`: case-insensitive substring filter; `nowMs`: wall clock; `runStarts`: when roko
+ *                 accepted each plan's run, which a row's time counts from.
  */
 export function buildPlanRows(
   plans: readonly WirePlanSummary[],
   run: RunState,
-  opts: { filter: string; nowMs: number },
+  opts: { filter: string; nowMs: number; runStarts?: RunStarts },
 ): PlanRowsResult {
   const { filter, nowMs } = opts;
   const filterLo = filter.toLowerCase();
@@ -248,14 +251,16 @@ export function buildPlanRows(
     );
 
     // ── time ───────────────────────────────────────────────────────────────
+    // The run's TIME, as its card reads it (bug-b6d5cb).
     let time: PlanRowModel['time'];
+    const runTime = runClock(run, disk.id, opts.runStarts?.[disk.id] ?? null, nowMs);
 
-    if (running && live && live.startedAtMs !== null) {
+    if (running && runTime) {
       // Elapsed: plan is currently running.
-      time = { kind: 'elapsed', ms: nowMs - live.startedAtMs };
-    } else if (live && live.startedAtMs !== null && live.finishedAtMs !== null) {
-      // Actual: plan has finished and we have both timestamps.
-      time = { kind: 'actual', ms: live.finishedAtMs - live.startedAtMs };
+      time = { kind: 'elapsed', ms: runTime.ms };
+    } else if (runTime?.ended) {
+      // Actual: plan has finished.
+      time = { kind: 'actual', ms: runTime.ms };
     } else if (!running && disk.estimated_minutes != null) {
       // Estimate: plan has not started but has a predicted duration.
       time = { kind: 'estimate', ms: disk.estimated_minutes * 60_000 };

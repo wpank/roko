@@ -10,8 +10,9 @@ rank = 56
 size = "S"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK56"
 anchors = ["benchmarks/viabilitybench"]
 lane = "bench"
@@ -60,3 +61,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Suggested model: opus.
 
 2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 5: 7101 approved: a BL12 line with a $10 cap. Hold lifted. 7111's measurement still needs the pilots' recorded passes.
+
+Checked 2026-10-27: 2026-10-26 sweep: hold lifted 2026-10-15 (decision 5, $10 BL12 cap approved). F7/F8 families now exist and Pilot B supplied 60/60 fd_claude passes, so the slice's input data is available; the s05-slice1 audit/replay report (7111) still has not been produced.

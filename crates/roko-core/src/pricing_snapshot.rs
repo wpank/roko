@@ -34,10 +34,10 @@ pub const PRICES_DIR: &str = "config/prices";
 
 /// The id of the snapshot built into the binary: the newest file in this repository's
 /// `config/prices/` when the binary was built.
-pub const BUILTIN_SNAPSHOT_ID: &str = "prices-2026-09-28";
+pub const BUILTIN_SNAPSHOT_ID: &str = "prices-2026-10-27";
 
 /// The built-in snapshot's bytes, exactly as the file has them.
-const BUILTIN_SNAPSHOT_TOML: &str = include_str!("../../../config/prices/2026-09-28.toml");
+const BUILTIN_SNAPSHOT_TOML: &str = include_str!("../../../config/prices/2026-10-27.toml");
 
 /// The prefix of every snapshot id.
 const ID_PREFIX: &str = "prices-";
@@ -674,8 +674,8 @@ mod tests {
             ..TokenCounts::default()
         };
 
-        // claude-sonnet-4-6, the ladder's top rung, has no row (decision 2113): its cost is
-        // unknown until a new dated snapshot lists it, never another model's rate.
+        // claude-sonnet-4-6, the ladder's top rung, has no row in this snapshot (decision 2113):
+        // its cost at it is unknown, never another model's rate. prices-2026-10-27 lists it.
         for slug in ["claude-sonnet-4-6", "gpt-5.4-nano", "gpt-oss-20b", ""] {
             assert_eq!(snapshot.price(slug, &tokens), None, "{slug}");
         }
@@ -843,6 +843,35 @@ mod tests {
         assert_eq!(builtin, newest);
     }
 
+    /// gap-ceffb3: the built-in snapshot prices every model the default config routes to,
+    /// claude-sonnet-4-6 among them, so a call to one is never an unknown cost; and every row
+    /// names its price page.
+    #[test]
+    fn pricing_snapshot_builtin_prices_the_default_models() {
+        let builtin = PriceSnapshot::builtin().expect("parse the built-in copy");
+        let config = RokoConfig::default();
+        let routing = &config.routing;
+        let defaults = [
+            crate::defaults::MODEL_FAST,
+            crate::defaults::MODEL_FOCUSED,
+            crate::defaults::MODEL_DEEP,
+            config.agent.default_model.as_str(),
+            routing.fast_task_model.as_str(),
+            routing.standard_task_model.as_str(),
+            routing.complex_task_model.as_str(),
+            config.conductor.auto_fix_model.as_str(),
+        ];
+        let rungs = routing.ladder.rungs.iter().map(|rung| rung.model.as_str());
+
+        for model in defaults.into_iter().chain(rungs) {
+            assert!(builtin.row(model).is_some(), "{model} has no row");
+        }
+        assert!(builtin.row("claude-sonnet-4-6").is_some());
+        for row in builtin.rows() {
+            assert!(row.source_url.starts_with("https://"), "{}", row.slug);
+        }
+    }
+
     #[test]
     fn pricing_snapshot_config_key_is_optional() {
         let unset = RokoConfig::from_toml("").expect("parse an empty config");
@@ -865,8 +894,8 @@ mod tests {
     fn pricing_snapshot_config_key_survives_the_config_loader() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("roko.toml");
-        std::fs::write(&path, "[pricing]\nsnapshot = \"prices-2026-09-28\"\n")
-            .expect("write roko.toml");
+        let text = format!("[pricing]\nsnapshot = \"{BUILTIN_SNAPSHOT_ID}\"\n");
+        std::fs::write(&path, text).expect("write roko.toml");
         let opts = LoadOptions {
             merge_global: false,
             apply_env_overrides: false,
@@ -876,10 +905,10 @@ mod tests {
 
         let config = load_config_file(&path, &opts).expect("load roko.toml");
 
-        assert_eq!(config.pricing.snapshot_id(), Some("prices-2026-09-28"));
+        assert_eq!(config.pricing.snapshot_id(), Some(BUILTIN_SNAPSHOT_ID));
         // The workspace has no config/prices/, so the built-in id resolves to the copy.
         let snapshot =
             PriceSnapshot::for_workspace(&config.pricing, dir.path()).expect("resolve the id");
-        assert_eq!(snapshot.id(), "prices-2026-09-28");
+        assert_eq!(snapshot.id(), BUILTIN_SNAPSHOT_ID);
     }
 }

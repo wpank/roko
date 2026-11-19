@@ -930,10 +930,7 @@ command = "test -f docs/parser.md"
         let mut ladder = LadderConfig::default();
         ladder.roles.push(LadderRoleConfig {
             role: "scribe".to_string(),
-            rungs: Some(vec![LadderRung {
-                name: "docs".to_string(),
-                model: "gpt-4o-mini".to_string(),
-            }]),
+            rungs: Some(vec![LadderRung::new("docs", "gpt-4o-mini")]),
             ..LadderRoleConfig::default()
         });
         let validated = test_generator()

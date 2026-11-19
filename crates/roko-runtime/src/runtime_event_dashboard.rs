@@ -432,18 +432,21 @@ impl RuntimeEventDashboardProjector {
                     DashboardEvent::EfficiencyEvent {
                         plan_id: plan_id_opt.to_string(),
                         task_id: task_id_opt.to_string(),
+                        attempt: None,
                         metric: "input_tokens".to_string(),
                         value: *input_tokens as f64,
                     },
                     DashboardEvent::EfficiencyEvent {
                         plan_id: plan_id_opt.to_string(),
                         task_id: task_id_opt.to_string(),
+                        attempt: None,
                         metric: "output_tokens".to_string(),
                         value: *output_tokens as f64,
                     },
                     DashboardEvent::EfficiencyEvent {
                         plan_id: plan_id_opt.to_string(),
                         task_id: task_id_opt.to_string(),
+                        attempt: None,
                         metric: "cost_usd".to_string(),
                         value: *cost_usd,
                     },
@@ -456,6 +459,7 @@ impl RuntimeEventDashboardProjector {
             } => vec![DashboardEvent::EfficiencyEvent {
                 plan_id: plan_id_opt.to_string(),
                 task_id: task_id_opt.to_string(),
+                attempt: None,
                 metric: "budget_remaining_usd".to_string(),
                 value: *remaining_usd,
             }],

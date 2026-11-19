@@ -656,6 +656,10 @@ pub enum FeedbackEvent {
         outcome: String,
         total_cost_usd: f64,
         total_tokens: u64,
+        /// When the workflow began, read from the clock as it began
+        /// (bug-41e2de). Its episode starts here and completes `duration_ms`
+        /// later.
+        started_at: chrono::DateTime<chrono::Utc>,
         duration_ms: u64,
     },
 }

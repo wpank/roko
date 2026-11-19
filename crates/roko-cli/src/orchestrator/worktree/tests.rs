@@ -16,9 +16,9 @@ use super::git_ops::{
 use super::{
     AttemptAcceptance, CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK,
     RUNTIME_SHUTDOWN_WAIT, TestClaimMutationBarrier, TestClaimMutationPoint, TestPhaseBarrier,
-    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, clear_stale_index_lock,
-    format_attempt_branch_name, format_attempt_worktree_id, format_branch_name,
-    validate_workspace_file_kinds_with,
+    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, attempt_review_diff,
+    clear_stale_index_lock, format_attempt_branch_name, format_attempt_worktree_id,
+    format_branch_name, validate_workspace_file_kinds_with,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -2312,6 +2312,7 @@ fn acceptance_in(run_id: &str) -> AttemptAcceptance {
         attempt_key: format!("{run_id}:plan:task:1"),
         verdict: "passed".to_string(),
         title: "Accept the attempt".to_string(),
+        files: Vec::new(),
     }
 }
 
@@ -2496,6 +2497,137 @@ async fn accept_refuses_a_conflicting_sibling_and_moves_no_ref() {
     assert_eq!(manager.accepted_for_plan("plan").unwrap(), one);
 }
 
+/// The base of round v7's phase-1 `core/CMakeLists.txt` (gap-32ddce), and
+/// the same list with `sources` registered after `src/engine.cpp`.
+fn source_list(sources: &[&str]) -> String {
+    let mut list =
+        String::from("add_library(core STATIC\n    src/params.cpp\n    src/engine.cpp\n");
+    for source in sources {
+        list.push_str(&format!("    src/{source}.cpp\n"));
+    }
+    list.push_str(")\n");
+    list
+}
+
+/// A manager whose repository's `main` holds `CMakeLists.txt` as
+/// [`source_list`] with no sources, where attempt `first` registered
+/// `oscillator` and landed on the plan branch, and attempt `sibling` wrote
+/// `sibling` over the file, from the same base.
+async fn sibling_conflicts_in_cmake(sibling: &str) -> Option<(TempDir, WorktreeManager)> {
+    let (tmp, manager) = make_manager()?;
+    let repo = manager.config.repo_root.clone();
+    std::fs::write(repo.join("CMakeLists.txt"), source_list(&[])).unwrap();
+    git_in(&repo, &["add", "CMakeLists.txt"]);
+    git_in(&repo, &["commit", "-m", "core library"]);
+    attempt_with_file(
+        &manager,
+        "first",
+        "CMakeLists.txt",
+        &source_list(&["oscillator"]),
+    )
+    .await;
+    attempt_with_file(&manager, "sibling", "CMakeLists.txt", sibling).await;
+    manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    let refused = manager
+        .accept_attempt("plan", "sibling", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, WorktreeError::Conflict { .. }),
+        "{refused}"
+    );
+    Some((tmp, manager))
+}
+
+/// gap-32ddce: a sibling that, like the plan branch, only added a line to a
+/// registration file takes the plan branch with both added lines. Its
+/// checkout then holds a commit on top of the plan branch's tip, so
+/// accepting it again fast-forwards the branch.
+#[tokio::test]
+async fn a_union_merge_keeps_both_sides_added_lines() {
+    let Some((_tmp, manager)) = sibling_conflicts_in_cmake(&source_list(&["envelope"])).await
+    else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    let plan = format_branch_name("plan");
+    let tip = git_in(&repo, &["rev-parse", &plan]);
+    let cmake = ["CMakeLists.txt".to_string()];
+
+    let merged = manager
+        .union_merge_attempt("plan", "sibling", 0, &cmake)
+        .await
+        .unwrap()
+        .expect("both sides only added lines");
+
+    assert_eq!(merged.paths, cmake);
+    let sibling = manager.get_attempt("plan", "sibling", 0).unwrap();
+    let both = source_list(&["oscillator", "envelope"]);
+    assert_eq!(
+        std::fs::read_to_string(sibling.path.join("CMakeLists.txt")).unwrap(),
+        both
+    );
+    assert_eq!(git_in(&sibling.path, &["status", "--porcelain"]), "");
+    assert_eq!(git_in(&sibling.path, &["rev-parse", "HEAD"]), merged.commit);
+    git_in(
+        &repo,
+        &["merge-base", "--is-ancestor", &tip, &merged.commit],
+    );
+    assert_eq!(
+        git_in(&repo, &["rev-parse", &plan]),
+        tip,
+        "the plan branch waits"
+    );
+
+    let accepted = manager
+        .accept_attempt("plan", "sibling", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    assert_eq!(git_in(&repo, &["rev-parse", &plan]), accepted.commit_oid);
+    assert_eq!(
+        git_in(&repo, &["rev-parse", &format!("{}^", accepted.commit_oid)]),
+        merged.commit,
+        "a fast-forward"
+    );
+    assert_eq!(
+        git_in(&repo, &["show", &format!("{plan}:CMakeLists.txt")]),
+        both.trim_end()
+    );
+}
+
+/// gap-32ddce: a sibling that removed or changed a line, or conflicts in a
+/// file it was not given, is not merged: nothing changes.
+#[tokio::test]
+async fn a_union_merge_refuses_changed_lines_and_other_files() {
+    let changed = source_list(&["envelope"]).replace("src/params.cpp", "src/parameters.cpp");
+    for (sibling, given) in [
+        (changed, "CMakeLists.txt"),
+        (source_list(&["envelope"]), "other.txt"),
+    ] {
+        let Some((_tmp, manager)) = sibling_conflicts_in_cmake(&sibling).await else {
+            return;
+        };
+        let checkout = manager.get_attempt("plan", "sibling", 0).unwrap().path;
+        let head = git_in(&checkout, &["rev-parse", "HEAD"]);
+
+        let merged = manager
+            .union_merge_attempt("plan", "sibling", 0, &[given.to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(merged, None, "{given}: {sibling}");
+        assert_eq!(git_in(&checkout, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git_in(&checkout, &["status", "--porcelain"]), "");
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("CMakeLists.txt")).unwrap(),
+            sibling
+        );
+    }
+}
+
 /// gap-3b5361: a plan branch checked out anywhere is never moved.
 #[tokio::test]
 async fn accept_leaves_a_checked_out_plan_branch_alone() {
@@ -2592,6 +2724,226 @@ async fn accept_leaves_roko_config_copies_out_of_the_commit() {
     );
     assert!(files.contains("first.txt"), "{files}");
     assert!(!files.contains(".cursor"), "{files}");
+}
+
+/// Write `contents` to `path` under `root`, making its directories.
+fn write_under(root: &Path, path: &str, contents: &[u8]) {
+    let path = root.join(path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+/// A repository whose `main` holds crate `crates/a` and a `.gitignore` that
+/// ignores only the root's `/target`, as the golden path's seed does.
+fn commit_crate_seed(repo: &Path) {
+    // `info/exclude` outranks a global excludes file, which may ignore every
+    // `target/` and so hide the build output these tests leave in a crate.
+    write_under(repo, ".git/info/exclude", b"!target/\n");
+    write_under(repo, ".gitignore", b"/target\n");
+    write_under(
+        repo,
+        "crates/a/src/lib.rs",
+        b"pub fn one() -> u8 {\n    1\n}\n",
+    );
+    git_in(repo, &["add", "--all"]);
+    git_in(repo, &["commit", "--quiet", "-m", "seed"]);
+}
+
+/// What `cd crates/a && CARGO_TARGET_DIR=target cargo test` leaves in a
+/// checkout: build output under `crates/a/target/`, which the seed's
+/// `/target` does not ignore.
+const CRATE_BUILD_OUTPUT: [(&str, &[u8]); 3] = [
+    (
+        "crates/a/target/CACHEDIR.TAG",
+        b"Signature: 8a477f597d28d172789f06886806bc55\n",
+    ),
+    (
+        "crates/a/target/.rustc_info.json",
+        b"{\"rustc_fingerprint\":1}\n",
+    ),
+    (
+        "crates/a/target/debug/deps/a-0123456789abcdef",
+        b"\x7fELF\0test binary",
+    ),
+];
+
+/// bug-ba0c40: the golden path's T7 ran `cd crates/alpha && cargo test`
+/// under a relative `CARGO_TARGET_DIR`, and acceptance committed the 233
+/// files cargo left under `crates/alpha/target/`, none of them in the task's
+/// `files`, which the plan then delivered. Acceptance commits the task's
+/// declared change and its new declared file, and leaves the build output
+/// out, saying so in the commit's message; the review diff shows what is
+/// committed, and the delivered checkout is still removed.
+#[tokio::test]
+async fn an_attempts_undeclared_build_output_is_not_committed() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    commit_crate_seed(&repo);
+    let handle = manager.create_for_attempt("plan", "task", 0).await.unwrap();
+    let checkout = handle.path.clone();
+    let lib = "pub fn one() -> u8 {\n    1\n}\n\npub fn two() -> u8 {\n    2\n}\n";
+    write_under(&checkout, "crates/a/src/lib.rs", lib.as_bytes());
+    write_under(
+        &checkout,
+        "crates/a/tests/accept.rs",
+        b"#[test]\nfn two() {\n    assert_eq!(a::two(), 2);\n}\n",
+    );
+    for (path, contents) in CRATE_BUILD_OUTPUT {
+        write_under(&checkout, path, contents);
+    }
+    // The root's build output, which the repository ignores.
+    write_under(&checkout, "target/debug/a", b"ignored\n");
+    let mut acceptance = acceptance_in("run-1");
+    acceptance.files = vec![
+        "crates/a/src/lib.rs".to_string(),
+        "crates/a/tests/accept.rs".to_string(),
+    ];
+
+    let review = attempt_review_diff(&checkout, &acceptance.files)
+        .await
+        .unwrap();
+    assert!(
+        review.numstat.contains("crates/a/tests/accept.rs"),
+        "{}",
+        review.numstat
+    );
+    assert!(!review.numstat.contains("target"), "{}", review.numstat);
+
+    let accepted = manager
+        .accept_attempt("plan", "task", 0, &acceptance)
+        .await
+        .unwrap();
+    for commit in [&accepted.attempt_commit, &accepted.commit_oid] {
+        let committed = git_in(&repo, &["ls-tree", "-r", "--name-only", commit]);
+        assert_eq!(
+            committed.lines().collect::<Vec<_>>(),
+            [
+                ".gitignore",
+                "crates/a/src/lib.rs",
+                "crates/a/tests/accept.rs"
+            ]
+        );
+    }
+    let plan_lib = format!("{}:crates/a/src/lib.rs", format_branch_name("plan"));
+    assert_eq!(git_in(&repo, &["show", &plan_lib]), lib.trim_end());
+    assert_eq!(accepted.left_out.dirs, ["crates/a/target"]);
+    assert!(accepted.left_out.files.is_empty());
+    assert_eq!(accepted.left_out.count, CRATE_BUILD_OUTPUT.len());
+    let message = git_in(
+        &repo,
+        &["log", "-1", "--format=%B", &accepted.attempt_commit],
+    );
+    assert!(
+        message.contains("Not committed: 3 new file(s) of build output"),
+        "{message}"
+    );
+    assert!(message.contains("\n- crates/a/target/\n"), "{message}");
+    assert!(message.contains("Roko-Run: run-1"), "{message}");
+    // The build output stays in the checkout, untracked.
+    assert_eq!(
+        git_in(
+            &checkout,
+            &["status", "--porcelain", "--untracked-files=all"]
+        ),
+        "?? crates/a/target/.rustc_info.json\n?? crates/a/target/CACHEDIR.TAG\n\
+         ?? crates/a/target/debug/deps/a-0123456789abcdef"
+    );
+
+    // Once the plan is delivered, the checkout goes, its build output too.
+    let released = manager.release_accepted("plan", false).await.unwrap();
+    assert_eq!(released.removed_checkouts, vec![checkout.clone()]);
+    assert!(!checkout.exists());
+}
+
+/// bug-ba0c40: build output that an agent staged itself, with `git add -A`
+/// in its checkout, stays out of the commit as well.
+#[tokio::test]
+async fn build_output_an_attempt_staged_is_left_out_too() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    commit_crate_seed(&repo);
+    let handle = manager.create_for_attempt("plan", "task", 0).await.unwrap();
+    write_under(
+        &handle.path,
+        "crates/a/src/lib.rs",
+        b"pub fn one() -> u8 {\n    2\n}\n",
+    );
+    for (path, contents) in CRATE_BUILD_OUTPUT {
+        write_under(&handle.path, path, contents);
+    }
+    git_in(&handle.path, &["add", "-A"]);
+    let mut acceptance = acceptance_in("run-1");
+    acceptance.files = vec!["crates/a/src/lib.rs".to_string()];
+
+    let accepted = manager
+        .accept_attempt("plan", "task", 0, &acceptance)
+        .await
+        .unwrap();
+
+    let committed = git_in(
+        &repo,
+        &["ls-tree", "-r", "--name-only", &accepted.commit_oid],
+    );
+    assert_eq!(
+        committed.lines().collect::<Vec<_>>(),
+        [".gitignore", "crates/a/src/lib.rs"]
+    );
+    assert_eq!(accepted.left_out.dirs, ["crates/a/target"]);
+}
+
+/// bug-346498: roko's managed git runs with `GIT_CONFIG_GLOBAL=/dev/null`
+/// (found while fixing bug-ba0c40), so it never reads a custom
+/// `core.excludesFile` the operator names in their own `~/.gitconfig` on its
+/// own. Acceptance must still keep what that file ignores out of the
+/// attempt's commit, by naming the resolved file explicitly. The scratch
+/// `HOME` below is this test's own, never the operator's real one.
+#[tokio::test]
+async fn acceptance_honours_the_operators_excludes_file() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+
+    let home = TempDir::new().unwrap();
+    std::fs::write(
+        home.path().join(".gitconfig"),
+        "[core]\n\texcludesFile = ~/.gitignore_global\n",
+    )
+    .unwrap();
+    std::fs::write(home.path().join(".gitignore_global"), "scratch.log\n").unwrap();
+    manager.set_test_git_probe_environment(vec![(
+        std::ffi::OsString::from("HOME"),
+        home.path().as_os_str().to_os_string(),
+    )]);
+
+    let handle = manager.create_for_attempt("plan", "task", 0).await.unwrap();
+    std::fs::write(handle.path.join("declared.txt"), b"declared\n").unwrap();
+    std::fs::write(handle.path.join("scratch.log"), b"not for commit\n").unwrap();
+    let mut acceptance = acceptance_in("run-1");
+    acceptance.files = vec!["declared.txt".to_string()];
+
+    let accepted = manager
+        .accept_attempt("plan", "task", 0, &acceptance)
+        .await
+        .unwrap();
+
+    for commit in [&accepted.attempt_commit, &accepted.commit_oid] {
+        let committed = git_in(&repo, &["ls-tree", "-r", "--name-only", commit]);
+        assert_eq!(
+            committed.lines().collect::<Vec<_>>(),
+            ["declared.txt"],
+            "the operator's globally ignored scratch.log must not be committed"
+        );
+    }
+    assert!(accepted.left_out.is_empty());
+    assert!(
+        handle.path.join("scratch.log").exists(),
+        "the ignored file stays on disk, just uncommitted"
+    );
 }
 
 #[tokio::test]

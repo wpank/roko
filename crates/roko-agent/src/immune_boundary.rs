@@ -491,7 +491,7 @@ impl ImmuneScreenedAgent {
             let mut tool_work = false;
             let mut first_output = None;
             while let Some(event) = buffer_rx.recv().await {
-                if first_output.is_none() && is_model_output(&event.kind) {
+                if first_output.is_none() && event.kind.is_model_output() {
                     first_output = Some(started.elapsed());
                 }
                 tool_work |= matches!(
@@ -1039,20 +1039,6 @@ fn is_tool_work_signal(signal: &Signal) -> bool {
             .get("tool_calls")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|calls| !calls.is_empty())
-}
-
-/// Whether `kind` is model output, whose first arrival ends a call's time to
-/// first token: text, reasoning or a tool call (gap-7a8474). Usage, the end
-/// of a turn and a tool's own result are not.
-fn is_model_output(kind: &StreamEventKind) -> bool {
-    matches!(
-        kind,
-        StreamEventKind::TextDelta(_)
-            | StreamEventKind::ReasoningDelta(_)
-            | StreamEventKind::ToolCallStart { .. }
-            | StreamEventKind::ToolCallDelta { .. }
-            | StreamEventKind::ToolCallEnd { .. }
-    )
 }
 
 /// Bytes `event` adds to its model call's stream. A tool result is host
@@ -2339,6 +2325,48 @@ mod tests {
         let ttft_ms = timed.ttft_ms.expect("the stream showed model output");
         assert!(ttft_ms >= 20, "{ttft_ms} ms");
         assert_eq!(run(Some(7)).await.ttft_ms, Some(7));
+    }
+
+    /// bug-7d13f0: a provider that exits before it reads its prompt answers
+    /// nothing, however the timing goes. A short prompt breaks the pipe only
+    /// when the agent's exit comes first, which made
+    /// `canonical_provider_factory_installs_boundary_automatically` flake on
+    /// Linux. A prompt bigger than any pipe's buffer always breaks it. The run
+    /// is still an empty answer, not a failed write.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_provider_that_exits_before_reading_its_prompt_is_an_empty_answer() {
+        use crate::provider::{AgentOptions, create_agent_for_model};
+        use roko_core::config::schema::RokoConfig;
+
+        let workspace = tempdir().expect("temp workspace");
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.command = None;
+        let options = AgentOptions {
+            command: Some("/bin/sh".to_string()),
+            extra_args: vec!["-c".to_string(), "exit 0".to_string()],
+            working_dir: Some(workspace.path().to_path_buf()),
+            immune_root: Some(workspace.path().to_path_buf()),
+            name: "unread-prompt-agent".to_string(),
+            ..AgentOptions::default()
+        };
+        let agent = create_agent_for_model(&config, "missing-model", options)
+            .expect("create fallback provider agent");
+        // 4 MiB: more than any pipe holds, so the write ends at the exit.
+        let unread = Signal::builder(Kind::Prompt)
+            .body(Body::text("x".repeat(4 << 20)))
+            .build();
+        let result = agent.run(&unread, &Context::now()).await;
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output.tag("provider_error"),
+            Some("empty_response"),
+            "{:?}",
+            result.output.body.as_text()
+        );
     }
 
     #[cfg(unix)]

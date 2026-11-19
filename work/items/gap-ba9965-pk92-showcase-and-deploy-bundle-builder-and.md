@@ -11,8 +11,9 @@ size = "L"
 hold = "waits on Will's deferred decision(s) 3346, 7101, 9303 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["demo-app/showcase"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK92"
 anchors = ["demo/demo-app/src/main.tsx"]
 lane = "frontend"
@@ -73,3 +74,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Suggested model: sonnet.
 
 2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): task 9342's verify is weak: its greps already pass (`p1-routing` is only an Overview tile id at `build_bundle.py:100`, and `timeline` is in `verify_bundle.py`), and `test_bundle.py` tests only R1, so with pytest installed the verify would pass with no R2 view built (tmp/status-quo/2026-10-15/backlog/A11-93-showcase-deploy.md lines 116-118). Add assertions that the R2 views exist in a built bundle. Its pytest also needs `benchmarks/viabilitybench/.venv`, which does not exist in the main checkout.
+
+Checked 2026-10-27: 2026-10-26 recheck at 15335e2f9: no R2 work has landed; correctly still on hold. Verify table 1 remains weak as the 2026-10-15 status-quo finding already flagged.
+
+The [[verify]] command is unsound. Proposed replacement, not yet validated: `Table 1: add 'test -f demo/demo-app/src/pages/showcase/Routing.tsx && test -f demo/demo-app/src/pages/showcase/SpecQuality.tsx &&' before the existing p1-routing/timeline greps, so it fails until an R2 page actually exists.`.

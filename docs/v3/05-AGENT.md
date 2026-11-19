@@ -137,6 +137,7 @@ pub struct ModelProfile {
     pub provider: String,              // Key into [providers.*]
     pub slug: String,                  // Model ID sent to the API
     pub context_window: u64,           // Token window (default: 128_000)
+    pub compact_at_tokens: Option<u64>,// Tool-result compaction trigger (default: 80% of the window)
     pub max_output: Option<u64>,       // Output-token cap
     pub supports_tools: bool,          // Tool calling
     pub supports_thinking: bool,       // Reasoning output

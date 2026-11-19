@@ -64,7 +64,9 @@ skips.
 that unit that exited otherwise, or never finished, is retried under a new run id when its run directory holds no
 records and no ledger rows. Otherwise the campaign stops: the attempt's records would count twice. Move its run
 directory to `<results>/<experiment>.abandoned/` (inside the results root, so the ledger still counts its spend) and
-run the campaign again.
+run the campaign again. A unit that finished runs again in the same way once its run directory has been moved there:
+that is how an operator discards a finished run an infrastructure failure spoiled (Pilot B, 2026-10-20: the
+provider refused the account for a unit's last 9 tasks). The campaign log keeps every attempt.
 
 **`requires_live`** (3359, S09 §5's example: `L-audit`, `L-gate-depth`, `L-route-trust`). Before a live manifest's
 first dispatch, `check` runs the loop census (`roko learn loops --json`, S03.T15) against this repo's roko binary
@@ -450,7 +452,9 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
     fingerprint, why = _fingerprint(secret_file)
     log = results_root / manifest.id / LOG
     events = _read_log(log)
-    finished = {event["unit"] for event in events if event["event"] == "finish" and event.get("exit") == 0}
+    # A finished unit whose run directory was moved to <experiment>.abandoned/ is redone (module docstring, Resuming).
+    finished = {event["unit"] for event in events if event["event"] == "finish" and event.get("exit") == 0
+                and (results_root / manifest.id / event["run_id"]).is_dir()}
     found = check(vb, manifest, budget=budget, results_root=results_root, include=args.include or (),
                   provider_url=args.provider_url, arm_files=arm_files, secret_fingerprint=fingerprint,
                   finished=finished, limit=args.limit, lock=args.lock, spec=args.prereg_spec)

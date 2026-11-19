@@ -14,9 +14,11 @@ use super::sandbox::{require_string, require_within_worktree};
 /// Canonical `snake_case` name.
 pub const NAME: &str = "multi_edit";
 
-/// Human-readable description sent to the LLM.
-pub const DESCRIPTION: &str =
-    "Apply multiple exact-string replacements to a single file atomically.";
+/// Human-readable description sent to the LLM (gap-b46c16: one call, not one
+/// turn an edit).
+pub const DESCRIPTION: &str = "Apply multiple exact-string replacements to a single file \
+    atomically, in one call: cheaper than an edit_file call a turn, since every turn re-sends \
+    the whole conversation.";
 
 /// Build the [`ToolDef`] for `multi_edit`.
 #[must_use]

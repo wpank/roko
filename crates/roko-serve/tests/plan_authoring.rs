@@ -333,6 +333,8 @@ impl CliRuntime for StubAuthoringRuntime {
             tasks: Vec::new(),
             title: None,
             max_parallel: 1,
+            plan_checks: Vec::new(),
+            workspace_rungs: true,
         }))
     }
 
@@ -376,6 +378,7 @@ impl CliRuntime for StubAuthoringRuntime {
             artifacts: Vec::new(),
             cost_usd: 0.0,
             source_checks: None,
+            repairs: Vec::new(),
         })
     }
 }

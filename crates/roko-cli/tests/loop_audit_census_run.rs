@@ -17,7 +17,10 @@
 //! - the measured census (5123) gives L-know and L-play exposure above 0;
 //! - every sections row carries L-sec's fields, and the audit ticks at the
 //!   plans' closes leave `loop.health` rows for L-sec and the placebo, which
-//!   never moves, in a ledger whose audit never broke (gap-6f31c3).
+//!   never moves, in a ledger whose audit never broke (gap-6f31c3);
+//! - each of L-sec's opportunities logs the bandit's exclusion odds on both
+//!   arms, and its ι, measured on them, lies between 0 and the cap's excess
+//!   over the floor (q-beea61).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -28,6 +31,7 @@ use assert_cmd::cargo::cargo_bin;
 use roko_learn::loop_audit::AuditState;
 use roko_learn::loop_audit::census::measure;
 use roko_learn::loop_audit::ledger::{Ledger, LoopAuditRow, latest_health};
+use roko_learn::section_effect::{SECTION_EXCLUSION_CAP, SECTION_EXCLUSION_FLOOR};
 use roko_learn::telemetry::records::AuditFields;
 use roko_learn::telemetry::report::{RunRecords, srm_check};
 use roko_learn::telemetry::{Arm, ContentDecisionPoint};
@@ -287,6 +291,31 @@ fn fixture_run_logs_arms_before_plan_and_measures_exposure() {
     }
     let opportunities = measured.get("L-sec").map_or(0, |sec| sec.n_opp);
     assert!(opportunities > 0, "L-sec's opportunities");
+    // q-beea61: each of L-sec's opportunities logs the odds the bandit left
+    // each droppable section out at, on both arms, beside the floor
+    // policy's; its ι, measured on them, is their excess over the floor.
+    let mut arms_with_odds = [false; 2];
+    for row in &sections {
+        let eligible = row.audit.opportunity.as_ref();
+        if !eligible.is_some_and(|opportunity| opportunity.eligible) {
+            continue;
+        }
+        let exclusion = row.proposals.as_ref().and_then(|p| p.exclusion.as_ref());
+        let exclusion = exclusion.unwrap_or_else(|| panic!("no odds on {row:?}"));
+        assert_eq!(exclusion.floor, SECTION_EXCLUSION_FLOOR, "{row:?}");
+        assert!(!exclusion.learned.is_empty(), "{row:?}");
+        let odds = SECTION_EXCLUSION_FLOOR..=SECTION_EXCLUSION_CAP;
+        assert!(
+            exclusion.learned.values().all(|p| odds.contains(p)),
+            "{row:?}"
+        );
+        let arm = row.audit.assignment.as_ref().map(|draw| draw.draw.arm);
+        arms_with_odds[usize::from(arm == Some(Arm::Learned))] = true;
+    }
+    assert_eq!(arms_with_odds, [true; 2], "odds on both arms");
+    let iota = measured.get("L-sec").map_or(-1.0, |sec| sec.iota_net);
+    let excess = SECTION_EXCLUSION_CAP - SECTION_EXCLUSION_FLOOR;
+    assert!((0.0..=excess).contains(&iota), "L-sec's ι_net {iota}");
     let placebo = measured.get("L-placebo").expect("the placebo is measured");
     assert_eq!((placebo.n_opp, placebo.iota_net), (CHAINS as u64, 0.0));
 

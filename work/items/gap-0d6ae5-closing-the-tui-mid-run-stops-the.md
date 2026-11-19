@@ -8,16 +8,16 @@ severity = "p3"
 goal = "visibility"
 subsystem = ["roko-cli/graph_execution", "roko-cli/tui"]
 created = 2026-09-29
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-11-12
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e2-planset"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::pending_interrupt", "crates/roko-cli/src/graph_execution/plan_runner.rs::PlanRunInterrupt", "crates/roko-cli/src/serve_client.rs::follow_run_tui"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'stopping the plan run' crates/roko-cli/src/graph_execution/plan_runner.rs"
+command = "grep -qw 'closing_the_tui_mid_run_interrupts_the_run' crates/roko-cli/src/graph_execution/plan_runner.rs (pin) replaced once fixed by a positive test like `grep -rqw 'fn tui_close_can_detach_and_keep_the_run_going' crates/roko-cli/src && cargo test -p roko-cli tui_close_can_detach_and_keep_the_run_going` - the current verify also matches the unconditional conductor-stop log line at plan_runner.rs:1809 ('the conductor is stopping the plan run'), which the 2026-10-01 note already flagged as a false-fail risk once this ships, not a false-pass risk today."
 +++
 
 Quitting the TUI while plans are still running is treated as an interrupt (`PlanRunInterrupt::Interrupt`, exit 130). Before the interrupt work, the run continued headless with stderr redirected and no terminal output. Neither suits an operator who closes the dashboard to look at something else.
@@ -29,3 +29,11 @@ Re-verified 2026-09-29 at d9e79e9d8: when a live roko-serve owns the workspace, 
 ## Notes
 
 2026-10-01 (wk-runstate): blocked. Two things stop this: an explicit detach choice is TUI work in another packet's files, and it needs a UX decision. Still true at BASE: a local run turns a TUI close into `PlanRunInterrupt::Interrupt` (`plan_runner.rs::pending_interrupt`), and the test `closing_the_tui_mid_run_interrupts_the_run` pins that behaviour. The choice belongs in the TUI's quit confirmation (`ModalState::Quit`: `tui/app/actions.rs`, `tui/input.rs::handle_confirm_key`, `tui/modals/mod.rs`, `tui/widgets/status_bar.rs`). Proposed next step: give the quit modal a `d` (detach) answer that sets a flag the runner passes in, for example `App::with_detach_flag(Arc<AtomicBool>)`. With the flag set, `pending_interrupt` keeps the run going: it drops the `TuiSession`, which points stderr back at the terminal, and turns on the inline progress sink. `InlineProgressTelemetrySink::show_progress` would become a shared `AtomicBool` for that. Ctrl-C would still stop the run, and `roko dashboard` could reattach to it through `.roko/events.jsonl`. Will should first decide whether quitting keeps stopping the run, with detach as the opt-in answer as proposed, or whether detach becomes the default. Also: the [[verify]] cannot pass as written, because "the conductor is stopping the plan run" (`plan_runner.rs:1247`) also matches `stopping the plan run`. Narrow it to the TUI-close message when this is done.
+
+2026-11-12 (round v8, gap-2c87f0, roko-recovery): what the terminal default settles. `roko plan run` and `roko run
+plans/<dir>` no longer open the TUI on a terminal: they show the inline live view (a line per task, a footer of tasks,
+time and spend), and the TUI opens only with `--tui` (`--approval`) or for a plan that holds its tasks for approval.
+So a person who never asks for the TUI never meets this; the inline progress the proposed detach would fall back to
+is now the default. What stays open is the choice itself: closing a TUI that was asked for still stops the run, and
+there is no detach answer in its quit dialog. The TUI's own self-close at the end of a run no longer reads as a stop
+(bug-a362b8).

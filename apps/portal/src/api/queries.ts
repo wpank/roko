@@ -15,9 +15,10 @@
  *  - Errors propagate as `ApiError`; callers read `.body` for detail.
  */
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/api/client';
 import type {
+  WirePlanDetail,
   WirePlanSummary,
   WirePlanTasks,
   WirePlanSource,
@@ -29,6 +30,9 @@ import type {
   WireReviews,
   WireTaskDiff,
   WireReviewDecision,
+  WireRunDiff,
+  WireRunResult,
+  WireRunSummary,
 } from '@/api/contracts';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +46,14 @@ export const queryKeys = {
   validation: (id: string) => ['plans', id, 'validation'] as const,
   reviews: (id: string) => ['plans', id, 'reviews'] as const,
   taskDiff: (id: string, taskId: string) => ['plans', id, 'diff', taskId] as const,
+  /** A plan's detail as it stood when `stamp` (its last run's end) was current. */
+  planDetail: (id: string, stamp: string) => ['plans', id, 'detail', stamp] as const,
+  /** A run's summary as it stood when `stamp` was current: a run's index is complete only once the run ends. */
+  runSummary: (runId: string, stamp: string) => ['runs', runId, 'summary', stamp] as const,
+  runDiff: (runId: string) => ['runs', runId, 'diff'] as const,
+  planCosts: (id: string) => ['plans', id, 'costs'] as const,
+  runFacts: (id: string, stamp: string) => ['plans', id, 'run-facts', stamp] as const,
+  gateRungs: ['config', 'gates', 'rungs'] as const,
   workspace: ['workspace'] as const,
 };
 
@@ -77,10 +89,15 @@ export function useWorkspace() {
 // Plans
 // ---------------------------------------------------------------------------
 
+/**
+ * The plan list, with a row for each plan being written (gap-f8c57a; older servers send none). While a write runs,
+ * the list is read again every 2 s: its row's spend moves as its calls settle, and its plan replaces it.
+ */
 export function usePlans() {
   return useQuery<WirePlanSummary[]>({
     queryKey: queryKeys.plans,
-    queryFn: () => api.get<WirePlanSummary[]>('/api/plans'),
+    queryFn: () => api.get<WirePlanSummary[]>('/api/plans?writing=true'),
+    refetchInterval: (query) => (query.state.data?.some((row) => row.writing) ? 2_000 : false),
   });
 }
 
@@ -110,6 +127,44 @@ export function useValidation(id: string | undefined) {
     queryFn: () =>
       api.post<WireValidation>(`/api/plans/${encodeURIComponent(id!)}/validate`),
     enabled: Boolean(id),
+  });
+}
+
+/**
+ * The project's own checks, which roko runs on every task (`[[gates.rungs]]` in roko.toml), by name. An older or
+ * locked-down server that does not say gives none: the check count then shows each task's own checks only.
+ */
+export function useGateRungs() {
+  return useQuery<string[]>({
+    queryKey: queryKeys.gateRungs,
+    queryFn: async () => {
+      try {
+        const config = await api.get<{ gates?: { rungs?: { name?: string }[] } }>('/api/config');
+        return (config.gates?.rungs ?? []).map((r) => r.name ?? '').filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** A plan's spending cap in USD (`[budget] max_plan_usd`), or null when it has none or the server does not say. */
+export function usePlanCap(id: string | undefined) {
+  return useQuery<number | null>({
+    queryKey: queryKeys.planCosts(id ?? ''),
+    queryFn: async () => {
+      try {
+        const costs = await api.get<{ plan_budget?: number; budget?: { enabled?: boolean } }>(
+          `/api/plans/${encodeURIComponent(id!)}/costs`,
+        );
+        return costs.budget?.enabled === false || !costs.plan_budget ? null : costs.plan_budget;
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(id),
+    staleTime: 60_000,
   });
 }
 
@@ -224,10 +279,112 @@ function taskPath(id: string, taskId: string): string {
   return `/api/plans/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}`;
 }
 
-export function useTaskDiff(id: string, taskId: string) {
+export function useTaskDiff(id: string, taskId: string, enabled = true) {
   return useQuery<WireTaskDiff>({
     queryKey: queryKeys.taskDiff(id, taskId),
     queryFn: () => api.get<WireTaskDiff>(`${taskPath(id, taskId)}/diff`),
+    enabled,
+    retry: false,
+  });
+}
+
+/** What the plan's detail says of its run that only the run's request and roko serve know. */
+export interface RunFacts {
+  /** What the run may spend: the cap its request set (gap-acfe4b), or null when it named none. */
+  capUsd: number | null;
+  /** When roko accepted the run, in ms (gap-c1726f), or null when serve doesn't say. */
+  startedAtMs: number | null;
+}
+
+function fetchRunFacts(id: string): Promise<RunFacts> {
+  return fetchPlanDetail(id).then((detail) => {
+    const started = detail.last_run?.started_at ? Date.parse(detail.last_run.started_at) : Number.NaN;
+    return {
+      capUsd: detail.last_run?.max_usd ?? null,
+      startedAtMs: Number.isFinite(started) ? started : null,
+    };
+  });
+}
+
+/**
+ * What the plan's detail names of its run (`last_run.max_usd` and `last_run.started_at`). `stamp` changes when the
+ * run starts and ends, so it is read then; while the run is `live` and the detail doesn't name its start yet (the
+ * run's checkpoint comes a moment after it starts), it is read again every 5 s.
+ */
+export function useRunFacts(id: string, live: boolean, stamp: string) {
+  return useQuery<RunFacts>({
+    queryKey: queryKeys.runFacts(id, stamp),
+    queryFn: () => fetchRunFacts(id),
+    retry: false,
+    refetchInterval: (query) => (live && query.state.data?.startedAtMs == null ? 5_000 : false),
+  });
+}
+
+/**
+ * When roko accepted each of `runs`, by plan id: what the plan list's and the top bar's clocks count from, as TIME
+ * does (bug-b6d5cb). Each is read as useRunFacts reads it, with the same key, so the plan open on its page costs no
+ * second request.
+ */
+export function useRunStarts(
+  runs: ReadonlyArray<{ id: string; live: boolean; stamp: string }>,
+): Readonly<Record<string, number>> {
+  return useQueries({
+    queries: runs.map(({ id, live, stamp }) => ({
+      queryKey: queryKeys.runFacts(id, stamp),
+      queryFn: () => fetchRunFacts(id),
+      retry: false,
+      refetchInterval: (query: { state: { data?: RunFacts } }) =>
+        live && query.state.data?.startedAtMs == null ? 5_000 : false,
+    })),
+    combine: (results) =>
+      Object.fromEntries(
+        results.flatMap((result, i) => {
+          const at = result.data?.startedAtMs;
+          return at == null ? [] : [[runs[i]!.id, at]];
+        }),
+      ),
+  });
+}
+
+/**
+ * A plan's detail: its last run and the run a resume would continue. `stamp` names the live run state it goes
+ * with (when the plan and its run last ended), so the detail is read again once a run ends.
+ */
+export function usePlanDetail(id: string, stamp: string, enabled = true) {
+  return useQuery<WirePlanDetail>({
+    queryKey: queryKeys.planDetail(id, stamp),
+    queryFn: () => fetchPlanDetail(id),
+    enabled,
+  });
+}
+
+/** How many times a run's summary is read, a second apart, while it names no result yet. */
+const RESULT_READS = 15;
+
+/**
+ * Where run `runId`'s work went (its summary's `result`), or null when it has none. `stamp` is the plan's
+ * detailStamp, so the summary is read again when the plan and its run end; a result lands a moment after the run's
+ * end, so while it names none the summary is read again each second, RESULT_READS times at most.
+ */
+export function useRunResult(runId: string | null, stamp: string) {
+  return useQuery<WireRunResult | null>({
+    queryKey: queryKeys.runSummary(runId ?? '', stamp),
+    queryFn: () =>
+      api.get<WireRunSummary>(`/api/runs/${encodeURIComponent(runId!)}/summary`).then((s) => s.result ?? null),
+    enabled: runId !== null,
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.data === null && query.state.dataUpdateCount < RESULT_READS ? 1_000 : false,
+  });
+}
+
+/** The files run `runId`'s work changes, with their patches. */
+export function useRunDiff(runId: string | null, enabled = true) {
+  return useQuery<WireRunDiff>({
+    queryKey: queryKeys.runDiff(runId ?? ''),
+    queryFn: () => api.get<WireRunDiff>(`/api/runs/${encodeURIComponent(runId!)}/diff`),
+    enabled: runId !== null && enabled,
+    retry: false,
   });
 }
 
@@ -264,6 +421,14 @@ export async function planExists(id: string): Promise<boolean> {
     if (err instanceof ApiError && err.status === 404) return false;
     throw err;
   }
+}
+
+/**
+ * Fetches one plan's summary with the run a resume would continue (`resumable_run`), read fresh each time:
+ * Run and Run again read it before a run that would set that run aside (gap-0eb763).
+ */
+export async function fetchPlanDetail(id: string): Promise<WirePlanDetail> {
+  return api.get<WirePlanDetail>(`/api/plans/${encodeURIComponent(id)}`);
 }
 
 /**

@@ -9,10 +9,11 @@ goal = "cybernetic"
 size = "M"
 subsystem = ["roko-cli/self_model", "roko-learn/self_model"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-29"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/self_model.rs", "crates/roko-cli/src/runtime_feedback/self_model.rs", "crates/roko-cli/src/dispatch/model_routing.rs::decide_self_model"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/self_model.rs", "crates/roko-cli/src/runtime_feedback/self_model.rs", "crates/roko-cli/src/dispatch/model_routing.rs::decide_self_model", "crates/roko-cli/src/commands/learn_self_model.rs::read_forecast_join"]
 links = { depends_on = [], blocks = [], related = ["gap-d2d750", "gap-7ec3ef", "gap-45c8fe", "bug-78e5ce"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -68,3 +69,5 @@ The `[[verify]]` command passes.
 
 Spend: 6128/6129 ride on any approved cheap run; 6130's 200 attempts need Will's approval (ask with the pilots'
 report, per decision 1). The coordinator may split 6130 out as its own held item.
+
+Checked 2026-10-27: 2026-10-26: the code blocker for 6129 is fixed (f90e8194f, 2026-10-17); what remains is actually running a live shadow plan and recording the 6128/6129 shares, plus Will's budget approval and the 200-attempt run for 6130, written up in work/history/self-model-live-acceptance-<date>.md.

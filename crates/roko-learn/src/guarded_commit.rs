@@ -14,7 +14,9 @@
 //!   live state and nothing is written but the row (`rolled_back`);
 //! - a check fails in [`GuardMode::Observe`], decision 8103's mode for the
 //!   first ten runs: the candidate is committed and the row records the
-//!   rollback that would have happened (`observed`).
+//!   rollback that would have happened (`observed`);
+//! - the store's precondition fails, such as the knowledge store's
+//!   `delivered` (bug-2ad4fa): the candidate is rolled back in either mode.
 //!
 //! [`GuardedStore::restore_top`] puts the current version back after a
 //! restart, and [`GuardedStore::rollback`] restores any version still kept
@@ -112,6 +114,15 @@ pub trait CommitCheck {
 
     /// The candidate against human-edited anchors and invariants.
     fn anchors(&self, candidate: &[u8]) -> CheckOutcome;
+
+    /// What must hold before the candidate counts at all, such as the
+    /// knowledge store's `delivered`: the run that learned it delivered
+    /// (bug-2ad4fa). A failed precondition rolls the candidate back in
+    /// either mode, since observe mode measures checks and a precondition is
+    /// none. `None`, the default, for a store without one.
+    fn precondition(&self, _candidate: &[u8]) -> Option<CheckOutcome> {
+        None
+    }
 }
 
 /// What a proposal, or a rollback, came to.
@@ -120,7 +131,8 @@ pub trait CommitCheck {
 pub enum CommitDecision {
     /// Every check passed: the candidate is the new version.
     Committed,
-    /// A check failed in enforce mode: the LKG was restored.
+    /// A check failed in enforce mode, or the store's precondition failed in
+    /// either mode: the LKG was restored.
     RolledBack,
     /// A check failed in observe mode: the candidate was committed, and
     /// the row records the rollback that would have happened.
@@ -389,11 +401,15 @@ impl GuardedStore {
     /// Propose `state`, as the learner left it, as the next version. A
     /// rolled-back proposal restores the LKG into `state`.
     ///
+    /// The row lists the store's precondition first, when it has one, then
+    /// the held-out and anchor checks. A failed precondition rolls back in
+    /// either mode (bug-2ad4fa).
+    ///
     /// # Errors
     ///
-    /// [`GuardError::NothingToRestore`] when a check fails in enforce mode
-    /// before any version exists (the state keeps the candidate), and I/O
-    /// errors.
+    /// [`GuardError::NothingToRestore`] when a check fails in enforce mode,
+    /// or the precondition in either mode, before any version exists (the
+    /// state keeps the candidate), and I/O errors.
     pub fn propose<S: GuardedState>(
         &mut self,
         state: &mut S,
@@ -406,13 +422,16 @@ impl GuardedStore {
             Some(version) => Some(self.snapshot(version)?),
             None => None,
         };
-        let outcomes = vec![
-            checks.held_out(&candidate, lkg.as_deref()),
-            checks.anchors(&candidate),
-        ];
+        let precondition = checks.precondition(&candidate);
+        let unmet = precondition.as_ref().is_some_and(|outcome| !outcome.passed);
+        let mut outcomes: Vec<CheckOutcome> = precondition.into_iter().collect();
+        outcomes.push(checks.held_out(&candidate, lkg.as_deref()));
+        outcomes.push(checks.anchors(&candidate));
+        // Observe mode keeps a candidate that failed a check, not one whose
+        // precondition failed: that is no measurement (bug-2ad4fa).
         let decision = if outcomes.iter().all(|outcome| outcome.passed) {
             CommitDecision::Committed
-        } else if self.mode == GuardMode::Observe {
+        } else if self.mode == GuardMode::Observe && !unmet {
             CommitDecision::Observed
         } else {
             CommitDecision::RolledBack
@@ -608,12 +627,87 @@ mod tests {
         }
     }
 
+    /// [`NoRegression`] behind a precondition that holds or not.
+    struct Delivered(bool);
+
+    impl CommitCheck for Delivered {
+        fn held_out(&self, candidate: &[u8], lkg: Option<&[u8]>) -> CheckOutcome {
+            NoRegression.held_out(candidate, lkg)
+        }
+
+        fn anchors(&self, candidate: &[u8]) -> CheckOutcome {
+            NoRegression.anchors(candidate)
+        }
+
+        fn precondition(&self, _candidate: &[u8]) -> Option<CheckOutcome> {
+            Some(if self.0 {
+                CheckOutcome::pass("delivered", "the run delivered")
+            } else {
+                CheckOutcome::fail("delivered", "the run was cancelled")
+            })
+        }
+    }
+
     fn proposer(change: &str) -> Proposer {
         Proposer::evolved(
             "homeostat",
             "counter",
             format!("homeostat:ep-0001/{change}"),
         )
+    }
+
+    /// bug-2ad4fa: a failed precondition rolls the candidate back in observe
+    /// mode too, where a failed check only logs the would-be rollback. The
+    /// row lists the precondition first; a store without one lists its two
+    /// checks.
+    #[test]
+    fn a_failed_precondition_rolls_back_in_observe_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store =
+            GuardedStore::open(dir.path(), "counter", GuardMode::Observe).expect("open");
+        let mut state = Counter(10);
+        let committed = store
+            .propose(&mut state, &Delivered(true), &proposer("ch-1"))
+            .expect("v1");
+        assert_eq!(committed, CommitDecision::Committed);
+
+        state.0 = 12;
+        let decision = store
+            .propose(&mut state, &Delivered(false), &proposer("ch-2"))
+            .expect("rolled back");
+        assert_eq!(decision, CommitDecision::RolledBack);
+        assert_eq!(state.0, 10, "the live state is the LKG again");
+        assert_eq!(store.current(), Some(1));
+        assert_eq!(store.versions().expect("versions"), [1]);
+
+        state.0 = 14;
+        let plain = store
+            .propose(&mut state, &NoRegression, &proposer("ch-3"))
+            .expect("v2");
+        assert_eq!(plain, CommitDecision::Committed);
+
+        let rows = store.rows().expect("rows");
+        let checks = |row: &CommitRow| -> Vec<(String, bool)> {
+            let outcomes = row.checks.iter();
+            outcomes
+                .map(|check| (check.check.clone(), check.passed))
+                .collect()
+        };
+        let rolled_back = &rows[1];
+        assert_eq!(rolled_back.decision, CommitDecision::RolledBack);
+        assert_eq!(rolled_back.mode, GuardMode::Observe);
+        assert_eq!(rolled_back.version, 1);
+        assert_eq!(
+            checks(rolled_back),
+            [
+                ("delivered".to_string(), false),
+                ("held_out".to_string(), true),
+                ("anchors".to_string(), true)
+            ]
+        );
+        assert_eq!(rolled_back.checks[0].reason, "the run was cancelled");
+        assert_eq!(checks(&rows[0])[0], ("delivered".to_string(), true));
+        assert_eq!(checks(&rows[2]).len(), 2);
     }
 
     #[test]

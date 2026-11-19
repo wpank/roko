@@ -9,8 +9,9 @@ goal = "features"
 size = "M"
 subsystem = ["roko-cli/graph-dispatch", "roko-cli/plan_validate"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "round v6 plans-research: tmp/hermes-roko-v6/findings/plans-research.md, section 2.4 and proposed item 8"
 discovered_from = "agent:plans-research (round v6)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskMeta", "crates/roko-cli/src/graph_task_dispatch/pack_rungs.rs::kind_rungs", "crates/roko-cli/src/graph_task_dispatch/pack_rungs.rs::rubric_criteria", "crates/roko-cli/src/graph_task_dispatch/verification.rs::plan_runs_workspace_rungs", "crates/roko-core/src/config/gates.rs::rung_files"]
@@ -120,3 +121,5 @@ key, and add `[[meta.rungs]]` when a second kind is wanted.
 - Evidence and mori numbers: `tmp/hermes-roko-v6/findings/plans-research.md` sections 1.2 and 2.4. A mori rubric
   to test with: `/Users/will/dev/uniswap/bardo/.mori/plans/08f-sonification-oscillator-filter-envelope/rubric.md`
   (read-only).
+
+Checked 2026-10-27: 2026-10-26: commit 8d0075cfe touched task_parser.rs for an unrelated feature (plan [meta] sources / PLAN_061), not a rubric key.

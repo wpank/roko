@@ -9,9 +9,9 @@ size = "M"
 goal = "release"
 subsystem = ["ci"]
 created = 2026-09-28
-updated = 2026-10-15
-last_verified = 2026-09-29
-last_verified_rev = "641a030ff"
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["Cargo.toml", "demo/speed-test/Cargo.toml", ".github/workflows/ci.yml", ".github/workflows/msrv.yml", ".github/workflows/deny.yml", ".github/workflows/coverage.yml", ".github/workflows/docs-lint.yml", ".github/workflows/plan-validate.yml", ".github/workflows/docker-publish.yml", ".github/workflows/deploy-fly.yml", "deny.toml"]
@@ -249,3 +249,5 @@ Update 2026-09-28, root cause on main: main's `Cargo.toml` lists `demo/speed-tes
 Re-checked 2026-09-29 (static, no GitHub API): main is still 244f564e1 and still lists demo/speed-test as a workspace member without the crate, so the merge that fixes the cargo jobs has not happened. No required-checks list has been published yet.
 
 2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 11: after the route-snapshot fix, push a branch and open a PR so CI runs on HEAD; merge when green apart from the filed CI-hidden failures, which the PR lists; then require checks on main.
+
+Checked 2026-10-27: 2026-10-26 sweep: the Rust fixes from 2026-09-29 (6e98eb87b, 641a030ff) remain in place. Still open: a published required-checks doc, branch protection, the 2 doctor tests, the 4 stale plan anchors, and confirming a green main (decision 11's push-PR-merge step); none of these can be checked without gh/network under this sweep's static-only rule.

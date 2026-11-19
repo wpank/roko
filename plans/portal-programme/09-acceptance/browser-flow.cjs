@@ -86,20 +86,28 @@ async function failStep(page, name, detail, evidenceDir) {
     process.exit(1);
 }
 
-// Browser errors the portal is expected to produce. `url` matches a failed request's URL and `text` a console
-// message; give every entry a `why`. Anything not listed fails the no-console-errors step (gap-9b0e6d). Add an entry
-// only for a request that is meant to fail; a real defect becomes a work item instead.
-const ALLOWED_BROWSER_ERRORS = [];
+// Browser errors the portal is expected to produce. `url` matches a failed request's URL (and, when given, `error`
+// its error and `step` the step it failed in) and `text` a console message; give every entry a `why`. Anything not
+// listed fails the no-console-errors step (gap-9b0e6d). Add an entry only for a request that is meant to fail; a real
+// defect becomes a work item instead.
+const ALLOWED_BROWSER_ERRORS = [
+    {
+        url: /\/api\/events\?/, error: /ERR_ABORTED/, step: /^reload$/,
+        why: 'the event stream stays open for the page\'s life, so the reload step\'s navigation aborts it',
+    },
+];
 
 function unexpectedBrowserErrors(consoleErrors, pageErrors, failedRequests) {
-    const allowed = (key, value) => ALLOWED_BROWSER_ERRORS.some(a => a[key] && a[key].test(value));
+    const allowedText = t => ALLOWED_BROWSER_ERRORS.some(a => a.text && a.text.test(t));
+    const allowedRequest = r => ALLOWED_BROWSER_ERRORS.some(a => a.url && a.url.test(r.url)
+        && (!a.error || a.error.test(r.error || '')) && (!a.step || a.step.test(r.step || '')));
     // Chrome logs a failed request as "Failed to load resource: …" without its URL; the request itself is judged below.
-    const messages = consoleErrors.filter(t => !t.startsWith('Failed to load resource') && !allowed('text', t));
-    const requests = failedRequests.filter(r => !allowed('url', r.url));
+    const messages = consoleErrors.filter(t => !t.startsWith('Failed to load resource') && !allowedText(t));
+    const requests = failedRequests.filter(r => !allowedRequest(r));
     return [
         ...pageErrors.map(e => `page error: ${e}`),
         ...messages.map(t => `console: ${t}`),
-        ...requests.map(r => `${r.status || r.error} ${r.method} ${r.url}`),
+        ...requests.map(r => `${r.status || r.error} ${r.method} ${r.url} (during ${r.step})`),
     ];
 }
 
@@ -115,7 +123,11 @@ function checkBrowserErrors(consoleErrors, pageErrors, failedRequests) {
 }
 
 // Require a step: fn() must resolve; on throw → FAIL + exit 1
+// The step running now, so a failed request says when it failed.
+let currentStep = 'start';
+
 async function requireStep(page, name, evidenceDir, fn) {
+    currentStep = name;
     try {
         const detail = await fn();
         passStep(name, detail || '');
@@ -173,7 +185,34 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'prompt visible, no plans';
     });
 
-    // 4. generate (action 1)
+    // 4. stop-write (gap-f8c57a): a write stopped while its planner works writes no plan. Its glass shows TIME and
+    // SPENT, and once stopped the box comes back with the request in it and says what the write spent. The fake
+    // planner holds a request that says SLOW n for n seconds. A detour, so it adds no action to the flow's count.
+    await requireStep(page, 'stop-write', evidenceDir, async () => {
+        const request = 'SLOW 60 a plan to stop before it is written';
+        await page.locator('[data-prompt]').fill(request);
+        await page.locator('[data-prompt]').press('Control+Enter');
+        const stop = page.locator('[data-region="writing"] [data-action="stop-write"]');
+        await stop.waitFor({ state: 'visible', timeout: 15_000 });
+        await page.waitForFunction(
+            () => document.querySelector('[data-action="stop-write"]')?.disabled === false,
+            { timeout: 15_000 }
+        );
+        await page.locator('[data-region="writing"] [data-reading="spent"]').waitFor({ state: 'visible', timeout: 5_000 });
+        await page.screenshot({ path: path.join(evidenceDir, '0-writing.png') });
+        await stop.click();
+        const stopped = page.locator('[data-stopped]');
+        await stopped.waitFor({ state: 'visible', timeout: 15_000 });
+        const said = (await stopped.textContent()) || '';
+        if (!said.startsWith('Stopped.')) throw new Error(`the stopped note says "${said}"`);
+        const kept = await page.locator('[data-prompt]').inputValue();
+        if (kept !== request) throw new Error(`the box holds "${kept}", not the stopped request`);
+        // The write's row goes once it stops, and no plan takes its place.
+        await page.waitForFunction(() => document.querySelectorAll('[data-plan-row]').length === 0, { timeout: 15_000 });
+        return said;
+    });
+
+    // 5. generate (action 1)
     await requireStep(page, 'generate', evidenceDir, async () => {
         await page.locator('[data-prompt]').fill('a rust app that prints hello world');
         await page.locator('[data-prompt]').press('Control+Enter');
@@ -189,7 +228,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return `slug=${slug} tasks=${taskCount}`;
     });
 
-    // 5. run (action 2)
+    // 6. run (action 2)
     await requireStep(page, 'run', evidenceDir, async () => {
         const btn = page.locator('[data-action="run"]');
         await btn.waitFor({ state: 'visible', timeout: T.runBtn });
@@ -202,24 +241,20 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'clicked run';
     });
 
-    // 6. running
+    // 7. running: the running task's pad is live, the page says what it does now, the glass counts its checks,
+    // and its opened detail shows the agent's live transcript.
     await requireStep(page, 'running', evidenceDir, async () => {
-        await page.locator('[data-task-row][data-state="active"]').waitFor({ state: 'visible', timeout: T.running });
-        await page.locator('[data-region="transcript"]').waitFor({ state: 'visible', timeout: 10_000 });
-        // Agent row contains slug + ' · '
-        await page.waitForFunction(
-            (s) => Array.from(document.querySelectorAll('[data-region="run-band"] [data-cell="agents"] [data-agent]'))
-                .some(r => r.textContent.includes(s + ' · ')),
-            slug,
-            { timeout: 15_000 }
-        );
-        // At least one check rung
-        await page.locator('[data-cell="checks"] [data-rung]').first().waitFor({ state: 'attached', timeout: 15_000 });
+        const live = page.locator('[data-task-row][data-state="live"]').first();
+        await live.waitFor({ state: 'visible', timeout: T.running });
+        await page.locator('[data-region="now"] [data-now-task]').first().waitFor({ state: 'visible', timeout: 15_000 });
+        await page.locator('[data-reading="checks"] .rk-pips i').first().waitFor({ state: 'attached', timeout: 15_000 });
+        await live.click();
+        await page.locator('[data-region="task-detail"] [data-region="transcript"]').waitFor({ state: 'visible', timeout: 10_000 });
         await page.screenshot({ path: path.join(evidenceDir, '2-running.png') });
-        return 'active task, transcript, agent row, rung';
+        return 'live pad, now line, check pips, transcript';
     });
 
-    // 7. live-step (flow only)
+    // 8. live-step (flow only)
     if (!isReal) {
         await requireStep(page, 'live-step', evidenceDir, async () => {
             await page.waitForFunction(() => {
@@ -234,7 +269,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         });
     }
 
-    // 8. reload
+    // 9. reload
     await requireStep(page, 'reload', evidenceDir, async () => {
         const baseUrl = url.split('#')[0].split('?')[0];
         await page.goto(baseUrl);
@@ -248,23 +283,27 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
         return 'rail visible, plan current, session persisted';
     });
 
-    // 9. done
+    // 10. done
     await requireStep(page, 'done', evidenceDir, async () => {
         await page.locator(`[data-plan-row="${slug}"][data-state="done"]`).waitFor({ state: 'attached', timeout: T.done });
         await page.waitForFunction(() => {
             const rows = document.querySelectorAll('[data-task-row]');
-            return rows.length > 0 && Array.from(rows).every(r => r.getAttribute('data-state') === 'done');
+            return rows.length > 0 && Array.from(rows).every(r => r.getAttribute('data-state') === 'pass');
         }, { timeout: 15_000 });
-        await page.locator('[data-region="run-band"]').waitFor({ state: 'hidden', timeout: 10_000 });
+        await page.locator('[data-region="now"]').waitFor({ state: 'detached', timeout: 10_000 });
         await page.screenshot({ path: path.join(evidenceDir, '3-done.png') });
-        return 'plan done, all tasks done, run-band gone';
+        return 'plan done, every pad passed, nothing runs';
     });
 
     // Steps 10–11: flow only
     if (!isReal) {
         // 10. revise
         await requireStep(page, 'revise', evidenceDir, async () => {
-            await page.locator('[data-action="revise"]').click();
+            // A passed run's one key is review (design system §4.8): revise waits in the plan's details (gap-a5b2e8).
+            if (await page.locator('[data-region="status-line"] [data-action="revise"]').count() === 0) {
+                await page.locator('[data-fold="plan"] > summary').click();
+            }
+            await page.locator('[data-action="revise"]:visible').first().click();
             await page.locator('[data-prompt]').fill('add a closing task');
             await page.locator('[data-prompt]').press('Control+Enter');
             await page.locator('[data-task-row="T99"]').waitFor({ state: 'visible', timeout: T.revise });
@@ -283,7 +322,7 @@ async function runFlow(page, url, wsName, evidenceDir, isReal) {
             );
             // Done again within 180s, T99 done
             await page.locator(`[data-plan-row="${slug}"][data-state="done"]`).waitFor({ state: 'attached', timeout: T.runDone });
-            await page.locator('[data-task-row="T99"][data-state="done"]').waitFor({ state: 'attached', timeout: 10_000 });
+            await page.locator('[data-task-row="T99"][data-state="pass"]').waitFor({ state: 'attached', timeout: 10_000 });
             return 'plan ran again, T99 done';
         });
     }
@@ -313,15 +352,11 @@ async function runParallel(page, url, evidenceDir) {
         await page.waitForFunction(() => {
             const slot = document.querySelector('[data-region="header"] [data-slot="run"]');
             if (!slot || !slot.textContent.includes('2 running')) return false;
-            const agents = document.querySelectorAll('[data-cell="agents"] [data-agent]');
-            const plans = new Set(Array.from(agents).map(a => {
-                const m = a.textContent.match(/^([^\s]+)\s+·\s+/);
-                return m ? m[1] : null;
-            }).filter(Boolean));
-            return plans.size >= 2;
+            // Two rows of the plan list run at once.
+            return document.querySelectorAll('[data-plan-row][data-signal="live"]').length >= 2;
         }, { timeout: 60_000 });
         await page.screenshot({ path: path.join(evidenceDir, '5-parallel.png') });
-        return '2 running in header, 2 different plans in agent list';
+        return '2 running in the status chip, 2 plans running in the list';
     });
 
     // all plan rows done within 300s
@@ -356,10 +391,10 @@ async function main() {
     page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
     page.on('pageerror', err => pageErrors.push(err.message));
     page.on('response', r => {
-        if (r.status() >= 400) failedRequests.push({ method: r.request().method(), url: r.url(), status: r.status() });
+        if (r.status() >= 400) failedRequests.push({ method: r.request().method(), url: r.url(), status: r.status(), step: currentStep });
     });
     page.on('requestfailed', r => failedRequests.push({
-        method: r.method(), url: r.url(), status: null, error: (r.failure() || {}).errorText || 'failed',
+        method: r.method(), url: r.url(), status: null, error: (r.failure() || {}).errorText || 'failed', step: currentStep,
     }));
 
     try {

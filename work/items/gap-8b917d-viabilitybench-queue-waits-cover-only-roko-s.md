@@ -9,11 +9,12 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "backlog wave reports 2026-10-02 (PK29 gap-064c40)"
 discovered_from = "gap-064c40; follows up on gap-3006e9's deferred benchmark-side wiring and gap-04e8e2's partial fix"
-anchors = ["benchmarks/viabilitybench/driver/run_roko.py::_rate_limit_waits", "benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/analysis/metrics.py"]
+anchors = ["benchmarks/viabilitybench/driver/run_roko.py::_rate_limit_waits", "benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/analysis/metrics.py:40"]
 lane = "bench"
 parent = "spec-567e52"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -95,3 +96,5 @@ explicitly deferred surfacing it to "the benchmark runner" (its own Notes) — t
   that gap-3006e9's own Notes said was still needed.
 - Filed from a backlog-wave follow-up report (PK29, working on gap-064c40, which itself only reconciled paper text
   and does not touch `metrics.py` or the drivers).
+
+Checked 2026-10-27: 2026-10-26 sweep: unchanged at HEAD 15335e2f9. metrics.py's stale docstring sentence moved from line 37 to line 40; all three sub-defects remain exactly as described.

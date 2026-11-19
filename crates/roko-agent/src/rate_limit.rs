@@ -24,6 +24,15 @@
 //! `HalfOpen` state are allowed through as probe requests.
 //!
 //! [`try_acquire`]: ProviderRateLimiter::try_acquire
+//!
+//! ## Calls at once, learned from rate limits
+//!
+//! A provider that refuses a call with a rate limit (HTTP 429) while others
+//! are in flight takes no more calls at once than those others.
+//! [`ProviderRateLimiter::admit`] then holds back a call to it while that
+//! many are in flight, so parallel tasks queue for the provider instead of
+//! all calling it and being refused again (bug-4b6844). The limit holds for
+//! [`LEARNED_LIMIT_HOLDS_FOR`] after the last refusal.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -247,6 +256,9 @@ pub struct ProviderRateLimiter {
     ///
     /// [`try_acquire`]: ProviderRateLimiter::try_acquire
     shared_health: Option<Arc<dyn ProviderHealthChecker>>,
+    /// What each endpoint's rate limits taught about the calls it takes at
+    /// once ([`ProviderRateLimiter::admit`]).
+    learned: Arc<Mutex<HashMap<String, LearnedConcurrency>>>,
 }
 
 impl std::fmt::Debug for ProviderRateLimiter {
@@ -272,6 +284,7 @@ impl ProviderRateLimiter {
             providers: Mutex::new(HashMap::new()),
             default_limiter: RateLimiter::keyed(Quota::per_minute(default_rpm)),
             shared_health: None,
+            learned: Arc::default(),
         }
     }
 
@@ -306,6 +319,7 @@ impl ProviderRateLimiter {
             providers: Mutex::new(providers),
             default_limiter: RateLimiter::keyed(Quota::per_minute(default_rpm)),
             shared_health: None,
+            learned: Arc::default(),
         }
     }
 
@@ -526,6 +540,79 @@ impl ProviderRateLimiter {
         snapshots
     }
 
+    /// Admit one call to the provider at `endpoint`, or hold it back while
+    /// the provider is at the calls at once it showed it takes
+    /// ([`Self::note_rate_limited`]). The call counts as in flight until the
+    /// returned [`AdmittedCall`] drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HeldCall`] when the endpoint is at its learned limit.
+    pub fn admit(&self, endpoint: &str) -> Result<AdmittedCall, HeldCall> {
+        self.admit_at(endpoint, std::time::Instant::now())
+    }
+
+    fn admit_at(&self, endpoint: &str, now: std::time::Instant) -> Result<AdmittedCall, HeldCall> {
+        let mut learned = lock_learned(&self.learned);
+        let state = learned.entry(endpoint.to_string()).or_default();
+        if let Some((limit, at)) = state.limit {
+            if now.saturating_duration_since(at) >= LEARNED_LIMIT_HOLDS_FOR {
+                state.limit = None;
+            } else if state.in_flight >= limit {
+                return Err(HeldCall {
+                    endpoint: endpoint.to_string(),
+                    in_flight: state.in_flight,
+                    limit,
+                });
+            }
+        }
+        state.in_flight += 1;
+        Ok(AdmittedCall {
+            learned: Arc::clone(&self.learned),
+            endpoint: endpoint.to_string(),
+        })
+    }
+
+    /// The run's own calls in flight to the provider at `endpoint`, while a
+    /// rate limit it answered within [`LEARNED_LIMIT_HOLDS_FOR`] says how
+    /// many it takes at once ([`Self::note_rate_limited`]); `None` when no
+    /// call is in flight there, or no such limit holds. A call the provider
+    /// refused, or this limiter held back, then waits for a slot among them
+    /// rather than handing its work to another model: the run's own calls
+    /// fill the provider (bug-62ae1e).
+    #[must_use]
+    pub fn own_calls(&self, endpoint: &str) -> Option<OwnCalls> {
+        self.own_calls_at(endpoint, std::time::Instant::now())
+    }
+
+    fn own_calls_at(&self, endpoint: &str, now: std::time::Instant) -> Option<OwnCalls> {
+        let learned = lock_learned(&self.learned);
+        let state = learned.get(endpoint)?;
+        let (limit, at) = state.limit?;
+        (state.in_flight > 0 && now.saturating_duration_since(at) < LEARNED_LIMIT_HOLDS_FOR)
+            .then_some(OwnCalls {
+                in_flight: state.in_flight,
+                limit,
+            })
+    }
+
+    /// The provider at `endpoint` refused a call this limiter admitted with a
+    /// rate limit (HTTP 429): it takes no more calls at once than the others
+    /// in flight now, and at least one, until [`LEARNED_LIMIT_HOLDS_FOR`]
+    /// passes without another refusal.
+    pub fn note_rate_limited(&self, endpoint: &str) {
+        self.note_rate_limited_at(endpoint, std::time::Instant::now());
+    }
+
+    fn note_rate_limited_at(&self, endpoint: &str, now: std::time::Instant) {
+        let mut learned = lock_learned(&self.learned);
+        let state = learned.entry(endpoint.to_string()).or_default();
+        // The refused call itself is still in flight.
+        let takes = state.in_flight.saturating_sub(1).max(1);
+        let limit = state.limit.map_or(takes, |(limit, _)| limit.min(takes));
+        state.limit = Some((limit, now));
+    }
+
     #[cfg(test)]
     pub(crate) fn new_per_second(rps: u32) -> Self {
         // For test-only per-second limiting, use the default keyed path.
@@ -536,13 +623,169 @@ impl ProviderRateLimiter {
             providers: Mutex::new(HashMap::new()),
             default_limiter: RateLimiter::keyed(Quota::per_second(rps)),
             shared_health: None,
+            learned: Arc::default(),
         }
+    }
+}
+
+// ─── Calls at once, learned from rate limits (bug-4b6844) ─────────────────
+
+/// How long the calls-at-once limit a provider showed by refusing a call
+/// with a rate limit holds without another refusal. Calls then go out
+/// unlimited again, and the next refusal teaches the limit afresh.
+pub const LEARNED_LIMIT_HOLDS_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What one endpoint's rate limits taught about the calls it takes at once.
+#[derive(Debug, Default)]
+struct LearnedConcurrency {
+    /// Calls to it in flight, as [`ProviderRateLimiter::admit`] admitted them.
+    in_flight: usize,
+    /// The calls at once it takes, and when a refusal last showed it.
+    limit: Option<(usize, std::time::Instant)>,
+}
+
+fn lock_learned(
+    learned: &Mutex<HashMap<String, LearnedConcurrency>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, LearnedConcurrency>> {
+    learned.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("rate limiter learned-concurrency mutex poisoned; recovering");
+        poisoned.into_inner()
+    })
+}
+
+/// A call [`ProviderRateLimiter::admit`] let through: in flight until it
+/// drops.
+#[derive(Debug)]
+pub struct AdmittedCall {
+    learned: Arc<Mutex<HashMap<String, LearnedConcurrency>>>,
+    endpoint: String,
+}
+
+impl Drop for AdmittedCall {
+    fn drop(&mut self) {
+        if let Some(state) = lock_learned(&self.learned).get_mut(&self.endpoint) {
+            state.in_flight = state.in_flight.saturating_sub(1);
+        }
+    }
+}
+
+/// A call [`ProviderRateLimiter::admit`] held back: its provider is at the
+/// calls at once it showed it takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldCall {
+    /// The provider's endpoint.
+    pub endpoint: String,
+    /// Its calls in flight.
+    pub in_flight: usize,
+    /// The calls at once it takes.
+    pub limit: usize,
+}
+
+/// The run's own calls in flight to a provider whose rate limit says how
+/// many it takes at once ([`ProviderRateLimiter::own_calls`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnCalls {
+    /// The run's calls in flight to it.
+    pub in_flight: usize,
+    /// The calls at once it takes.
+    pub limit: usize,
+}
+
+impl OwnCalls {
+    /// Whether they fill it: [`ProviderRateLimiter::admit`] holds the next
+    /// call back until one of them ends.
+    #[must_use]
+    pub const fn full(&self) -> bool {
+        self.in_flight >= self.limit
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-62ae1e: once a rate limit showed a provider takes two calls at
+    /// once, the run's own two calls fill it; one ending leaves a slot, none
+    /// in flight leaves the provider's limits its own, and a minute after
+    /// the last refusal the limit no longer holds.
+    #[test]
+    fn the_runs_own_calls_fill_a_provider_at_its_learned_limit() {
+        let limiter = ProviderRateLimiter::new(60);
+        let endpoint = "https://api.z.ai/api/paas/v4/chat/completions";
+        let t0 = std::time::Instant::now();
+        assert_eq!(limiter.own_calls_at(endpoint, t0), None);
+        let first = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        let second = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        assert_eq!(limiter.own_calls_at(endpoint, t0), None, "no limit learned");
+        let refused = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        limiter.note_rate_limited_at(endpoint, t0);
+        drop(refused);
+
+        let full = limiter.own_calls_at(endpoint, t0).expect("two in flight");
+        assert_eq!(
+            full,
+            OwnCalls {
+                in_flight: 2,
+                limit: 2
+            }
+        );
+        assert!(full.full());
+        drop(first);
+        let slot = limiter.own_calls_at(endpoint, t0).expect("one in flight");
+        assert!(!slot.full());
+        assert_eq!(
+            limiter.own_calls_at(endpoint, t0 + LEARNED_LIMIT_HOLDS_FOR),
+            None,
+            "the limit lapsed"
+        );
+        drop(second);
+        assert_eq!(limiter.own_calls_at(endpoint, t0), None, "none in flight");
+    }
+
+    /// bug-4b6844: a provider that refused one of three calls at once takes
+    /// two. While two are in flight a third is held back, without calling it;
+    /// once one ends, the next goes out; a minute after the last refusal,
+    /// calls go out unlimited again.
+    #[test]
+    fn a_rate_limit_teaches_how_many_calls_at_once_a_provider_takes() {
+        let limiter = ProviderRateLimiter::new(60);
+        let endpoint = "https://api.z.ai/api/paas/v4/chat/completions";
+        let t0 = std::time::Instant::now();
+        let first = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        let second = limiter.admit_at(endpoint, t0).expect("no limit yet");
+        let third = limiter.admit_at(endpoint, t0).expect("no limit yet");
+
+        limiter.note_rate_limited_at(endpoint, t0);
+        drop(third);
+        let held = limiter
+            .admit_at(endpoint, t0 + std::time::Duration::from_secs(1))
+            .expect_err("two in flight is the limit");
+        assert_eq!((held.in_flight, held.limit), (2, 2));
+        // Another endpoint is not held.
+        let other = limiter
+            .admit_at("https://api.openai.com/v1/chat/completions", t0)
+            .expect("another endpoint");
+
+        drop(first);
+        let next = limiter
+            .admit_at(endpoint, t0 + std::time::Duration::from_secs(2))
+            .expect("one call ended");
+        assert!(
+            limiter
+                .admit_at(endpoint, t0 + std::time::Duration::from_secs(3))
+                .is_err()
+        );
+        let later = t0 + LEARNED_LIMIT_HOLDS_FOR;
+        let unlimited = limiter.admit_at(endpoint, later).expect("the limit lapsed");
+        let again = limiter.admit_at(endpoint, later).expect("still unlimited");
+        drop((second, other, next, unlimited, again));
+
+        // A refusal with nothing else in flight still lets one call through.
+        limiter.note_rate_limited_at(endpoint, later);
+        let only = limiter.admit_at(endpoint, later).expect("one at a time");
+        assert!(limiter.admit_at(endpoint, later).is_err());
+        drop(only);
+    }
     use tokio::join;
 
     #[tokio::test]

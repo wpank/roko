@@ -1,0 +1,140 @@
+[meta]
+plan = "p4-1-bone-only-for-the-one-number"
+title = "P4.1 · bone only for the one number"
+iteration = 0
+total = 2
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+sources = ["docs/specs/phase-4.1-bone.md"]
+
+[[meta.verify]]
+phase = "test"
+command = "tools/check.sh --plugin"
+timeout_ms = 900000
+
+[[task]]
+id = "T1"
+title = "Restrict bone tokens to the CHEST pitch display"
+description = "Assumption: the only code changes needed are the token swaps named in docs/specs/phase-4.1-bone.md, because the failing phase 4 review isolated bone-like pixels to Look.cpp and Status.cpp. Update plugin/ui/Look.cpp so the knob value tick and Slider thumb use rose, and tooltip text uses textPrimary. Update plugin/ui/Status.cpp so the HEAD BPM readout uses textPrimary and the pump field RUMBLE label uses roseDim. Keep bone and boneDim untouched outside these two files so plugin/ui/Displays.cpp remains the one bone number. Do not change layout, sizing, fonts, behavior, tests, docs, tools, or any other editor colour assignments."
+role = "implementer"
+status = "ready"
+tier = "focused"
+max_loc = 20
+files = [
+    "plugin/ui/Look.cpp",
+    "plugin/ui/Status.cpp",
+]
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    "AC1: Running `tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'` passes, proving idle frames show effectively no bone-like pixels and playing frames keep all bone-like pixels inside one CHEST region while the tunnel, scope, and AT checks still pass.",
+    "AC2: Running `tools/spec.sh 4 display 'P4.05*'` passes after the colour swaps, preserving the void, white-free, rose-dominant panel and calm CHEST at rest.",
+    "AC3: Running `tools/spec.sh 4 display 'P4.07*'` passes after the colour swaps, preserving hazard stripes only while clipping.",
+]
+sequence = 0
+goal = "Only the CHEST pitch display keeps bone and bone_dim; the knob tick, knob thumb, tooltip text, BPM readout, and RUMBLE label use the ROSEDUST tokens named by the phase 4.1 spec."
+non_goals = [
+    "Do not edit plugin/ui/Displays.cpp or change the bone pitch display itself.",
+    "Do not change any header, layout, size, font, behaviour, tests/spec files, docs, third_party code, or tools.",
+]
+
+[task.context]
+symbols = [
+    "Look::Look — slider thumb and tooltip token assignments",
+    "Look::drawRotarySlider — knob value tick colour",
+    "Status::paint — HEAD BPM and RUMBLE label colours",
+]
+anti_patterns = [
+    "Do NOT change tests or tools to satisfy the spec; fix only the colour-token uses named in the spec.",
+    "Do NOT touch plugin/ui/Displays.cpp; bone remains reserved for the CHEST pitch display there.",
+    "Do NOT substitute different bright colours that would pass the bone-location checks but violate the named tokens.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4.1-bone.md"
+lines = "1-89"
+why = "The exact token swaps, scope limits, and rule that bone belongs only to the CHEST pitch display."
+
+[[task.context.read_files]]
+path = "plugin/ui/Look.cpp"
+lines = "1-67"
+why = "Contains the knob tick, slider thumb, and tooltip colours that currently use boneDim."
+
+[[task.context.read_files]]
+path = "plugin/ui/Status.cpp"
+lines = "1-85"
+why = "Contains the HEAD BPM and RUMBLE label colours that currently use bone."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.06*,P4.08*,P4.09*'"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.05*'"
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 display 'P4.07*'"
+timeout_ms = 900000
+covers = ["AC3"]
+expect = "pass_on_base"
+
+[[task]]
+id = "T2"
+title = "Refresh and commit the phase 4.1 review PNGs"
+description = "Assumption: after the token swaps land, running the unchanged budget script rewrites the three committed 1x review PNGs at artifacts/ui and leaves the uncommitted 2x preview copies under build/previews. Re-run the budget script from the repository root, keep the regenerated 1x images at artifacts/ui/editor-idle.png, artifacts/ui/editor-playing.png, and artifacts/ui/editor-clipping.png, and commit only those tracked PNG updates. Do not edit code, tests, docs, or any generated 2x preview outputs."
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+files = [
+    "artifacts/ui/editor-idle.png",
+    "artifacts/ui/editor-playing.png",
+    "artifacts/ui/editor-clipping.png",
+]
+depends_on = ["T1"]
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = ["AC1: Running `tools/spec.sh 4 budget` passes and rewrites the committed 1x review images at artifacts/ui/editor-idle.png, artifacts/ui/editor-playing.png, and artifacts/ui/editor-clipping.png."]
+sequence = 1
+goal = "The committed 1x review PNGs in artifacts/ui are regenerated from the corrected editor colours by the phase 4 budget run."
+non_goals = [
+    "Do not edit any source file, test, doc, or tool in this task.",
+    "Do not commit generated 2x previews under build/previews.",
+]
+
+[task.context]
+symbols = [
+    "artifacts/ui/editor-idle.png",
+    "artifacts/ui/editor-playing.png",
+    "artifacts/ui/editor-clipping.png",
+]
+anti_patterns = [
+    "Do NOT hand-edit PNG files; regenerate them with the unchanged budget command.",
+    "Do NOT add or track files under build/previews; only the three artifacts/ui 1x PNGs belong in this task.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "docs/specs/phase-4.1-bone.md"
+why = "States that the budget step must be rerun and that only the three 1x artifacts/ui PNGs are committed."
+
+[[task.verify]]
+phase = "test"
+command = "tools/spec.sh 4 budget"
+timeout_ms = 900000
+covers = ["AC1"]
+expect = "pass_on_base"

@@ -1568,7 +1568,7 @@ impl AgentDispatcherV2 {
         let snapshot = self.pricing_snapshot_for(&request);
         fill_cost_from_profile(&mut result, &created.target, snapshot.as_deref());
 
-        self.record_provider_outcome(&created.target.provider_id, &result);
+        self.record_provider_outcome(&created.target, &result);
 
         let health_recorded = self.health_registry.is_some();
         record_agent_dispatch_feedback(
@@ -1624,6 +1624,14 @@ impl AgentDispatcherV2 {
         let forwarder_tx = event_tx.clone();
         let forwarder = tokio::spawn(async move {
             while let Some(stream_event) = chunk_rx.recv().await {
+                // An empty reasoning delta only says a reasoning model's call
+                // is alive (gap-1ba0ac): there is nothing in it to show.
+                if matches!(
+                    &stream_event.kind,
+                    roko_agent::tool_loop::StreamEventKind::ReasoningDelta(text) if text.is_empty()
+                ) {
+                    continue;
+                }
                 let chunk = stream_chunk_from_event(stream_event);
                 let event = agent_event_from_chunk(chunk);
                 if forwarder_tx.send(event).await.is_err() {
@@ -1686,7 +1694,7 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        self.record_provider_outcome(&created.target.provider_id, &result);
+        self.record_provider_outcome(&created.target, &result);
         let health_recorded = self.health_registry.is_some();
         record_agent_dispatch_feedback(
             &request,
@@ -1794,7 +1802,7 @@ impl AgentDispatcherV2 {
         // This must happen before any gate verdict is applied so a provider
         // success followed by a failing code/test gate remains a provider
         // success in the health registry.
-        self.record_provider_outcome(&target.provider_id, &result);
+        self.record_provider_outcome(&target, &result);
 
         let health_recorded = self.health_registry.is_some();
         record_agent_dispatch_feedback(
@@ -1833,13 +1841,25 @@ impl AgentDispatcherV2 {
     /// Record a provider run's outcome for the circuit breaker (E48-T05), as
     /// [`ProviderHealthOutcome::of`] reads it. With a registry attached,
     /// this is the run's only provider-health record: the feedback recorder
-    /// then leaves health alone (backlog 1114).
-    fn record_provider_outcome(&self, provider_id: &str, result: &AgentResult) {
+    /// then leaves health alone (backlog 1114). A rate limit while the run's
+    /// own calls are in flight to `target`'s provider, at the calls at once
+    /// its rate limits showed it takes, is the run's own doing, most often a
+    /// call the limiter held back without calling the provider: not the
+    /// provider's failure (bug-62ae1e).
+    fn record_provider_outcome(&self, target: &ProviderDispatchSpec, result: &AgentResult) {
         let Some(registry) = &self.health_registry else {
             return;
         };
+        let provider_id = target.provider_id.as_str();
         match ProviderHealthOutcome::of(result) {
             ProviderHealthOutcome::Success => registry.record_provider_success(provider_id),
+            ProviderHealthOutcome::Failure("rate_limit") if Self::own_calls_in_flight(target) => {
+                tracing::debug!(
+                    provider = %provider_id,
+                    "a rate limit while the run's own calls fill the provider is not its \
+                     failure; its health is unchanged"
+                );
+            }
             ProviderHealthOutcome::Failure(error_kind) => {
                 registry.record_provider_failure(provider_id, error_kind);
             }
@@ -1852,6 +1872,17 @@ impl AgentDispatcherV2 {
                 "an attempt timeout is a task outcome; the provider's health is unchanged"
             ),
         }
+    }
+
+    /// Whether the run's own calls are in flight to `target`'s provider
+    /// while a rate limit it answered says how many it takes at once
+    /// ([`roko_agent::provider::openai_compat::own_calls`], bug-62ae1e).
+    fn own_calls_in_flight(target: &ProviderDispatchSpec) -> bool {
+        target
+            .provider_config
+            .as_ref()
+            .and_then(roko_agent::provider::openai_compat::own_calls)
+            .is_some()
     }
 
     /// `request`'s allowance as the tool loop of `target`'s model sees it:
@@ -1922,8 +1953,26 @@ impl AgentDispatcherV2 {
             // Thread the live output channel so the immune boundary can
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
+            essential_tools: essential_tools(request),
+            hand_off_check: request.hand_off.clone(),
             ..Default::default()
         }
+    }
+}
+
+/// The tools a model's tool-count cap must keep for `request`: `run_tests`
+/// when dispatch left the attempt's checks for it, so even a model offered
+/// eight tools can run them mid-try (gap-770cb5).
+fn essential_tools(request: &AgentDispatchRequest) -> Vec<String> {
+    let checks = request
+        .attempt_key
+        .as_deref()
+        .zip(request.immune_root.as_deref())
+        .map(|(key, root)| roko_std::tool::builtin::task_checks::task_checks_path(root, key));
+    if checks.is_some_and(|path| path.is_file()) {
+        vec![roko_std::tool::builtin::run_tests::NAME.to_string()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -2244,6 +2293,12 @@ pub struct AgentDispatchRequest {
     /// Skipped by serde.
     #[serde(skip)]
     pub allowance: Option<Arc<dyn CallAllowance>>,
+    /// What the agent's tool loop asks when its model hands back
+    /// (bug-cbbaa8): a plan attempt's implementer whose task's checks still
+    /// fail, with turns left, is sent back to them within its try. Skipped
+    /// by serde.
+    #[serde(skip)]
+    pub hand_off: Option<Arc<dyn roko_agent::tool_loop::HandOffCheck>>,
 }
 
 /// What an attempt may still spend on its model calls, as its dispatch
@@ -2257,6 +2312,27 @@ pub trait CallAllowance: Send + Sync + fmt::Debug {
     /// A model call finished, costing `cost_usd`; `priced` is false when no
     /// rate priced it, so what it cost is unknown.
     fn record_call(&self, cost_usd: f64, priced: bool);
+
+    /// A model call to `model` finished using `usage`, which it cost
+    /// `usage.cost_usd` for; `priced` as for [`Self::record_call`], which this
+    /// calls unless the allowance also reports each call as it returns
+    /// (gap-5c3347).
+    fn record_model_call(&self, _model: &str, usage: &roko_core::Usage, priced: bool) {
+        self.record_call(f64::from(usage.cost_usd), priced);
+    }
+
+    /// [`Self::record_model_call`], with the call's finish reason and how
+    /// long it took (gap-1ba0ac), for an allowance that reports each call.
+    fn record_finished_call(
+        &self,
+        model: &str,
+        usage: &roko_core::Usage,
+        priced: bool,
+        facts: roko_agent::tool_loop::CallFacts<'_>,
+    ) {
+        let _ = facts;
+        self.record_model_call(model, usage, priced);
+    }
 
     /// The most the attempt can still spend, in USD, for an agent that runs
     /// its own loop and keeps a spend limit of its own, as the Claude CLI
@@ -2289,12 +2365,16 @@ impl roko_agent::tool_loop::TurnBudget for PricedCalls {
     }
 
     fn record_turn(&self, usage: &roko_core::Usage) {
+        self.record_call(usage, roko_agent::tool_loop::CallFacts::default());
+    }
+
+    fn record_call(&self, usage: &roko_core::Usage, facts: roko_agent::tool_loop::CallFacts<'_>) {
         let mut usage = *usage;
         let pricing = price_target_usage(&mut usage, &self.target, self.snapshot.as_deref());
         // A call that used no tokens cost nothing, priced or not.
         let priced = pricing != CallPricing::Unpriced || usage.has_known_cost();
         self.allowance
-            .record_call(f64::from(usage.cost_usd), priced);
+            .record_finished_call(&self.target.model_slug, &usage, priced, facts);
     }
 }
 
@@ -3231,6 +3311,7 @@ mod tests {
                 attempt_key: None,
                 knowledge_ids: Vec::new(),
                 allowance: None,
+                hand_off: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3924,6 +4005,7 @@ mod tests {
             attempt_key: None,
             knowledge_ids: Vec::new(),
             allowance: None,
+            hand_off: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3997,6 +4079,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             attempt_key: None,
             knowledge_ids: Vec::new(),
             allowance: None,
+            hand_off: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());
@@ -4141,6 +4224,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             attempt_key: None,
             knowledge_ids: Vec::new(),
             allowance: None,
+            hand_off: None,
         }
     }
 

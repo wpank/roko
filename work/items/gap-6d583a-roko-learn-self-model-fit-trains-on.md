@@ -9,8 +9,9 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/self_model"]
 created = 2026-10-17
-updated = 2026-10-17
-last_verified = 2026-10-17
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "gap-dd89ff worker, 2026-10-17: the offline fit builds features with TaskFeatures::from(unit), which leaves the content group at its default"
 discovered_from = "gap-dd89ff"
 anchors = ["crates/roko-learn/src/self_model/ingest.rs::read_runs", "crates/roko-cli/src/commands/learn_self_model.rs::fit_offline"]
@@ -74,3 +75,5 @@ The `[[verify]]` command passes.
 
 Ingest is read-only and must stay so. Exposure rows are capped at 64 per attempt (`MAX_EXPOSURES_PER_ATTEMPT`); a unit
 whose rows are missing keeps the default group rather than a guess.
+
+Checked 2026-10-27: 2026-10-26: unchanged since 2026-10-17; fit_offline (learn_self_model.rs:270) still calls TaskFeatures::from(unit) at line 294.

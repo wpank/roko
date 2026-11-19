@@ -11,7 +11,7 @@ use crate::model_call_feedback::{ModelCallJournal, observe_model_call_on_router}
 use crate::section_effect::SectionEffectivenessRegistry;
 use crate::telemetry::CostSource;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use roko_core::foundation::{FeedbackEvent, FeedbackSink};
 use roko_core::{Result, RokoError};
 use serde::{Deserialize, Serialize};
@@ -291,6 +291,8 @@ impl FeedbackService {
                     "duration_ms": duration_ms,
                     "ts": ts,
                 }),
+                // The run's start goes to its episode; the row keeps `ts`,
+                // when it was written.
                 FeedbackEvent::WorkflowComplete {
                     event_type,
                     run_id,
@@ -299,6 +301,7 @@ impl FeedbackService {
                     outcome,
                     total_cost_usd,
                     total_tokens,
+                    started_at: _,
                     duration_ms,
                 } => serde_json::json!({
                     "kind": event_type,
@@ -773,6 +776,7 @@ impl FeedbackService {
                     outcome,
                     total_cost_usd,
                     total_tokens,
+                    started_at,
                     duration_ms,
                     ..
                 } = event
@@ -798,6 +802,7 @@ impl FeedbackService {
                         outcome,
                         *total_cost_usd,
                         *total_tokens,
+                        *started_at,
                         *duration_ms,
                         gate_verdicts,
                     ))
@@ -1000,6 +1005,8 @@ impl Drop for FeedbackService {
     }
 }
 
+/// The run's `workflow_complete` episode. It starts at `started_at`, when the
+/// run began, and completes `duration_ms` later (bug-41e2de).
 fn build_episode_from_workflow(
     run_id: &str,
     model: Option<&str>,
@@ -1007,6 +1014,7 @@ fn build_episode_from_workflow(
     outcome: &str,
     total_cost_usd: f64,
     total_tokens: u64,
+    started_at: DateTime<Utc>,
     duration_ms: u64,
     gate_verdicts: Vec<EpisodeGateVerdict>,
 ) -> Episode {
@@ -1017,7 +1025,7 @@ fn build_episode_from_workflow(
     episode.model = model.unwrap_or_default().to_string();
     episode.trigger_kind = "workflow_complete".to_string();
     episode.success = success;
-    episode.duration_secs = duration_ms as f64 / 1000.0;
+    episode.set_timing(started_at, duration_ms);
     episode.tokens_used = total_tokens;
     episode.gate_verdicts = gate_verdicts;
     episode.usage = Usage {
@@ -1216,6 +1224,7 @@ mod tests {
             outcome: "success".into(),
             total_cost_usd: 0.02,
             total_tokens: 1200,
+            started_at: Utc::now(),
             duration_ms: 2500,
         })
         .await
@@ -1239,6 +1248,49 @@ mod tests {
             episode.gate_verdicts,
             vec![EpisodeGateVerdict::new("compile", true)]
         );
+    }
+
+    /// bug-41e2de: the run's `workflow_complete` episode starts when the run
+    /// began, as its caller read the clock then, and completes the run's
+    /// duration later. It does not start and complete at the moment the
+    /// service writes it.
+    #[tokio::test]
+    async fn workflow_episode_starts_before_it_completes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let episodes_path = dir.path().join("episodes.jsonl");
+        let svc = FeedbackService::new(dir.path().join("learn"))
+            .with_episode_logger(EpisodeLogger::new(&episodes_path));
+        let started_at = DateTime::from_timestamp_millis(1_790_000_000_250).expect("a start");
+
+        svc.record(FeedbackEvent::WorkflowComplete {
+            event_type: "workflow_completed".into(),
+            run_id: "r1".into(),
+            model: Some("sonnet".into()),
+            success: true,
+            outcome: "success".into(),
+            total_cost_usd: 0.02,
+            total_tokens: 1200,
+            started_at,
+            duration_ms: 1500,
+        })
+        .await
+        .expect("record the run's completion");
+        svc.flush_async().await.expect("flush");
+
+        let episodes = EpisodeLogger::read_all(&episodes_path)
+            .await
+            .expect("read the episode log");
+        let episode = episodes
+            .iter()
+            .find(|episode| episode.kind == "workflow_complete")
+            .expect("the run's episode");
+        assert_eq!(episode.started_at, started_at);
+        assert_eq!(
+            (episode.completed_at - episode.started_at).num_milliseconds(),
+            1500
+        );
+        assert!((episode.duration_secs - 1.5).abs() < f64::EPSILON);
+        assert_eq!(episode.usage.wall_ms, 1500);
     }
 
     #[test]

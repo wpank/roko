@@ -279,7 +279,7 @@ pub static TOPICS: &[TopicEntry] = &[
                   ColdStore archives older signals to disk for long-term retention and \
                   audit. All writes are append-only and content-addressed.",
         detail: "The `FileSubstrate` in `roko-fs` is the primary Store implementation. \
-                 It writes signals to `.roko/engrams.jsonl` as append-only JSONL. \
+                 It writes signals to `.roko/signals.jsonl` as append-only JSONL. \
                  Reads scan or index the file for hash-addressed lookups. The `GC` \
                  module compacts old generations while preserving the audit trail. \
                  ColdStore archival is triggered by the server on a configurable timer \

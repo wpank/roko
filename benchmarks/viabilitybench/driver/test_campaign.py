@@ -168,6 +168,24 @@ def test_a_unit_that_left_records_stops_the_campaign_until_it_is_moved(places, c
     assert len(read_jsonl(out / "only-2" / "records.jsonl")) == 2
 
 
+def test_a_finished_unit_whose_run_was_moved_aside_runs_again(places):
+    # An infrastructure failure can spoil a run that finished (Pilot B: the provider refused the account for a unit's
+    # last tasks). Moving its directory to <experiment>.abandoned/ discards it, and the next campaign redoes the unit.
+    path = manifest(places, block("only"))
+    out = places["results"] / EXPERIMENT
+    with StubServer(SOLVE) as stub:
+        assert run_campaign(places, path, stub.url) == 0
+        assert run_campaign(places, path, stub.url) == 0 and len(stub.requests) == 4  # finished: nothing ran again
+        abandoned = places["results"] / f"{EXPERIMENT}{campaign.ABANDONED}"
+        abandoned.mkdir()
+        shutil.move(out / "only-1", abandoned / "only-1")
+        assert run_campaign(places, path, stub.url) == 0
+        assert len(stub.requests) == 8
+    assert len(read_jsonl(out / "only-2" / "records.jsonl")) == 2
+    assert [(event["event"], event["run_id"], event.get("exit")) for event in read_jsonl(out / campaign.LOG)] == [
+        ("start", "only-1", None), ("finish", "only-1", 0), ("start", "only-2", None), ("finish", "only-2", 0)]
+
+
 def test_max_cost_usd_caps_the_whole_campaign(places, capsys):
     """The campaign's --max-cost-usd: each billed unit gets its share of its block's cap or what the experiment's
     books leave under the campaign's, whichever is smaller, and a unit left less than one task's worst case does not

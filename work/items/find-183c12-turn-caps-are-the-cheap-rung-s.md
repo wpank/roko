@@ -9,8 +9,9 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "status-quo-2026-10-15#finding-49"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs"]
 lane = "rust-cold"
@@ -64,3 +65,5 @@ reason the caps are right as they are.
 
 Evidence: `tmp/status-quo/2026-10-15/live/H-live-run.md:179-181`, `:303-308` (cost), `:355` (N10) and `:271` (D11).
 No verify yet: this is an observation that needs data before a fix.
+
+Checked 2026-10-27: 2026-10-26 sweep: no measurement has been recorded on this item and no follow-up gap was filed; unchanged since 2026-10-15.

@@ -3,13 +3,15 @@ id = "gap-1cd676"
 kind = "gap"
 title = "Run the plan-level slice: Roko with the ladder against Claude Code on whole features"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-27
+last_verified = 2026-10-27
+last_verified_rev = "15335e2f9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "workstreams/assessment/W10-benchmarks-proof.md (rec 12); decided 2026-09-29"
 anchors = ["benchmarks/viabilitybench/reports/"]
@@ -66,3 +68,5 @@ golden-path acceptance test (gap-f30b8e).
 
 - This run is exploratory and not pre-registered as confirmatory. Say so wherever it is cited.
 - **From gap-3c430e (2026-09-29):** `vb.run_record/1` requires `task.ladder` and `spec_variant`, and plan-slice features have neither. Either fill them for whole-feature runs (for example `ladder = "plan"`, `spec_variant = "plan-slice"`) or relax the schema for the `exploratory.PL` family (S09 v1.2 §4.9).
+
+Checked 2026-10-27: 2026-10-26 sweep: the roko_plan arm runner (driver/run_roko_plan.py) and 3 of 4 dependencies are done, but no plan_slice_<date> run has actually executed or been committed yet; gap-f30b8e is the one remaining open dependency.

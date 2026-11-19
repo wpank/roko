@@ -1,0 +1,326 @@
+Preset CMake variables:
+
+  BUILD_TESTING="ON"
+  CMAKE_BUILD_TYPE="RelWithDebInfo"
+  UNDERTOW_BUILD_PLUGIN="OFF"
+
+-- Configuring done (0.2s)
+-- Generating done (0.3s)
+-- Build files have been written to: /x/regression-checkout/build/core
+[  4%] Built target undertow_spec_support
+[  5%] Building CXX object core/CMakeFiles/undertow_core.dir/src/filter.cpp.o
+[  8%] Building CXX object core/CMakeFiles/undertow_core.dir/src/engine.cpp.o
+[  8%] Building CXX object core/CMakeFiles/undertow_core.dir/src/presets.cpp.o
+[  9%] Building CXX object core/CMakeFiles/undertow_core.dir/src/sequencer.cpp.o
+[ 10%] Building CXX object core/CMakeFiles/undertow_core.dir/src/voice.cpp.o
+[ 12%] Linking CXX static library libundertow_core.a
+[ 20%] Built target undertow_core
+[ 21%] Building CXX object tools/render/CMakeFiles/undertow_render.dir/main.cpp.o
+[ 23%] Linking CXX executable spec_p1_engine
+[ 24%] Linking CXX executable spec_p0_engine
+[ 26%] Linking CXX executable spec_p0_params
+[ 28%] Built target spec_p0_engine
+[ 28%] Built target spec_p1_engine
+[ 30%] Built target spec_p0_params
+[ 31%] Linking CXX executable spec_p1_envelope
+[ 32%] Building CXX object tests/spec/CMakeFiles/spec_p1_filter.dir/p1/filter_test.cpp.o
+[ 34%] Linking CXX executable spec_p1_oscillator
+[ 35%] Built target spec_p1_envelope
+[ 36%] Built target spec_p1_oscillator
+[ 38%] Linking CXX executable spec_p2_engine
+[ 39%] Building CXX object tests/spec/CMakeFiles/spec_p1_voice.dir/p1/voice_test.cpp.o
+[ 41%] Built target spec_p2_engine
+[ 42%] Linking CXX executable spec_p2_lfo
+[ 43%] Built target spec_p2_lfo
+[ 45%] Linking CXX executable spec_p2_output
+[ 46%] Linking CXX executable undertow_render
+[ 47%] Built target spec_p2_output
+[ 49%] Linking CXX executable spec_p2_rumble
+[ 49%] Built target undertow_render
+[ 50%] Linking CXX executable spec_p1_filter
+[ 52%] Linking CXX executable spec_p2_1_engine
+[ 53%] Built target spec_p2_rumble
+[ 53%] Built target spec_p1_filter
+[ 54%] Linking CXX executable spec_p2_1_envelope
+[ 56%] Built target spec_p2_1_engine
+[ 57%] Linking CXX executable spec_p2_1_oscillator
+[ 58%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_filter.dir/p2_1/filter_test.cpp.o
+[ 60%] Built target spec_p2_1_envelope
+[ 61%] Building CXX object tests/spec/CMakeFiles/spec_p2_1_voice.dir/p2_1/voice_test.cpp.o
+[ 63%] Built target spec_p2_1_oscillator
+[ 64%] Building CXX object tests/spec/CMakeFiles/spec_p2_2_filter.dir/p2_2/filter_test.cpp.o
+[ 65%] Linking CXX executable spec_p2_1_filter
+[ 67%] Linking CXX executable spec_p1_voice
+[ 67%] Built target spec_p2_1_filter
+[ 68%] Linking CXX executable spec_p2_2_output
+[ 68%] Built target spec_p1_voice
+[ 69%] Linking CXX executable spec_p2_2_rumble
+[ 71%] Linking CXX executable spec_p2_2_filter
+[ 72%] Built target spec_p2_2_output
+[ 73%] Built target spec_p2_2_rumble
+[ 75%] Linking CXX executable spec_p2_1_voice
+[ 76%] Linking CXX executable spec_p3_sequencer
+[ 78%] Linking CXX executable spec_p3_engine
+[ 78%] Built target spec_p2_2_filter
+[ 78%] Built target spec_p2_1_voice
+[ 79%] Built target spec_p3_engine
+[ 80%] Built target spec_p3_sequencer
+[ 82%] Linking CXX executable spec_p4_scope
+[ 83%] Building CXX object tests/spec/CMakeFiles/spec_p5_filter.dir/p5/filter_test.cpp.o
+[ 84%] Building CXX object tests/spec/CMakeFiles/spec_p5_demos.dir/p5/demos_test.cpp.o
+[ 86%] Building CXX object tests/spec/CMakeFiles/spec_p5_install.dir/p5/install_test.cpp.o
+[ 87%] Built target spec_p4_scope
+[ 89%] Building CXX object tests/spec/CMakeFiles/spec_p5_presets.dir/p5/presets_test.cpp.o
+[ 90%] Linking CXX executable spec_p5_filter
+[ 90%] Built target spec_p5_filter
+[ 91%] Building CXX object tests/spec/CMakeFiles/spec_p5_render.dir/p5/render_test.cpp.o
+[ 93%] Linking CXX executable spec_p5_install
+[ 94%] Linking CXX executable spec_p5_demos
+[ 94%] Built target spec_p5_demos
+[ 95%] Building CXX object tests/spec/CMakeFiles/spec_p5_sequencer.dir/p5/sequencer_test.cpp.o
+[ 95%] Built target spec_p5_install
+[ 97%] Linking CXX executable spec_p5_presets
+[ 97%] Built target spec_p5_presets
+[ 98%] Linking CXX executable spec_p5_sequencer
+[ 98%] Built target spec_p5_sequencer
+[100%] Linking CXX executable spec_p5_render
+[100%] Built target spec_p5_render
+[ 85%] Built target undertow_core
+[100%] Built target undertow_render
+wrote /x/regression-checkout/build/demos/init.wav: 720000 frames, peak -27.3 dBFS, rms -33.1 dBFS
+wrote /x/regression-checkout/build/demos/sub-pure-foundation.wav: 720000 frames, peak -inf dBFS, rms -inf dBFS
+wrote /x/regression-checkout/build/demos/sub-low-pressure.wav: 720000 frames, peak -30.5 dBFS, rms -36.0 dBFS
+wrote /x/regression-checkout/build/demos/sub-kick-companion.wav: 720000 frames, peak -26.3 dBFS, rms -32.1 dBFS
+wrote /x/regression-checkout/build/demos/bass-hypnotic-roller.wav: 720000 frames, peak -9.0 dBFS, rms -25.5 dBFS
+wrote /x/regression-checkout/build/demos/bass-acid-undertow.wav: 720000 frames, peak -7.5 dBFS, rms -23.6 dBFS
+wrote /x/regression-checkout/build/demos/bass-dub-pulse.wav: 720000 frames, peak -9.3 dBFS, rms -21.4 dBFS
+wrote /x/regression-checkout/build/demos/bass-warehouse-drone.wav: 720000 frames, peak -7.3 dBFS, rms -23.6 dBFS
+wrote /x/regression-checkout/build/demos/rumble-dark-room.wav: 720000 frames, peak -inf dBFS, rms -inf dBFS
+wrote /x/regression-checkout/build/demos/rumble-tunnel-floor.wav: 720000 frames, peak -10.2 dBFS, rms -18.0 dBFS
+wrote /x/regression-checkout/build/demos/rumble-sidechain-fog.wav: 720000 frames, peak -6.7 dBFS, rms -18.5 dBFS
+wrote /x/regression-checkout/build/demos/seq-evolving-minor.wav: 720000 frames, peak -5.3 dBFS, rms -18.3 dBFS
+wrote /x/regression-checkout/build/demos/seq-phrygian-pulse.wav: 720000 frames, peak -3.7 dBFS, rms -20.5 dBFS
+wrote /x/regression-checkout/artifacts/audio/init.wav: 720000 frames, peak -27.3 dBFS, rms -33.1 dBFS
+wrote /x/regression-checkout/artifacts/audio/sub-pure-foundation.wav: 720000 frames, peak -inf dBFS, rms -inf dBFS
+wrote /x/regression-checkout/artifacts/audio/bass-hypnotic-roller.wav: 720000 frames, peak -9.0 dBFS, rms -25.5 dBFS
+wrote /x/regression-checkout/artifacts/audio/rumble-dark-room.wav: 720000 frames, peak -inf dBFS, rms -inf dBFS
+-- Configuring done (0.9s)
+-- Generating done (0.3s)
+-- Build files have been written to: /x/regression-checkout/build/plugin
+[  2%] Built target Undertow_vst3_helper
+[  4%] Building CXX object core/CMakeFiles/undertow_core.dir/src/filter.cpp.o
+[  4%] Building CXX object core/CMakeFiles/undertow_core.dir/src/sequencer.cpp.o
+[  8%] Building CXX object core/CMakeFiles/undertow_core.dir/src/engine.cpp.o
+[  8%] Building CXX object core/CMakeFiles/undertow_core.dir/src/presets.cpp.o
+[ 10%] Building CXX object core/CMakeFiles/undertow_core.dir/src/voice.cpp.o
+[ 10%] Linking CXX static library libundertow_core.a
+[ 17%] Built target undertow_core
+[ 17%] Building CXX object plugin/CMakeFiles/Undertow.dir/PluginProcessor.cpp.o
+[ 19%] Building CXX object plugin/CMakeFiles/Undertow.dir/PluginEditor.cpp.o
+[ 19%] Building CXX object plugin/CMakeFiles/Undertow.dir/ui/Displays.cpp.o
+[ 19%] Linking CXX static library "Undertow_artefacts/RelWithDebInfo/libMetakosmia Undertow_SharedCode.a"
+[ 47%] Built target Undertow
+[ 50%] Linking CXX executable "Undertow_artefacts/RelWithDebInfo/Standalone/Metakosmia Undertow.app/Contents/MacOS/Metakosmia Undertow"
+[ 52%] Linking CXX CFBundle shared module "Undertow_artefacts/RelWithDebInfo/AU/Metakosmia Undertow.component/Contents/MacOS/Metakosmia Undertow"
+[ 54%] Linking CXX CFBundle shared module "Undertow_artefacts/RelWithDebInfo/VST3/Metakosmia Undertow.vst3/Contents/MacOS/Metakosmia Undertow"
+[ 69%] Built target Undertow_AU
+[ 84%] Built target Undertow_Standalone
+-- Replacing invalid signature with ad-hoc signature
+removing moduleinfo.json
+creating /x/regression-checkout/build/plugin/plugin/Undertow_artefacts/RelWithDebInfo/VST3/Metakosmia Undertow.vst3
+[100%] Built target Undertow_VST3
+[100%] Built target Undertow_All
+installed build/install-test/VST3/Metakosmia Undertow.vst3
+installed build/install-test/Components/Metakosmia Undertow.component
+installed build/install-test/Applications/Metakosmia Undertow.app
+Test project /x/regression-checkout/build/core
+      Start  1: spec_p0_engine
+ 1/28 Test  #1: spec_p0_engine ...................   Passed    0.31 sec
+      Start  2: spec_p0_params
+ 2/28 Test  #2: spec_p0_params ...................   Passed    0.24 sec
+      Start  3: spec_p1_engine
+ 3/28 Test  #3: spec_p1_engine ...................   Passed    1.10 sec
+      Start  4: spec_p1_envelope
+ 4/28 Test  #4: spec_p1_envelope .................   Passed    0.32 sec
+      Start  5: spec_p1_filter
+ 5/28 Test  #5: spec_p1_filter ...................   Passed    0.31 sec
+      Start  6: spec_p1_oscillator
+ 6/28 Test  #6: spec_p1_oscillator ...............   Passed    0.28 sec
+      Start  7: spec_p1_voice
+ 7/28 Test  #7: spec_p1_voice ....................   Passed    0.37 sec
+      Start  8: spec_p2_engine
+ 8/28 Test  #8: spec_p2_engine ...................   Passed    1.23 sec
+      Start  9: spec_p2_lfo
+ 9/28 Test  #9: spec_p2_lfo ......................   Passed    0.29 sec
+      Start 10: spec_p2_output
+10/28 Test #10: spec_p2_output ...................   Passed    0.32 sec
+      Start 11: spec_p2_rumble
+11/28 Test #11: spec_p2_rumble ...................   Passed    0.88 sec
+      Start 12: spec_p2_1_engine
+12/28 Test #12: spec_p2_1_engine .................   Passed    0.33 sec
+      Start 13: spec_p2_1_envelope
+13/28 Test #13: spec_p2_1_envelope ...............   Passed    0.25 sec
+      Start 14: spec_p2_1_filter
+14/28 Test #14: spec_p2_1_filter .................   Passed    0.33 sec
+      Start 15: spec_p2_1_oscillator
+15/28 Test #15: spec_p2_1_oscillator .............   Passed    0.26 sec
+      Start 16: spec_p2_1_voice
+16/28 Test #16: spec_p2_1_voice ..................   Passed    0.26 sec
+      Start 17: spec_p2_2_filter
+17/28 Test #17: spec_p2_2_filter .................   Passed    0.28 sec
+      Start 18: spec_p2_2_output
+18/28 Test #18: spec_p2_2_output .................   Passed    0.26 sec
+      Start 19: spec_p2_2_rumble
+19/28 Test #19: spec_p2_2_rumble .................   Passed    0.93 sec
+      Start 20: spec_p3_engine
+20/28 Test #20: spec_p3_engine ...................   Passed    0.77 sec
+      Start 21: spec_p3_sequencer
+21/28 Test #21: spec_p3_sequencer ................   Passed    0.26 sec
+      Start 22: spec_p4_scope
+22/28 Test #22: spec_p4_scope ....................   Passed    0.26 sec
+      Start 23: spec_p5_demos
+23/28 Test #23: spec_p5_demos ....................   Passed    0.48 sec
+      Start 24: spec_p5_filter
+24/28 Test #24: spec_p5_filter ...................   Passed    0.27 sec
+      Start 25: spec_p5_install
+25/28 Test #25: spec_p5_install ..................   Passed    0.38 sec
+      Start 26: spec_p5_presets
+26/28 Test #26: spec_p5_presets ..................***Failed    1.06 sec
+[doctest] run with "--help" for options
+===============================================================================
+/x/regression-checkout/tests/spec/p5/presets_test.cpp:121:
+TEST CASE:  P5.03 each category sounds like itself
+
+/x/regression-checkout/tests/spec/p5/presets_test.cpp:141: ERROR: CHECK( share(out.left, 0.0, 200.0) >= 0.6 ) is NOT correct!
+  values: CHECK( 0.563968 >= 0.6 )
+  logged: preset "RUMBLE Dark Room"
+          a RUMBLE preset keeps at least 60% of its energy below 200 Hz; this one 56.3968%
+
+===============================================================================
+[doctest] test cases:    4 |    3 passed | 1 failed | 0 skipped
+[doctest] assertions: 1583 | 1582 passed | 1 failed |
+[doctest] Status: FAILURE!
+
+      Start 27: spec_p5_render
+27/28 Test #27: spec_p5_render ...................   Passed    0.53 sec
+      Start 28: spec_p5_sequencer
+28/28 Test #28: spec_p5_sequencer ................   Passed    0.28 sec
+
+96% tests passed, 1 tests failed out of 28
+
+Total Test time (real) =  12.84 sec
+
+The following tests FAILED:
+	 26 - spec_p5_presets (Failed)
+heavy.sh: got cpp slot 1 after 0s
+/x/regression-checkout/core/src/filter.cpp:14:17: warning: unused variable 'kButterK1' [-Wunused-const-variable]
+   14 | constexpr float kButterK1 = 0.7653668647301795f;
+      |                 ^~~~~~~~~
+1 warning generated.
+/x/regression-checkout/core/src/presets.cpp:111:17: warning: unused variable 'p' [-Wunused-variable]
+  111 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:129:17: warning: unused variable 'p' [-Wunused-variable]
+  129 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:147:17: warning: unused variable 'p' [-Wunused-variable]
+  147 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:175:17: warning: unused variable 'p' [-Wunused-variable]
+  175 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:190:17: warning: unused variable 'p' [-Wunused-variable]
+  190 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:206:17: warning: unused variable 'p' [-Wunused-variable]
+  206 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:221:17: warning: unused variable 'p' [-Wunused-variable]
+  221 |         Pattern p = defaultPattern();
+      |                 ^
+7 warnings generated.
+/x/regression-checkout/core/src/voice.cpp:341:17: warning: unused variable 'filtEnvSample' [-Wunused-variable]
+  341 |     const float filtEnvSample = filtEnv_.process();
+      |                 ^~~~~~~~~~~~~
+/x/regression-checkout/core/src/voice.cpp:10:18: warning: unused variable 'kLog2' [-Wunused-const-variable]
+   10 | constexpr double kLog2 = 0.6931471805599453;
+      |                  ^~~~~
+2 warnings generated.
+heavy.sh: got cpp slot 1 after 0s
+heavy.sh: got cpp slot 1 after 0s
+-- GLOB mismatch!
+-- GLOB mismatch!
+/x/regression-checkout/core/src/filter.cpp:14:17: warning: unused variable 'kButterK1' [-Wunused-const-variable]
+   14 | constexpr float kButterK1 = 0.7653668647301795f;
+      |                 ^~~~~~~~~
+/x/regression-checkout/core/src/presets.cpp:111:17: warning: unused variable 'p' [-Wunused-variable]
+  111 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:129:17: warning: unused variable 'p' [-Wunused-variable]
+  129 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:147:17: warning: unused variable 'p' [-Wunused-variable]
+  147 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:175:17: warning: unused variable 'p' [-Wunused-variable]
+  175 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:190:17: warning: unused variable 'p' [-Wunused-variable]
+  190 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:206:17: warning: unused variable 'p' [-Wunused-variable]
+  206 |         Pattern p = defaultPattern();
+      |                 ^
+/x/regression-checkout/core/src/presets.cpp:221:17: warning: unused variable 'p' [-Wunused-variable]
+  221 |         Pattern p = defaultPattern();
+      |                 ^
+1 warning generated.
+7 warnings generated.
+/x/regression-checkout/core/src/voice.cpp:341:17: warning: unused variable 'filtEnvSample' [-Wunused-variable]
+  341 |     const float filtEnvSample = filtEnv_.process();
+      |                 ^~~~~~~~~~~~~
+/x/regression-checkout/core/src/voice.cpp:10:18: warning: unused variable 'kLog2' [-Wunused-const-variable]
+   10 | constexpr double kLog2 = 0.6931471805599453;
+      |                  ^~~~~
+2 warnings generated.
+/x/regression-checkout/plugin/ui/Displays.cpp:106:16: warning: unused variable 'chest' [-Wunused-variable]
+  106 |     const auto chest = undertow::ui::theme::chestBounds;
+      |                ^~~~~
+/x/regression-checkout/plugin/ui/Displays.cpp:298:73: warning: implicit conversion turns floating-point number into integer: 'const float' to 'int' [-Wfloat-conversion]
+  298 |     texts::draw(g, readout, juce::Rectangle<int>(digitsLeft, numberTop, readoutWidth, juce::roundToInt(numberFont.getHeight())), juce::Justification::centredLeft);
+      |                             ~~~~                                        ^~~~~~~~~~~~
+/x/regression-checkout/plugin/ui/Displays.cpp:302:85: warning: implicit conversion turns floating-point number into integer: 'const float' to 'int' [-Wfloat-conversion]
+  302 |     texts::draw(g, "Hz", juce::Rectangle<int>(digitsLeft + readoutWidth + 8, hzTop, hzWidth, juce::roundToInt(hzFont.getHeight())), juce::Justification::centredLeft);
+      |                          ~~~~                                                       ^~~~~~~
+/x/regression-checkout/plugin/ui/Displays.cpp:302:73: warning: implicit conversion turns floating-point number into integer: 'float' to 'int' [-Wfloat-conversion]
+  302 |     texts::draw(g, "Hz", juce::Rectangle<int>(digitsLeft + readoutWidth + 8, hzTop, hzWidth, juce::roundToInt(hzFont.getHeight())), juce::Justification::centredLeft);
+      |                          ~~~~                 ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+In file included from /x/regression-checkout/plugin/PluginEditor.cpp:1:
+In file included from /x/regression-checkout/plugin/PluginEditor.h:11:
+In file included from /x/regression-checkout/plugin/ui/UnitArray.h:7:
+/x/regression-checkout/core/include/undertow/sequencer.h:15:51: warning: comparing floating point with == or != is unsafe [-Wfloat-equal]
+   15 |            && a.slide == b.slide && a.probability == b.probability;
+      |                                     ~~~~~~~~~~~~~ ^  ~~~~~~~~~~~~~
+In file included from /x/regression-checkout/plugin/PluginProcessor.cpp:1:
+In file included from /x/regression-checkout/plugin/PluginProcessor.h:5:
+In file included from /x/regression-checkout/core/include/undertow/engine.h:3:
+/x/regression-checkout/core/include/undertow/sequencer.h:15:51: warning: comparing floating point with == or != is unsafe [-Wfloat-equal]
+   15 |            && a.slide == b.slide && a.probability == b.probability;
+      |                                     ~~~~~~~~~~~~~ ^  ~~~~~~~~~~~~~
+/x/regression-checkout/plugin/PluginProcessor.cpp:60:9: warning: 'macroBasedForLoop' is deprecated [-Wdeprecated-declarations]
+   60 |         forEachXmlChildElement(*patternXml, stepXml) {
+      |         ^
+/x/cache/JUCE-8.0.12-install/include/JUCE-8.0.12/modules/juce_core/xml/juce_XmlElement.h:952:65: note: expanded from macro 'forEachXmlChildElement'
+  952 |     for (auto* (childElementVariableName) : ((parentXmlElement).macroBasedForLoop(), (parentXmlElement).getChildIterator()))
+      |                                                                 ^
+/x/cache/JUCE-8.0.12-install/include/JUCE-8.0.12/modules/juce_core/xml/juce_XmlElement.h:878:7: note: 'macroBasedForLoop' has been explicitly marked deprecated here
+  878 |     [[deprecated]] void macroBasedForLoop() const noexcept {}
+      |       ^
+4 warnings generated.
+2 warnings generated.
+1 warning generated.
+/x/regression-checkout/build/plugin/plugin/Undertow_artefacts/RelWithDebInfo/VST3/Metakosmia Undertow.vst3: code has no resources but signature indicates they must be present
+/x/regression-checkout/build/plugin/plugin/Undertow_artefacts/RelWithDebInfo/VST3/Metakosmia Undertow.vst3: replacing existing signature
+Errors while running CTest
+[exit 8 after 34158 ms]
+

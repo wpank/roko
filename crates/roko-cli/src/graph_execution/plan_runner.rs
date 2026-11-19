@@ -4034,6 +4034,19 @@ impl FlowWatch {
         }
     }
 
+    /// The watch of a hand-back's try of task `task_id`, whose plan's live
+    /// views last saw `statuses` (bug-b589fe). The task starts over: they saw it
+    /// complete, from the try before, so a try that no tick saw run would end
+    /// as no change, and never be reported. Its completions are held until
+    /// the try's graph gives their verdicts ([`Self::holding_completions`]).
+    fn for_handback_try(
+        mut statuses: HashMap<String, roko_graph::engine::NodeStatus>,
+        task_id: &str,
+    ) -> Self {
+        statuses.remove(task_id);
+        Self::new(statuses).holding_completions()
+    }
+
     /// The watch of a graph whose tasks' verdicts are known only once it
     /// ends, a hand-back's try (bug-58a1d6): its ticks hold back a task that
     /// completed, so the live views never see it without its verdict, which
@@ -4151,6 +4164,30 @@ impl FlowWatch {
         // The time left, again every minute while tasks run (gap-c1045f).
         ctx.graph_tui_bridge.refresh_eta();
         self.statuses = current;
+    }
+
+    /// Once the graph's `output` came: publish what the ticks did not of how
+    /// its tasks ended, with its verdicts, and take that in. A task a stop cut
+    /// off is left out: its node failed with a cancellation.
+    fn report_end(
+        &mut self,
+        bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+        plan_id: &str,
+        output: &roko_graph::GraphOutput,
+        node_titles: &HashMap<String, String>,
+    ) {
+        let interrupted = self.interrupted_by.is_some();
+        let ended: HashMap<String, roko_graph::engine::NodeStatus> = output
+            .node_results
+            .iter()
+            .filter(|result| node_titles.contains_key(&result.node_id))
+            .filter(|result| !interrupted || cancel_reason(result).is_none())
+            .map(|result| (result.node_id.clone(), result.status))
+            .collect();
+        bridge.poll_status_changes(plan_id, &self.statuses, &ended, node_titles, || {
+            output.gate_verdicts.clone()
+        });
+        self.statuses.extend(ended);
     }
 
     /// Once the graph ended: agents that ignored SIGTERM must not outlive
@@ -5965,9 +6002,10 @@ async fn rerun_handed_back_tasks(
     use roko_graph::cells::TaskExecutorCell;
     use roko_graph::engine::GraphEngine;
 
+    let try_id = try_task.0.clone();
     let retries: Arc<dyn roko_graph::cells::RetryBudgetSource> = Arc::new(HandbackRetries {
         plan_id: plan.id.clone(),
-        task_id: try_task.0.clone(),
+        task_id: try_id.clone(),
         budgets: rerun.live_budgets.cloned(),
         dispatcher: Arc::clone(ctx.graph_task_dispatcher),
     });
@@ -6012,7 +6050,7 @@ async fn rerun_handed_back_tasks(
     let flow_handle = engine.start(cell_ctx);
     // The try's graph keeps no checkpoint, so its verdicts come with its
     // output: until then a task that completed is held back (bug-58a1d6).
-    let mut watch = FlowWatch::new(statuses).holding_completions();
+    let mut watch = FlowWatch::for_handback_try(statuses, &try_id);
     while watch.tick(ctx, &plan.id, control, &flow_handle, &stop_attempts) {
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
         watch.publish(
@@ -6030,29 +6068,14 @@ async fn rerun_handed_back_tasks(
         flow_handle.await_completion().await
     };
     // What the ticks did not publish of how the tasks ended.
-    let mut statuses = watch.statuses;
     if let Some(output) = &output {
-        let ended: HashMap<String, roko_graph::engine::NodeStatus> = output
-            .node_results
-            .iter()
-            .filter(|result| rerun.node_titles.contains_key(&result.node_id))
-            .filter(|result| watch.interrupted_by.is_none() || cancel_reason(result).is_none())
-            .map(|result| (result.node_id.clone(), result.status))
-            .collect();
-        ctx.graph_tui_bridge.poll_status_changes(
-            &plan.id,
-            &statuses,
-            &ended,
-            rerun.node_titles,
-            || output.gate_verdicts.clone(),
-        );
-        statuses.extend(ended);
+        watch.report_end(ctx.graph_tui_bridge, &plan.id, output, rerun.node_titles);
     }
     Ok(HandbackRerunResult {
         output,
         interrupted_by: watch.interrupted_by,
         cancelled_by_tui: watch.cancelled_by_tui,
-        statuses,
+        statuses: watch.statuses,
     })
 }
 
@@ -11710,6 +11733,60 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
                 assert_eq!(verify["passed"], true, "{verify}");
             }
         }
+    }
+
+    /// bug-b589fe: a hand-back's try is reported however quickly it runs. The
+    /// plan's views last saw its task complete, from the try before, and the
+    /// try's watch holds completions until its graph gives their verdicts. A
+    /// try that started and ended between two ticks is still a change when
+    /// its graph ends, and is reported with its verdict.
+    #[test]
+    fn a_handback_try_that_no_tick_saw_is_reported() {
+        use roko_core::DashboardEvent;
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        use roko_graph::engine::NodeStatus;
+
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let bridge = crate::runner::graph_tui_bridge::GraphTuiBridge::new(
+            crate::runner::tui_bridge::TuiBridge::new(hub.sender()),
+        );
+        let seen = HashMap::from([("T1".to_string(), NodeStatus::Complete)]);
+        let mut watch = FlowWatch::for_handback_try(seen, "T1");
+        // No tick ran: the try's graph ended first.
+        let output = roko_graph::GraphOutput {
+            graph_name: "01-alpha".to_string(),
+            success: true,
+            node_results: vec![roko_graph::NodeResult {
+                node_id: "T1".to_string(),
+                cell_type: TASK_EXECUTOR_CELL_TYPE.to_string(),
+                status: NodeStatus::Complete,
+                duration: Duration::ZERO,
+                error: None,
+                output_count: 1,
+                is_stub: false,
+                blocked_by: None,
+                timing: roko_graph::NodeTiming::default(),
+            }],
+            total_duration: Duration::ZERO,
+            gate_verdicts: BTreeMap::from([("T1".to_string(), TaskGateVerdict::Passed)]),
+        };
+        let titles = HashMap::from([("T1".to_string(), "write alpha.txt".to_string())]);
+
+        watch.report_end(&bridge, "01-alpha", &output, &titles);
+
+        let completed: Vec<String> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                DashboardEvent::TaskCompleted {
+                    task_id, outcome, ..
+                } if task_id == "T1" => Some(outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completed, ["passed"]);
+        assert_eq!(watch.statuses.get("T1"), Some(&NodeStatus::Complete));
     }
 
     /// Plan `01-alpha`'s hand-backs in `repo`'s checkpoint, and how each

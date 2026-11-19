@@ -2,7 +2,7 @@
 id = "bug-19af94"
 kind = "bug"
 title = "On Linux CI the warm build tree tests run where no tree can be given: clones_on probes an empty directory, which cp --reflink=always copies on any filesystem, so the nine tests ran on ext4, where give_build_trees clones nothing and every checkout builds cold"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/worktree"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
+last_verified_rev = "d136e9f30"
 source = "round v8 lead: release PR #88's CI run 43183197388 (Test + Clippy, ubuntu-latest), for #89"
 discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::clone_tree"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["bug-40bf59", "gap-6754ab", "
 
 [[verify]]
 command = "grep -rqw 'fn a_tree_is_copied_where_the_filesystem_makes_no_clones' crates/roko-cli/src && ! grep -rqw 'clones_on' crates/roko-cli/src && cargo test -p roko-cli --lib -- warm_build_tree seeded_worktree_builds_nothing a_tree_is_copied_where_the_filesystem_makes_no_clones a_tree_past_the_copy_limit_builds_cold_without_clones a_dependent_attempt_starts_from_its_dependency_s_build_trees acquire_gives_the_checkout_warm_build_trees the_regression_checkout_starts_with_the_workdirs_build_trees warm_seeds_the_base_from_the_workspace_build"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T12:23:56Z"
+commit = "d136e9f30"
+forced = false
+evidence = "d136e9f30 on work/bug-19af94. Cause: give_build_trees gave a checkout a tree only by a copy-on-write clone (cp -a --reflink=always on Linux), which CI's ext4 cannot make; bug-40bf59's test guard clones_on probed with an empty directory, which cp --reflink=always copies on any filesystem (it fails only at the first file: 'failed to clone ...: Operation not supported'), so on ext4 the nine tests ran and found no tree given (#88's run 43183197388: left 0 right 1, 'No such file or directory'); off the tests, no checkout on ext4 got a warm tree. Fix: where no clone can be made, give_tree copies a tree of at most 256 MiB (COPY_LIMIT_BYTES) with cp -pPR, keeping each file's times and links, then relocates it as a clone; larger trees and other devices build cold; GivenBuildTree.copied says which. clones_on and the tests' guards are gone, so the tests run on every filesystem. New tests force the copy path on any filesystem: a_tree_is_copied_where_the_filesystem_makes_no_clones (times, links, relocation, source untouched, ignored) and a_tree_past_the_copy_limit_builds_cold_without_clones. Linux proof in a container on overlayfs (no reflinks, GNU coreutils 9.1; tmp/hermes-roko-v8/roko-recovery/linux/cp-proof.txt): the empty-directory probe exits 0 while a tree with a file fails, and cp -pPR keeps the file's mtime to the nanosecond and its link as a link. A full roko-cli Linux build in the container was stopped when it took the Mac's free disk to the 35 GB floor; CI confirms. macOS: the 12 warm-tree tests pass (both new ones included); roko-cli lib 4164 passed with TMPDIR under /var/folders, its one failure rust_task_checks_refuse_an_unformatted_change being TMPDIR-sensitive (passes alone with the scratchpad TMPDIR), and with the scratchpad TMPDIR 4156 passed, its nine tui failures caused by a stray /private/tmp/.roko another run made today (all 135 tui tests pass under /var/folders); bin 484 passed; 9 integration files that run plans in worktrees passed; workspace clippy -D warnings clean."
 +++
 
 ## Problem

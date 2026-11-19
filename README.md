@@ -323,7 +323,7 @@ hermes roko init        # checks the project and roko, and asks before each chan
 
 A run started from a chat needs a model roko calls over an API (an OpenAI, Anthropic, OpenRouter,
 Cerebras, Z.ai or Moonshot key), because only roko's own tool loop can hold a tool call for your
-approval. The plugin's [getting started](https://github.com/wpank/hermes-plugin-roko/blob/main/docs/getting-started.md)
+approval. The plugin's [getting started](https://github.com/wpank/hermes-plugin-roko/blob/HEAD/docs/getting-started.md)
 covers the rest.
 
 **A real build:** [Undertow](https://github.com/wpank/undertow), a sub-bass synthesizer plug-in, was

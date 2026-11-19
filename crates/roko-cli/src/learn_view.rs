@@ -372,21 +372,27 @@ fn labelled(label: &str, text: &str, stored: Option<usize>, room: Option<usize>)
     if whole && term_style::visible_width(line) <= room {
         return format!("{lead}{line}");
     }
-    let mut kept = String::new();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut width = 0;
     for word in words {
-        let wider = term_style::visible_width(&kept) + usize::from(!kept.is_empty());
-        if wider + term_style::visible_width(word) + 1 > room {
+        let wider = width + usize::from(!kept.is_empty()) + term_style::visible_width(word);
+        if wider + 1 > room {
             break;
         }
-        if !kept.is_empty() {
-            kept.push(' ');
-        }
-        kept.push_str(word);
+        width = wider;
+        kept.push(word);
+    }
+    // A cut ends at a word, not at a list's dash.
+    while kept
+        .last()
+        .is_some_and(|word| !word.chars().any(char::is_alphanumeric))
+    {
+        kept.pop();
     }
     if kept.is_empty() {
         return format!("{lead}{}", term_style::truncate(line, room));
     }
-    format!("{lead}{kept}…")
+    format!("{lead}{}…", kept.join(" "))
 }
 
 /// How many columns a learn view's item has beside a label `label_width`
@@ -808,6 +814,16 @@ mod tests {
         assert!(
             !patterns.iter().any(|line| line.contains("Next")),
             "{patterns:?}"
+        );
+        // A cut ends at a word, not at a list's dash.
+        assert_eq!(
+            labelled(
+                "fix",
+                "Implemented the preset API in: - `core/x.h` - `core/y.h`",
+                None,
+                Some(40)
+            ),
+            "fix: Implemented the preset API in:…"
         );
 
         let candidate = GraduationCandidate {

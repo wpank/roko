@@ -382,7 +382,7 @@ fn display_cost(cost_usd: f64, input_tokens: u64, output_tokens: u64) -> String 
 }
 
 /// `roko learn rungs`: how each rung did over the workspace's newest `runs`
-/// runs, or every run (gap-3217a0).
+/// runs, or every run (gap-3217a0), in the learn views' style (gap-407f38).
 fn cmd_learn_rungs(workdir: &Path, runs: Option<usize>, json: bool) -> Result<i32> {
     let layout = roko_fs::RokoLayout::for_project(workdir);
     let records = roko_learn::telemetry::rung_stats::load_runs(&layout.runs_dir(), runs);
@@ -394,14 +394,9 @@ fn cmd_learn_rungs(workdir: &Path, runs: Option<usize>, json: bool) -> Result<i3
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(EXIT_SUCCESS);
     }
-    if report.rows.is_empty() {
-        println!("No settled tries in {} run(s).", report.runs.len());
-        return Ok(EXIT_SUCCESS);
-    }
-    println!("Rungs over {} run(s):", report.runs.len());
-    for line in report.lines() {
-        println!("  {line}");
-    }
+    let style = roko_cli::term_style::Style::stdout();
+    let lines = roko_cli::learn_view::rungs_lines(&report, style);
+    println!("{}", lines.join("\n"));
     Ok(EXIT_SUCCESS)
 }
 
@@ -1634,7 +1629,7 @@ fn learn_lines(
     sections: &[LearnSection],
     style: roko_cli::term_style::Style,
 ) -> Vec<String> {
-    use roko_cli::term_style::{self, Role};
+    use roko_cli::term_style;
 
     // The command's own name, and what the view covers.
     let (area, context) = match what {
@@ -1685,11 +1680,7 @@ fn learn_lines(
     }
     if !read.is_empty() {
         out.push(String::new());
-        let said = format!("Read from {}.", term_style::listed(&read));
-        for line in roko_cli::learn_view::paragraph(style, &said) {
-            let text = line.trim_start();
-            out.push(format!("  {}", style.paint(Role::Dim, text)));
-        }
+        out.extend(roko_cli::learn_view::read_from(style, &read));
     }
     out
 }
@@ -3181,13 +3172,20 @@ async fn cmd_learn_playbooks(workdir: &std::path::Path) -> Result<i32> {
 
 // ── Failure patterns (backlog 4128) ──────────────────────────────────
 
-/// `roko learn patterns`: the failure patterns in `learn/error-patterns.json`,
-/// most frequent first. With `graduate`, only those ready to graduate into a
-/// lint or a verify step (decision 4127), each with its fix and a suggested
-/// check: roko proposes, and a person writes the check.
+/// How many failure patterns `roko learn patterns` shows, most frequent
+/// first.
+const PATTERNS_SHOWN: usize = 20;
+
+/// `roko learn patterns`: the failure patterns in `learn/error-patterns.json`
+/// that no fix retired, most frequent first, and the latest seen first among
+/// equals. With `graduate`, only those ready to graduate into a lint or a
+/// verify step (decision 4127), each with its fix and a suggested check: roko
+/// proposes, and a person writes the check. Both in the learn views' style
+/// (gap-407f38); `--json` is unchanged.
 fn cmd_learn_patterns(workdir: &std::path::Path, graduate: bool, json: bool) -> Result<i32> {
     use roko_learn::error_pattern_store::{
-        ERROR_PATTERNS_FILE, ErrorPatternStore, GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS,
+        ERROR_PATTERNS_FILE, ErrorPattern, ErrorPatternStore, GRADUATION_MIN_OCCURRENCES,
+        GRADUATION_MIN_PLANS,
     };
 
     let path = workdir
@@ -3195,44 +3193,41 @@ fn cmd_learn_patterns(workdir: &std::path::Path, graduate: bool, json: bool) -> 
         .join("learn")
         .join(ERROR_PATTERNS_FILE);
     let store = ErrorPatternStore::load(&path);
-    if !graduate {
-        if json {
-            println!("{}", serde_json::to_string_pretty(&store.top_patterns(50))?);
-        } else if store.is_empty() {
-            println!("Failure patterns: none at {}", path.display());
-        } else {
-            print!("{}", store.format_for_prompt(20));
-        }
-        return Ok(EXIT_SUCCESS);
-    }
     let candidates = store.graduation_candidates(GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS);
-    if json {
-        println!("{}", serde_json::to_string_pretty(&candidates)?);
-        return Ok(EXIT_SUCCESS);
-    }
-    if candidates.is_empty() {
-        println!(
-            "No failure pattern is ready to graduate: none was seen {GRADUATION_MIN_OCCURRENCES} \
-             or more times across {GRADUATION_MIN_PLANS} or more plans with a verified fix."
-        );
-        return Ok(EXIT_SUCCESS);
-    }
-    println!(
-        "Failure patterns ready to graduate into a lint or a verify step \
-         ({GRADUATION_MIN_OCCURRENCES}+ times, {GRADUATION_MIN_PLANS}+ plans, a verified fix):"
-    );
-    for (index, candidate) in candidates.iter().enumerate() {
-        println!();
-        println!("{}. {}", index + 1, candidate.key);
-        let (seen, plans) = (candidate.occurrences, candidate.plans);
-        println!("   seen {seen} times in {plans} plans");
-        println!("   failure: {}", candidate.digest);
-        if let Some(gate) = &candidate.gate {
-            println!("   verify: {gate}");
+    let style = roko_cli::term_style::Style::stdout();
+    if graduate {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&candidates)?);
+        } else {
+            let lines = roko_cli::learn_view::graduation_lines(
+                &candidates,
+                GRADUATION_MIN_OCCURRENCES,
+                GRADUATION_MIN_PLANS,
+                style,
+            );
+            println!("{}", lines.join("\n"));
         }
-        println!("   fix: {}", candidate.resolution);
-        println!("   suggested check: {}", candidate.suggested_check);
+        return Ok(EXIT_SUCCESS);
     }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&store.top_patterns(50))?);
+        return Ok(EXIT_SUCCESS);
+    }
+    let mut open: Vec<&ErrorPattern> = store
+        .top_patterns(store.len())
+        .into_iter()
+        .filter(|pattern| !pattern.resolved)
+        .collect();
+    open.sort_by(|a, b| {
+        b.occurrences
+            .cmp(&a.occurrences)
+            .then_with(|| b.last_seen_at.cmp(&a.last_seen_at))
+    });
+    let total = open.len();
+    open.truncate(PATTERNS_SHOWN);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let lines = roko_cli::learn_view::patterns_lines(&open, total, candidates.len(), style, now_ms);
+    println!("{}", lines.join("\n"));
     Ok(EXIT_SUCCESS)
 }
 

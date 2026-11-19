@@ -16,6 +16,9 @@ discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/build_trees.rs::give_build_trees", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::clone_tree"]
 lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = ["bug-40bf59", "gap-6754ab", "gap-e02ec4", "gap-dc24dd"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_tree_is_copied_where_the_filesystem_makes_no_clones' crates/roko-cli/src && ! grep -rqw 'clones_on' crates/roko-cli/src && cargo test -p roko-cli --lib -- warm_build_tree seeded_worktree_builds_nothing a_tree_is_copied_where_the_filesystem_makes_no_clones a_tree_past_the_copy_limit_builds_cold_without_clones a_dependent_attempt_starts_from_its_dependency_s_build_trees acquire_gives_the_checkout_warm_build_trees the_regression_checkout_starts_with_the_workdirs_build_trees warm_seeds_the_base_from_the_workspace_build"
 +++
 
 ## Problem
@@ -66,7 +69,9 @@ to 4 s do nothing on the most common filesystem.
    build, keeping its files' times (`cp -pPR`). A larger tree still builds cold, as before.
 2. The tests run on every filesystem, by a clone or by a copy, and no longer skip. `clones_on` goes.
 3. New tests for both sides of the copy limit, run without clones on any filesystem.
-4. Proof: the nine tests in a Linux container on overlayfs, red before and green after.
+4. Proof on Linux: the two `cp` behaviours in a container on overlayfs, which has no reflinks, as ext4 has none. The
+   copy path itself runs in the no-clone tests on any filesystem, and CI's run on ext4 confirms it. A full roko-cli
+   test build in the container pushed the Mac's free disk to heavy.sh's 35 GB floor, and was stopped.
 
 ## Done when
 

@@ -3207,10 +3207,6 @@ mod tests {
     async fn the_regression_checkout_starts_with_the_workdirs_build_trees() {
         let repo = diverged_repo();
         let path = repo.path();
-        if !crate::orchestrator::worktree::clones_on(path) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         let root = with_build_tree(path);
         // The check needs the person's build, and builds on it.
         let backend = GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(vec![

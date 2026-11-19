@@ -1186,10 +1186,6 @@ printf '%s\n' '{"type":"result","session_id":"sess-n","model":"claude-sonnet-4-6
     #[tokio::test]
     async fn a_dependent_attempt_starts_from_its_dependency_s_build_trees() {
         let (repo, worktrees) = repo_with_worktrees();
-        if !crate::orchestrator::worktree::clones_on(repo.path()) {
-            eprintln!("this filesystem makes no copy-on-write clones; skipping");
-            return;
-        }
         // The person's checkout has a CMake build tree in an ignored build/.
         std::fs::write(repo.path().join(".gitignore"), "build/\n").expect("gitignore");
         git(repo.path(), &["add", ".gitignore"]);

@@ -3115,6 +3115,25 @@ fn scrub_json_value(value: &mut Value, scrubber: &LogScrubber) {
 mod tests {
     use super::*;
 
+    /// Where run `run_id`'s index lives in a workspace at `dir`, as production
+    /// keeps it: `.roko/events-by-run/<digest>.jsonl`, beside the global log
+    /// (bug-c6f163). Both directories are private, as roko makes them: the
+    /// index reader refuses one that another user can write, and a temp
+    /// dir's own parent is the shared temp root (`/tmp`, 1777, on Linux).
+    fn index_in(dir: &FsPath, run_id: &str) -> PathBuf {
+        let roko = dir.join(".roko");
+        let index = roko_fs::run_index::run_index_path(&roko.join("events.jsonl"), run_id)
+            .expect("an index path");
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(index.parent().expect("the index's directory"))
+            .expect("the index's directory");
+        index
+    }
+
     fn write_index(path: &FsPath, run_id: &str) {
         let rows = [
             json!({"type":"run.started","run_id":run_id,"timestamp_ms":1}),
@@ -3127,13 +3146,25 @@ mod tests {
             .map(|row| serde_json::to_string(&row).unwrap())
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(path, format!("{body}\n")).unwrap();
+        write_private(path, &format!("{body}\n"));
+    }
+
+    /// Write `body` to `path` as roko's index writer creates a file: readable
+    /// and writable by its owner only, whatever the umask (the reader refuses
+    /// a file another user can write).
+    fn write_private(path: &FsPath, body: &str) {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(path).expect("open the index");
+        std::io::Write::write_all(&mut file, body.as_bytes()).expect("write the index");
     }
 
     #[test]
     fn cursor_pages_are_bounded_and_resume_at_line_boundary() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.jsonl");
+        let path = index_in(dir.path(), "r1");
         write_index(&path, "r1");
         let first = read_index_page(
             &path,
@@ -3179,7 +3210,7 @@ mod tests {
     #[test]
     fn mismatched_and_malformed_records_are_quarantined() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.jsonl");
+        let path = index_in(dir.path(), "r1");
         std::fs::write(
             &path,
             "{bad}\n{\"type\":\"run.started\",\"run_id\":\"other\"}\n{\"type\":\"run.started\",\"run_id\":\"r1\",\"event\":{\"run_id\":\"other\"}}\n{\"type\":\"run.started\",\"run_id\":\"r1\"}\n",
@@ -3203,7 +3234,7 @@ mod tests {
     #[test]
     fn partial_tail_does_not_advance_the_external_cursor() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.jsonl");
+        let path = index_in(dir.path(), "r1");
         let complete = "{\"type\":\"run.started\",\"run_id\":\"r1\"}\n";
         std::fs::write(&path, format!("{complete}{{\"type\":\"run.completed\"")).unwrap();
         let page = read_index_page(
@@ -3226,7 +3257,7 @@ mod tests {
     #[test]
     fn filtered_pagination_resumes_after_last_emitted_match() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.jsonl");
+        let path = index_in(dir.path(), "r1");
         std::fs::write(
             &path,
             [
@@ -3272,7 +3303,7 @@ mod tests {
     #[test]
     fn type_filter_and_secret_scrubbing_apply_before_response() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.jsonl");
+        let path = index_in(dir.path(), "r1");
         std::fs::write(
             &path,
             "{\"type\":\"agent.completed\",\"run_id\":\"r1\",\"message\":\"Bearer abcdefghijklmnopqrstuvwxyz1234\"}\n{\"type\":\"run.completed\",\"run_id\":\"r1\"}\n",
@@ -3296,7 +3327,7 @@ mod tests {
     #[test]
     fn summary_reports_tasks_gates_and_terminal_metrics() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.jsonl");
+        let path = index_in(dir.path(), "r1");
         write_index(&path, "r1");
         let page = read_index_page(
             &path,
@@ -3523,7 +3554,7 @@ mod tests {
     #[test]
     fn a_running_try_s_spend_reaches_the_run_summary() {
         let dir = tempfile::tempdir().unwrap();
-        let index = dir.path().join("run.jsonl");
+        let index = index_in(dir.path(), "g1");
         let efficiency = |metric: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T1","metric":metric,"value":value});
         let call = |task: &str, attempt: u32, call: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"call":call,"model":"glm-4.7","input_tokens":1000,"output_tokens":100,"cost_usd":0.01,"attempt_cost_usd":so_far});
         let settled = |task: &str, attempt: u32| json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"verdict":"passed","cost_usd":0.02});
@@ -3577,7 +3608,7 @@ mod tests {
     #[test]
     fn a_settling_try_counts_once() {
         let dir = tempfile::tempdir().unwrap();
-        let index = dir.path().join("run.jsonl");
+        let index = index_in(dir.path(), "g1");
         let cost_row = |task: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"metric":"cost_usd","value":value});
         let call = |task: &str, call: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"call":call,"model":"glm-4.7","input_tokens":1000,"output_tokens":100,"cost_usd":0.01,"attempt_cost_usd":so_far});
         let settled = |task: &str| json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":task,"attempt":1,"verdict":"passed"});
@@ -3623,7 +3654,7 @@ mod tests {
     #[test]
     fn a_side_call_event_names_its_try_and_the_summary_keeps_its_cost() {
         let dir = tempfile::tempdir().unwrap();
-        let index = dir.path().join("run.jsonl");
+        let index = index_in(dir.path(), "g1");
         let refused = |attempt: u32| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"metric":"side_call_usd.failover_refused","value":0.0068});
         let call = |attempt: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":"T2","attempt":attempt,"call":1,"model":"glm-4.7","cost_usd":0.01,"attempt_cost_usd":so_far});
         let summary = |rows: &[Value]| {
@@ -3822,7 +3853,7 @@ mod tests {
     fn write_rows(path: &FsPath, rows: &[Value]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
-        std::fs::write(path, body).unwrap();
+        write_private(path, &body);
     }
 
     /// bug-9a5970: a run whose plans the spec gate refused before any

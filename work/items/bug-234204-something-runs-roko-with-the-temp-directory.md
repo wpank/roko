@@ -59,3 +59,17 @@ in TMPDIR itself:
 ## Done when
 
 No suite leaves a `.roko` in its TMPDIR. A check that fails when one does is wired into the test harness.
+
+## Notes
+
+2026-11-19 (roko-recovery): one writer found. The stray `/private/tmp/.roko` came back today at 19:18, holding only
+`immune/tool-controls.json.lock`, during a run of roko-agent's lib tests with TMPDIR set elsewhere. Those tests run tools
+under `ToolContext::testing("/tmp")`, a literal `/tmp` workspace:
+- `dispatcher/mod.rs` (about ten tests);
+- `openai_compat_backend.rs`;
+- `dispatcher/production_safety_chain.rs`;
+- `testutil.rs`.
+
+The tool dispatch's immune check opens `<workspace>/.roko/immune/tool-controls.json` with a lock file, so it creates
+`/tmp/.roko/immune/` for any TMPDIR. The fix: those tests use a temp directory of their own. The `roko plan generate`
+in `roko.log` came from another writer, not found yet.

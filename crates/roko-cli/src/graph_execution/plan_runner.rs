@@ -11789,6 +11789,63 @@ printf '%s\n' '{{"type":"result","session_id":"sess-handback","model":"claude-so
         assert_eq!(watch.statuses.get("T1"), Some(&NodeStatus::Complete));
     }
 
+    /// bug-b589fe: a run that hands nothing back reports each task as it did
+    /// before: its end once, with its verdict, and its start at most once, in
+    /// the shared tree and with a worktree per task. Here two plans each pass
+    /// their whole-plan check, so neither hands a task back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_without_a_handback_reports_each_task_once() {
+        for worktree_per_task in [false, true] {
+            let mode = if worktree_per_task {
+                "worktree"
+            } else {
+                "shared tree"
+            };
+            let dir = repo_with_file_plans(&["alpha", "beta"], Some("true"));
+            let repo = dir.path();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-once".into()))
+                .await
+                .expect("run the plans");
+
+            assert_eq!(exit_code, EXIT_SUCCESS, "{mode}");
+            let events = std::fs::read_to_string(RokoLayout::for_project(repo).events_jsonl_path())
+                .expect("the run's event log");
+            let task_events = |kind: &str, plan: &str| -> Vec<String> {
+                events
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .filter(|event| {
+                        event["type"] == kind
+                            && event["plan_id"] == plan
+                            && event["task_id"] == "T1"
+                    })
+                    .map(|event| event["outcome"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            };
+            for plan in ["01-alpha", "02-beta"] {
+                assert_eq!(
+                    task_events("task_completed", plan),
+                    ["passed"],
+                    "{mode}: {plan}"
+                );
+                let started = task_events("task_started", plan);
+                assert!(started.len() <= 1, "{mode}: {plan}: {started:?}");
+                let checkpoint = checkpoint_json(repo, plan);
+                assert!(
+                    checkpoint["extensions"]
+                        .get(crate::graph_checkpoint::PLAN_HANDBACKS_EXTENSION)
+                        .is_none(),
+                    "{mode}: {plan} handed nothing back"
+                );
+            }
+        }
+    }
+
     /// Plan `01-alpha`'s hand-backs in `repo`'s checkpoint, and how each
     /// ended.
     fn handback_results(repo: &Path) -> (serde_json::Value, Vec<String>) {

@@ -1862,10 +1862,10 @@ consistently, it is temporarily skipped until a failure is observed. This saves 
 projects where certain gates almost always pass. State persists to
 `.roko/learn/gate-thresholds.json`.
 
-Tune with:
+Inspect them with:
 
 ```bash
-roko learn tune gates
+roko learn gates
 ```
 
 Override per-role floor (prevents skipping rungs unless historical pass rate meets threshold):
@@ -1930,7 +1930,7 @@ layer 6 of the 9-layer system prompt. After dozens of successful runs, the playb
 becomes a highly relevant catalog of what works for your specific codebase.
 
 ```bash
-roko learn all   # view current playbook state
+roko learn playbooks   # view current playbook state
 ```
 
 ### CascadeRouter bandit state
@@ -1973,8 +1973,8 @@ consistently low scores are trimmed first when the prompt approaches the token b
 grounded comparisons between prompt strategies.
 
 ```bash
-roko config experiments    # list active experiments
-roko learn tune routing    # tune routing weights
+roko config experiments      # list active experiments
+roko learn inspect routing   # the router's state and model statistics
 ```
 
 State file: `.roko/learn/experiments.json`
@@ -1995,13 +1995,15 @@ to `.roko/learn/efficiency.jsonl`.
 roko learn efficiency   # view efficiency events
 ```
 
-**Manual tuning commands**
+**Read-only inspection**
 
 ```bash
-roko learn tune gates     # adjust adaptive gate thresholds
-roko learn tune routing   # adjust routing reward weights
-roko learn tune budget    # adjust budget parameters
+roko learn inspect gates     # adaptive gate thresholds
+roko learn inspect routing   # routing state and model statistics
+roko learn inspect budget    # budget limits and spend history
 ```
+
+`roko learn tune` is a deprecated alias for `roko learn inspect`; neither changes anything.
 
 </details>
 

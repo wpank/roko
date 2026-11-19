@@ -39,8 +39,8 @@ flowchart LR
   ladder that its size calls for and moves up only when it fails; once the forecaster proves
   calibrated and you switch it on, it starts each task on the cheapest model likely to pass.
 - **Done means checked.** A task is finished when its checks pass, not when an agent says so. The
-  checks are fixed before the agent starts and kept out of its reach, and the merged result is
-  checked again.
+  checks are fixed before the agent starts, an attempt that weakens or edits them is turned down,
+  and the plan's own check runs again on the merged result.
 - **Knows how often it's wrong.** Roko re-checks a random sample of its own passes against hidden
   tests and reports a false-pass rate, so you know how far to trust a green result.
 - **Learning you can audit.** Every attempt feeds playbooks, a durable knowledge store and the
@@ -74,8 +74,8 @@ enough to verify, with Claude Code as one of its workers.
 
 - **Plans are files.** A plan is a `tasks.toml`: tasks, dependencies, the files each task may touch,
   the context it needs and the commands that prove it is done. Read it, edit it, lint it, commit it.
-- **Specs are checked first.** A spec-quality lint scores every task, and vague ones go back to the
-  author before any agent starts.
+- **Specs are checked first.** Before any agent starts, a spec-quality lint scores every task and
+  turns back a plan whose check can never fail, or already passes before any change.
 - **Focused context.** Each prompt layers a role template, the task's declared files and symbols,
   relevant playbooks and knowledge, and the errors from any earlier attempt.
 - **From prompt to plan.** Write a plan by hand, or have an agent write one from a prompt with
@@ -99,8 +99,9 @@ enough to verify, with Claude Code as one of its workers.
   Code, docs, data or ops: if a command can check it, Roko can run it.
 - **Tamper evidence.** Acceptance tests are pinned outside the agent's reach, and every attempt is
   diffed: deleted tests, weakened asserts or edits to the checks fail it.
-- **A gate ladder.** Compile, lint, test, public API, generated tests, property tests and
-  integration, scaled to each task's risk, with thresholds that adapt from history.
+- **Checks that deepen where needed.** A kind of task that has let wrong results through is checked
+  more deeply on later runs: its checks run three times, a hidden test suite is written from its
+  spec, and in Rust, clippy and mutations of the functions it changed.
 - **Whole-plan checks.** Each plan's verified tasks land on the plan's own branch. Finished plans
   merge into the run branch one at a time, each merge is checked as a whole in a separate checkout,
   and the run branch keeps a plan only if that check passes. You take the result with one merge.
@@ -109,8 +110,9 @@ enough to verify, with Claude Code as one of its workers.
 
 ### Learn
 
-- **Everything recorded.** Every prompt, model, cost and verdict is a content-addressed signal in a
-  lineage graph you can replay (`roko replay <hash>`).
+- **Everything recorded.** Every try's model, tokens, cost, checks and verdict go into the project's
+  run records, so a run can resume, and be explained, later. `roko serve` also keeps a
+  content-addressed signal log you can walk with `roko replay <hash>`.
 - **Memory.** Verified lessons, error patterns and playbooks go into a durable knowledge store and
   come back in future prompts.
 - **Learned routing.** A router and an outcome forecaster learn from settled verdicts which model
@@ -144,9 +146,9 @@ enough to verify, with Claude Code as one of its workers.
 ### Also in the box
 
 Offline knowledge consolidation between runs · affect-modulated dispatch · plugins with a capability
-policy · feeds, recipes and cron, webhook and file-watch triggers · per-agent HTTP sidecars ·
-Telegram and Slack channel adapters · a code-intelligence index for Rust, TypeScript and Go ·
-optional chain primitives (agent registry, job marketplace, arena).
+policy · feeds, recipes and cron, webhook and file-watch triggers · per-agent HTTP sidecars · a
+code-intelligence index for Rust, TypeScript and Go · optional chain primitives (agent registry, job
+marketplace, arena), left out of the default build.
 
 ## What it looks like
 
@@ -160,6 +162,35 @@ roko run plans/add-oauth2-login                    # run it: parallel, isolated,
 roko dashboard                                     # watch it live
 ```
 
+A small change, from request to merge command (recorded against a stand-in model, so its times and
+costs are only an example):
+
+```
+◆ roko  run “Add a farewell command”
+  writing a plan first · glm-4.7 · cap $2.00
+
+  ✓ Plan written  plans/add-a-farewell-command · 2 tasks · 2 checks · a plan check · 2.7s · <$0.01
+
+  ○ task 1  Add farewell to the greeting module
+  ○ task 2  Say goodbye from the command line    after task 1
+
+  Task 1 and task 2 name no files to read first, so their agents start without that context.
+
+  Run it now? [Y/n] y
+
+◆ roko  run add-a-farewell-command
+  2 tasks · cap $3.00
+
+  ✓ task 1  Add farewell to the greeting module  1 try       4.2s  $0.10
+  ✓ task 2  Say goodbye from the command line    1 try       4.3s  $0.10
+  ✓ plan check  python3 cli.py --bye world | grep -qx '…     0.0s
+
+  ✓ Done  2/2 tasks · 5 checks passed · 9.6s · $0.20 of $3.00
+  The work is on its own branch: +15 −0 in 2 files. Your checkout is unchanged.
+
+  Next  git merge --ff-only roko/work/add-a-farewell-command
+```
+
 Roko ran most of the build of its own web portal: 16 plans and 173 tasks.
 
 36 workspace members · ~1.2M lines of Rust · 11,000+ tests · MIT OR Apache-2.0
@@ -168,9 +199,9 @@ The design is described in the whitepaper, [Roko: A Cybernetic Harness for Multi
 
 ---
 
-**The guide:** [Quick start](#quick-start) · [How it works](#how-it-works) ·
-[Dashboard](#dashboard) · [Providers](#providers) · [Architecture](#architecture) ·
-[Gate pipeline](#gate-pipeline) · [Learning](#learning) · [Deployment](#deployment) ·
+**The guide:** [Quick start](#quick-start) · [Use roko from Hermes](#use-roko-from-hermes) ·
+[How it works](#how-it-works) · [Dashboard](#dashboard) · [Providers](#providers) ·
+[Architecture](#architecture) · [Checks](#checks) · [Learning](#learning) · [Deployment](#deployment) ·
 [Configuration](#configuration) · [CLI reference](#cli-quick-reference) ·
 [Building](#building-and-testing) · [Contributing](#contributing)
 
@@ -258,10 +289,12 @@ cp -R <path-to-roko>/plans/demos/parallel-plans/demo-hello-world plans/
 roko plan run plans/demo-hello-world
 ```
 
-`roko plan run` shows a terminal UI when stdout is a terminal (`--no-tui` gives plain logs). It
-also starts the HTTP control plane in the background (`--no-serve` skips it). Progress is
-checkpointed under `.roko/state/graph/<plan>/`. `roko plan status plans/demo-hello-world` shows the
-task states, and `roko plan run plans/ --resume-plan` resumes an interrupted run.
+On a terminal, `roko plan run` shows the live view: a line per task, what each one is doing, and a
+footer of tasks done, time and spend (`--tui` opens the full-screen dashboard instead; in a pipe it
+prints one line per event). It also starts the HTTP control plane in the background (`--no-serve`
+skips it). Progress is checkpointed under `.roko/state/graph/<plan>/`. `roko plan status
+plans/demo-hello-world` shows the plan's last run, and `roko plan run plans/ --resume-plan` resumes an
+interrupted run.
 
 ### 5. Start the control plane
 
@@ -271,6 +304,31 @@ roko serve
 
 `roko serve` listens on `127.0.0.1:6677` and prints a `portal:` link that carries a one-time token.
 `GET /health` and `GET /ready` are open. The `/api/` routes need that token or an API key.
+
+## Use roko from Hermes
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) hands coding work to roko through the
+roko plugin, [hermes-plugin-roko](https://github.com/wpank/hermes-plugin-roko) (0.9.0). Ask in any
+Hermes chat, for example "Use roko to add a `--json` flag to the report command, with a test. Cap it
+at $0.50.", and roko runs the work as checked tasks while Hermes shows the run live. The result waits
+on its own branch until you review and merge it.
+
+With roko installed (step 1 above):
+
+```bash
+hermes plugins install https://github.com/wpank/hermes-plugin-roko --enable
+cd path/to/your-project
+hermes roko init        # checks the project and roko, and asks before each change it makes
+```
+
+A run started from a chat needs a model roko calls over an API (an OpenAI, Anthropic, OpenRouter,
+Cerebras, Z.ai or Moonshot key), because only roko's own tool loop can hold a tool call for your
+approval. The plugin's [getting started](https://github.com/wpank/hermes-plugin-roko/blob/HEAD/docs/getting-started.md)
+covers the rest.
+
+**A real build:** [Undertow](https://github.com/wpank/undertow), a sub-bass synthesizer plug-in, was
+built by roko from a Hermes chat: 11 phases and 34 tasks for $12.66 in roko, with every line of the
+synth written by roko's agents.
 
 ## How it works
 
@@ -319,6 +377,51 @@ the plan and stops, and `roko run plans/` runs every plan under `plans/`.
 `roko plan run plans/<plan> --dry-run` lists a plan's tasks and their order. `roko doctor disk`
 reports free space, stale Rust targets, orphaned worktrees and oversized logs without changing
 anything.
+
+### Watching a run
+
+While a plan runs, the terminal shows each task's state and what its agent is doing, over a footer
+of tasks done, time and spend (the example above, part way through):
+
+```
+◆ roko  run add-a-farewell-command
+  2 tasks · cap $3.00
+
+  ✓ task 1  Add farewell to the greeting module  1 try       4.2s  $0.10
+  ⠧ task 2  Say goodbye from the command line    reading cli.py
+
+   1/2   0:05   $0.13  of $3.00
+```
+
+`roko plan status <plan>` shows a plan's last run the same way, from any terminal, while it runs or
+after it ends. Here is a real one, from the Undertow build:
+
+```
+◆ roko  plan p7-3-the-playing-step-row-as-designed
+  plans/p7-3-the-playing-step-row-as-designed · done 13 Nov
+  3/3 tasks · 4m 59s · $0.17 of $2.00 · 10/10 checks
+
+  ✓ task 1  Rework the step cells and trace bands        1 try     2m 10s  $0.13
+  ✓ task 2  Rework knob glow and zero-arc behavior       1 try     1m 08s  $0.04
+  ✓ task 3  Regenerate the review images and strict log  1 try        57s <$0.01
+  ✓ plan check  tools/check.sh --plugin                            1m 16s
+
+  The work was delivered on roko/work/p7-3-the-playing-step-row-as-designed.
+```
+
+`roko status` lists what is running and how the last runs ended, with what they spent:
+
+```
+◆ roko  status undertow
+  13 plans · $0.00 today · $12.66 this month
+
+  ✓ p7-4-the-step-cell-outlines   done yesterday 11:37  2/2 tasks   $0.01
+  ✓ p7-3-the-playing-step-row-a…  done 13 Nov           3/3 tasks   $0.17
+  ✓ p7-2-the-window-as-designed…  done 13 Nov           5/5 tasks   $1.32
+  ✓ p7-1-silent-until-played      done 13 Nov           2/2 tasks   $0.11
+  ✓ p7-ship                       done 13 Nov           2/2 tasks   $0.01
+  and 6 earlier
+```
 
 ### One-shot prompts
 
@@ -419,48 +522,68 @@ Substrate. Missing or unknown safety contracts fail closed, so an unsupported to
 ### Optional chain primitives
 
 `crates/roko-chain` holds an optional chain client plus local state machines for a registry, a job
-marketplace (`roko job`), an arena and DeFi primitives. It is off by default (`[chain] enabled =
-false`). Nodes, consensus and on-chain contracts live in a separate repository.
+marketplace, an arena and DeFi primitives. A default build leaves it out; `cargo build -p roko-cli
+--features chain` brings it back. Nodes, consensus and on-chain contracts live in a separate
+repository.
 
-## Gate pipeline
+## Checks
 
-Every agent result passes through gates before it is accepted. Plan tasks also carry their own
-`verify` commands, and those must pass too.
+A plan task passes when its checks pass. A run checks each try in this order:
 
-The pipeline has 7 rungs. Which rungs run depends on the task: trivial tasks skip the expensive
-checks, and complex tasks run all of them.
+1. **What the try changed.** A try that deletes, empties or skips a test, takes out asserts, or edits
+   a file the checks depend on (a script they run, the plan, a test runner's settings or roko's own
+   check settings) without the plan giving it that file is turned down before anything runs, and
+   the next try is told why. Adding tests is fine. Code that could pass its tests without doing the
+   work is flagged, and such a try reads unverified even when its checks pass.
+2. **The task's own `verify` commands**, written in the plan.
+3. **The workspace's rungs**, `[[gates.rungs]]` in `roko.toml` (`roko init` writes them for the
+   project it finds), except a rung whose command one of the task's steps already runs. A plan opts
+   out with `workspace_rungs = false` in its `[meta]`. Task prompts list the rungs, and
+   `roko plan validate` shows which will run.
+4. **Deeper checks where they are due.** Random audits re-check a sample of passed tries; a kind of
+   task that lets wrong results through is checked more deeply on later runs: its checks run three
+   times, a hidden suite is written from its spec, and in Rust, clippy and mutations of the functions
+   it changed.
 
-| Rung | Gate | What it checks |
-|------|------|---------------|
-| 0 | Compile | `cargo check`, `tsc`, `go build`: does it build? |
-| 1 | Lint | `cargo clippy`, `eslint`: does it pass linting? |
-| 2 | Test | `cargo test`: do the existing tests pass? |
-| 3 | Symbol | Symbol manifest: did the change break a public API? |
-| 4 | GeneratedTest | Agent-generated behavioural tests |
-| 5 | PropertyTest | Property-based tests |
-| 6 | Integration | A full integration scenario |
+A failed check goes back to the task, named, with the lines it failed on. After two failed tries on
+one model, the task moves up to a stronger model, at most two steps. When every task in a plan has
+passed, roko merges the work and runs the plan's own check (`[meta] verify`) on the result; a Rust
+project without one gets a default (formatting, lints, and the tests of the crates the plan
+changed). The work stays off the run's branch until that check passes.
 
-Rungs declared under `[[gates.rungs]]` in `roko.toml` replace the built-in compile, lint and test
-checks for that workspace. `roko plan run` runs the required ones after each task's own
-`[[task.verify]]` steps, except a rung whose command one of those steps already runs, and a failing
-rung fails the task. Task prompts list the rungs, and `roko plan validate` shows which will run. A
-plan opts out with `workspace_rungs = false` in its `[meta]`. Other gates include `DiffGate`,
-`LlmJudgeGate`, `FactCheckGate`, `CodeExecutionGate` and `SecurityScanGate`. Gate thresholds adapt
-from recorded outcomes and persist to `.roko/learn/gate-thresholds.json`, and `roko learn gates`
-shows them.
+`roko plan run --rich-topology` adds a gate step to each task that runs roko-gate's full pipeline:
+up to seven rungs, depending on the task (compile, lint, test, public API, generated tests, property
+tests and integration). Gate thresholds adapt from recorded outcomes and persist to
+`.roko/learn/gate-thresholds.json`, and `roko learn gates` shows them.
 
 ## Learning
 
-roko records its own performance and feeds it back into routing, prompts and knowledge.
+roko records its own performance and feeds it back into routing, prompts and knowledge. The `roko
+learn` views read those records:
 
 ```bash
-roko learn all                       # router, experiments, efficiency, episodes, reflexes
-roko learn experiments               # prompt A/B experiments
+roko learn all                       # everything at once: routing, reuse, knowledge and more
+roko learn router                    # how roko picks a model
+roko learn rungs                     # how each rung of the model ladder did
+roko learn patterns                  # failure patterns, most frequent first
 roko learn efficiency                # tokens, latency, cost and gate results per turn
 roko knowledge query "authentication patterns"
 roko knowledge stats
 roko knowledge dream run             # offline consolidation of recent episodes
-roko knowledge dream report
+```
+
+The router's view, from the Undertow build:
+
+```
+◆ roko  learn router
+  how roko picks a model
+
+  Routing  42 observations · static (it moves to confidence at 50 observations and to UCB at 200)
+           Graph tasks start on the model ladder's rung; the router's pick is recorded beside it
+           49 outcomes: gpt-5.4 10 tries, 9 passed · gpt-5.4-mini 39 tries, 35 passed
+           no outcomes yet: claude-sonnet-4-6, glm-4.7 (unavailable), gpt-5.6-luna, gpt-oss-120b
+
+  Read from .roko/learn/cascade-router.json.
 ```
 
 ## Deployment
@@ -616,9 +739,9 @@ collection.
 | `roko run --plan "<prompt>"` | Write a plan for the prompt, show it, and run it once you confirm |
 | `roko plan generate "<prompt>"` | Write a plan to `plans/<slug>/` without running it |
 | `roko run plans/<dir>` | Execute a plan directory through the Graph engine (also `roko plan run <dir>`) |
-| `roko plan status <dir>` | Show a plan's task states |
+| `roko plan status <dir>` | Show a plan's last run: each task, the plan check, where the work went, and the next step |
 | `roko research topic "<topic>"` | Research with citations |
-| `roko status` | Signal counts, recent episodes, gate results |
+| `roko status` | What is running, how the last runs ended and what they spent (`--details` adds roko's internals) |
 | `roko github status` | GitHub config, auth, plan PR, CI, and failure-issue status |
 | `roko dashboard` | Interactive terminal dashboard |
 | `roko knowledge query "<topic>"` | Search durable knowledge |
@@ -662,7 +785,7 @@ The component table in [`CLAUDE.md`](CLAUDE.md) says where each subsystem lives.
 
 Contributions are welcome. A few ground rules:
 
-1. **Search before writing.** With 36 workspace members and ~1M lines, the thing you want to build
+1. **Search before writing.** With 36 workspace members and ~1.2M lines, the thing you want to build
    might already exist. Run `rg 'StructName' crates/ --glob '*.rs'` first.
 2. **Wire, don't build.** Before adding new code, check whether existing code just needs to be
    called from the runtime.

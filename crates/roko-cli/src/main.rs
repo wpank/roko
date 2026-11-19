@@ -649,7 +649,7 @@ Examples:
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// Print signal counts, most recent episode, and gate pass/fail.
+    /// What is running, how the last runs ended and what they spent, and what to run next.
     #[command(
         visible_alias = "s",
         after_help = "\

@@ -968,8 +968,9 @@ roko plan budget raise <plan-id> --to <usd> [--workdir <path>]
 
 #### `roko plan status`
 
-Show lightweight runner status from `.roko/state/status.json`. With a plan directory, it shows that plan in the
-run view's style:
+Show a plan's last run in the run view's style, from the run's records, from any terminal while the run goes or
+after it ended. Without a plan directory, it prints the latest run's progress from `.roko/state/status.json`: its
+id, phase, plans done, agents running, time and last event. With one, it shows:
 - how its last run ended and when;
 - the run's four readings, by the rule every surface shares (the round's design system, §4.8):
   - its tasks, `3/3 tasks`;

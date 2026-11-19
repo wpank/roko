@@ -498,23 +498,23 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[command(subcommand)]
         cmd: QueueCmd,
     },
-    /// Show the lightweight runner status from `.roko/state/status.json`.
+    /// Show a plan's last run in the run view's style.
     ///
-    /// Reads the < 500 byte status file written by the runner on every tick
-    /// (debounced 1/sec). This is fast because it does not require
-    /// deserializing the full executor snapshot.
+    /// Its tasks, time, spend of its cap and checks; each task as the run
+    /// left it; the plan check; where the work went; and the one command to
+    /// run next. It reads the run's records, so it works from any terminal,
+    /// while the run goes or after it ended.
     ///
-    /// When a plan directory is provided, shows task-level status for that
-    /// specific plan (from its tasks.toml and executor snapshot).
-    /// When omitted, shows the global runner status (phase, plans, agents).
+    /// Without a plan directory, it prints the latest run's progress from
+    /// `.roko/state/status.json`: its id, phase, plans done, agents running,
+    /// time and last event.
     #[command(after_help = "\
 Examples:
-  roko plan status                          Show global runner status
-  roko plan status plans/demos/demo-hello   Show task status for a specific plan")]
+  roko plan status plans/demos/demo-hello   A plan's last run: readings, tasks, plan check, next step
+  roko plan status                          The latest run's progress: phase, plans done, agents")]
     Status {
-        /// Optional plan directory to show status for (e.g. plans/my-plan).
-        /// When provided, shows task-level status for that specific plan.
-        /// When omitted, shows the global runner status.
+        /// The plan's directory (e.g. plans/my-plan), to show its last run.
+        /// Without it, the latest run's progress.
         plan_dir: Option<PathBuf>,
         /// Working directory.
         #[arg(long)]

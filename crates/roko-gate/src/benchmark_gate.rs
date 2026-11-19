@@ -447,8 +447,8 @@ async fn run_cargo_bench(
             .await
             .map_err(|e| format!("spawn failed: {e}"))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = crate::output_text::output_text(&output.stdout);
+        let stderr = crate::output_text::output_text(&output.stderr);
 
         if !output.status.success() {
             let code = output

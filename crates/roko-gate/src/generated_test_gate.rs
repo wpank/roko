@@ -359,8 +359,8 @@ impl Verify for GeneratedTestGate {
 
         // 6. Parse results into a Verdict.
         let elapsed = elapsed_ms(started);
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = crate::output_text::output_text(&output.stdout);
+        let stderr = crate::output_text::output_text(&output.stderr);
         let combined = format!("{stdout}\n{stderr}");
         let counts =
             crate::test_gate::parse_test_counts(&combined, self.build_system).unwrap_or_default();

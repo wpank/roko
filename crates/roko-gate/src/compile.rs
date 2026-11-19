@@ -183,8 +183,8 @@ impl Verify for CompileGate {
         };
 
         let elapsed = started.elapsed().as_millis() as u64;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = crate::output_text::output_text(&output.stdout);
+        let stderr = crate::output_text::output_text(&output.stderr);
         let detail = if stdout.is_empty() {
             stderr.clone()
         } else {

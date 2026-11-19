@@ -27,7 +27,9 @@ jobs:
           # A run whose tests fail still saves its build for the next one.
           cache-on-failure: true
       - run: cargo clippy --workspace --no-deps -- -D warnings
-      - run: cargo test --workspace
+      # Every test binary runs, so one run shows every failure; the step still
+      # fails if any test does (bug-eeadbb).
+      - run: cargo test --workspace --no-fail-fast
 
   golden-path:
     name: Golden-path canaries (C1-C8)

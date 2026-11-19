@@ -352,6 +352,57 @@ async fn clippy_rung_passes_and_rejects_lint_noise() {
     assert!(fail.reason.contains("unused") || fail.reason.contains("warning"));
 }
 
+/// bug-4debc8: a lint or compile failure's reason carries its first
+/// diagnostic when cargo colors its output, as it does under
+/// `CARGO_TERM_COLOR=always` (CI sets it) or `--color always`. Colored
+/// diagnostic lines start with escape sequences, and the reason fell back to
+/// cargo's "Checking" status line. Nothing the gate reports keeps an escape.
+#[tokio::test]
+async fn lint_and_compile_reasons_carry_the_diagnostic_when_cargo_colors_its_output() {
+    let colored = || vec!["--color".to_string(), "always".to_string()];
+    let tmp = tempdir();
+    scaffold_cargo_project(
+        tmp.path(),
+        r#"fn lint_me() {
+    let unused_value = 1;
+    let _ = 2;
+}
+"#,
+        &[],
+    );
+    let signal = cargo_signal(tmp.path());
+
+    let lint = ClippyGate::cargo()
+        .with_extra_args(colored())
+        .with_timeout_ms(60_000);
+    let fail = verify(&lint, &signal).await;
+    assert!(!fail.passed);
+    assert!(fail.reason.contains("unused variable"), "{:?}", fail.reason);
+    assert!(!fail.reason.contains('\u{1b}'), "{:?}", fail.reason);
+    assert!(
+        !fail
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains('\u{1b}'),
+        "{:?}",
+        fail.detail
+    );
+
+    write_text(
+        tmp.path(),
+        "src/lib.rs",
+        "pub fn broken() -> { missing body }\n",
+    );
+    let compile = CompileGate::cargo()
+        .with_extra_args(colored())
+        .with_timeout_ms(60_000);
+    let fail = verify(&compile, &signal).await;
+    assert!(!fail.passed);
+    assert!(fail.reason.starts_with("error"), "{:?}", fail.reason);
+    assert!(!fail.reason.contains('\u{1b}'), "{:?}", fail.reason);
+}
+
 #[tokio::test]
 async fn diff_gate_accepts_real_diffs_and_rejects_stub_tokens() {
     let gate = DiffGate::new();

@@ -9,7 +9,7 @@ goal = "tooling"
 size = "M"
 subsystem = ["roko-cli/commands"]
 created = 2026-11-13
-updated = 2026-11-13
+updated = 2026-11-18
 last_verified = 2026-11-13
 source = "round v8 lead, on gap-9bfb4e's phase 6 reading (6/6 tasks · 11m 51s · $5.77 · 7/7 checks)"
 discovered_from = "agent:team-lead (round v8)"
@@ -52,7 +52,11 @@ serve's run handle.
    the sum of its invocations' run times (each part's `run_completed.duration_ms`, and the running part's elapsed
    time so far), which matches SPENT's whole-run sense. Write it into §4.8.
 2. **Name each invocation's event index** in the run manifest (with gap-1ac9eb). `RunIndex` then reads every part's
-   index: TIME is the sum, and the plan check row and live spend come from the running part.
+   index: TIME is the sum, and the plan check row comes from the running part. Live spend needs no index since
+   bug-80c642 (8aba09b6b): SPENT reads the checkpoint, which holds every part's settled spend and each try's calls.
+3. **Name the field on gap-2cd0ec** once the fix records each invocation's run time in the manifest (portal-v8's
+   ask, 2026-11-18). serve's `carried_ms` should sum the same field, so the web, Hermes and the terminal read one
+   number.
 
 ## Done when
 

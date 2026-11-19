@@ -3224,30 +3224,35 @@ fn check_target_staleness(workdir: &Path) -> DoctorCheck {
     }
 }
 
-/// Warn when both `./plans/` and `.roko/plans/` exist (potential conflict).
+/// Warn when both `./plans/` and `.roko/plans/` hold plans (potential
+/// conflict). Only a directory that holds a plan counts: `.roko/plans/` may
+/// hold the enrichment pipeline's per-plan artifacts, and an older `roko init`
+/// made it empty (bug-a1c99a).
 fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
+    use roko_fs::workspace_plans::holds_plans;
+
     let top_level = workdir.join("plans");
     let dot_roko = workdir.join(".roko").join("plans");
+    // The plan directories directly under `dir`, by name: those that hold a
+    // `tasks.toml` or a `plan.md`.
+    let plan_names = |dir: &Path| -> std::collections::HashSet<String> {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| {
+                        let path = e.path();
+                        path.join("tasks.toml").is_file() || path.join("plan.md").is_file()
+                    })
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
-    if top_level.is_dir() && dot_roko.is_dir() {
-        let top_names: std::collections::HashSet<String> = std::fs::read_dir(&top_level)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let dot_names: std::collections::HashSet<String> = std::fs::read_dir(&dot_roko)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
+    if top_level.is_dir() && holds_plans(&dot_roko) {
+        let top_names = plan_names(&top_level);
+        let dot_names = plan_names(&dot_roko);
 
         let top_count = top_names.len();
         let dot_count = dot_names.len();
@@ -5032,6 +5037,39 @@ mod tests {
             legacy_check.status,
             DoctorStatus::Ok,
             "fresh V3 workspace should have no legacy files"
+        );
+    }
+
+    /// bug-a1c99a: `.roko/plans/` beside `plans/` warns only when it holds a
+    /// plan: the empty directory an older `roko init` made, or the enrichment
+    /// pipeline's artifacts for a plan, are no conflict.
+    #[test]
+    fn plans_dir_conflict_counts_only_plans() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("plans/hello")).expect("plans/hello");
+        std::fs::write(root.join("plans/hello/tasks.toml"), "[meta]\n").expect("tasks.toml");
+        std::fs::create_dir_all(root.join(".roko/plans")).expect(".roko/plans");
+        assert_eq!(check_plans_dir_conflict(root).status, DoctorStatus::Ok);
+
+        std::fs::create_dir_all(root.join(".roko/plans/hello")).expect("artifacts");
+        std::fs::write(
+            root.join(".roko/plans/hello/enriched-context.md"),
+            "context\n",
+        )
+        .expect("an enrichment artifact");
+        assert_eq!(check_plans_dir_conflict(root).status, DoctorStatus::Ok);
+
+        std::fs::create_dir_all(root.join(".roko/plans/old")).expect(".roko/plans/old");
+        std::fs::write(root.join(".roko/plans/old/tasks.toml"), "[meta]\n").expect("tasks.toml");
+        let check = check_plans_dir_conflict(root);
+        assert_eq!(check.status, DoctorStatus::Warn);
+        assert!(
+            check
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains(".roko/plans/ has 1 plan dir")),
+            "{check:?}"
         );
     }
 

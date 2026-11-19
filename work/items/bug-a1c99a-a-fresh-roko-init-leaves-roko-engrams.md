@@ -18,7 +18,7 @@ lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn fresh_init_leaves_no_legacy_files' crates/roko-cli/ && cargo test -p roko-cli fresh_init_leaves_no_legacy_files && d=\"$(mktemp -d)\" && git -C \"$d\" init -q && mkdir \"$d/h\" && cargo build -q -p roko-cli && HOME=\"$d/h\" target/debug/roko init \"$d\" >/dev/null 2>&1 && test ! -e \"$d/.roko/engrams.jsonl\" && test ! -d \"$d/.roko/plans\""
+command = "grep -rqw 'fn fresh_init_leaves_no_legacy_files' crates/roko-cli/ && cargo test -p roko-cli --test doctor -- fresh_init_leaves_no_legacy_files reinit_keeps_the_signal_log init_moves_a_legacy_signal_log_into_signals_jsonl && cargo test -p roko-cli --lib -- plans_dir_conflict_counts_only_plans && d=\"$(mktemp -d)\" && git -C \"$d\" init -q && mkdir \"$d/h\" && cargo build -q -p roko-cli && HOME=\"$d/h\" target/debug/roko init \"$d\" >/dev/null 2>&1 && test ! -e \"$d/.roko/engrams.jsonl\" && test ! -d \"$d/.roko/plans\""
 +++
 
 ## Problem

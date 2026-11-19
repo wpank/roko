@@ -16,6 +16,9 @@ discovered_from = "agent:roko-recovery (round v8, 2026-11-19)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/rust_checks.rs", "crates/roko-cli/src/graph_task_dispatch/verify_depth.rs::run_check_command"]
 lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn with_check_env' crates/roko-cli/src && grep -rqw 'fn env_without_compiler_wrappers' crates/roko-cli/src && cargo test -p roko-cli --lib -- rust_task_checks_refuse_an_unformatted_change rust_checks verify_depth"
 +++
 
 ## Problem

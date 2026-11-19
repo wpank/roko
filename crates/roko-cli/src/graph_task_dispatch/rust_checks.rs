@@ -328,7 +328,7 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher_with, no_auto_fix,
         verify_step,
     };
     use crate::graph_task_dispatch::verify_depth::CheckRun;
@@ -450,6 +450,17 @@ mod tests {
         rows.join(", ")
     }
 
+    /// roko's environment without the compiler wrappers a test harness may
+    /// run under: `cargo llvm-cov` is the coverage job's `RUSTC_WRAPPER`,
+    /// and refuses the nested cargo of a test's checks, which lack its own
+    /// variables (bug-eab239). A person's `sccache` reaches their checks.
+    fn env_without_compiler_wrappers() -> Vec<(String, std::ffi::OsString)> {
+        roko_core::child_env::process_env()
+            .into_iter()
+            .filter(|(name, _)| name != "RUSTC_WRAPPER" && name != "RUSTC_WORKSPACE_WRAPPER")
+            .collect()
+    }
+
     /// Dispatch one attempt whose provider writes `lib` to `beta`'s library,
     /// under `config`, in the run `run`; its result and its verdict's `rust:`
     /// rows.
@@ -467,7 +478,7 @@ mod tests {
         };
         let write =
             format!("cat >/dev/null\ncat > crates/beta/src/lib.rs <<'ROKO_LIB'\n{lib}ROKO_LIB\n");
-        let (dispatcher, mut task) = make_test_dispatcher(
+        let (dispatcher, mut task) = make_test_dispatcher_with(
             temp,
             &VERIFY_PROVIDER.replace("cat >/dev/null\n", &write),
             |roko| {
@@ -475,6 +486,7 @@ mod tests {
                 config(roko);
             },
             feedback,
+            |dispatcher| dispatcher.with_check_env(env_without_compiler_wrappers()),
         )
         .await;
         task.files = vec!["crates/beta/src/lib.rs".to_string()];

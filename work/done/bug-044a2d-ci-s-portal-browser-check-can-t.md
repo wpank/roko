@@ -2,7 +2,7 @@
 id = "bug-044a2d"
 kind = "bug"
 title = "CI's Portal browser check can't run on GitHub's runners: ubuntu-latest is now 26.04, where demo/demo-app's Playwright 1.59.1 has no Chromium (PR #88 and #89), and behind that, on Linux a parallel run's second delivery fails 'Author identity unknown' because a runner has no git identity"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["ci"]
 created = 2026-11-19
 updated = 2026-11-19
 last_verified = 2026-11-19
+last_verified_rev = "5f9b88cf9"
 source = "round v8 portal-v8, the lead's ask for release PR #89 (2026-11-19)"
 discovered_from = "agent:portal-v8 (round v8)"
 anchors = [".github/workflows/ci.yml"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["find-8cc7ac", "bug-37a893"],
 
 [[verify]]
 command = "J=\"$(awk '/^  portal-browser:/{f=1;next} /^  [a-z][a-z-]*:$/{f=0} f' .github/workflows/ci.yml)\" && printf '%s\\n' \"$J\" | grep -q 'runs-on: ubuntu-24.04' && printf '%s\\n' \"$J\" | grep -q 'git config --global user.email' && ! printf '%s\\n' \"$J\" | grep -q 'shared-key: layer-check'"
+
+[closed]
+at = 2026-11-19
+at_ts = "2026-11-19T12:19:13Z"
+commit = "ed5325f43"
+by = "portal-v8 (round v8)"
+model = "claude-opus-5-5"
+forced = false
+evidence = "CI run 44518589917 on PR #89's head a7ec12459 (job 135541002507, image ubuntu-24.04): 'Build the demo app and install Playwright's Chromium' passed, roko-cli built cold in about 16 minutes, the new git identity step ran, and the Portal check printed PORTAL-CHECK: PASS (39 checks), par-b's delivered branch included; the job's first green run on Linux (26m32s). The item's [[verify]] passes at a7ec12459."
 +++
 
 ## Problem

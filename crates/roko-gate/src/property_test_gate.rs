@@ -265,8 +265,8 @@ impl Verify for PropertyTestGate {
         };
 
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = crate::output_text::output_text(&output.stdout);
+        let stderr = crate::output_text::output_text(&output.stderr);
         let combined = format!("{stdout}\n{stderr}");
         let counts = parse_property_test_counts(&combined);
 

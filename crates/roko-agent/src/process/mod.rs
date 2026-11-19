@@ -17,6 +17,8 @@
 //!   child processes, and the provider-credential scrub for provider CLIs.
 //! - **Stderr suppression** ([`stderr`]): classify and deduplicate benign
 //!   agent stderr noise.
+//! - **Prompt delivery** ([`stdin`]): write a prompt to an agent's stdin, where
+//!   an agent that stopped reading it is no failure in itself.
 //!
 //! # Platform support
 //!
@@ -32,6 +34,7 @@ pub mod limits;
 pub mod mcp;
 pub mod registry;
 pub mod stderr;
+pub mod stdin;
 
 // Re-export the primary public API surface for convenience.
 pub use env::{
@@ -51,3 +54,4 @@ pub use registry::{
     registered_pids_in_scope, set_registry_root, unregister_pid,
 };
 pub use stderr::{BenignStderr, benign_stderr_warn_once, classify_benign_stderr};
+pub use stdin::write_prompt;

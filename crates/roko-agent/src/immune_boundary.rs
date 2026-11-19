@@ -2327,6 +2327,48 @@ mod tests {
         assert_eq!(run(Some(7)).await.ttft_ms, Some(7));
     }
 
+    /// bug-7d13f0: a provider that exits before it reads its prompt answers
+    /// nothing, however the timing goes. A short prompt breaks the pipe only
+    /// when the agent's exit comes first, which made
+    /// `canonical_provider_factory_installs_boundary_automatically` flake on
+    /// Linux. A prompt bigger than any pipe's buffer always breaks it. The run
+    /// is still an empty answer, not a failed write.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_provider_that_exits_before_reading_its_prompt_is_an_empty_answer() {
+        use crate::provider::{AgentOptions, create_agent_for_model};
+        use roko_core::config::schema::RokoConfig;
+
+        let workspace = tempdir().expect("temp workspace");
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.command = None;
+        let options = AgentOptions {
+            command: Some("/bin/sh".to_string()),
+            extra_args: vec!["-c".to_string(), "exit 0".to_string()],
+            working_dir: Some(workspace.path().to_path_buf()),
+            immune_root: Some(workspace.path().to_path_buf()),
+            name: "unread-prompt-agent".to_string(),
+            ..AgentOptions::default()
+        };
+        let agent = create_agent_for_model(&config, "missing-model", options)
+            .expect("create fallback provider agent");
+        // 4 MiB: more than any pipe holds, so the write ends at the exit.
+        let unread = Signal::builder(Kind::Prompt)
+            .body(Body::text("x".repeat(4 << 20)))
+            .build();
+        let result = agent.run(&unread, &Context::now()).await;
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output.tag("provider_error"),
+            Some("empty_response"),
+            "{:?}",
+            result.output.body.as_text()
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn canonical_provider_factory_installs_boundary_automatically() {
